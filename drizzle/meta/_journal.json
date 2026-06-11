@@ -1,0 +1,34 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1778278523817,
+      "tag": "0000_neat_zarda",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1778278684839,
+      "tag": "0001_simple_outlaw_kid",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1778284996506,
+      "tag": "0002_lazy_hellfire_club",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1778285745326,
+      "tag": "0003_mature_whirlwind",
+      "breakpoints": true
+    }
+  ]
+}

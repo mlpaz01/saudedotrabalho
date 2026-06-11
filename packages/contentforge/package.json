@@ -1,0 +1,9 @@
+{
+  "name": "@contentforge/core",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.0"
+  }
+}

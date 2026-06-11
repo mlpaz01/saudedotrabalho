@@ -1,0 +1,53 @@
+import AppLayout from "@/components/AppLayout";
+import { trpc } from "@/lib/trpc";
+import { useState } from "react";
+import { toast } from "sonner";
+import { Plus, Trash2 } from "lucide-react";
+
+export default function AdminDepartments() {
+  const branches = trpc.branchesAdmin.list.useQuery();
+  const list = trpc.departmentsAdmin.list.useQuery();
+  const create = trpc.departmentsAdmin.create.useMutation({ onSuccess: () => { toast.success("Setor criado"); list.refetch(); setForm({ name: "", branchId: undefined }); }, onError: (e) => toast.error(e.message) });
+  const del = trpc.departmentsAdmin.delete.useMutation({ onSuccess: () => { toast.success("Removido"); list.refetch(); }, onError: (e) => toast.error(e.message) });
+  const [form, setForm] = useState<{ name: string; branchId?: number }>({ name: "", branchId: undefined });
+
+  return (
+    <AppLayout>
+      <div className="p-6 space-y-4">
+        <h1 className="text-2xl font-bold text-primary">Setores</h1>
+
+        <div className="bg-white border rounded-lg p-4 flex gap-2 items-end flex-wrap">
+          <label className="text-sm flex-1 min-w-[180px]">Nome
+            <input className="w-full mt-1 border rounded p-2" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          </label>
+          <label className="text-sm w-56">Filial (opcional)
+            <select className="w-full mt-1 border rounded p-2" value={form.branchId ?? ""} onChange={(e) => setForm({ ...form, branchId: e.target.value ? Number(e.target.value) : undefined })}>
+              <option value="">— Sem filial —</option>
+              {(branches.data ?? []).map((b: any) => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+          </label>
+          <button onClick={() => form.name && create.mutate(form)} className="px-4 py-2 bg-primary text-white rounded inline-flex items-center gap-1"><Plus size={14} /> Adicionar</button>
+        </div>
+
+        <div className="bg-white border rounded-lg overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50 text-xs uppercase"><tr><th className="p-3 text-left">Nome</th><th className="p-3 text-left">Filial</th><th className="p-3 text-right">Ações</th></tr></thead>
+            <tbody>
+              {(list.data ?? []).map((s: any) => {
+                const branch = (branches.data ?? []).find((b: any) => b.id === s.branchId);
+                return (
+                  <tr key={s.id} className="border-t">
+                    <td className="p-3 font-medium">{s.name}</td>
+                    <td className="p-3">{branch?.name ?? "-"}</td>
+                    <td className="p-3 text-right"><button onClick={() => confirm("Remover?") && del.mutate({ id: s.id })} className="text-red-600 p-1"><Trash2 size={14} /></button></td>
+                  </tr>
+                );
+              })}
+              {(list.data ?? []).length === 0 && <tr><td colSpan={3} className="p-6 text-center text-muted-foreground">Nenhum setor.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </AppLayout>
+  );
+}

@@ -1,0 +1,50 @@
+import AppLayout from "@/components/AppLayout";
+import { trpc } from "@/lib/trpc";
+import { useState } from "react";
+import { toast } from "sonner";
+import { Plus, Trash2 } from "lucide-react";
+
+export default function AdminBranches() {
+  const list = trpc.branchesAdmin.list.useQuery();
+  const create = trpc.branchesAdmin.create.useMutation({ onSuccess: () => { toast.success("Filial criada"); list.refetch(); setForm({ name: "", city: "", state: "" }); }, onError: (e) => toast.error(e.message) });
+  const del = trpc.branchesAdmin.delete.useMutation({ onSuccess: () => { toast.success("Removida"); list.refetch(); }, onError: (e) => toast.error(e.message) });
+  const [form, setForm] = useState({ name: "", city: "", state: "" });
+
+  return (
+    <AppLayout>
+      <div className="p-6 space-y-4">
+        <h1 className="text-2xl font-bold text-primary">Filiais</h1>
+
+        <div className="bg-white border rounded-lg p-4 flex gap-2 items-end flex-wrap">
+          <label className="text-sm flex-1 min-w-[180px]">Nome
+            <input className="w-full mt-1 border rounded p-2" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          </label>
+          <label className="text-sm w-40">Cidade
+            <input className="w-full mt-1 border rounded p-2" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} />
+          </label>
+          <label className="text-sm w-20">UF
+            <input className="w-full mt-1 border rounded p-2" maxLength={2} value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value.toUpperCase() })} />
+          </label>
+          <button onClick={() => form.name && create.mutate(form)} className="px-4 py-2 bg-primary text-white rounded inline-flex items-center gap-1"><Plus size={14} /> Adicionar</button>
+        </div>
+
+        <div className="bg-white border rounded-lg overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50 text-xs uppercase"><tr><th className="p-3 text-left">Nome</th><th className="p-3 text-left">Cidade</th><th className="p-3 text-left">UF</th><th className="p-3 text-right">Ações</th></tr></thead>
+            <tbody>
+              {(list.data ?? []).map((b: any) => (
+                <tr key={b.id} className="border-t">
+                  <td className="p-3 font-medium">{b.name}</td>
+                  <td className="p-3">{b.city ?? "-"}</td>
+                  <td className="p-3">{b.state ?? "-"}</td>
+                  <td className="p-3 text-right"><button onClick={() => confirm("Remover?") && del.mutate({ id: b.id })} className="text-red-600 p-1"><Trash2 size={14} /></button></td>
+                </tr>
+              ))}
+              {(list.data ?? []).length === 0 && <tr><td colSpan={4} className="p-6 text-center text-muted-foreground">Nenhuma filial.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </AppLayout>
+  );
+}

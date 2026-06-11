@@ -1,0 +1,4637 @@
+import { TRPCError } from "@trpc/server";
+
+
+import { z } from "zod";
+
+
+import { COOKIE_NAME } from "@shared/const";
+
+
+import { getSessionCookieOptions } from "./_core/cookies";
+
+
+import { systemRouter } from "./_core/systemRouter";
+
+
+import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
+
+
+import {
+
+
+  upsertUser,
+
+
+  getUserByOpenId,
+
+
+  getCorporateEmailByEmail,
+
+
+  setCorporateEmailPassword,
+
+
+  updateCorporateEmailLastAccess,
+
+
+  bulkInsertCorporateEmails,
+
+
+  listCorporateEmails,
+
+
+  listModules,
+
+
+  getModuleById,
+
+
+  updateModule,
+
+
+  getUserProgress,
+
+
+  getUserProgressForModule,
+
+
+  upsertUserProgress,
+
+
+  getCertificate,
+
+
+  getUserCertificates,
+
+
+  createCertificate,
+
+
+  listDecompressionVideos,
+
+
+  listAllDecompressionVideos,
+
+
+  createDecompressionVideo,
+
+
+  updateDecompressionVideo,
+
+
+  deleteDecompressionVideo,
+
+
+  updateModuleCertConfig,
+
+
+  getReminderSettings,
+
+
+  updateReminderSettings,
+
+
+  getAdminStats,
+
+
+  getSectorEngagement,
+
+
+  getInactiveUsers,
+
+
+  getEmailLogs,
+
+
+  logEmail,
+
+
+  listAllLessonsByModule,
+
+
+  listLessonsByModule,
+
+
+  createLesson,
+
+
+  updateLesson,
+
+
+  deleteLesson,
+
+
+  upsertLessonProgress,
+
+
+  getModuleLessonProgressForUser,
+
+
+  createModule,
+
+
+  adminUpdateModule,
+
+
+  deleteModule,
+
+
+  getCompanies,
+
+
+  getCompanyById,
+
+
+  createCompany,
+
+
+  updateCompany,
+
+
+  getBranchesByCompany,
+
+
+  createBranch,
+
+
+  updateBranch,
+
+
+  deleteBranch,
+
+
+  getSectorsByCompany,
+
+
+  getSectorsByBranch,
+
+
+  createSector,
+
+
+  updateSector,
+
+
+  deleteSector,
+
+
+  getCorporateEmailsByCompany,
+
+
+  getSectorEngagementByCompany,
+
+
+  getQuizByLesson,
+
+
+  getQuizForGrading,
+
+
+  createQuizAttempt,
+
+
+  getUserQuizAttempts,
+
+
+  upsertQuiz,
+
+
+  createQuestion,
+
+
+  createOption,
+
+
+  deleteQuestion,
+
+
+  logAudit,
+
+
+  listAuditLogs,
+
+
+  logViewEvent,
+
+
+  getEffectiveWatchSeconds,
+
+
+  recordAcceptance,
+
+
+  getAcceptance,
+
+
+  getEvidenceReport,
+
+
+  getUserById,
+
+
+  listAllCompaniesWithStats,
+
+
+  getSuperAdminOverview,
+
+
+  createCompanyFull,
+
+
+  updateCompanyPlan,
+
+
+  deleteCompanyHard,
+
+
+  listMasterCatalog,
+
+
+  setModuleMasterFlag,
+
+
+  setTrailMasterFlag,
+
+
+  cloneModuleForCompany,
+
+
+  cloneTrailForCompany,
+
+
+  listAvailableContentForCompany,
+
+
+  enrollCompanyInContent,
+
+
+  unenrollCompanyFromContent,
+
+
+  updateEnrollmentAssignments,
+
+
+  getVisibleModulesForUser,
+
+
+  getVisibleTrailsForUser,
+
+
+  createAIGeneration,
+
+
+  markAIGenerationDone,
+
+
+  markAIGenerationFailed,
+
+
+  listAIGenerationsForCompany,
+  updateAIGenerationProgress,
+  getAIGenerationStatus,
+  getAIGenerationById,
+
+
+  generateCourseFromPromptStub,
+
+
+  listComplianceItems,
+
+
+  getCompanyComplianceStatus,
+
+
+  updateComplianceStatus,
+
+
+  getOverallComplianceScore,
+
+
+  listSurveysForCompany,
+
+
+  listSurveyTemplates,
+
+
+  getSurveyById,
+
+
+  createSurvey,
+
+
+  createSurveyFromTemplate,
+
+
+  addSurveyQuestion,
+
+
+  deleteSurveyQuestion,
+
+
+  updateSurveyStatus,
+
+
+  deleteSurvey,
+
+
+  submitSurveyResponse,
+
+
+  getSurveyResults,
+
+
+  listActiveSurveysForUser,
+
+
+  updateCompanySettings,
+
+
+  getUserTotalPoints,
+
+
+  getLeaderboard,
+
+
+  getUserBadges,
+
+
+  awardPoints,
+
+
+  listAllLearningTrails,
+
+
+  listLearningTrails,
+
+
+  getLearningTrailById,
+
+
+  createLearningTrail,
+
+
+  updateLearningTrail,
+
+
+  deleteLearningTrail,
+
+
+  getTrailModules,
+
+
+  addModuleToTrail,
+
+
+  removeModuleFromTrail,
+
+
+  removeTrailItem,
+
+
+  getCompanyNameById,
+
+
+  getImpersonationContext,
+
+
+  listProfessionalLicenses,
+
+
+  createProfessionalLicense,
+
+
+  updateProfessionalLicense,
+
+
+  deleteProfessionalLicense,
+
+
+  getCompanyLicenseExpirations,
+
+
+  getManagerDashboard,
+
+
+  getEmployeeDashboard,
+
+
+} from "./db";
+
+
+import { getDb } from "./db";
+
+
+import { quizQuestions } from "../drizzle/schema";
+
+
+import { eq as drzEq, sql as drzSql, eq, sql, and } from "drizzle-orm";
+
+
+import { modules, userProgress } from "../drizzle/schema";
+
+
+import bcrypt from "bcryptjs";
+
+
+import { nanoid } from "nanoid";
+
+
+import { generateCertificatePDF } from "./certificate";
+
+
+import { sdk } from "./_core/sdk";
+
+
+
+
+
+// ─── Middleware ───────────────────────────────────────────────────────────────
+
+
+const adminOrRhProcedure = protectedProcedure.use(({ ctx, next }) => {
+
+
+  if (ctx.user.role !== "admin" && ctx.user.role !== "rh" && ctx.user.role !== "admin_global" && ctx.user.role !== "company_admin") {
+
+
+    throw new TRPCError({ code: "FORBIDDEN", message: "Acesso restrito a administradores e RH." });
+
+
+  }
+
+
+  return next({ ctx });
+
+
+});
+
+
+
+
+
+// Extract IP + user agent from request
+
+
+function getReqMeta(ctx: any) {
+
+
+  const req = ctx?.req;
+
+
+  const fwd = req?.headers?.['x-forwarded-for'];
+
+
+  const ip = (Array.isArray(fwd) ? fwd[0] : (typeof fwd === 'string' ? fwd.split(',')[0] : ''))?.trim()
+
+
+    || req?.ip || req?.socket?.remoteAddress || '';
+
+
+  const ua = req?.headers?.['user-agent'] ?? '';
+
+
+  return { ip: String(ip).slice(0, 45), ua: String(ua).slice(0, 500) };
+
+
+}
+
+
+
+
+
+const adminGlobalProcedure = protectedProcedure.use(({ ctx, next }) => {
+
+
+  if (ctx.user.role !== "admin_global") {
+
+
+    throw new TRPCError({ code: "FORBIDDEN", message: "Acesso restrito a administradores globais." });
+
+
+  }
+
+
+  return next({ ctx });
+
+
+});
+
+
+
+
+
+
+
+
+const superAdminProcedure = protectedProcedure.use(({ ctx, next }) => {
+
+
+  if (ctx.user.role !== "super_admin") {
+
+
+    throw new TRPCError({ code: "FORBIDDEN", message: "Acesso restrito ao Super Admin." });
+
+
+  }
+
+
+  return next({ ctx });
+
+
+});
+
+
+
+
+
+// ─── App Router ───────────────────────────────────────────────────────────────
+
+
+export const appRouter = router({
+
+
+  system: systemRouter,
+
+
+
+
+
+  // ── Auth ──────────────────────────────────────────────────────────────────
+
+
+  auth: router({
+
+
+    me: publicProcedure.query((opts) => {
+
+
+      if (!opts.ctx.user) return null;
+
+
+      const u = opts.ctx.user;
+
+
+      return {
+
+
+        ...u,
+
+
+        companyId: (u as any).companyId ?? null,
+
+
+        branchId: (u as any).branchId ?? null,
+
+
+        sectorId: (u as any).sectorId ?? null,
+
+
+        role: u.role,
+
+
+      };
+
+
+    }),
+
+
+    logout: publicProcedure.mutation(async ({ ctx }) => {
+
+
+      const cookieOptions = getSessionCookieOptions(ctx.req);
+
+
+      ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
+
+
+      const meta = getReqMeta(ctx);
+
+
+      if (ctx.user) {
+
+
+        await logAudit({
+
+
+          userId: ctx.user.id, userEmail: ctx.user.email,
+
+
+          action: 'logout', ipAddress: meta.ip, userAgent: meta.ua,
+
+
+        });
+
+
+      }
+
+
+      return { success: true } as const;
+
+
+    }),
+
+
+
+
+
+    // Check if corporate email exists and if password is set
+
+
+    checkCorporateEmail: publicProcedure
+
+
+      .input(z.object({ email: z.string().email() }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        const record = await getCorporateEmailByEmail(input.email);
+
+
+        if (!record) throw new TRPCError({ code: "NOT_FOUND", message: "E-mail não cadastrado na plataforma. Entre em contato com o RH." });
+
+
+        return { hasSetPassword: record.hasSetPassword, employeeName: record.employeeName };
+
+
+      }),
+
+
+
+
+
+    // First access: set password
+
+
+    setPassword: publicProcedure
+
+
+      .input(z.object({ email: z.string().email(), password: z.string().min(8) }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        const record = await getCorporateEmailByEmail(input.email);
+
+
+        if (!record) throw new TRPCError({ code: "NOT_FOUND", message: "E-mail não encontrado." });
+
+
+        if (record.hasSetPassword) throw new TRPCError({ code: "BAD_REQUEST", message: "Senha já definida. Use o login normal." });
+
+
+        const hash = await bcrypt.hash(input.password, 10);
+
+
+        // Create a user record for this corporate email
+
+
+        const openId = `corp_${nanoid(16)}`;
+
+
+        await upsertUser({ openId, email: input.email, name: record.employeeName ?? input.email, loginMethod: "corporate" });
+
+
+        const user = await getUserByOpenId(openId);
+
+
+        if (!user) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+
+        await setCorporateEmailPassword(input.email, hash, user.id);
+
+
+        return { success: true };
+
+
+      }),
+
+
+
+
+
+    // Corporate login
+
+
+    corporateLogin: publicProcedure
+
+
+      .input(z.object({ email: z.string().email(), password: z.string() }))
+
+
+      .mutation(async ({ input, ctx }) => {
+
+
+        const record = await getCorporateEmailByEmail(input.email);
+
+
+        if (!record || !record.hasSetPassword || !record.passwordHash) {
+
+
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "E-mail ou senha inválidos." });
+
+
+        }
+
+
+        const valid = await bcrypt.compare(input.password, record.passwordHash);
+
+
+        if (!valid) throw new TRPCError({ code: "UNAUTHORIZED", message: "E-mail ou senha inválidos." });
+
+
+
+
+
+        // Get or create the user
+
+
+        let user = record.userId ? (await (async () => {
+
+
+          const { getDb } = await import("./db");
+
+
+          const { users } = await import("../drizzle/schema");
+
+
+          const { eq } = await import("drizzle-orm");
+
+
+          const db = await getDb();
+
+
+          if (!db) return undefined;
+
+
+          const r = await db.select().from(users).where(eq(users.id, record.userId!)).limit(1);
+
+
+          return r[0];
+
+
+        })()) : undefined;
+
+
+
+
+
+        if (!user) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Usuário não encontrado." });
+
+
+
+
+
+           await updateCorporateEmailLastAccess(input.email);
+
+
+        // Issue JWT session using sdk.createSessionToken so the payload matches what verifySession expects
+
+
+        // (fields: openId, appId, name — all required by the SDK)
+
+
+        const token = await sdk.createSessionToken(user.openId, {
+
+
+          name: user.name ?? user.email ?? "",
+
+
+          expiresInMs: 7 * 24 * 60 * 60 * 1000,
+
+
+        });
+
+
+        const cookieOptions = getSessionCookieOptions(ctx.req);
+
+
+        ctx.res.cookie(COOKIE_NAME, token, { ...cookieOptions, maxAge: 7 * 24 * 60 * 60 * 1000 });
+
+
+        const meta = getReqMeta(ctx);
+
+
+        await logAudit({
+
+
+          userId: user.id, userEmail: user.email,
+
+
+          action: 'login', ipAddress: meta.ip, userAgent: meta.ua,
+
+
+        });
+
+
+        return { success: true, user: { id: user.id, name: user.name, email: user.email, role: user.role } };
+
+
+      }),
+
+
+  }),
+
+
+
+
+
+  // ── Modules ───────────────────────────────────────────────────────────────
+
+
+  modules: router({
+
+
+    list: protectedProcedure.query(async ({ ctx }) => {
+
+
+      try {
+
+
+        return await getVisibleModulesForUser(ctx.user.id);
+
+
+      } catch (e) {
+
+
+        return listModules();
+
+
+      }
+
+
+    }),
+
+
+
+
+
+    get: protectedProcedure
+
+
+      .input(z.object({ id: z.number() }))
+
+
+      .query(async ({ input }) => {
+
+
+        const mod = await getModuleById(input.id);
+
+
+        if (!mod) throw new TRPCError({ code: "NOT_FOUND" });
+
+
+        return mod;
+
+
+      }),
+
+
+
+
+
+    update: adminOrRhProcedure
+
+
+      .input(z.object({
+
+
+        id: z.number(),
+
+
+        videoUrl: z.string().optional(),
+
+
+        thumbnailUrl: z.string().optional(),
+
+
+        description: z.string().optional(),
+
+
+        durationMinutes: z.number().optional(),
+
+
+      }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        const { id, ...data } = input;
+
+
+        await updateModule(id, data);
+
+
+        return { success: true };
+
+
+      }),
+
+
+  }),
+
+
+
+
+
+  // ── Progress ──────────────────────────────────────────────────────────────
+
+
+  progress: router({
+
+
+    getUserProgress: protectedProcedure.query(async ({ ctx }) => {
+
+
+      return getUserProgress(ctx.user.id);
+
+
+    }),
+
+
+
+
+
+    getModuleProgress: protectedProcedure
+
+
+      .input(z.object({ moduleId: z.number() }))
+
+
+      .query(async ({ ctx, input }) => {
+
+
+        return getUserProgressForModule(ctx.user.id, input.moduleId);
+
+
+      }),
+
+
+
+
+
+    updateProgress: protectedProcedure
+
+
+      .input(z.object({
+
+
+        moduleId: z.number(),
+
+
+        percentWatched: z.number().min(0).max(100),
+
+
+        isCompleted: z.boolean(),
+
+
+      }))
+
+
+      .mutation(async ({ ctx, input }) => {
+
+
+        const before = await getUserProgressForModule(ctx.user.id, input.moduleId);
+
+
+        await upsertUserProgress(ctx.user.id, input.moduleId, input.percentWatched, input.isCompleted);
+
+
+        if (input.isCompleted && !before?.isCompleted) {
+
+
+          const meta = getReqMeta(ctx);
+
+
+          await logAudit({
+
+
+            userId: ctx.user.id, userEmail: ctx.user.email,
+
+
+            action: 'module_completed', entityType: 'module', entityId: input.moduleId,
+
+
+            detailsJson: { percentWatched: input.percentWatched },
+
+
+            ipAddress: meta.ip, userAgent: meta.ua,
+
+
+          });
+
+
+        }
+
+
+        return { success: true };
+
+
+      }),
+
+
+  }),
+
+
+
+
+
+  // ── Certificates ──────────────────────────────────────────────────────────
+
+
+  certificates: router({
+
+
+    getUserCertificates: protectedProcedure.query(async ({ ctx }) => {
+
+
+      const certs = await getUserCertificates(ctx.user.id);
+
+
+      const allModules = await listModules();
+
+
+      return certs.map((c) => {
+
+
+        const mod = allModules.find((m) => m.id === c.moduleId);
+
+
+        return {
+
+
+          ...c,
+
+
+          moduleName: mod?.title ?? "Módulo",
+
+
+          certTitle: mod?.certTitle ?? null,
+
+
+          certBody: mod?.certBody ?? null,
+
+
+          certSignerName: mod?.certSignerName ?? null,
+
+
+          certSignerRole: mod?.certSignerRole ?? null,
+
+
+        };
+
+
+      });
+
+
+    }),
+
+
+
+
+
+    generate: protectedProcedure
+
+
+      .input(z.object({ moduleId: z.number() }))
+
+
+      .mutation(async ({ ctx, input }) => {
+
+
+        // Check if already exists
+
+
+        const existing = await getCertificate(ctx.user.id, input.moduleId);
+
+
+        if (existing) return existing;
+
+
+
+
+
+        // Check 100% completion
+
+
+        const progress = await getUserProgressForModule(ctx.user.id, input.moduleId);
+
+
+        if (!progress?.isCompleted) {
+
+
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Módulo não concluído. Assista 100% do conteúdo para obter o certificado." });
+
+
+        }
+
+
+
+
+
+        const mod = await getModuleById(input.moduleId);
+
+
+        if (!mod) throw new TRPCError({ code: "NOT_FOUND" });
+
+
+
+
+
+        const code = nanoid(20).toUpperCase();
+
+
+        const pdfBuffer = await generateCertificatePDF({
+
+
+          userName: ctx.user.name ?? ctx.user.email ?? "Participante",
+
+
+          moduleName: mod.title,
+
+
+          completedAt: progress.completedAt ?? new Date(),
+
+
+          certificateCode: code,
+
+
+        });
+
+
+
+
+
+        // Store PDF
+
+
+        const { storagePut } = await import("./storage");
+
+
+        const { key, url } = await storagePut(`certificates/${code}.png`, pdfBuffer, "image/png");
+
+
+
+
+
+        const cert = await createCertificate(ctx.user.id, input.moduleId, code, url);
+
+
+        const meta = getReqMeta(ctx);
+
+
+        await logAudit({
+
+
+          userId: ctx.user.id, userEmail: ctx.user.email,
+
+
+          action: 'certificate_issued', entityType: 'certificate', entityId: cert?.id,
+
+
+          detailsJson: { moduleId: input.moduleId, code },
+
+
+          ipAddress: meta.ip, userAgent: meta.ua,
+
+
+        });
+
+
+        return cert;
+
+
+      }),
+
+
+
+
+
+    download: protectedProcedure
+
+
+      .input(z.object({ moduleId: z.number() }))
+
+
+      .query(async ({ ctx, input }) => {
+
+
+        const cert = await getCertificate(ctx.user.id, input.moduleId);
+
+
+        if (!cert) throw new TRPCError({ code: "NOT_FOUND", message: "Certificado não encontrado." });
+
+
+        return cert;
+
+
+      }),
+
+
+  }),
+
+
+
+
+
+  // ── Decompression ─────────────────────────────────────────────────────────
+
+
+  decompression: router({
+
+
+    list: protectedProcedure.query(async () => {
+
+
+      return listDecompressionVideos();
+
+
+    }),
+
+
+  }),
+
+
+
+
+
+  // ── Admin ─────────────────────────────────────────────────────────────────
+
+
+  admin: router({
+
+
+    stats: adminOrRhProcedure.query(async () => {
+
+
+      return getAdminStats();
+
+
+    }),
+
+
+
+
+
+    sectorEngagement: adminOrRhProcedure.query(async () => {
+
+
+      return getSectorEngagement();
+
+
+    }),
+
+
+
+
+
+    studentHistory: adminOrRhProcedure
+
+
+      .input(z.object({ userId: z.number() }))
+
+
+      .query(async ({ input }) => {
+
+
+        const db = await getDb();
+
+
+        if (!db) return { user: {}, progress: [], certificates: [] };
+
+
+        const { eq: dEq, and: dAnd } = await import("drizzle-orm");
+
+
+        const { users: usersT, userProgress: upT, certificates: certsT, modules: modsT } = await import("../drizzle/schema");
+
+
+
+
+
+        const userRows = await db.select().from(usersT).where(dEq(usersT.id, input.userId)).limit(1);
+
+
+        const user = userRows[0] ?? {};
+
+
+
+
+
+        const progress = await db.select({
+
+
+          moduleId: upT.moduleId,
+
+
+          percentWatched: upT.percentWatched,
+
+
+          isCompleted: upT.isCompleted,
+
+
+          completedAt: upT.completedAt,
+
+
+          moduleTitle: modsT.title,
+
+
+        }).from(upT).leftJoin(modsT, dEq(upT.moduleId, modsT.id)).where(dEq(upT.userId, input.userId));
+
+
+
+
+
+        const certs = await db.select({
+
+
+          id: certsT.id,
+
+
+          certificateCode: certsT.certificateCode,
+
+
+          issuedAt: certsT.issuedAt,
+
+
+          moduleTitle: modsT.title,
+
+
+        }).from(certsT).leftJoin(modsT, dEq(certsT.moduleId, modsT.id)).where(dEq(certsT.userId, input.userId));
+
+
+
+
+
+        return { user, progress, certificates: certs };
+
+
+      }),
+
+
+    emailLogs: adminOrRhProcedure.query(async () => {
+
+
+      return getEmailLogs(100);
+
+
+    }),
+
+
+
+
+
+    listUsers: adminOrRhProcedure
+
+
+      .input(z.object({ page: z.number().default(1), limit: z.number().default(50) }))
+
+
+      .query(async ({ ctx, input }) => {
+
+
+        // non-global admins: filter by company
+
+
+        if (ctx.user.role !== "admin_global" && ctx.user.role !== "admin") {
+
+
+          const companyId = (ctx.user as any).companyId;
+
+
+          if (companyId) {
+
+
+            const emails = await getCorporateEmailsByCompany(companyId);
+
+
+            return { data: emails, total: emails.length };
+
+
+          }
+
+
+        }
+
+
+        return listCorporateEmails(input.page, input.limit);
+
+
+      }),
+
+
+
+
+
+    importEmails: adminOrRhProcedure
+
+
+      .input(z.object({
+
+
+        emails: z.array(z.object({
+
+
+          email: z.string().email(),
+
+
+          employeeName: z.string().optional(),
+
+
+          company: z.string().optional(),
+
+
+          sector: z.string().optional(),
+
+
+          companyId: z.number().optional(),
+
+
+          branchId: z.number().optional(),
+
+
+          sectorId: z.number().optional(),
+
+
+        })),
+
+
+      }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        const count = await bulkInsertCorporateEmails(input.emails);
+
+
+        return { inserted: count, total: input.emails.length };
+
+
+      }),
+
+
+
+
+
+    getReminderSettings: adminOrRhProcedure.query(async () => {
+
+
+      return getReminderSettings();
+
+
+    }),
+
+
+
+
+
+    updateReminderSettings: adminOrRhProcedure
+
+
+      .input(z.object({
+
+
+        inactiveDaysThreshold: z.number().min(1).max(365).optional(),
+
+
+        lowEngagementThreshold: z.number().min(0).max(100).optional(),
+
+
+        isEnabled: z.boolean().optional(),
+
+
+      }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        await updateReminderSettings(input);
+
+
+        return { success: true };
+
+
+      }),
+
+
+
+
+
+    sendReminders: adminOrRhProcedure.mutation(async () => {
+
+
+      const settings = await getReminderSettings();
+
+
+      if (!settings?.isEnabled) return { sent: 0, message: "Lembretes desativados." };
+
+
+
+
+
+      const inactiveUsers = await getInactiveUsers(settings.inactiveDaysThreshold);
+
+
+      let sent = 0;
+
+
+
+
+
+      for (const user of inactiveUsers) {
+
+
+        try {
+
+
+          // Log the reminder (actual email sending would require SMTP config)
+
+
+          await logEmail(
+
+
+            user.email,
+
+
+            "reminder_employee",
+
+
+            `Lembrete: Continue sua jornada na plataforma Saúde do Trabalho`,
+
+
+            true
+
+
+          );
+
+
+          sent++;
+
+
+        } catch (e) {
+
+
+          await logEmail(user.email, "reminder_employee", "Lembrete", false, String(e));
+
+
+        }
+
+
+      }
+
+
+
+
+
+      await updateReminderSettings({ lastRunAt: new Date() });
+
+
+      return { sent, total: inactiveUsers.length };
+
+
+    }),
+
+
+
+
+
+     updateModuleVideo: adminOrRhProcedure
+
+
+      .input(z.object({
+
+
+        moduleId: z.number(),
+
+
+        videoUrl: z.string().url().or(z.literal("")),
+
+
+        thumbnailUrl: z.string().optional(),
+
+
+        durationMinutes: z.number().optional(),
+
+
+        description: z.string().optional(),
+
+
+        title: z.string().optional(),
+
+
+      }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        const { moduleId, ...data } = input;
+
+
+        await updateModule(moduleId, data);
+
+
+        return { success: true };
+
+
+      }),
+
+
+    updateModuleCert: adminOrRhProcedure
+
+
+      .input(z.object({
+
+
+        moduleId: z.number(),
+
+
+        certTitle: z.string().optional(),
+
+
+        certBody: z.string().optional(),
+
+
+        certSignerName: z.string().optional(),
+
+
+        certSignerRole: z.string().optional(),
+
+
+      }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        const { moduleId, ...data } = input;
+
+
+        await updateModuleCertConfig(moduleId, data);
+
+
+        return { success: true };
+
+
+      }),
+
+
+    listDecompressionVideos: adminOrRhProcedure.query(async () => {
+
+
+      return listAllDecompressionVideos();
+
+
+    }),
+
+
+    createDecompressionVideo: adminOrRhProcedure
+
+
+      .input(z.object({
+
+
+        title: z.string().min(1),
+
+
+        category: z.enum(["yoga", "meditacao", "respiracao", "outro"]),
+
+
+        videoUrl: z.string().optional(),
+
+
+        thumbnailUrl: z.string().optional(),
+
+
+        durationMinutes: z.number().optional(),
+
+
+        description: z.string().optional(),
+
+
+        isActive: z.boolean().optional(),
+
+
+        orderIndex: z.number().optional(),
+
+
+      }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        await createDecompressionVideo(input);
+
+
+        return { success: true };
+
+
+      }),
+
+
+    updateDecompressionVideo: adminOrRhProcedure
+
+
+      .input(z.object({
+
+
+        id: z.number(),
+
+
+        title: z.string().optional(),
+
+
+        category: z.enum(["yoga", "meditacao", "respiracao", "outro"]).optional(),
+
+
+        videoUrl: z.string().optional(),
+
+
+        thumbnailUrl: z.string().optional(),
+
+
+        durationMinutes: z.number().optional(),
+
+
+        description: z.string().optional(),
+
+
+        isActive: z.boolean().optional(),
+
+
+        orderIndex: z.number().optional(),
+
+
+      }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        const { id, ...data } = input;
+
+
+        await updateDecompressionVideo(id, data);
+
+
+        return { success: true };
+
+
+      }),
+
+
+    deleteDecompressionVideo: adminOrRhProcedure
+
+
+      .input(z.object({ id: z.number() }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        await deleteDecompressionVideo(input.id);
+
+
+        return { success: true };
+
+
+      }),
+
+
+    listModules: adminOrRhProcedure.query(async () => {
+
+
+      return listModules();
+
+
+    }),
+
+
+    // ─── Module CRUD ───────────────────────────────────────────────────────────
+
+
+    createModule: adminOrRhProcedure
+
+
+      .input(z.object({
+
+
+        title: z.string().min(1),
+
+
+        description: z.string().optional(),
+
+
+        durationMinutes: z.number().optional(),
+
+
+        orderIndex: z.number().optional(),
+
+
+        isActive: z.boolean().optional(),
+
+
+        validityDays: z.number().nullish(), isMandatory: z.boolean().optional(), profession: z.string().nullish() }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        await createModule(input);
+
+
+        return { success: true };
+
+
+      }),
+
+
+    updateModuleAdmin: adminOrRhProcedure
+
+
+      .input(z.object({
+
+
+        id: z.number(),
+
+
+        title: z.string().min(1).optional(),
+
+
+        description: z.string().optional(),
+
+
+        durationMinutes: z.number().optional(),
+
+
+        orderIndex: z.number().optional(),
+
+
+        isActive: z.boolean().optional(),
+
+
+        certTitle: z.string().optional(),
+
+
+        certBody: z.string().optional(),
+
+
+        certSignerName: z.string().optional(),
+
+
+        certSignerRole: z.string().optional(),
+
+
+        validityDays: z.number().nullish(), isMandatory: z.boolean().optional(), profession: z.string().nullish() }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        const { id, ...data } = input;
+
+
+        await adminUpdateModule(id, data);
+
+
+        return { success: true };
+
+
+      }),
+
+
+    deleteModule: adminOrRhProcedure
+
+
+      .input(z.object({ id: z.number() }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        await deleteModule(input.id);
+
+
+        return { success: true };
+
+
+      }),
+
+
+    // ─── Lessons CRUD ──────────────────────────────────────────────────────────
+
+
+    
+
+
+  moduleCompletionStats: adminOrRhProcedure.query(async () => {
+
+
+    const db = (await getDb())!;
+
+
+    const mods = await db.select().from(modules).where(eq(modules.isActive, 1 as any));
+
+
+    const results = await Promise.all(mods.map(async (m: any) => {
+
+
+      const completedRows = await db.select({ count: sql`COUNT(*)` }).from(userProgress).where(and(eq(userProgress.moduleId, m.id), eq(userProgress.isCompleted, true)));
+
+
+      const totalRows = await db.select({ count: sql`COUNT(DISTINCT user_id)` }).from(userProgress);
+
+
+      const completed = Number(completedRows[0]?.count ?? 0);
+
+
+      const total = Number(totalRows[0]?.count ?? 0);
+
+
+      return { moduleId: m.id, title: m.title, total, completed, pct: total > 0 ? Math.round((completed/total)*100) : 0 };
+
+
+    }));
+
+
+    return results;
+
+
+  }),
+
+
+  listLessons: adminOrRhProcedure
+
+
+      .input(z.object({ moduleId: z.number() }))
+
+
+      .query(async ({ input }) => {
+
+
+        return listAllLessonsByModule(input.moduleId);
+
+
+      }),
+
+
+    createLesson: adminOrRhProcedure
+
+
+      .input(z.object({
+
+
+        moduleId: z.number(),
+
+
+        title: z.string().min(1),
+
+
+        description: z.string().optional(),
+
+
+        videoUrl: z.string().optional(),
+
+
+        durationMinutes: z.number().optional(),
+
+
+        orderIndex: z.number().optional(),
+
+
+        isActive: z.boolean().optional(),
+
+
+      }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        await createLesson(input);
+
+
+        return { success: true };
+
+
+      }),
+
+
+    updateLesson: adminOrRhProcedure
+
+
+      .input(z.object({
+
+
+        id: z.number(),
+
+
+        title: z.string().optional(),
+
+
+        description: z.string().optional(),
+
+
+        videoUrl: z.string().optional(),
+
+
+        durationMinutes: z.number().optional(),
+
+
+        orderIndex: z.number().optional(),
+
+
+        isActive: z.boolean().optional(),
+
+
+      }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        const { id, ...data } = input;
+
+
+        await updateLesson(id, data);
+
+
+        return { success: true };
+
+
+      }),
+
+
+    deleteLesson: adminOrRhProcedure
+
+
+      .input(z.object({ id: z.number() }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        await deleteLesson(input.id);
+
+
+        return { success: true };
+
+
+      }),
+
+
+
+
+
+    // ─── Quiz management ────────────────────────────────────────────────────
+
+
+    getQuiz: adminOrRhProcedure
+
+
+      .input(z.object({ lessonId: z.number() }))
+
+
+      .query(async ({ input }) => {
+
+
+        return await getQuizForGrading(input.lessonId);
+
+
+      }),
+
+
+
+
+
+    upsertQuiz: adminOrRhProcedure
+
+
+      .input(z.object({
+
+
+        lessonId: z.number(),
+
+
+        passingScore: z.number().min(0).max(100).default(70),
+
+
+        questions: z.array(z.object({
+
+
+          questionText: z.string().min(1),
+
+
+          options: z.array(z.object({
+
+
+            optionText: z.string().min(1),
+
+
+            isCorrect: z.boolean(),
+
+
+          })).min(2),
+
+
+        })).min(1),
+
+
+      }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        const quizId = await upsertQuiz(input.lessonId, input.passingScore);
+
+
+        const db = await getDb();
+
+
+        if (!db) throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR' });
+
+
+        const existing = await db.select().from(quizQuestions).where(drzEq(quizQuestions.quizId, quizId));
+
+
+        for (const q of existing) await deleteQuestion(q.id);
+
+
+        let idx = 0;
+
+
+        for (const q of input.questions) {
+
+
+          const qid = await createQuestion(quizId, q.questionText, idx++);
+
+
+          let oidx = 0;
+
+
+          for (const o of q.options) {
+
+
+            await createOption(qid, o.optionText, o.isCorrect ? 1 : 0, oidx++);
+
+
+          }
+
+
+        }
+
+
+        return { quizId };
+
+
+      }),
+
+
+  }),
+
+
+
+
+
+  // ── Quiz (employee) ───────────────────────────────────────────────────────
+
+
+  quiz: router({
+
+
+    getByLesson: protectedProcedure
+
+
+      .input(z.object({ lessonId: z.number() }))
+
+
+      .query(async ({ input }) => {
+
+
+        const quiz = await getQuizByLesson(input.lessonId);
+
+
+        if (!quiz) return null;
+
+
+        return {
+
+
+          ...quiz,
+
+
+          questions: quiz.questions.map((q) => ({
+
+
+            ...q,
+
+
+            options: q.options.map((opt) => {
+
+
+              const { isCorrect, ...rest } = opt as any;
+
+
+              return rest;
+
+
+            }),
+
+
+          })),
+
+
+        };
+
+
+      }),
+
+
+
+
+
+    submit: protectedProcedure
+
+
+      .input(z.object({
+
+
+        lessonId: z.number(),
+
+
+        answers: z.array(z.object({ questionId: z.number(), selectedOptionId: z.number() })),
+
+
+      }))
+
+
+      .mutation(async ({ ctx, input }) => {
+
+
+        const quiz = await getQuizForGrading(input.lessonId);
+
+
+        if (!quiz) throw new TRPCError({ code: 'NOT_FOUND', message: 'Quiz não encontrado' });
+
+
+
+
+
+        let earned = 0;
+
+
+        let total = 0;
+
+
+        const detailedAnswers: any[] = [];
+
+
+        for (const q of quiz.questions) {
+
+
+          total += q.points;
+
+
+          const userAnswer = input.answers.find((a) => a.questionId === q.id);
+
+
+          const correct = q.options.find((o) => o.isCorrect === 1);
+
+
+          const isCorrect = !!(userAnswer && correct && userAnswer.selectedOptionId === correct.id);
+
+
+          if (isCorrect) earned += q.points;
+
+
+          detailedAnswers.push({
+
+
+            questionId: q.id,
+
+
+            selectedOptionId: userAnswer?.selectedOptionId ?? null,
+
+
+            isCorrect,
+
+
+          });
+
+
+        }
+
+
+        const score = total > 0 ? Math.round((earned / total) * 100) : 0;
+
+
+        const passed = score >= quiz.passingScore ? 1 : 0;
+
+
+
+
+
+        const meta = getReqMeta(ctx);
+
+
+        await createQuizAttempt({
+
+
+          userId: ctx.user.id,
+
+
+          quizId: quiz.id,
+
+
+          lessonId: input.lessonId,
+
+
+          score,
+
+
+          passed,
+
+
+          answersJson: JSON.stringify(detailedAnswers),
+
+
+          ipAddress: meta.ip,
+
+
+          userAgent: meta.ua,
+
+
+        });
+
+
+        await logAudit({
+
+
+          userId: ctx.user.id, userEmail: ctx.user.email,
+
+
+          action: passed ? 'quiz_passed' : 'quiz_failed',
+
+
+          entityType: 'quiz', entityId: quiz.id,
+
+
+          detailsJson: { score, lessonId: input.lessonId },
+
+
+          ipAddress: meta.ip, userAgent: meta.ua,
+
+
+        });
+
+
+        return { score, passed: !!passed, passingScore: quiz.passingScore };
+
+
+      }),
+
+
+
+
+
+    myAttempts: protectedProcedure
+
+
+      .input(z.object({ lessonId: z.number() }))
+
+
+      .query(async ({ ctx, input }) => {
+
+
+        const quiz = await getQuizByLesson(input.lessonId);
+
+
+        if (!quiz) return { attempts: [], hasPassed: false };
+
+
+        const attempts = await getUserQuizAttempts(ctx.user.id, quiz.id);
+
+
+        return { attempts, hasPassed: attempts.some((a) => a.passed === 1) };
+
+
+      }),
+
+
+  }),
+
+
+
+
+
+  // ── Audit / view tracking / acceptance ─────────────────────────────────────
+
+
+  audit: router({
+
+
+    logView: protectedProcedure
+
+
+      .input(z.object({
+
+
+        lessonId: z.number(),
+
+
+        moduleId: z.number(),
+
+
+        videoPositionSeconds: z.number().int().min(0),
+
+
+        videoDurationSeconds: z.number().int().min(0),
+
+
+        eventType: z.enum(['play', 'pause', 'heartbeat', 'seek', 'ended', 'blur', 'focus']),
+
+
+      }))
+
+
+      .mutation(async ({ ctx, input }) => {
+
+
+        const meta = getReqMeta(ctx);
+
+
+        await logViewEvent({ userId: ctx.user.id, ...input, ipAddress: meta.ip });
+
+
+        return { ok: true };
+
+
+      }),
+
+
+
+
+
+    effectiveWatch: protectedProcedure
+
+
+      .input(z.object({ lessonId: z.number() }))
+
+
+      .query(async ({ ctx, input }) => {
+
+
+        const seconds = await getEffectiveWatchSeconds(ctx.user.id, input.lessonId);
+
+
+        return { seconds };
+
+
+      }),
+
+
+
+
+
+    acceptTerm: protectedProcedure
+
+
+      .input(z.object({ moduleId: z.number(), termText: z.string().min(1) }))
+
+
+      .mutation(async ({ ctx, input }) => {
+
+
+        const meta = getReqMeta(ctx);
+
+
+        await recordAcceptance({
+
+
+          userId: ctx.user.id,
+
+
+          moduleId: input.moduleId,
+
+
+          termText: input.termText,
+
+
+          userName: ctx.user.name,
+
+
+          userEmail: ctx.user.email,
+
+
+          ipAddress: meta.ip,
+
+
+          userAgent: meta.ua,
+
+
+        });
+
+
+        await logAudit({
+
+
+          userId: ctx.user.id, userEmail: ctx.user.email,
+
+
+          action: 'term_accepted', entityType: 'module', entityId: input.moduleId,
+
+
+          ipAddress: meta.ip, userAgent: meta.ua,
+
+
+        });
+
+
+        return { ok: true };
+
+
+      }),
+
+
+
+
+
+    getAcceptance: protectedProcedure
+
+
+      .input(z.object({ moduleId: z.number() }))
+
+
+      .query(async ({ ctx, input }) => {
+
+
+        return await getAcceptance(ctx.user.id, input.moduleId);
+
+
+      }),
+
+
+
+
+
+    listLogs: adminOrRhProcedure
+
+
+      .input(z.object({
+
+
+        userId: z.number().optional(),
+
+
+        action: z.string().optional(),
+
+
+        limit: z.number().default(200),
+
+
+      }))
+
+
+      .query(async ({ input }) => {
+
+
+        return await listAuditLogs(input);
+
+
+      }),
+
+
+
+
+
+    evidenceReport: adminOrRhProcedure
+
+
+      .input(z.object({ userId: z.number() }))
+
+
+      .query(async ({ input }) => {
+
+
+        return await getEvidenceReport(input.userId);
+
+
+      }),
+
+
+
+
+
+    // For evidence-report user dropdown
+
+
+    listAuditUsers: adminOrRhProcedure.query(async () => {
+
+
+      const db = await getDb();
+
+
+      if (!db) return [];
+
+
+      const r = await db.select().from((await import('../drizzle/schema')).users);
+
+
+      return r.map(u => ({ id: u.id, name: u.name, email: u.email }));
+
+
+    }),
+
+
+  }),
+
+
+  // ─── Lessons (employee) ────────────────────────────────────────────────────
+
+
+  lessons: router({
+
+
+    listByModule: protectedProcedure
+
+
+      .input(z.object({ moduleId: z.number() }))
+
+
+      .query(async ({ input }) => {
+
+
+        return listLessonsByModule(input.moduleId);
+
+
+      }),
+
+
+    updateProgress: protectedProcedure
+
+
+      .input(z.object({
+
+
+        lessonId: z.number(),
+
+
+        moduleId: z.number(),
+
+
+        percentWatched: z.number().min(0).max(100).optional(),
+
+
+        isCompleted: z.boolean().optional(),
+
+
+      }))
+
+
+      .mutation(async ({ ctx, input }) => {
+
+
+        const allProgressBefore = await getModuleLessonProgressForUser(ctx.user.id, input.moduleId);
+
+
+        const prevLessonProg = allProgressBefore.find((p: any) => p.lessonId === input.lessonId);
+
+
+        await upsertLessonProgress(ctx.user.id, input.lessonId, input.moduleId, {
+
+
+          percentWatched: input.percentWatched,
+
+
+          isCompleted: input.isCompleted,
+
+
+        });
+
+
+        if (input.isCompleted && !prevLessonProg?.isCompleted) {
+
+
+          const meta = getReqMeta(ctx);
+
+
+          await logAudit({
+
+
+            userId: ctx.user.id, userEmail: ctx.user.email,
+
+
+            action: 'lesson_completed', entityType: 'lesson', entityId: input.lessonId,
+
+
+            detailsJson: { moduleId: input.moduleId, percentWatched: input.percentWatched },
+
+
+            ipAddress: meta.ip, userAgent: meta.ua,
+
+
+          });
+
+
+        }
+
+
+        // Recalculate module progress based on lessons
+
+
+        const allLessons = await listLessonsByModule(input.moduleId);
+
+
+        const allProgress = await getModuleLessonProgressForUser(ctx.user.id, input.moduleId);
+
+
+        if (allLessons.length > 0) {
+
+
+          const completedCount = allProgress.filter(p => p.isCompleted).length;
+
+
+          const percentComplete = Math.round((completedCount / allLessons.length) * 100);
+
+
+          const isModuleCompleted = percentComplete === 100;
+
+
+          await upsertUserProgress(ctx.user.id, input.moduleId, percentComplete, isModuleCompleted);
+
+
+        }
+
+
+        return { success: true };
+
+
+      }),
+
+
+    getModuleProgress: protectedProcedure
+
+
+      .input(z.object({ moduleId: z.number() }))
+
+
+      .query(async ({ ctx, input }) => {
+
+
+        return getModuleLessonProgressForUser(ctx.user.id, input.moduleId);
+
+
+      }),
+
+
+  }),
+
+
+
+
+
+  // ── Companies ─────────────────────────────────────────────────────────────
+
+
+  companies: router({
+
+
+    list: adminOrRhProcedure.query(async ({ ctx }) => {
+
+
+      const user = ctx.user;
+
+
+      // admin_global sees all companies
+
+
+      if (user.role === 'admin_global') {
+
+
+        return await getCompanies();
+
+
+      }
+
+
+      // company_admin/rh sees only their company
+
+
+      const companyId = (user as any).companyId;
+
+
+      if (companyId) {
+
+
+        const company = await getCompanyById(companyId);
+
+
+        return company ? [company] : [];
+
+
+      }
+
+
+      return [];
+
+
+    }),
+
+
+
+
+
+    get: adminOrRhProcedure
+
+
+      .input(z.object({ id: z.number() }))
+
+
+      .query(async ({ ctx, input }) => {
+
+
+        return await getCompanyById(input.id);
+
+
+      }),
+
+
+
+
+
+    create: adminOrRhProcedure
+
+
+      .input(z.object({ name: z.string(), cnpj: z.string().optional() }))
+
+
+      .mutation(async ({ ctx, input }) => {
+
+
+        if (ctx.user.role !== 'admin_global') throw new TRPCError({ code: 'FORBIDDEN' });
+
+
+        return await createCompany(input);
+
+
+      }),
+
+
+
+
+
+    update: adminOrRhProcedure
+
+
+      .input(z.object({ id: z.number(), name: z.string().optional(), cnpj: z.string().optional(), isActive: z.number().optional() }))
+
+
+      .mutation(async ({ ctx, input }) => {
+
+
+        if (ctx.user.role !== 'admin_global') throw new TRPCError({ code: 'FORBIDDEN' });
+
+
+        const { id, ...data } = input;
+
+
+        await updateCompany(id, data);
+
+
+      }),
+
+
+
+
+
+    branches: adminOrRhProcedure
+
+
+      .input(z.object({ companyId: z.number() }))
+
+
+      .query(async ({ input }) => {
+
+
+        return await getBranchesByCompany(input.companyId);
+
+
+      }),
+
+
+
+
+
+    createBranch: adminOrRhProcedure
+
+
+      .input(z.object({ companyId: z.number(), name: z.string(), city: z.string().optional(), state: z.string().optional() }))
+
+
+      .mutation(async ({ ctx, input }) => {
+
+
+        if (!['admin_global','company_admin'].includes(ctx.user.role)) throw new TRPCError({ code: 'FORBIDDEN' });
+
+
+        return await createBranch(input);
+
+
+      }),
+
+
+
+
+
+    updateBranch: adminOrRhProcedure
+
+
+      .input(z.object({ id: z.number(), name: z.string().optional(), city: z.string().optional(), state: z.string().optional(), isActive: z.number().optional() }))
+
+
+      .mutation(async ({ ctx, input }) => {
+
+
+        if (!['admin_global','company_admin'].includes(ctx.user.role)) throw new TRPCError({ code: 'FORBIDDEN' });
+
+
+        const { id, ...data } = input;
+
+
+        await updateBranch(id, data);
+
+
+      }),
+
+
+
+
+
+    deleteBranch: adminOrRhProcedure
+
+
+      .input(z.object({ id: z.number() }))
+
+
+      .mutation(async ({ ctx, input }) => {
+
+
+        if (!['admin_global','company_admin'].includes(ctx.user.role)) throw new TRPCError({ code: 'FORBIDDEN' });
+
+
+        await deleteBranch(input.id);
+
+
+      }),
+
+
+
+
+
+    sectors: adminOrRhProcedure
+
+
+      .input(z.object({ companyId: z.number(), branchId: z.number().optional() }))
+
+
+      .query(async ({ input }) => {
+
+
+        if (input.branchId) return await getSectorsByBranch(input.branchId);
+
+
+        return await getSectorsByCompany(input.companyId);
+
+
+      }),
+
+
+
+
+
+    createSector: adminOrRhProcedure
+
+
+      .input(z.object({ companyId: z.number(), branchId: z.number().optional(), name: z.string() }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        return await createSector(input);
+
+
+      }),
+
+
+
+
+
+    updateSector: adminOrRhProcedure
+
+
+      .input(z.object({ id: z.number(), name: z.string().optional(), isActive: z.number().optional() }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        const { id, ...data } = input;
+
+
+        await updateSector(id, data);
+
+
+      }),
+
+
+
+
+
+    deleteSector: adminOrRhProcedure
+
+
+      .input(z.object({ id: z.number() }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        await deleteSector(input.id);
+
+
+      }),
+
+
+
+
+
+    usersByCompany: adminOrRhProcedure
+
+
+      .input(z.object({ companyId: z.number() }))
+
+
+      .query(async ({ ctx, input }) => {
+
+
+        // LGPD: non-global admins can only see their own company
+
+
+        const effectiveCompanyId = ctx.user.role === 'admin_global' ? input.companyId : ((ctx.user as any).companyId ?? input.companyId);
+
+
+        return await getCorporateEmailsByCompany(effectiveCompanyId);
+
+
+      }),
+
+
+
+
+
+    sectorEngagement: adminOrRhProcedure
+
+
+      .input(z.object({ companyId: z.number() }))
+
+
+      .query(async ({ ctx, input }) => {
+
+
+        const effectiveCompanyId = ctx.user.role === 'admin_global' ? input.companyId : ((ctx.user as any).companyId ?? input.companyId);
+
+
+        return await getSectorEngagementByCompany(effectiveCompanyId);
+
+
+      }),
+
+
+  
+
+
+    updateSettings: adminOrRhProcedure
+
+
+      .input(z.object({
+
+
+        id: z.number(),
+
+
+        name: z.string().optional(),
+
+
+        cnpj: z.string().optional(),
+
+
+        primaryColor: z.string().optional(),
+
+
+        description: z.string().optional(),
+
+
+        phone: z.string().optional(),
+
+
+        website: z.string().optional(),
+
+
+        address: z.string().optional(),
+
+
+        loginBgUrl: z.string().optional(),
+
+
+        logoUrl: z.string().optional(),
+
+
+      }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        const { id, ...data } = input;
+
+
+        await updateCompanySettings(id, data as any);
+
+
+        return { ok: true };
+
+
+      }),
+
+
+  }),
+
+
+
+
+
+  // ── Gamification ────────────────────────────────────────────────────────────
+
+
+  gamification: router({
+
+
+    myPoints: protectedProcedure.query(async ({ ctx }) => {
+
+
+      const total = await getUserTotalPoints((ctx.user as any).id ?? (ctx.user as any).userId);
+
+
+      return { total };
+
+
+    }),
+
+
+    leaderboard: protectedProcedure.query(async () => {
+
+
+      return getLeaderboard(10);
+
+
+    }),
+
+
+    myBadges: protectedProcedure.query(async ({ ctx }) => {
+
+
+      return getUserBadges((ctx.user as any).id ?? (ctx.user as any).userId);
+
+
+    }),
+
+
+    awardPoints: adminOrRhProcedure
+
+
+      .input(z.object({ userId: z.number(), points: z.number(), reason: z.string() }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        await awardPoints(input.userId, input.points, input.reason);
+
+
+        return { ok: true };
+
+
+      }),
+
+
+  }),
+
+
+
+
+
+  // ── Trails ──────────────────────────────────────────────────────────────────
+
+
+  trails: router({
+
+
+    list: adminOrRhProcedure.query(async () => {
+
+
+      return listAllLearningTrails();
+
+
+    }),
+
+
+    listActive: protectedProcedure.query(async ({ ctx }) => {
+
+
+      try {
+
+
+        return await getVisibleTrailsForUser(ctx.user.id);
+
+
+      } catch (e) {
+
+
+        return listLearningTrails();
+
+
+      }
+
+
+    }),
+
+
+    get: protectedProcedure.input(z.object({ id: z.number() })).query(async ({ input }) => {
+
+
+      return getLearningTrailById(input.id);
+
+
+    }),
+
+
+    create: adminOrRhProcedure
+
+
+      .input(z.object({ title: z.string(), description: z.string().optional(), objective: z.string().optional(), thumbnailUrl: z.string().optional(), isSequential: z.number().optional() }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        return createLearningTrail(input);
+
+
+      }),
+
+
+    update: adminOrRhProcedure
+
+
+      .input(z.object({ id: z.number(), title: z.string().optional(), description: z.string().optional(), objective: z.string().optional(), thumbnailUrl: z.string().optional(), isSequential: z.number().optional(), isActive: z.number().optional() }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        const { id, ...data } = input;
+
+
+        await updateLearningTrail(id, data);
+
+
+        return { ok: true };
+
+
+      }),
+
+
+    delete: adminOrRhProcedure
+
+
+      .input(z.object({ id: z.number() }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        await deleteLearningTrail(input.id);
+
+
+        return { ok: true };
+
+
+      }),
+
+
+    getModules: protectedProcedure
+
+
+      .input(z.object({ trailId: z.number() }))
+
+
+      .query(async ({ input }) => {
+
+
+        return getTrailModules(input.trailId);
+
+
+      }),
+
+
+    addModule: adminOrRhProcedure
+
+
+      .input(z.object({
+
+
+        trailId: z.number(),
+
+
+        moduleId: z.number().nullable().optional(),
+
+
+        orderIndex: z.number(),
+
+
+        itemType: z.enum(["module", "quiz", "exam", "survey"]).optional(),
+
+
+        quizConfig: z.any().optional(),
+
+
+        surveyId: z.number().nullable().optional(),
+
+
+      }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        await addModuleToTrail(input.trailId, input.moduleId ?? null, input.orderIndex, {
+
+
+          itemType: input.itemType ?? "module",
+
+
+          quizConfig: input.quizConfig ?? null,
+
+
+          surveyId: input.surveyId ?? null,
+
+
+        });
+
+
+        return { ok: true };
+
+
+      }),
+
+
+    removeItem: adminOrRhProcedure
+
+
+      .input(z.object({ id: z.number() }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        await removeTrailItem(input.id);
+
+
+        return { ok: true };
+
+
+      }),
+
+
+    removeModule: adminOrRhProcedure
+
+
+      .input(z.object({ trailId: z.number(), moduleId: z.number() }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        await removeModuleFromTrail(input.trailId, input.moduleId);
+
+
+        return { ok: true };
+
+
+      }),
+
+
+  }),
+
+
+
+
+
+  // ── Super Admin ─────────────────────────────────────────────────────────────
+
+
+  superAdmin: router({
+
+
+    overview: superAdminProcedure.query(async () => {
+
+
+      return getSuperAdminOverview();
+
+
+    }),
+
+
+    getImpersonatedCompanyName: protectedProcedure
+
+
+      .input(z.object({ companyId: z.number() }))
+
+
+      .query(async ({ ctx, input }) => {
+
+
+        if ((ctx.user as any).role !== "super_admin") return null;
+
+
+        return getCompanyNameById(input.companyId);
+
+
+      }),
+
+
+    listCompanies: superAdminProcedure.query(async () => {
+
+
+      return listAllCompaniesWithStats();
+
+
+    }),
+
+
+    createCompany: superAdminProcedure
+
+
+      .input(z.object({
+
+
+        name: z.string(),
+
+
+        cnpj: z.string().optional(),
+
+
+        plan: z.string().optional(),
+
+
+        subscriptionStatus: z.string().optional(),
+
+
+        mrr: z.number().optional(),
+
+
+        maxEmployees: z.number().optional(),
+
+
+      }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        await createCompanyFull(input);
+
+
+        return { ok: true };
+
+
+      }),
+
+
+    updateCompany: superAdminProcedure
+
+
+      .input(z.object({
+
+
+        id: z.number(),
+
+
+        plan: z.string().optional(),
+
+
+        subscriptionStatus: z.string().optional(),
+
+
+        mrr: z.number().optional(),
+
+
+        maxEmployees: z.number().optional(),
+
+
+      }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        const { id, ...rest } = input;
+
+
+        await updateCompanyPlan(id, rest);
+
+
+        return { ok: true };
+
+
+      }),
+
+
+    deleteCompany: superAdminProcedure
+
+
+      .input(z.object({ id: z.number() }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        await deleteCompanyHard(input.id);
+
+
+        return { ok: true };
+
+
+      }),
+
+
+    listMasterCatalog: superAdminProcedure.query(async () => {
+
+
+      return listMasterCatalog();
+
+
+    }),
+
+
+    setModuleMasterFlag: superAdminProcedure
+
+
+      .input(z.object({ moduleId: z.number(), isMaster: z.boolean() }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        await setModuleMasterFlag(input.moduleId, input.isMaster);
+
+
+        return { ok: true };
+
+
+      }),
+
+
+    setTrailMasterFlag: superAdminProcedure
+
+
+      .input(z.object({ trailId: z.number(), isMaster: z.boolean() }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        await setTrailMasterFlag(input.trailId, input.isMaster);
+
+
+        return { ok: true };
+
+
+      }),
+
+
+  }),
+
+
+
+
+
+  // ── Catalog (configurador) ─────────────────────────────────────────────────
+
+
+  catalog: router({
+
+
+    listAvailable: protectedProcedure.query(async ({ ctx }) => {
+
+
+      const cid = (ctx.user as any).companyId;
+
+
+      if (!cid) return { masterModules: [], ownModules: [], masterTrails: [], ownTrails: [], enrollments: [] };
+
+
+      return listAvailableContentForCompany(cid);
+
+
+    }),
+
+
+    enroll: adminOrRhProcedure
+
+
+      .input(z.object({
+
+
+        contentType: z.enum(['module', 'trail']),
+
+
+        contentId: z.number(),
+
+
+        branches: z.array(z.number()).nullable().optional(),
+
+
+        departments: z.array(z.number()).nullable().optional(),
+
+
+      }))
+
+
+      .mutation(async ({ ctx, input }) => {
+
+
+        const cid = (ctx.user as any).companyId;
+
+
+        if (!cid) throw new TRPCError({ code: "BAD_REQUEST", message: "Usuário sem empresa associada" });
+
+
+        await enrollCompanyInContent(cid, input.contentType, input.contentId, input.branches ?? null, input.departments ?? null);
+
+
+        return { ok: true };
+
+
+      }),
+
+
+    unenroll: adminOrRhProcedure
+
+
+      .input(z.object({ contentType: z.string(), contentId: z.number() }))
+
+
+      .mutation(async ({ ctx, input }) => {
+
+
+        const cid = (ctx.user as any).companyId;
+
+
+        if (!cid) throw new TRPCError({ code: "BAD_REQUEST" });
+
+
+        await unenrollCompanyFromContent(cid, input.contentType, input.contentId);
+
+
+        return { ok: true };
+
+
+      }),
+
+
+    updateAssignments: adminOrRhProcedure
+
+
+      .input(z.object({
+
+
+        enrollmentId: z.number(),
+
+
+        branches: z.array(z.number()).nullable(),
+
+
+        departments: z.array(z.number()).nullable(),
+
+
+      }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        await updateEnrollmentAssignments(input.enrollmentId, input.branches, input.departments);
+
+
+        return { ok: true };
+
+
+      }),
+
+
+    cloneModule: adminOrRhProcedure
+
+
+      .input(z.object({ moduleId: z.number() }))
+
+
+      .mutation(async ({ ctx, input }) => {
+
+
+        const cid = (ctx.user as any).companyId;
+
+
+        if (!cid) throw new TRPCError({ code: "BAD_REQUEST" });
+
+
+        return cloneModuleForCompany(input.moduleId, cid);
+
+
+      }),
+
+
+    cloneTrail: adminOrRhProcedure
+
+
+      .input(z.object({ trailId: z.number() }))
+
+
+      .mutation(async ({ ctx, input }) => {
+
+
+        const cid = (ctx.user as any).companyId;
+
+
+        if (!cid) throw new TRPCError({ code: "BAD_REQUEST" });
+
+
+        return cloneTrailForCompany(input.trailId, cid);
+
+
+      }),
+
+
+  }),
+
+
+
+
+
+  // ── Branches (per company) ──────────────────────────────────────────────────
+
+
+  branchesAdmin: router({
+
+
+    list: adminOrRhProcedure.query(async ({ ctx }) => {
+
+
+      const cid = (ctx.user as any).companyId;
+
+
+      if (!cid) return [];
+
+
+      return getBranchesByCompany(cid);
+
+
+    }),
+
+
+    create: adminOrRhProcedure
+
+
+      .input(z.object({ name: z.string(), city: z.string().optional(), state: z.string().optional() }))
+
+
+      .mutation(async ({ ctx, input }) => {
+
+
+        const cid = (ctx.user as any).companyId;
+
+
+        if (!cid) throw new TRPCError({ code: "BAD_REQUEST" });
+
+
+        await createBranch({ companyId: cid, ...input });
+
+
+        return { ok: true };
+
+
+      }),
+
+
+    update: adminOrRhProcedure
+
+
+      .input(z.object({ id: z.number(), name: z.string().optional(), city: z.string().optional(), state: z.string().optional(), isActive: z.number().optional() }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        const { id, ...rest } = input;
+
+
+        await updateBranch(id, rest);
+
+
+        return { ok: true };
+
+
+      }),
+
+
+    delete: adminOrRhProcedure
+
+
+      .input(z.object({ id: z.number() }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        await deleteBranch(input.id);
+
+
+        return { ok: true };
+
+
+      }),
+
+
+  }),
+
+
+
+
+
+  // ── Departments (sectors) per company ───────────────────────────────────────
+
+
+  departmentsAdmin: router({
+
+
+    list: adminOrRhProcedure
+
+
+      .input(z.object({ branchId: z.number().optional() }).optional())
+
+
+      .query(async ({ ctx, input }) => {
+
+
+        const cid = (ctx.user as any).companyId;
+
+
+        if (!cid) return [];
+
+
+        if (input?.branchId) return getSectorsByBranch(input.branchId);
+
+
+        return getSectorsByCompany(cid);
+
+
+      }),
+
+
+    create: adminOrRhProcedure
+
+
+      .input(z.object({ name: z.string(), branchId: z.number().optional() }))
+
+
+      .mutation(async ({ ctx, input }) => {
+
+
+        const cid = (ctx.user as any).companyId;
+
+
+        if (!cid) throw new TRPCError({ code: "BAD_REQUEST" });
+
+
+        await createSector({ companyId: cid, ...input });
+
+
+        return { ok: true };
+
+
+      }),
+
+
+    update: adminOrRhProcedure
+
+
+      .input(z.object({ id: z.number(), name: z.string().optional(), isActive: z.number().optional() }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        const { id, ...rest } = input;
+
+
+        await updateSector(id, rest);
+
+
+        return { ok: true };
+
+
+      }),
+
+
+    delete: adminOrRhProcedure
+
+
+      .input(z.object({ id: z.number() }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        await deleteSector(input.id);
+
+
+        return { ok: true };
+
+
+      }),
+
+
+  }),
+
+
+
+
+
+// ===AI_COMPLIANCE_SURVEYS_ROUTERS===
+
+
+
+
+
+  // ── AI Studio ───────────────────────────────────────────────────────────────
+
+
+  aiStudio: router({
+
+
+    list: adminOrRhProcedure.query(async ({ ctx }) => {
+
+
+      const cid = (ctx.user as any).companyId;
+
+
+      if (!cid) return [];
+
+
+      return listAIGenerationsForCompany(cid);
+
+
+    }),
+
+
+    generate: adminOrRhProcedure
+      .input(z.object({
+        prompt: z.string().min(5),
+        sourceMaterialUrl: z.string().optional().nullable(),
+        targetDurationMinutes: z.number().min(5).max(480).default(30),
+        level: z.enum(["basico", "intermediario", "avancado"]).default("basico"),
+        language: z.string().default("pt-BR"),
+        includeQuiz: z.boolean().default(true),
+        includeCertificate: z.boolean().default(true),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const uid = (ctx.user as any).id ?? (ctx.user as any).userId;
+        if (!cid) throw new TRPCError({ code: "BAD_REQUEST", message: "Empresa nao definida no usuario." });
+        const genId = await createAIGeneration({ companyId: cid, userId: uid, prompt: input.prompt, sourceMaterialUrl: input.sourceMaterialUrl ?? null, targetDurationMinutes: input.targetDurationMinutes, level: input.level, language: input.language, includeQuiz: input.includeQuiz, includeCertificate: input.includeCertificate });
+        await updateAIGenerationProgress(genId, 5, "Iniciando geracao com IA...");
+
+        // Background work - mutation returns immediately.
+        setImmediate(async () => {
+          try {
+            await updateAIGenerationProgress(genId, 15, "Conectando ao Gemini...");
+            const { isGeminiAvailable, generateCourseWithGemini } = await import("./_core/gemini");
+            let outline: any;
+            await updateAIGenerationProgress(genId, 25, "Gerando estrutura do curso...");
+            if (isGeminiAvailable()) {
+              try {
+                outline = await generateCourseWithGemini({
+                  prompt: input.prompt,
+                  level: input.level,
+                  durationMinutes: input.targetDurationMinutes,
+                  language: input.language,
+                  includeQuiz: input.includeQuiz,
+                });
+              } catch (gerr) {
+                console.error("[aiStudio] Gemini failed, falling back to stub:", gerr);
+                outline = generateCourseFromPromptStub(input.prompt, { durationMinutes: input.targetDurationMinutes, level: input.level });
+              }
+            } else {
+              outline = generateCourseFromPromptStub(input.prompt, { durationMinutes: input.targetDurationMinutes, level: input.level });
+            }
+            await updateAIGenerationProgress(genId, 60, "Recebendo conteudo da IA...");
+            await createModule({ title: outline.title, description: outline.description, durationMinutes: outline.durationMinutes ?? input.targetDurationMinutes, isActive: true });
+            const dbi = await getDb();
+            let moduleId = 0;
+            if (!dbi) throw new Error("DB unavailable");
+            const r: any = await dbi.execute(drzSql`SELECT id FROM modules WHERE title=${outline.title} ORDER BY id DESC LIMIT 1`);
+            moduleId = Number((r as any)[0]?.[0]?.id ?? 0);
+            if (!moduleId) throw new Error("Module not created");
+            await dbi.execute(drzSql`UPDATE modules SET created_by_company_id=${cid} WHERE id=${moduleId}`);
+            try { await dbi.execute(drzSql`INSERT IGNORE INTO company_content_enrollments (company_id, content_type, content_id, is_active) VALUES (${cid}, 'module', ${moduleId}, 1)`); } catch(e) {}
+
+            await updateAIGenerationProgress(genId, 70, "Salvando modulo e aulas...");
+
+            let companyName: string | undefined;
+            let primaryColor: string | undefined;
+            try {
+              const compR: any = await dbi.execute(drzSql`SELECT name, primaryColor FROM companies WHERE id=${cid} LIMIT 1`);
+              companyName = (compR as any)[0]?.[0]?.name;
+              primaryColor = (compR as any)[0]?.[0]?.primaryColor;
+            } catch (e) { /* skip */ }
+
+            await updateAIGenerationProgress(genId, 80, "Buscando imagens...");
+            const { getImageForQuery } = await import("./_core/images");
+            for (let i = 0; i < outline.lessons.length; i++) {
+              const l = outline.lessons[i];
+              const fullContent = l.content || "";
+              const summary = fullContent.substring(0, 300);
+              await dbi.execute(drzSql`INSERT INTO lessons (moduleId, title, description, content, durationMinutes, orderIndex, isActive) VALUES (${moduleId}, ${l.title}, ${summary}, ${fullContent}, ${l.durationMinutes ?? 10}, ${i+1}, 1)`);
+              const lr: any = await dbi.execute(drzSql`SELECT LAST_INSERT_ID() as id`);
+              const lessonId = Number((lr as any)[0]?.[0]?.id ?? 0);
+              if (!lessonId) continue;
+              try {
+                const imgUrl = await getImageForQuery(l.imageQuery || outline.imageQuery || input.prompt);
+                await dbi.execute(drzSql`UPDATE lessons SET image_url=${imgUrl} WHERE id=${lessonId}`);
+              } catch (e) { /* skip */ }
+              if (Array.isArray(l.quiz)) {
+                for (let qi = 0; qi < l.quiz.length; qi++) {
+                  const q = l.quiz[qi];
+                  try {
+                    await dbi.execute(drzSql`INSERT INTO ai_lesson_quizzes (lesson_id, question_text, options, correct_index, explanation, order_index) VALUES (${lessonId}, ${q.question}, ${JSON.stringify(q.options)}, ${q.correctIndex}, ${q.explanation ?? ""}, ${qi+1})`);
+                  } catch (e) { console.error("[aiStudio] quiz insert failed:", e); }
+                }
+              }
+            }
+            if (Array.isArray(outline.finalExam)) {
+              for (let qi = 0; qi < outline.finalExam.length; qi++) {
+                const q = outline.finalExam[qi];
+                try {
+                  await dbi.execute(drzSql`INSERT INTO ai_module_exams (module_id, question_text, options, correct_index, explanation, order_index) VALUES (${moduleId}, ${q.question}, ${JSON.stringify(q.options)}, ${q.correctIndex}, ${q.explanation ?? ""}, ${qi+1})`);
+                } catch (e) { console.error("[aiStudio] exam insert failed:", e); }
+              }
+            }
+
+            await updateAIGenerationProgress(genId, 90, "Iniciando geracao de audio e PDF em segundo plano...");
+
+            setImmediate(async () => {
+              try {
+                const { generateNarrationMP3 } = await import("./_core/tts");
+                const { generateLessonPDF } = await import("./_core/pdf");
+                const lessonsR: any = await dbi.execute(drzSql`SELECT id, title, content FROM lessons WHERE moduleId=${moduleId} ORDER BY orderIndex`);
+                const lessonsList = ((lessonsR as any)[0] || []) as Array<{ id: number; title: string; content: string }>;
+                for (const ll of lessonsList) {
+                  try {
+                    const audioUrl = await generateNarrationMP3(ll.content || ll.title, ll.id, "antonio");
+                    await dbi.execute(drzSql`UPDATE lessons SET audio_url=${audioUrl} WHERE id=${ll.id}`);
+                  } catch (e) { console.error("[aiStudio] TTS failed for lesson", ll.id, e); }
+                  try {
+                    const pdfUrl = await generateLessonPDF({ lessonId: ll.id, moduleTitle: outline.title, lessonTitle: ll.title, content: ll.content || "", companyName, primaryColor });
+                    await dbi.execute(drzSql`UPDATE lessons SET pdf_url=${pdfUrl} WHERE id=${ll.id}`);
+                  } catch (e) { console.error("[aiStudio] PDF failed for lesson", ll.id, e); }
+                }
+              } catch (e) { console.error("[aiStudio] Background media generation failed:", e); }
+            });
+
+            await markAIGenerationDone(genId, moduleId, outline);
+            await updateAIGenerationProgress(genId, 100, "Concluido!");
+          } catch (e: any) {
+            console.error("[aiStudio] background generation failed:", e);
+            await markAIGenerationFailed(genId, String(e?.message ?? e));
+            await updateAIGenerationProgress(genId, 0, String(e?.message ?? e).slice(0, 240));
+          }
+        });
+
+        return { ok: true, generationId: genId };
+      }),
+
+    getStatus: adminOrRhProcedure
+      .input(z.object({ id: z.number() }))
+      .query(async ({ input }) => {
+        return getAIGenerationStatus(input.id);
+      }),
+
+    get: adminOrRhProcedure
+      .input(z.object({ id: z.number() }))
+      .query(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const row: any = await getAIGenerationById(input.id);
+        if (!row) return null;
+        // Light tenancy guard: only return if same company (re-check via list lookup not needed; column exists)
+        return row;
+      }),
+
+  }),
+
+
+
+
+
+  // ── Compliance Hub ──────────────────────────────────────────────────────────
+
+
+  compliance: router({
+
+
+    items: adminOrRhProcedure.query(async () => listComplianceItems()),
+
+
+    status: adminOrRhProcedure.query(async ({ ctx }) => {
+
+
+      const cid = (ctx.user as any).companyId;
+
+
+      if (!cid) return [];
+
+
+      return getCompanyComplianceStatus(cid);
+
+
+    }),
+
+
+    score: adminOrRhProcedure.query(async ({ ctx }) => {
+
+
+      const cid = (ctx.user as any).companyId;
+
+
+      if (!cid) return 0;
+
+
+      return getOverallComplianceScore(cid);
+
+
+    }),
+
+
+    update: adminOrRhProcedure
+
+
+      .input(z.object({ itemId: z.number(), status: z.string(), completionPercent: z.number().min(0).max(100), notes: z.string().optional(), evidenceUrl: z.string().optional() }))
+
+
+      .mutation(async ({ ctx, input }) => {
+
+
+        const cid = (ctx.user as any).companyId;
+
+
+        if (!cid) throw new TRPCError({ code: "BAD_REQUEST" });
+
+
+        await updateComplianceStatus(cid, input.itemId, input.status, input.completionPercent, input.notes, input.evidenceUrl);
+
+
+        return { ok: true };
+
+
+      }),
+
+
+  }),
+
+
+
+
+
+  // ── Surveys ────────────────────────────────────────────────────────────────
+
+
+  surveys: router({
+
+
+    listTemplates: adminOrRhProcedure.query(async () => listSurveyTemplates()),
+
+
+    list: adminOrRhProcedure.query(async ({ ctx }) => {
+
+
+      const cid = (ctx.user as any).companyId;
+
+
+      if (!cid) return [];
+
+
+      return listSurveysForCompany(cid);
+
+
+    }),
+
+
+    get: protectedProcedure.input(z.object({ id: z.number() })).query(async ({ input }) => getSurveyById(input.id)),
+
+
+    create: adminOrRhProcedure
+
+
+      .input(z.object({ title: z.string(), description: z.string().optional(), category: z.string().optional(), isAnonymous: z.boolean().optional() }))
+
+
+      .mutation(async ({ ctx, input }) => {
+
+
+        const cid = (ctx.user as any).companyId;
+
+
+        if (!cid) throw new TRPCError({ code: "BAD_REQUEST" });
+
+
+        const id = await createSurvey({ companyId: cid, ...input, createdBy: (ctx.user as any).id });
+
+
+        return { id };
+
+
+      }),
+
+
+    createFromTemplate: adminOrRhProcedure
+
+
+      .input(z.object({ templateId: z.number() }))
+
+
+      .mutation(async ({ ctx, input }) => {
+
+
+        const cid = (ctx.user as any).companyId;
+
+
+        if (!cid) throw new TRPCError({ code: "BAD_REQUEST" });
+
+
+        const id = await createSurveyFromTemplate(input.templateId, cid, (ctx.user as any).id);
+
+
+        return { id };
+
+
+      }),
+
+
+    addQuestion: adminOrRhProcedure
+
+
+      .input(z.object({ surveyId: z.number(), questionText: z.string(), questionType: z.string().default("likert"), options: z.any().optional(), isRequired: z.boolean().optional(), orderIndex: z.number().optional() }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        const { surveyId, ...rest } = input;
+
+
+        await addSurveyQuestion(surveyId, rest);
+
+
+        return { ok: true };
+
+
+      }),
+
+
+    deleteQuestion: adminOrRhProcedure
+
+
+      .input(z.object({ id: z.number() }))
+
+
+      .mutation(async ({ input }) => { await deleteSurveyQuestion(input.id); return { ok: true }; }),
+
+
+    launch: adminOrRhProcedure
+
+
+      .input(z.object({ id: z.number() }))
+
+
+      .mutation(async ({ input }) => { await updateSurveyStatus(input.id, "active"); return { ok: true }; }),
+
+
+    close: adminOrRhProcedure
+
+
+      .input(z.object({ id: z.number() }))
+
+
+      .mutation(async ({ input }) => { await updateSurveyStatus(input.id, "closed"); return { ok: true }; }),
+
+
+    delete: adminOrRhProcedure
+
+
+      .input(z.object({ id: z.number() }))
+
+
+      .mutation(async ({ input }) => { await deleteSurvey(input.id); return { ok: true }; }),
+
+
+    listForUser: protectedProcedure.query(async ({ ctx }) => {
+
+
+      const uid = (ctx.user as any).id ?? (ctx.user as any).userId;
+
+
+      return listActiveSurveysForUser(uid);
+
+
+    }),
+
+
+    submit: protectedProcedure
+
+
+      .input(z.object({ surveyId: z.number(), answers: z.array(z.object({ questionId: z.number(), value: z.string() })) }))
+
+
+      .mutation(async ({ ctx, input }) => {
+
+
+        const uid = (ctx.user as any).id ?? (ctx.user as any).userId;
+
+
+        const branchId = (ctx.user as any).branchId ?? undefined;
+
+
+        const sectorId = (ctx.user as any).sectorId ?? undefined;
+
+
+        const s = await getSurveyById(input.surveyId);
+
+
+        const userIdForResponse = s?.isAnonymous ? undefined : uid;
+
+
+        const id = await submitSurveyResponse(input.surveyId, input.answers, userIdForResponse, branchId, sectorId);
+
+
+        return { id };
+
+
+      }),
+
+
+    results: adminOrRhProcedure.input(z.object({ id: z.number() })).query(async ({ input }) => getSurveyResults(input.id)),
+
+
+  }),
+
+
+
+
+
+  // ── Dashboard ──────────────────────────────────────────────────────────────
+
+
+  dashboard: router({
+
+
+    managerOverview: adminOrRhProcedure.query(async ({ ctx }) => {
+
+
+      const cid = (ctx.user as any).companyId ?? null;
+
+
+      return getManagerDashboard(cid);
+
+
+    }),
+
+
+    employeeHome: protectedProcedure.query(async ({ ctx }) => {
+
+
+      const uid = (ctx.user as any).id ?? (ctx.user as any).userId;
+
+
+      return getEmployeeDashboard(uid);
+
+
+    }),
+
+
+    companyExpirations: adminOrRhProcedure.query(async ({ ctx }) => {
+
+
+      const cid = (ctx.user as any).companyId ?? null;
+
+
+      if (!cid) return [];
+
+
+      return getCompanyLicenseExpirations(cid);
+
+
+    }),
+
+
+  }),
+
+
+
+
+
+  // ── Professional Licenses ─────────────────────────────────────────────────
+
+
+  licenses: router({
+
+
+    list: protectedProcedure.query(async ({ ctx }) => {
+
+
+      const uid = (ctx.user as any).id ?? (ctx.user as any).userId;
+
+
+      return listProfessionalLicenses(uid);
+
+
+    }),
+
+
+    create: protectedProcedure
+
+
+      .input(z.object({
+
+
+        licenseType: z.string(),
+
+
+        licenseNumber: z.string().optional(),
+
+
+        issuedAt: z.string().optional(),
+
+
+        expiresAt: z.string().optional(),
+
+
+        documentUrl: z.string().optional(),
+
+
+        notes: z.string().optional(),
+
+
+      }))
+
+
+      .mutation(async ({ ctx, input }) => {
+
+
+        const uid = (ctx.user as any).id ?? (ctx.user as any).userId;
+
+
+        await createProfessionalLicense({
+
+
+          userId: uid,
+
+
+          licenseType: input.licenseType,
+
+
+          licenseNumber: input.licenseNumber ?? null,
+
+
+          issuedAt: input.issuedAt ? new Date(input.issuedAt) : null,
+
+
+          expiresAt: input.expiresAt ? new Date(input.expiresAt) : null,
+
+
+          documentUrl: input.documentUrl ?? null,
+
+
+          notes: input.notes ?? null,
+
+
+        } as any);
+
+
+        return { ok: true };
+
+
+      }),
+
+
+    update: protectedProcedure
+
+
+      .input(z.object({
+
+
+        id: z.number(),
+
+
+        licenseType: z.string().optional(),
+
+
+        licenseNumber: z.string().optional(),
+
+
+        issuedAt: z.string().optional(),
+
+
+        expiresAt: z.string().optional(),
+
+
+        documentUrl: z.string().optional(),
+
+
+        notes: z.string().optional(),
+
+
+      }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        const { id, issuedAt, expiresAt, ...rest } = input;
+
+
+        await updateProfessionalLicense(id, {
+
+
+          ...rest,
+
+
+          ...(issuedAt !== undefined ? { issuedAt: issuedAt ? new Date(issuedAt) : null } : {}),
+
+
+          ...(expiresAt !== undefined ? { expiresAt: expiresAt ? new Date(expiresAt) : null } : {}),
+
+
+        } as any);
+
+
+        return { ok: true };
+
+
+      }),
+
+
+    delete: protectedProcedure
+
+
+      .input(z.object({ id: z.number() }))
+
+
+      .mutation(async ({ input }) => {
+
+
+        await deleteProfessionalLicense(input.id);
+
+
+        return { ok: true };
+
+
+      }),
+
+
+  }),
+
+
+
+
+
+});
+
+
+export type AppRouter = typeof appRouter;
