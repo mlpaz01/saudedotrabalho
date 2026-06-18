@@ -1,4 +1,4 @@
-CREATE TABLE `training_programs` (
+CREATE TABLE IF NOT EXISTS `training_programs` (
 	`id` int AUTO_INCREMENT NOT NULL,
 	`company_id` int,
 	`name` varchar(255) NOT NULL,
@@ -13,14 +13,14 @@ CREATE TABLE `training_programs` (
 	CONSTRAINT `training_programs_id` PRIMARY KEY(`id`)
 );
 --> statement-breakpoint
-CREATE TABLE `training_program_factors` (
+CREATE TABLE IF NOT EXISTS `training_program_factors` (
 	`id` int AUTO_INCREMENT NOT NULL,
 	`program_id` int NOT NULL,
 	`factor_id` int NOT NULL,
 	CONSTRAINT `training_program_factors_id` PRIMARY KEY(`id`)
 );
 --> statement-breakpoint
-CREATE TABLE `training_program_modules` (
+CREATE TABLE IF NOT EXISTS `training_program_modules` (
 	`id` int AUTO_INCREMENT NOT NULL,
 	`program_id` int NOT NULL,
 	`module_id` int NOT NULL,
