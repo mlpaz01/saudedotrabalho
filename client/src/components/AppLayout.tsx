@@ -8,7 +8,7 @@ import {
   Shield, Library, Settings2, Store, Wrench, ShieldQuestion, ClipboardList,
   Mail, ShieldAlert, CreditCard, FolderOpen, GraduationCap, Stethoscope,
   Link2, Layers, RotateCcw, Activity, Search, LineChart, Signature,
-  LifeBuoy, Headphones, HeartHandshake, BarChart3,
+  LifeBuoy, Headphones, HeartHandshake, BarChart3, ListChecks,
 } from "lucide-react";
 import { useState } from "react";
 import { trpc } from "@/lib/trpc";
@@ -83,6 +83,7 @@ const adminSections: NavSection[] = [
     section: "GRO Riscos",
     items: [
       { label: "Analise de Risco", href: "/admin/analise-risco", notRoles: ["chefia", "sesmt", "psicologo"], icon: <ShieldAlert size={16} />, feature: "risk_assessment" },
+      { label: "13 Fatores NR-01", href: "/admin/fatores", notRoles: ["chefia", "sesmt", "psicologo"], icon: <ListChecks size={16} />, feature: "risk_assessment" },
       { label: "Acoes Vinculadas", href: "/admin/acoes-vinculadas", notRoles: ["chefia", "sesmt", "psicologo"], icon: <Link2 size={16} />, feature: "risk_assessment" },
     ],
   },
@@ -163,6 +164,7 @@ const ITEM_LABELS: Record<string, string> = {
   "Agendamentos": "Agendamentos",
   "Vencimentos": "Vencimentos",
   "Analise de Risco": "Análise de Risco",
+  "13 Fatores NR-01": "13 Fatores NR-01",
   "Acoes Vinculadas": "Ações Vinculadas",
   "GHE / GSE": "GHE / GSE",
   "EPC / EPI": "EPC / EPI",
