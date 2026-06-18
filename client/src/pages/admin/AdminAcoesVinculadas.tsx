@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import { trpc } from "@/lib/trpc";
 import AppLayout from "@/components/AppLayout";
+import { LayoutGrid, List } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 
@@ -82,6 +83,22 @@ const CSS = `
 .ucg-empty small{font-size:12px;margin-top:4px;display:block}
 .ucg-skel{background:linear-gradient(90deg,#E9EDF2 0%,#F4F6F9 50%,#E9EDF2 100%);background-size:200% 100%;animation:shimmer 1.3s infinite;border-radius:8px}
 @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.ucg-stripe{height:5px;width:100%;flex-shrink:0}
+.ucg-cat-row{display:flex;align-items:center;justify-content:space-between;gap:6px}
+.ucg-status-inline{font-size:9.5px;font-weight:700;padding:3px 8px;border-radius:6px;white-space:nowrap;flex-shrink:0}
+.ucg-view-toggle{display:flex;border:1.5px solid #E0E6ED;border-radius:9px;overflow:hidden;flex-shrink:0}
+.ucg-vt-btn{background:#fff;border:none;padding:6px 10px;cursor:pointer;color:#62707D;display:flex;align-items:center;transition:all .15s}
+.ucg-vt-btn:hover{background:#F4F6F9}
+.ucg-vt-btn.active{background:#0E2C46;color:#fff}
+.ucg-list{display:flex;flex-direction:column;gap:8px}
+.ucg-list-row{background:#fff;border:0 solid transparent;border-left-width:4px;border-radius:0 12px 12px 0;padding:12px 16px;display:flex;align-items:flex-start;gap:14px;transition:box-shadow .18s}
+.ucg-list-row:hover{box-shadow:0 4px 16px -4px rgba(14,44,70,.12)}
+.ucg-list-row.overdue{border-left-color:#b83225!important}
+.ucg-list-info{flex:1;min-width:0}
+.ucg-list-title{font-size:14px;font-weight:700;color:#0E2C46;margin:0 0 3px}
+.ucg-list-desc{font-size:12px;color:#62707D;margin:0 0 4px}
+.ucg-list-meta{display:flex;gap:10px;flex-wrap:wrap;flex-shrink:0}
+.ucg-list-actions{display:flex;flex-direction:column;gap:6px;flex-shrink:0;align-items:flex-end}
 .ucg-kpi-row{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
 @media(max-width:700px){.ucg-kpi-row{grid-template-columns:repeat(2,1fr)}}
 .ucg-kpi{background:#fff;border:1.5px solid #E9EDF2;border-radius:14px;padding:14px 16px}
@@ -120,6 +137,7 @@ export default function AdminAcoesVinculadas() {
   const [filterStatus, setFilterStatus]     = useState("todos");
   const [linkingId, setLinkingId]           = useState<number | null>(null);
   const [selectedModuleId, setSelectedModuleId] = useState<string>("");
+  const [viewMode, setViewMode] = useState<"cards" | "list">("cards");
 
   const items: any[]   = actionsQ.data ?? [];
   const modules: any[] = modulesQ.data ?? [];
@@ -221,6 +239,12 @@ export default function AdminAcoesVinculadas() {
                 onChange={e => setSearch(e.target.value)}
               />
             </div>
+            <div className="ucg-actions" style={{ marginLeft: "auto" }}>
+              <div className="ucg-view-toggle">
+                <button className={`ucg-vt-btn${viewMode === "cards" ? " active" : ""}`} onClick={() => setViewMode("cards")} title="Cards"><LayoutGrid size={15} /></button>
+                <button className={`ucg-vt-btn${viewMode === "list" ? " active" : ""}`} onClick={() => setViewMode("list")} title="Lista"><List size={15} /></button>
+              </div>
+            </div>
           </div>
 
           {/* Priority filter */}
@@ -284,31 +308,35 @@ export default function AdminAcoesVinculadas() {
             </div>
           </div>
 
-          {/* Grid */}
+          {/* Grid / List */}
           {actionsQ.isLoading ? (
             <div className="ucg-grid">
               {Array.from({ length: 6 }).map((_, i) => (
                 <div key={i} className="ucg-card">
-                  <div className="ucg-skel" style={{ height: 72 }} />
+                  <div className="ucg-skel ucg-stripe" />
                   <div className="ucg-body" style={{ gap: 10 }}>
-                    <div className="ucg-skel" style={{ height: 12, width: "45%" }} />
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <div className="ucg-skel" style={{ height: 18, width: "40%", borderRadius: 999 }} />
+                      <div className="ucg-skel" style={{ height: 18, width: "20%", borderRadius: 999 }} />
+                    </div>
                     <div className="ucg-skel" style={{ height: 38 }} />
                     <div className="ucg-skel" style={{ height: 11, width: "80%" }} />
-                    <div className="ucg-skel" style={{ height: 11, width: "55%" }} />
                     <div className="ucg-skel" style={{ height: 11, width: "65%" }} />
                   </div>
                 </div>
               ))}
             </div>
-          ) : (
+          ) : filtered.length === 0 ? (
             <div className="ucg-grid">
-              {filtered.length === 0 ? (
-                <div className="ucg-empty">
-                  <svg viewBox="0 0 24 24"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
-                  <p>Nenhuma ação encontrada</p>
-                  <small>As ações são geradas automaticamente a partir das análises de risco psicossocial.</small>
-                </div>
-              ) : filtered.map((item: any) => {
+              <div className="ucg-empty">
+                <svg viewBox="0 0 24 24"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
+                <p>Nenhuma ação encontrada</p>
+                <small>As ações são geradas automaticamente a partir das análises de risco psicossocial.</small>
+              </div>
+            </div>
+          ) : viewMode === "cards" ? (
+            <div className="ucg-grid">
+              {filtered.map((item: any) => {
                 const overdue   = isOverdue(item.endDate, item.status);
                 const priCfg    = priorityConfig(item.priority);
                 const isLinking = linkingId === item.id;
@@ -316,23 +344,16 @@ export default function AdminAcoesVinculadas() {
 
                 return (
                   <div key={item.id} className={`ucg-card${overdue ? " overdue" : ""}`}>
-
-                    {/* Thumb */}
-                    <div className="ucg-thumb" style={{ background: priCfg.grad }}>
-                      <div className="ucg-thumb-content">
-                        {overdue && <div className="ucg-overdue-dot" title="Atrasado" />}
-                        {item.factorCode && (
-                          <span className="ucg-factor-badge">{item.factorCode}</span>
-                        )}
-                      </div>
-                    </div>
+                    <div className="ucg-stripe" style={{ background: priCfg.color }} />
 
                     {/* Body */}
                     <div className="ucg-body">
-                      {/* Priority category pill */}
-                      <span className="ucg-cat" style={{ background: priCfg.bg, color: priCfg.color }}>
-                        {priCfg.label}
-                      </span>
+                      <div className="ucg-cat-row">
+                        <span className="ucg-cat" style={{ background: priCfg.bg, color: priCfg.color }}>
+                          {priCfg.label}{item.factorCode ? ` · ${item.factorCode}` : ""}
+                        </span>
+                        {overdue && <span style={{ fontSize: 10, color: "#b83225", fontWeight: 700, background: "rgba(184,50,37,.1)", padding: "2px 7px", borderRadius: 6, flexShrink: 0 }}>Atrasado</span>}
+                      </div>
 
                       {/* Title: action description */}
                       <div className="ucg-card-title">{item.actionDescription}</div>
@@ -448,7 +469,67 @@ export default function AdminAcoesVinculadas() {
                 );
               })}
             </div>
-          )}
+          ) : (
+            <div className="ucg-list">
+              {filtered.map((item: any) => {
+                const overdue   = isOverdue(item.endDate, item.status);
+                const priCfg    = priorityConfig(item.priority);
+                const isLinking = linkingId === item.id;
+                const deadline  = fmtDate(item.endDate);
+                return (
+                  <div key={item.id} className={`ucg-list-row${overdue ? " overdue" : ""}`} style={{ borderLeftColor: overdue ? "#b83225" : priCfg.color }}>
+                    <div className="ucg-list-info">
+                      <div className="ucg-cat-row" style={{ marginBottom: 4 }}>
+                        <span className="ucg-cat" style={{ background: priCfg.bg, color: priCfg.color }}>{priCfg.label}{item.factorCode ? ` · ${item.factorCode}` : ""}</span>
+                        {overdue && <span style={{ fontSize: 10, color: "#b83225", fontWeight: 700, background: "rgba(184,50,37,.1)", padding: "2px 7px", borderRadius: 6, flexShrink: 0 }}>Atrasado</span>}
+                      </div>
+                      <p className="ucg-list-title">{item.actionDescription}</p>
+                      {item.factorName && <p className="ucg-list-desc">{item.factorName}</p>}
+                      <div className="ucg-meta" style={{ marginTop: 4, flexWrap: "wrap" }}>
+                        {item.sectorName && <div className="ucg-meta-item"><svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>{item.sectorName}</div>}
+                        {item.responsibleParty && <div className="ucg-meta-item"><svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>{item.responsibleParty}</div>}
+                        {deadline && <div className={`ucg-meta-item${overdue ? " overdue-text" : ""}`}><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>Prazo: {deadline}</div>}
+                        {item.moduleId && <div className="ucg-meta-item" style={{ color: "#2460a8" }}><svg viewBox="0 0 24 24"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>{item.moduleTitle}</div>}
+                      </div>
+                      {isLinking && (
+                        <div className="ucg-link-inline" style={{ marginTop: 6 }}>
+                          <Select value={selectedModuleId} onValueChange={setSelectedModuleId}>
+                            <SelectTrigger style={{ height: 32, fontSize: 12 }}><SelectValue placeholder="Selecione um curso..." /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="">— Remover vínculo —</SelectItem>
+                              {modules.filter((m: any) => m.publishStatus === "published" || !m.publishStatus).map((m: any) => (
+                                <SelectItem key={m.id} value={String(m.id)} style={{ fontSize: 12 }}>{m.title}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <div className="ucg-link-inline-row">
+                            <button className="ucg-save-btn" onClick={() => handleLinkSave(item.id)}>Salvar</button>
+                            <button className="ucg-cancel-btn" onClick={() => setLinkingId(null)}>Cancelar</button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <div className="ucg-list-actions">
+                      <Select value={item.status} onValueChange={(v) => updateMut.mutate({ id: item.id, status: v })}>
+                        <SelectTrigger style={{ height: 32, fontSize: 12, width: 130 }}><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          {STATUS_OPTIONS.map(s => (<SelectItem key={s.value} value={s.value} style={{ fontSize: 12 }}>{s.label}</SelectItem>))}
+                        </SelectContent>
+                      </Select>
+                      {!isLinking && (
+                        <button className="ucg-fb ucg-fg" style={{ whiteSpace: "nowrap", padding: "7px 12px" }}
+                          onClick={() => { setLinkingId(item.id); setSelectedModuleId(item.moduleId ? String(item.moduleId) : ""); }}>
+                          <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                          {item.moduleId ? "Trocar" : "Vincular"}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )
+          }
         </div>
       </div>
     </AppLayout>

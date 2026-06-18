@@ -1,6 +1,7 @@
 import AppLayout from "@/components/AppLayout";
 import { trpc } from "@/lib/trpc";
 import { useState } from "react";
+import { LayoutGrid, List } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -96,9 +97,23 @@ const CSS = `
 .ucg-empty small{font-size:12px;margin-top:4px;display:block}
 .ucg-skel{background:linear-gradient(90deg,#E9EDF2 0%,#F4F6F9 50%,#E9EDF2 100%);background-size:200% 100%;animation:shimmer 1.3s infinite;border-radius:8px}
 @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
-.ucg-status-badge{position:absolute;top:9px;right:9px;font-size:9.5px;font-weight:700;padding:3px 8px;border-radius:6px}
 .ucg-sb-active{background:rgba(46,165,106,.88);color:#fff}
 .ucg-sb-inactive{background:rgba(100,116,139,.82);color:#fff}
+.ucg-stripe{height:5px;width:100%;flex-shrink:0}
+.ucg-cat-row{display:flex;align-items:center;justify-content:space-between;gap:6px}
+.ucg-status-inline{font-size:9.5px;font-weight:700;padding:3px 8px;border-radius:6px;white-space:nowrap;flex-shrink:0}
+.ucg-view-toggle{display:flex;border:1.5px solid #E0E6ED;border-radius:9px;overflow:hidden;flex-shrink:0}
+.ucg-vt-btn{background:#fff;border:none;padding:6px 10px;cursor:pointer;color:#62707D;display:flex;align-items:center;transition:all .15s}
+.ucg-vt-btn:hover{background:#F4F6F9}
+.ucg-vt-btn.active{background:#0E2C46;color:#fff}
+.ucg-list{display:flex;flex-direction:column;gap:8px}
+.ucg-list-row{background:#fff;border:0 solid transparent;border-left-width:4px;border-radius:0 12px 12px 0;padding:12px 16px;display:flex;align-items:center;gap:14px;transition:box-shadow .18s}
+.ucg-list-row:hover{box-shadow:0 4px 16px -4px rgba(14,44,70,.12)}
+.ucg-list-info{flex:1;min-width:0}
+.ucg-list-title{font-size:14px;font-weight:700;color:#0E2C46;margin:0 0 3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ucg-list-desc{font-size:12px;color:#62707D;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ucg-list-meta{display:flex;gap:10px;flex-shrink:0}
+.ucg-list-actions{display:flex;gap:6px;flex-shrink:0}
 `;
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -138,6 +153,7 @@ export default function AdminDecompression() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<VideoForm>(emptyForm);
   const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
+  const [viewMode, setViewMode] = useState<"cards" | "list">("cards");
 
   const createMutation = trpc.admin.createDecompressionVideo.useMutation({
     onSuccess: () => {
@@ -285,6 +301,10 @@ export default function AdminDecompression() {
               ))}
             </div>
             <div className="ucg-actions">
+              <div className="ucg-view-toggle">
+                <button className={`ucg-vt-btn${viewMode === "cards" ? " active" : ""}`} onClick={() => setViewMode("cards")} title="Cards"><LayoutGrid size={15} /></button>
+                <button className={`ucg-vt-btn${viewMode === "list" ? " active" : ""}`} onClick={() => setViewMode("list")} title="Lista"><List size={15} /></button>
+              </div>
               <button className="ucg-btn-primary" onClick={openCreate}>
                 <span dangerouslySetInnerHTML={{ __html: IconPlus }} />
                 Nova Atividade
@@ -292,48 +312,43 @@ export default function AdminDecompression() {
             </div>
           </div>
 
-          {/* Grid */}
-          <div className="ucg-grid">
-            {videosQuery.isLoading ? (
-              Array.from({ length: 8 }).map((_, i) => (
+          {/* Grid / List */}
+          {videosQuery.isLoading ? (
+            <div className="ucg-grid">
+              {Array.from({ length: 8 }).map((_, i) => (
                 <div key={i} className="ucg-card">
-                  <div className="ucg-thumb ucg-skel" style={{ aspectRatio: "16/9" }} />
+                  <div className="ucg-skel ucg-stripe" />
                   <div className="ucg-body" style={{ gap: 8 }}>
-                    <div className="ucg-skel" style={{ height: 16, width: "40%", borderRadius: 8 }} />
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <div className="ucg-skel" style={{ height: 18, width: "45%", borderRadius: 999 }} />
+                      <div className="ucg-skel" style={{ height: 18, width: "18%", borderRadius: 999 }} />
+                    </div>
                     <div className="ucg-skel" style={{ height: 14, width: "80%" }} />
                     <div className="ucg-skel" style={{ height: 12, width: "60%" }} />
                   </div>
                 </div>
-              ))
-            ) : filtered.length === 0 ? (
+              ))}
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="ucg-grid">
               <div className="ucg-empty">
                 <span dangerouslySetInnerHTML={{ __html: IconLeaf }} />
                 <p>{search || activeFilter !== "Todas" ? "Nenhuma atividade encontrada" : "Nenhuma atividade cadastrada ainda"}</p>
                 <small>{search || activeFilter !== "Todas" ? "Tente ajustar os filtros" : "Clique em \"Nova Atividade\" para começar"}</small>
               </div>
-            ) : (
-              filtered.map((v) => {
+            </div>
+          ) : viewMode === "cards" ? (
+            <div className="ucg-grid">
+              {filtered.map((v) => {
                 const cat = decompCategory(v.category);
                 return (
                   <div key={v.id} className="ucg-card" style={{ opacity: v.isActive ? 1 : 0.65 }}>
-                    {/* Thumb */}
-                    <div className="ucg-thumb" style={{ background: cat.grad }}>
-                      {v.thumbnailUrl ? (
-                        <img src={v.thumbnailUrl} alt={v.title} style={{ width: "100%", height: "100%", objectFit: "cover", position: "absolute", inset: 0 }} />
-                      ) : (
-                        <div className="ucg-thumb-icon">
-                          <span dangerouslySetInnerHTML={{ __html: IconLeaf }} />
-                        </div>
-                      )}
-                      <span className={`ucg-status-badge ${v.isActive ? "ucg-sb-active" : "ucg-sb-inactive"}`}>
-                        {v.isActive ? "Ativo" : "Inativo"}
-                      </span>
-                    </div>
-                    {/* Body */}
+                    <div className="ucg-stripe" style={{ background: cat.color }} />
                     <div className="ucg-body">
-                      <span className="ucg-cat" style={{ background: cat.bg, color: cat.color }}>
-                        {cat.label}
-                      </span>
+                      <div className="ucg-cat-row">
+                        <span className="ucg-cat" style={{ background: cat.bg, color: cat.color }}>{cat.label}</span>
+                        <span className={`ucg-status-inline ${v.isActive ? "ucg-sb-active" : "ucg-sb-inactive"}`}>{v.isActive ? "Ativo" : "Inativo"}</span>
+                      </div>
                       <p className="ucg-card-title">{v.title}</p>
                       {v.description && <p className="ucg-card-desc">{v.description}</p>}
                       <div className="ucg-meta">
@@ -345,13 +360,9 @@ export default function AdminDecompression() {
                         ) : null}
                       </div>
                     </div>
-                    {/* Footer */}
                     <div className="ucg-footer">
-                      <button
-                        className="ucg-fb ucg-fg"
-                        title={v.isActive ? "Desativar" : "Ativar"}
-                        onClick={() => toggleActiveMutation.mutate({ id: v.id, isActive: !v.isActive })}
-                      >
+                      <button className="ucg-fb ucg-fg" title={v.isActive ? "Desativar" : "Ativar"}
+                        onClick={() => toggleActiveMutation.mutate({ id: v.id, isActive: !v.isActive })}>
                         <span dangerouslySetInnerHTML={{ __html: IconEye }} />
                         {v.isActive ? "Desativar" : "Ativar"}
                       </button>
@@ -365,9 +376,50 @@ export default function AdminDecompression() {
                     </div>
                   </div>
                 );
-              })
-            )}
-          </div>
+              })}
+            </div>
+          ) : (
+            <div className="ucg-list">
+              {filtered.map((v) => {
+                const cat = decompCategory(v.category);
+                return (
+                  <div key={v.id} className="ucg-list-row" style={{ borderLeftColor: cat.color, opacity: v.isActive ? 1 : 0.65 }}>
+                    <div className="ucg-list-info">
+                      <div className="ucg-cat-row" style={{ marginBottom: 4 }}>
+                        <span className="ucg-cat" style={{ background: cat.bg, color: cat.color }}>{cat.label}</span>
+                        <span className={`ucg-status-inline ${v.isActive ? "ucg-sb-active" : "ucg-sb-inactive"}`}>{v.isActive ? "Ativo" : "Inativo"}</span>
+                      </div>
+                      <p className="ucg-list-title">{v.title}</p>
+                      {v.description && <p className="ucg-list-desc">{v.description}</p>}
+                      <div className="ucg-list-meta">
+                        {v.durationMinutes ? (
+                          <span className="ucg-meta-item">
+                            <span dangerouslySetInnerHTML={{ __html: IconClock }} />
+                            {v.durationMinutes} min
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="ucg-list-actions">
+                      <button className="ucg-fb ucg-fg" title={v.isActive ? "Desativar" : "Ativar"}
+                        onClick={() => toggleActiveMutation.mutate({ id: v.id, isActive: !v.isActive })}>
+                        <span dangerouslySetInnerHTML={{ __html: IconEye }} />
+                        {v.isActive ? "Desativar" : "Ativar"}
+                      </button>
+                      <button className="ucg-fb ucg-fp" onClick={() => openEdit(v)}>
+                        <span dangerouslySetInnerHTML={{ __html: IconPencil }} />
+                        Editar
+                      </button>
+                      <button className="ucg-fb ucg-fd" style={{ flex: "0 0 auto", padding: "7px 10px" }} onClick={() => setDeleteConfirmId(v.id)}>
+                        <span dangerouslySetInnerHTML={{ __html: IconTrash }} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )
+          }
         </div>
       </div>
 

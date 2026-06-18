@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import {
   Plus, ClipboardList, Play, Square, BarChart3, Pencil, Trash2,
-  Sparkles as SparklesIcon, Search,
+  Sparkles as SparklesIcon, Search, LayoutGrid, List,
 } from "lucide-react";
 
 /* ─── Shared CSS ─────────────────────────────────────────── */
@@ -86,6 +86,21 @@ const SHARED_CSS = `
 .ucg-sb-draft{background:rgba(232,178,62,.9);color:#fff}
 .ucg-sb-review{background:rgba(59,130,196,.9);color:#fff}
 .ucg-sb-approved{background:rgba(139,111,207,.9);color:#fff}
+.ucg-stripe{height:5px;width:100%;flex-shrink:0}
+.ucg-cat-row{display:flex;align-items:center;justify-content:space-between;gap:6px}
+.ucg-status-inline{font-size:9.5px;font-weight:700;padding:3px 8px;border-radius:6px;white-space:nowrap;flex-shrink:0}
+.ucg-view-toggle{display:flex;border:1.5px solid #E0E6ED;border-radius:9px;overflow:hidden;flex-shrink:0}
+.ucg-vt-btn{background:#fff;border:none;padding:6px 10px;cursor:pointer;color:#62707D;display:flex;align-items:center;transition:all .15s}
+.ucg-vt-btn:hover{background:#F4F6F9}
+.ucg-vt-btn.active{background:#0E2C46;color:#fff}
+.ucg-list{display:flex;flex-direction:column;gap:8px}
+.ucg-list-row{background:#fff;border:0 solid transparent;border-left-width:4px;border-radius:0 12px 12px 0;padding:12px 16px;display:flex;align-items:center;gap:14px;transition:box-shadow .18s}
+.ucg-list-row:hover{box-shadow:0 4px 16px -4px rgba(14,44,70,.12)}
+.ucg-list-info{flex:1;min-width:0}
+.ucg-list-title{font-size:14px;font-weight:700;color:#0E2C46;margin:0 0 3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ucg-list-desc{font-size:12px;color:#62707D;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ucg-list-meta{display:flex;gap:10px;flex-shrink:0}
+.ucg-list-actions{display:flex;gap:6px;flex-shrink:0}
 `;
 
 /* ─── Survey category helper ─────────────────────────────── */
@@ -127,9 +142,12 @@ function SkeletonCards() {
     <>
       {[1, 2, 3, 4].map(i => (
         <div key={i} className="ucg-card">
-          <div className="ucg-skel" style={{ aspectRatio: "16/9" }} />
+          <div className="ucg-skel ucg-stripe" />
           <div className="ucg-body" style={{ gap: 8 }}>
-            <div className="ucg-skel" style={{ height: 18, width: "40%" }} />
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <div className="ucg-skel" style={{ height: 18, width: "45%", borderRadius: 999 }} />
+              <div className="ucg-skel" style={{ height: 18, width: "18%", borderRadius: 999 }} />
+            </div>
             <div className="ucg-skel" style={{ height: 16, width: "80%" }} />
             <div className="ucg-skel" style={{ height: 13, width: "60%" }} />
           </div>
@@ -189,6 +207,7 @@ export default function AdminSurveys() {
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState("Todas");
   const [statusFilter, setStatusFilter] = useState("Todos");
+  const [viewMode, setViewMode] = useState<"cards" | "list">("cards");
 
   const surveys = listQ.data ?? [];
   const templates = templatesQ.data ?? [];
@@ -281,6 +300,10 @@ export default function AdminSurveys() {
 
             {/* Actions */}
             <div className="ucg-actions">
+              <div className="ucg-view-toggle">
+                <button className={`ucg-vt-btn${viewMode === "cards" ? " active" : ""}`} onClick={() => setViewMode("cards")} title="Cards"><LayoutGrid size={15} /></button>
+                <button className={`ucg-vt-btn${viewMode === "list" ? " active" : ""}`} onClick={() => setViewMode("list")} title="Lista"><List size={15} /></button>
+              </div>
               <Link href="/admin/pesquisas/estudio">
                 <a className="ucg-btn-ai">
                   <SparklesIcon size={15} />
@@ -294,134 +317,92 @@ export default function AdminSurveys() {
             </div>
           </div>
 
-          {/* Grid */}
-          <div className="ucg-grid">
-            {listQ.isLoading && <SkeletonCards />}
-
-            {!listQ.isLoading && filtered.length === 0 && (
+          {/* Grid / List */}
+          {listQ.isLoading ? (
+            <div className="ucg-grid"><SkeletonCards /></div>
+          ) : filtered.length === 0 ? (
+            <div className="ucg-grid">
               <div className="ucg-empty">
                 <ClipboardList />
                 <p>{search || catFilter !== "Todas" || statusFilter !== "Todos" ? "Nenhuma pesquisa encontrada" : "Nenhuma pesquisa ainda"}</p>
-                <small>
-                  {search || catFilter !== "Todas" || statusFilter !== "Todos"
-                    ? "Tente ajustar os filtros ou a busca."
-                    : "Use um template ou crie uma pesquisa do zero."}
-                </small>
+                <small>{search || catFilter !== "Todas" || statusFilter !== "Todos" ? "Tente ajustar os filtros ou a busca." : "Use um template ou crie uma pesquisa do zero."}</small>
               </div>
-            )}
-
-            {!listQ.isLoading && filtered.map((s: any) => {
-              const cat = surveyCategory(s.category ?? "");
-              const qCount = s.questions?.length ?? s.questionsCount ?? 0;
-              return (
-                <div key={s.id} className="ucg-card">
-                  {/* Thumb */}
-                  <div className="ucg-thumb" style={{ background: cat.grad }}>
-                    <div className="ucg-thumb-icon">
-                      <ClipboardList size={24} style={{ stroke: "#fff", fill: "none", strokeWidth: 1.8 }} />
-                    </div>
-                    <span className={`ucg-status-badge ${statusBadgeClass(s.status)}`}>
-                      {statusLabel(s.status)}
-                    </span>
-                  </div>
-
-                  {/* Body */}
-                  <div className="ucg-body">
-                    <span className="ucg-cat" style={{ background: cat.bg, color: cat.color }}>
-                      {cat.label}
-                    </span>
-                    <div className="ucg-card-title">{s.title}</div>
-                    {s.description && (
-                      <div className="ucg-card-desc">{s.description}</div>
-                    )}
-                    <div className="ucg-meta">
-                      {qCount > 0 && (
+            </div>
+          ) : viewMode === "cards" ? (
+            <div className="ucg-grid">
+              {filtered.map((s: any) => {
+                const cat = surveyCategory(s.category ?? "");
+                const qCount = s.questions?.length ?? s.questionsCount ?? 0;
+                return (
+                  <div key={s.id} className="ucg-card">
+                    <div className="ucg-stripe" style={{ background: cat.color }} />
+                    <div className="ucg-body">
+                      <div className="ucg-cat-row">
+                        <span className="ucg-cat" style={{ background: cat.bg, color: cat.color }}>{cat.label}</span>
+                        <span className={`ucg-status-inline ${statusBadgeClass(s.status)}`}>{statusLabel(s.status)}</span>
+                      </div>
+                      <div className="ucg-card-title">{s.title}</div>
+                      {s.description && <div className="ucg-card-desc">{s.description}</div>}
+                      <div className="ucg-meta">
+                        {qCount > 0 && (
+                          <span className="ucg-meta-item">
+                            <svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" /></svg>
+                            {qCount} {qCount === 1 ? "pergunta" : "perguntas"}
+                          </span>
+                        )}
                         <span className="ucg-meta-item">
-                          <svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" /></svg>
-                          {qCount} {qCount === 1 ? "pergunta" : "perguntas"}
+                          <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
+                          {s.isAnonymous ? "Anônima" : "Identificada"}
                         </span>
-                      )}
-                      <span className="ucg-meta-item">
-                        <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
-                        {s.isAnonymous ? "Anônima" : "Identificada"}
-                      </span>
-                    </div>
-
-                    {/* Footer */}
-                    <div className="ucg-footer">
-                      {/* Primary action */}
-                      {s.status === "draft" && (
-                        <button
-                          className="ucg-fb ucg-fp"
-                          onClick={() => launchMut.mutate({ id: s.id })}
-                          disabled={launchMut.isPending}
-                        >
-                          <Play size={12} />
-                          Lançar
-                        </button>
-                      )}
-                      {s.status === "active" && (
-                        <Link href={`/admin/pesquisas/${s.id}/resultados`}>
-                          <a className="ucg-fb ucg-fp" style={{ textDecoration: "none" }}>
-                            <BarChart3 size={12} />
-                            Ver resultados
-                          </a>
-                        </Link>
-                      )}
-                      {s.status === "closed" && (
-                        <Link href={`/admin/pesquisas/${s.id}/resultados`}>
-                          <a className="ucg-fb ucg-fp" style={{ textDecoration: "none" }}>
-                            <BarChart3 size={12} />
-                            Resultados
-                          </a>
-                        </Link>
-                      )}
-
-                      {/* Edit */}
-                      <Link href={`/admin/pesquisas/${s.id}/editar`}>
-                        <a className="ucg-fb ucg-fg" style={{ textDecoration: "none" }}>
-                          <Pencil size={12} />
-                          Editar
-                        </a>
-                      </Link>
-
-                      {/* Close / Reopen */}
-                      {s.status === "active" && (
-                        <button
-                          className="ucg-fb ucg-fg"
-                          onClick={() => closeMut.mutate({ id: s.id })}
-                          disabled={closeMut.isPending}
-                          title="Encerrar pesquisa"
-                        >
-                          <Square size={12} />
-                        </button>
-                      )}
-                      {s.status === "closed" && (
-                        <button
-                          className="ucg-fb ucg-fg"
-                          onClick={() => launchMut.mutate({ id: s.id })}
-                          disabled={launchMut.isPending}
-                          title="Reabrir pesquisa"
-                        >
-                          <Play size={12} />
-                        </button>
-                      )}
-
-                      {/* Delete */}
-                      <button
-                        className="ucg-fb ucg-fd"
-                        style={{ flex: "none", padding: "7px 10px" }}
-                        onClick={() => { setDeleteSurveyId(s.id); setDeleteSurveyTitle(s.title); }}
-                        title="Excluir"
-                      >
-                        <Trash2 size={12} />
-                      </button>
+                      </div>
+                      <div className="ucg-footer">
+                        {s.status === "draft" && <button className="ucg-fb ucg-fp" onClick={() => launchMut.mutate({ id: s.id })} disabled={launchMut.isPending}><Play size={12} />Lançar</button>}
+                        {s.status === "active" && <Link href={`/admin/pesquisas/${s.id}/resultados`}><a className="ucg-fb ucg-fp" style={{ textDecoration: "none" }}><BarChart3 size={12} />Ver resultados</a></Link>}
+                        {s.status === "closed" && <Link href={`/admin/pesquisas/${s.id}/resultados`}><a className="ucg-fb ucg-fp" style={{ textDecoration: "none" }}><BarChart3 size={12} />Resultados</a></Link>}
+                        <Link href={`/admin/pesquisas/${s.id}/editar`}><a className="ucg-fb ucg-fg" style={{ textDecoration: "none" }}><Pencil size={12} />Editar</a></Link>
+                        {s.status === "active" && <button className="ucg-fb ucg-fg" onClick={() => closeMut.mutate({ id: s.id })} disabled={closeMut.isPending} title="Encerrar"><Square size={12} /></button>}
+                        {s.status === "closed" && <button className="ucg-fb ucg-fg" onClick={() => launchMut.mutate({ id: s.id })} disabled={launchMut.isPending} title="Reabrir"><Play size={12} /></button>}
+                        <button className="ucg-fb ucg-fd" style={{ flex: "none", padding: "7px 10px" }} onClick={() => { setDeleteSurveyId(s.id); setDeleteSurveyTitle(s.title); }} title="Excluir"><Trash2 size={12} /></button>
+                      </div>
                     </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="ucg-list">
+              {filtered.map((s: any) => {
+                const cat = surveyCategory(s.category ?? "");
+                const qCount = s.questions?.length ?? s.questionsCount ?? 0;
+                return (
+                  <div key={s.id} className="ucg-list-row" style={{ borderLeftColor: cat.color }}>
+                    <div className="ucg-list-info">
+                      <div className="ucg-cat-row" style={{ marginBottom: 4 }}>
+                        <span className="ucg-cat" style={{ background: cat.bg, color: cat.color }}>{cat.label}</span>
+                        <span className={`ucg-status-inline ${statusBadgeClass(s.status)}`}>{statusLabel(s.status)}</span>
+                      </div>
+                      <p className="ucg-list-title">{s.title}</p>
+                      {s.description && <p className="ucg-list-desc">{s.description}</p>}
+                      <div className="ucg-list-meta">
+                        {qCount > 0 && <span className="ucg-meta-item"><svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" /></svg>{qCount} {qCount === 1 ? "pergunta" : "perguntas"}</span>}
+                        <span className="ucg-meta-item"><svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>{s.isAnonymous ? "Anônima" : "Identificada"}</span>
+                      </div>
+                    </div>
+                    <div className="ucg-list-actions">
+                      {s.status === "draft" && <button className="ucg-fb ucg-fp" onClick={() => launchMut.mutate({ id: s.id })} disabled={launchMut.isPending}><Play size={12} />Lançar</button>}
+                      {s.status === "active" && <Link href={`/admin/pesquisas/${s.id}/resultados`}><a className="ucg-fb ucg-fp" style={{ textDecoration: "none" }}><BarChart3 size={12} />Resultados</a></Link>}
+                      {s.status === "closed" && <Link href={`/admin/pesquisas/${s.id}/resultados`}><a className="ucg-fb ucg-fp" style={{ textDecoration: "none" }}><BarChart3 size={12} />Resultados</a></Link>}
+                      <Link href={`/admin/pesquisas/${s.id}/editar`}><a className="ucg-fb ucg-fg" style={{ textDecoration: "none" }}><Pencil size={12} />Editar</a></Link>
+                      {s.status === "active" && <button className="ucg-fb ucg-fg" onClick={() => closeMut.mutate({ id: s.id })} disabled={closeMut.isPending} title="Encerrar"><Square size={12} /></button>}
+                      {s.status === "closed" && <button className="ucg-fb ucg-fg" onClick={() => launchMut.mutate({ id: s.id })} disabled={launchMut.isPending} title="Reabrir"><Play size={12} /></button>}
+                      <button className="ucg-fb ucg-fd" style={{ flex: "none", padding: "7px 10px" }} onClick={() => { setDeleteSurveyId(s.id); setDeleteSurveyTitle(s.title); }} title="Excluir"><Trash2 size={12} /></button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )
+          }
         </div>
       </div>
 
