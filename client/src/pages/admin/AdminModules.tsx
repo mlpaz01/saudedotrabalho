@@ -1,6 +1,6 @@
 import AppLayout from "@/components/AppLayout";
 import { trpc } from "@/lib/trpc";
-import { useState } from "react";
+import React, { useState } from "react";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,7 +9,7 @@ import { toast } from "sonner";
 import {
   Plus, Pencil, Trash2, BookOpen, Video, Award, ChevronDown,
   ChevronUp, Eye, EyeOff, GripVertical, X, Check, Search,
-  MoreVertical, Sparkles, Clock, Code2
+  MoreVertical, Sparkles, Clock, Code2, LayoutGrid, List,
 } from "lucide-react";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -82,13 +82,28 @@ const SHARED_CSS = `
 .ucg-empty small{font-size:12px;margin-top:4px;display:block}
 .ucg-skel{background:linear-gradient(90deg,#E9EDF2 0%,#F4F6F9 50%,#E9EDF2 100%);background-size:200% 100%;animation:shimmer 1.3s infinite;border-radius:8px}
 @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
-.ucg-status-badge{position:absolute;top:9px;right:9px;font-size:9.5px;font-weight:700;padding:3px 8px;border-radius:6px}
-.ucg-sb-active{background:rgba(46,165,106,.88);color:#fff}
-.ucg-sb-inactive{background:rgba(100,116,139,.82);color:#fff}
-.ucg-sb-draft{background:rgba(232,178,62,.9);color:#fff}
-.ucg-sb-review{background:rgba(59,130,196,.9);color:#fff}
-.ucg-sb-approved{background:rgba(139,111,207,.9);color:#fff}
+.ucg-stripe{height:5px;flex-shrink:0}
+.ucg-cat-row{display:flex;align-items:center;justify-content:space-between;gap:6px}
+.ucg-status-inline{font-size:9.5px;font-weight:700;padding:3px 8px;border-radius:6px;white-space:nowrap;flex-shrink:0}
+.ucg-sb-active{background:rgba(46,165,106,.15);color:#1a6b40}
+.ucg-sb-inactive{background:rgba(100,116,139,.15);color:#475569}
+.ucg-sb-draft{background:rgba(232,178,62,.18);color:#92620a}
+.ucg-sb-review{background:rgba(59,130,196,.15);color:#185FA5}
+.ucg-sb-approved{background:rgba(139,111,207,.15);color:#6d28d9}
 .ucg-lesson-panel{grid-column:1/-1;background:#fff;border:1.5px solid #E9EDF2;border-radius:16px;overflow:hidden;margin-top:-4px}
+.ucg-view-toggle{display:flex;border:1.5px solid #E0E6ED;border-radius:9px;overflow:hidden;flex-shrink:0}
+.ucg-vt-btn{padding:7px 10px;background:#fff;color:#62707D;border:none;cursor:pointer;display:flex;align-items:center;transition:all .14s;font-family:inherit}
+.ucg-vt-btn:hover{background:#F4F6F9}
+.ucg-vt-btn.active{background:#0E2C46;color:#fff}
+.ucg-vt-btn svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2}
+.ucg-list{display:flex;flex-direction:column;gap:8px}
+.ucg-list-row{background:#fff;border:0 solid transparent;border-left-width:4px;border-radius:0 12px 12px 0;padding:12px 16px;display:flex;align-items:center;gap:14px;transition:box-shadow .18s}
+.ucg-list-row:hover{box-shadow:0 4px 16px -4px rgba(14,44,70,.12)}
+.ucg-list-info{flex:1;min-width:0}
+.ucg-list-title{font-size:14px;font-weight:700;color:#0E2C46;margin:0 0 3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ucg-list-desc{font-size:12px;color:#62707D;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ucg-list-meta{display:flex;gap:10px;flex-shrink:0}
+.ucg-list-actions{display:flex;gap:6px;flex-shrink:0}
 .ucg-lesson-panel-header{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid #EFF2F6;background:#F8FAFC}
 .ucg-lesson-panel-title{font-size:13px;font-weight:700;color:#0E2C46;display:flex;align-items:center;gap:8px}
 .ucg-lesson-item{display:flex;align-items:center;gap:12px;padding:11px 18px;border-bottom:1px solid #EFF2F6}
@@ -225,6 +240,7 @@ export default function AdminModules() {
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState<string>("Todos");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive" | "draft">("all");
+  const [viewMode, setViewMode] = useState<"cards" | "list">("cards");
 
   /* Mutations */
   const createModuleMutation = trpc.admin.createModule.useMutation({
@@ -398,6 +414,22 @@ export default function AdminModules() {
               />
             </div>
             <div className="ucg-actions">
+              <div className="ucg-view-toggle">
+                <button
+                  className={`ucg-vt-btn${viewMode === "cards" ? " active" : ""}`}
+                  onClick={() => setViewMode("cards")}
+                  title="Cards"
+                >
+                  <LayoutGrid size={15} />
+                </button>
+                <button
+                  className={`ucg-vt-btn${viewMode === "list" ? " active" : ""}`}
+                  onClick={() => setViewMode("list")}
+                  title="Lista"
+                >
+                  <List size={15} />
+                </button>
+              </div>
               <button className="ucg-btn-ghost" onClick={openCreateModule}>
                 <Plus size={14} /> Novo curso
               </button>
@@ -438,27 +470,35 @@ export default function AdminModules() {
             ))}
           </div>
 
-          {/* Grid */}
-          <div className="ucg-grid">
-            {modulesQuery.isLoading ? (
-              [1,2,3,4].map(i => (
+          {/* Grid / List */}
+          {modulesQuery.isLoading ? (
+            <div className="ucg-grid">
+              {[1,2,3,4].map(i => (
                 <div key={i} className="ucg-card" style={{ cursor: "default" }}>
-                  <div className="ucg-skel" style={{ aspectRatio: "16/9" }} />
+                  <div className="ucg-skel ucg-stripe" />
                   <div className="ucg-body" style={{ gap: 10 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <div className="ucg-skel" style={{ height: 18, width: "45%", borderRadius: 999 }} />
+                      <div className="ucg-skel" style={{ height: 18, width: "18%", borderRadius: 999 }} />
+                    </div>
                     <div className="ucg-skel" style={{ height: 14, borderRadius: 6 }} />
                     <div className="ucg-skel" style={{ height: 12, borderRadius: 6, width: "70%" }} />
                     <div className="ucg-skel" style={{ height: 10, borderRadius: 6, width: "40%" }} />
                   </div>
                 </div>
-              ))
-            ) : filtered.length === 0 ? (
+              ))}
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="ucg-grid">
               <div className="ucg-empty">
                 <BookOpen />
                 <p>{search || catFilter !== "Todos" || statusFilter !== "all" ? "Nenhum curso encontrado." : "Nenhum módulo cadastrado."}</p>
                 <small>{search || catFilter !== "Todos" || statusFilter !== "all" ? "Tente ajustar os filtros." : "Clique em \"Novo curso\" para começar."}</small>
               </div>
-            ) : (
-              filtered.map(mod => {
+            </div>
+          ) : viewMode === "cards" ? (
+            <div className="ucg-grid">
+              {filtered.map(mod => {
                 const isExpanded = expandedModuleId === mod.id;
                 const sb = statusBadge(mod);
                 const cat = courseCategory(mod.title);
@@ -470,50 +510,31 @@ export default function AdminModules() {
                       className="ucg-card"
                       style={{ opacity: !mod.isActive && ((mod as any).publishStatus ?? "published") !== "draft" ? 0.75 : 1 }}
                     >
-                      {/* Thumb */}
-                      <div className="ucg-thumb" style={{ background: cat.grad }}>
-                        <div className="ucg-thumb-icon">
-                          <BookOpen size={24} style={{ stroke: "#fff", fill: "none", strokeWidth: 1.8 }} />
-                        </div>
-                        <span className={`ucg-status-badge ${sb.cls}`}>{sb.label}</span>
-                      </div>
-
-                      {/* Body */}
+                      <div className="ucg-stripe" style={{ background: cat.color }} />
                       <div className="ucg-body">
-                        <span className="ucg-cat" style={{ background: cat.bg, color: cat.color }}>{cat.label}</span>
+                        <div className="ucg-cat-row">
+                          <span className="ucg-cat" style={{ background: cat.bg, color: cat.color }}>{cat.label}</span>
+                          <span className={`ucg-status-inline ${sb.cls}`}>{sb.label}</span>
+                        </div>
                         <p className="ucg-card-title">{mod.title}</p>
                         {mod.description && <p className="ucg-card-desc">{mod.description}</p>}
                         <div className="ucg-meta">
                           {mod.durationMinutes ? (
-                            <span className="ucg-meta-item">
-                              <Clock size={11} />
-                              {mod.durationMinutes} min
-                            </span>
+                            <span className="ucg-meta-item"><Clock size={11} />{mod.durationMinutes} min</span>
                           ) : null}
                           {((mod as any).certSignerName || (mod as any).certTitle) && (
-                            <span className="ucg-meta-item" style={{ color: "#a07a10" }}>
-                              <Award size={11} />
-                              Certificado
-                            </span>
+                            <span className="ucg-meta-item" style={{ color: "#a07a10" }}><Award size={11} />Certificado</span>
                           )}
                         </div>
-
-                        {/* Footer */}
                         <div className="ucg-footer" onClick={e => e.stopPropagation()}>
-                          <button
-                            className="ucg-fb ucg-fp"
-                            onClick={e => { e.stopPropagation(); setExpandedModuleId(isExpanded ? null : mod.id); }}
-                          >
-                            <Video size={12} />
-                            Ver aulas
+                          <button className="ucg-fb ucg-fp"
+                            onClick={e => { e.stopPropagation(); setExpandedModuleId(isExpanded ? null : mod.id); }}>
+                            <Video size={12} />Ver aulas
                             {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
                           </button>
-                          <button
-                            className="ucg-fb ucg-fg"
-                            onClick={e => { e.stopPropagation(); openEditModule(mod); }}
-                          >
-                            <Pencil size={12} />
-                            Editar
+                          <button className="ucg-fb ucg-fg"
+                            onClick={e => { e.stopPropagation(); openEditModule(mod); }}>
+                            <Pencil size={12} />Editar
                           </button>
                           <KebabMenu
                             isActive={mod.isActive}
@@ -526,7 +547,6 @@ export default function AdminModules() {
                       </div>
                     </div>
 
-                    {/* Expanded lesson panel — spans full grid row */}
                     {isExpanded && (
                       <div key={`lessons-${mod.id}`} className="ucg-lesson-panel">
                         <div className="ucg-lesson-panel-header">
@@ -606,8 +626,120 @@ export default function AdminModules() {
                   </>
                 );
               })
-            )}
-          </div>
+              }
+            </div>
+          ) : (
+            <div className="ucg-list">
+              {filtered.map(mod => {
+                const isExpanded = expandedModuleId === mod.id;
+                const sb = statusBadge(mod);
+                const cat = courseCategory(mod.title);
+                const lessons = isExpanded ? (lessonsQuery.data ?? []) : [];
+                return (
+                  <React.Fragment key={mod.id}>
+                    <div className="ucg-list-row" style={{ borderLeftColor: cat.color, opacity: !mod.isActive && ((mod as any).publishStatus ?? "published") !== "draft" ? 0.75 : 1 }}>
+                      <div className="ucg-list-info">
+                        <div className="ucg-cat-row" style={{ marginBottom: 4 }}>
+                          <span className="ucg-cat" style={{ background: cat.bg, color: cat.color }}>{cat.label}</span>
+                          <span className={`ucg-status-inline ${sb.cls}`}>{sb.label}</span>
+                        </div>
+                        <p className="ucg-list-title">{mod.title}</p>
+                        {mod.description && <p className="ucg-list-desc">{mod.description}</p>}
+                        <div className="ucg-list-meta">
+                          {mod.durationMinutes ? <span className="ucg-meta-item"><Clock size={11} />{mod.durationMinutes} min</span> : null}
+                          {((mod as any).certSignerName || (mod as any).certTitle) && <span className="ucg-meta-item" style={{ color: "#a07a10" }}><Award size={11} />Certificado</span>}
+                        </div>
+                      </div>
+                      <div className="ucg-list-actions" onClick={e => e.stopPropagation()}>
+                        <button className="ucg-fb ucg-fp"
+                          onClick={e => { e.stopPropagation(); setExpandedModuleId(isExpanded ? null : mod.id); }}>
+                          <Video size={12} />Ver aulas
+                          {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                        </button>
+                        <button className="ucg-fb ucg-fg"
+                          onClick={e => { e.stopPropagation(); openEditModule(mod); }}>
+                          <Pencil size={12} />Editar
+                        </button>
+                        <KebabMenu
+                          isActive={mod.isActive}
+                          onEdit={() => openEditModule(mod)}
+                          onEditContent={() => navigate(`/admin/cursos/${mod.id}/editar`)}
+                          onDelete={() => setDeleteModuleId(mod.id)}
+                          onToggle={() => toggleModuleMutation.mutate({ id: mod.id, isActive: !mod.isActive })}
+                        />
+                      </div>
+                    </div>
+                    {isExpanded && (
+                      <div className="ucg-lesson-panel" style={{ borderRadius: "0 0 12px 12px", marginBottom: 6 }}>
+                        <div className="ucg-lesson-panel-header">
+                          <span className="ucg-lesson-panel-title">
+                            <Video size={14} style={{ color: "#2EA56A" }} />
+                            Aulas — {mod.title}
+                            <span style={{ fontWeight: 500, color: "#92A0AC", fontSize: 12 }}>
+                              {lessonsQuery.isLoading ? "(carregando...)" : `(${lessons.length} aula${lessons.length !== 1 ? "s" : ""})`}
+                            </span>
+                          </span>
+                          <div style={{ display: "flex", gap: 8 }}>
+                            <button className="ucg-btn-primary" style={{ padding: "7px 14px", fontSize: 12 }}
+                              onClick={() => openCreateLesson(mod.id)}>
+                              <Plus size={13} /> Adicionar Aula
+                            </button>
+                            <button className="ucg-btn-ghost" style={{ padding: "7px 12px", fontSize: 12 }}
+                              onClick={() => setExpandedModuleId(null)}>
+                              <X size={13} />
+                            </button>
+                          </div>
+                        </div>
+                        {lessons.length === 0 && !lessonsQuery.isLoading ? (
+                          <div style={{ textAlign: "center", padding: "32px 20px", color: "#92A0AC", fontSize: 13 }}>
+                            <Video size={24} style={{ margin: "0 auto 10px", opacity: .35 }} />
+                            <p>Nenhuma aula cadastrada. Clique em "Adicionar Aula" para começar.</p>
+                          </div>
+                        ) : (
+                          lessons.map(lesson => (
+                            <div key={lesson.id} className="ucg-lesson-item" style={{ opacity: !lesson.isActive ? 0.6 : 1 }}>
+                              <GripVertical size={14} style={{ color: "#C8D1DA", flexShrink: 0 }} />
+                              <div className="ucg-lesson-num">{lesson.orderIndex + 1}</div>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                  <p style={{ fontSize: 13, fontWeight: 600, color: "#0E2C46", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{lesson.title}</p>
+                                  {!lesson.isActive && <span style={{ fontSize: 11, padding: "2px 7px", borderRadius: 6, background: "rgba(184,50,37,.12)", color: "#b83225", fontWeight: 700 }}>Inativa</span>}
+                                </div>
+                                <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 12, color: "#92A0AC", marginTop: 2 }}>
+                                  {lesson.durationMinutes ? <span>{lesson.durationMinutes} min</span> : null}
+                                  {lesson.videoUrl ? (
+                                    <span style={{ color: "#228A57", fontWeight: 600, display: "flex", alignItems: "center", gap: 4 }}><Check size={11} /> Vídeo configurado</span>
+                                  ) : (
+                                    <span style={{ color: "#a07a10" }}>Sem vídeo</span>
+                                  )}
+                                </div>
+                              </div>
+                              <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+                                <button style={{ width: 30, height: 30, borderRadius: 8, background: "#F4F6F9", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#62707D" }}
+                                  onClick={() => toggleLessonMutation.mutate({ id: lesson.id, isActive: !lesson.isActive })}
+                                  title={lesson.isActive ? "Desativar" : "Ativar"}>
+                                  {lesson.isActive ? <Eye size={13} /> : <EyeOff size={13} />}
+                                </button>
+                                <button style={{ width: 30, height: 30, borderRadius: 8, background: "#F4F6F9", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#0E2C46" }}
+                                  onClick={() => openEditLesson(lesson)} title="Editar">
+                                  <Pencil size={13} />
+                                </button>
+                                <button style={{ width: 30, height: 30, borderRadius: 8, background: "rgba(184,50,37,.08)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#b83225" }}
+                                  onClick={() => setDeleteLessonId(lesson.id)} title="Excluir">
+                                  <Trash2 size={13} />
+                                </button>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </div>
+          )
+          }
         </div>
       </div>
 
