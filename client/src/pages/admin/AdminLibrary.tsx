@@ -11,7 +11,9 @@ import {
   Library, BookOpen, ClipboardList, Leaf, Sparkles, Wand2,
   CheckCircle2, Brain, ShieldAlert, BarChart3, Clock, Loader2, Search,
   Wind, Eye, Zap, Dumbbell, ClipboardCheck, PlusCircle, Play,
+  HeartPulse, Send,
 } from "lucide-react";
+import { HEALTH_CAMPAIGNS, type HealthCampaignTemplate } from "@/data/healthCampaigns";
 
 /* ─── CSS ─────────────────────────────────────────────────────────── */
 const CSS = `
@@ -62,10 +64,15 @@ const CSS = `
 .ucg-empty small { font-size: 12.5px; margin-top: 4px; display: block; }
 .ucg-skel { background: linear-gradient(90deg,#E9EDF2 0%,#F4F6F9 50%,#E9EDF2 100%); background-size: 200% 100%; animation: shimmer 1.3s infinite; border-radius: 8px; }
 @keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+.ucg-month-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #92A0AC; margin: 0 0 10px; }
+.ucg-health-banner { background: #FFF8F0; border: 1.5px solid #FFE4B5; border-radius: 14px; padding: 14px 18px; display: flex; gap: 12px; align-items: flex-start; margin-bottom: 6px; }
+.ucg-health-banner svg { color: #D97706; flex-shrink: 0; margin-top: 2px; }
+.ucg-health-banner-title { font-size: 13.5px; font-weight: 700; color: #0E2C46; margin: 0 0 4px; }
+.ucg-health-banner-desc { font-size: 12px; color: #62707D; line-height: 1.5; margin: 0; }
 `;
 
 /* ─── Category configs ────────────────────────────────────────────── */
-type TabId = "surveys" | "modules" | "decompression";
+type TabId = "surveys" | "modules" | "decompression" | "saude";
 
 const SURVEY_CFG: Record<string, { label: string; stripeColor: string; catBg: string; catColor: string; Icon: any }> = {
   psicossocial: { label: "DRPS — quantitativa", stripeColor: "#3B82F6", catBg: "rgba(59,130,246,.12)",  catColor: "#1D4ED8", Icon: Brain },
@@ -133,6 +140,10 @@ export default function AdminLibrary() {
     onError: (e: any) => toast.error(e?.message ?? "Erro ao aplicar template"),
   });
 
+  function launchHealthCampaign(c: HealthCampaignTemplate) {
+    setLocation(`/admin/campanhas?healthTemplate=${c.id}`);
+  }
+
   function customize(type: "survey" | "module" | "decompression", templateId: number, title: string) {
     if (type === "survey") {
       setLocation(`/admin/pesquisas/estudio?templateId=${templateId}&topic=${encodeURIComponent(title)}`);
@@ -149,9 +160,10 @@ export default function AdminLibrary() {
   const decompList  = data?.decompression ?? [];
 
   const tabs: Array<{ id: TabId; label: string; count: number; Icon: any }> = [
-    { id: "surveys",      label: "Pesquisas",      count: surveys.length,     Icon: ClipboardList },
-    { id: "modules",      label: "Cursos",          count: modulesList.length, Icon: BookOpen },
-    { id: "decompression",label: "Descompressão",   count: decompList.length,  Icon: Leaf },
+    { id: "surveys",      label: "Pesquisas",       count: surveys.length,          Icon: ClipboardList },
+    { id: "modules",      label: "Cursos",           count: modulesList.length,      Icon: BookOpen },
+    { id: "decompression",label: "Descompressão",    count: decompList.length,       Icon: Leaf },
+    { id: "saude",        label: "Saúde Preventiva", count: HEALTH_CAMPAIGNS.length, Icon: HeartPulse },
   ];
 
   const q = search.toLowerCase();
@@ -353,6 +365,59 @@ export default function AdminLibrary() {
                   );
                 })
             )}
+            {/* ── Saúde Preventiva ── */}
+            {tab === "saude" && (
+              <>
+                <div className="ucg-health-banner" style={{ gridColumn: "1/-1" }}>
+                  <HeartPulse size={20} />
+                  <div>
+                    <p className="ucg-health-banner-title">Calendário anual de saúde preventiva</p>
+                    <p className="ucg-health-banner-desc">
+                      {HEALTH_CAMPAIGNS.length} campanhas prontas — cada cor representa uma causa. Clique em <strong>Lançar campanha</strong> para abrir o estúdio com e-mail, ações e cursos pré-preenchidos.
+                    </p>
+                  </div>
+                </div>
+
+                {[1,2,3,4,5,6,7,8,9,10,11,12].map(month => {
+                  const items = HEALTH_CAMPAIGNS.filter(c => c.month === month && (!q || c.name.toLowerCase().includes(q) || c.cause.toLowerCase().includes(q) || c.description.toLowerCase().includes(q)));
+                  if (!items.length) return null;
+                  return (
+                    <div key={month} style={{ gridColumn: "1/-1" }}>
+                      <p className="ucg-month-label">{items[0].monthLabel}</p>
+                      <div className="ucg-grid" style={{ gridTemplateColumns: "repeat(3,1fr)" }}>
+                        {items.map(c => (
+                          <div key={c.id} className="ucg-card">
+                            <div className="ucg-stripe" style={{ background: c.colorHex }} />
+                            <div className="ucg-body">
+                              <div className="ucg-cat-row">
+                                <span className="ucg-cat" style={{ background: c.colorHex + "22", color: c.colorHex === "#F5F5F5" ? "#444" : c.colorHex }}>
+                                  {c.colorName}
+                                </span>
+                                <span className="ucg-anon">{c.cause}</span>
+                              </div>
+                              <div className="ucg-card-title">{c.name}</div>
+                              <div className="ucg-card-desc">{c.description}</div>
+                              <div className="ucg-meta">
+                                <span><Sparkles size={11} />{c.suggestedActions.length} ações sugeridas</span>
+                              </div>
+                              <div className="ucg-footer">
+                                <button
+                                  className="ucg-footer-btn ucg-footer-primary"
+                                  onClick={() => launchHealthCampaign(c)}
+                                >
+                                  <Send size={13} />Lançar campanha
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+
           </div>
         </div>
       </div>
