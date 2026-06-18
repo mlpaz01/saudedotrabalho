@@ -4,13 +4,15 @@ import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard, BookOpen, Award, Leaf, LogOut,
   Users, Bell, ChevronRight, Menu, Building2,
-  ShieldCheck, FileSearch, Home, Clock, IdCard, FileCheck,
+  ShieldCheck, FileSearch, Home, Clock, IdCard, FileCheck, CalendarClock,
   Shield, Library, Settings2, Store, Wrench, ShieldQuestion, ClipboardList,
   Mail, ShieldAlert, CreditCard, FolderOpen, GraduationCap, Stethoscope,
-  Link2, Layers, RotateCcw, Activity, Search, LineChart,
+  Link2, Layers, RotateCcw, Activity, Search, LineChart, Signature,
+  LifeBuoy, Headphones, HeartHandshake, BarChart3,
 } from "lucide-react";
 import { useState } from "react";
 import { trpc } from "@/lib/trpc";
+import { NotificationBell } from "./NotificationBell";
 import { toast } from "sonner";
 
 const LOGO_FULL = "/plataforma/logo-full.png";
@@ -35,10 +37,12 @@ interface NavSection {
 const employeeNav: NavItem[] = [
   { label: "Inicio", href: "/inicio", icon: <Home size={16} /> },
   { label: "Meus Cursos", href: "/cursos", icon: <BookOpen size={16} />, feature: "courses" },
-  { label: "Minhas Licencas", href: "/minhas-licencas", icon: <IdCard size={16} /> },
+  { label: "Qualificacoes e Habilitacoes", href: "/qualificacoes", icon: <IdCard size={16} /> },
   { label: "Certificados", href: "/certificados", icon: <Award size={16} />, feature: "certificates" },
   { label: "Pesquisas", href: "/pesquisas", icon: <ClipboardList size={16} />, feature: "surveys" },
   { label: "Area de Descompressao", href: "/area-de-descompressao", icon: <Leaf size={16} />, feature: "decompression" },
+  { label: "Canal de Denuncia", href: "/denuncia", icon: <ShieldAlert size={16} /> },
+  { label: "Suporte", href: "/suporte", icon: <LifeBuoy size={16} /> },
 ];
 
 const adminSections: NavSection[] = [
@@ -46,17 +50,18 @@ const adminSections: NavSection[] = [
     section: "Principal",
     items: [
       { label: "Dashboard", href: "/dashboard", icon: <LayoutDashboard size={16} /> },
-      { label: "Analises", href: "/admin/analises", notRoles: ["chefia"], icon: <LineChart size={16} />, feature: "analytics" },
-      { label: "Visao 360", href: "/admin/visao-360", notRoles: ["chefia"], icon: <Activity size={16} />, feature: "analytics" },
+      { label: "Analises", href: "/admin/analises", notRoles: ["chefia", "sesmt", "psicologo"], icon: <LineChart size={16} />, feature: "analytics" },
+      { label: "Visao 360", href: "/admin/visao-360", notRoles: ["chefia", "sesmt", "psicologo"], icon: <Activity size={16} />, feature: "analytics" },
+      { label: "Riscos Psicossociais", href: "/admin/riscos-psicossociais", notRoles: ["chefia", "sesmt", "psicologo"], icon: <ShieldAlert size={16} />, feature: "analytics" },
     ],
   },
   {
     section: "Conteudo",
     items: [
-      { label: "Cursos", href: "/admin/cursos", notRoles: ["chefia"], icon: <BookOpen size={16} />, feature: "courses", dotCount: 3 },
-      { label: "Pesquisas", href: "/admin/pesquisas", notRoles: ["chefia"], icon: <ClipboardList size={16} />, feature: "surveys" },
-      { label: "Descompressao", href: "/admin/descompressao", notRoles: ["chefia"], icon: <Leaf size={16} />, feature: "decompression" },
-      { label: "Biblioteca", href: "/admin/biblioteca", notRoles: ["chefia"], icon: <Library size={16} /> },
+      { label: "Cursos", href: "/admin/cursos", notRoles: ["chefia", "sesmt", "psicologo"], icon: <BookOpen size={16} />, feature: "courses", dotCount: 3 },
+      { label: "Pesquisas", href: "/admin/pesquisas", notRoles: ["chefia", "sesmt", "psicologo"], icon: <ClipboardList size={16} />, feature: "surveys" },
+      { label: "Descompressao", href: "/admin/descompressao", notRoles: ["chefia", "sesmt", "psicologo"], icon: <Leaf size={16} />, feature: "decompression" },
+      { label: "Biblioteca", href: "/admin/biblioteca", notRoles: ["chefia", "sesmt", "psicologo"], icon: <Library size={16} /> },
     ],
   },
   {
@@ -65,39 +70,44 @@ const adminSections: NavSection[] = [
     items: [
       { label: "Empresas", href: "/admin/empresas", icon: <Building2 size={16} />, roles: ["admin_global", "super_admin"] },
       { label: "Planos", href: "/admin/planos", icon: <CreditCard size={16} />, roles: ["admin_global", "super_admin"] },
-      { label: "Filiais", href: "/admin/filiais", notRoles: ["chefia"], icon: <Store size={16} /> },
-      { label: "Setores", href: "/admin/setores", notRoles: ["chefia"], icon: <Wrench size={16} /> },
-      { label: "Colaboradores", href: "/admin/usuarios", notRoles: ["chefia"], icon: <Users size={16} /> },
-      { label: "Campanhas", href: "/admin/campanhas", notRoles: ["chefia"], icon: <Mail size={16} />, feature: "campaigns" },
-      { label: "Lembretes", href: "/admin/lembretes", notRoles: ["chefia"], icon: <Bell size={16} /> },
+      { label: "Filiais", href: "/admin/filiais", notRoles: ["chefia", "sesmt", "psicologo"], icon: <Store size={16} /> },
+      { label: "Setores", href: "/admin/setores", notRoles: ["chefia", "sesmt", "psicologo"], icon: <Wrench size={16} /> },
+      { label: "Colaboradores", href: "/admin/usuarios", notRoles: ["chefia", "sesmt", "psicologo"], icon: <Users size={16} /> },
+      { label: "Campanhas", href: "/admin/campanhas", notRoles: ["sesmt", "psicologo"], icon: <Mail size={16} />, feature: "campaigns" },
+      { label: "Lembretes", href: "/admin/lembretes", notRoles: ["chefia", "sesmt", "psicologo"], icon: <Bell size={16} /> },
+      { label: "Agendamentos", href: "/admin/agenda", notRoles: ["sesmt"], icon: <CalendarClock size={16} /> },
     ],
   },
   {
     // GRO — identificação, classificação e controle de riscos ocupacionais
     section: "GRO Riscos",
     items: [
-      { label: "Analise de Risco", href: "/admin/analise-risco", notRoles: ["chefia"], icon: <ShieldAlert size={16} />, feature: "risk_assessment" },
-      { label: "Acoes Vinculadas", href: "/admin/acoes-vinculadas", notRoles: ["chefia"], icon: <Link2 size={16} />, feature: "risk_assessment" },
+      { label: "Analise de Risco", href: "/admin/analise-risco", notRoles: ["chefia", "sesmt", "psicologo"], icon: <ShieldAlert size={16} />, feature: "risk_assessment" },
+      { label: "Acoes Vinculadas", href: "/admin/acoes-vinculadas", notRoles: ["chefia", "sesmt", "psicologo"], icon: <Link2 size={16} />, feature: "risk_assessment" },
     ],
   },
   {
     // PGR — documentação e programa formal de gerenciamento
     section: "PGR Programa",
     items: [
-      { label: "GHE / GSE", href: "/admin/ghe-gse", notRoles: ["chefia"], icon: <Layers size={16} />, feature: "risk_assessment" },
-      { label: "EPC / EPI", href: "/admin/epc-epi", notRoles: ["chefia"], icon: <Shield size={16} />, feature: "risk_assessment" },
-      { label: "Gerador de PGR", href: "/admin/pgr", notRoles: ["chefia"], icon: <FileCheck size={16} />, feature: "pgr" },
-      { label: "Revisoes PGR", href: "/admin/pgr-revisoes", notRoles: ["chefia"], icon: <RotateCcw size={16} />, feature: "risk_assessment" },
-      { label: "Arquivos SST", href: "/admin/arquivos", notRoles: ["chefia"], icon: <FolderOpen size={16} /> },
+      { label: "GHE / GSE", href: "/admin/ghe-gse", roles: ["sesmt", "admin_global", "super_admin"], icon: <Layers size={16} />, feature: "risk_assessment" },
+      { label: "EPC / EPI", href: "/admin/epc-epi", roles: ["sesmt", "admin_global", "super_admin"], icon: <Shield size={16} />, feature: "risk_assessment" },
+      { label: "Gerador de PGR", href: "/admin/pgr", roles: ["sesmt", "admin_global", "super_admin"], icon: <FileCheck size={16} />, feature: "pgr" },
+      { label: "Dashboard PGR", href: "/admin/pgr/executivo", roles: ["sesmt", "admin_global", "super_admin"], icon: <BarChart3 size={16} />, feature: "pgr" },
+      { label: "Auditoria PGR", href: "/admin/pgr/auditoria", roles: ["sesmt", "admin_global", "super_admin"], icon: <ShieldCheck size={16} />, feature: "pgr" },
+      { label: "Revisoes PGR", href: "/admin/pgr-revisoes", roles: ["sesmt", "admin_global", "super_admin"], icon: <RotateCcw size={16} />, feature: "risk_assessment" },
+      { label: "Arquivos SST", href: "/admin/arquivos", roles: ["sesmt", "admin_global", "super_admin"], icon: <FolderOpen size={16} /> },
+      { label: "Responsaveis Tecnicos", href: "/admin/responsaveis-tecnicos", roles: ["sesmt", "admin_global", "super_admin"], icon: <Signature size={16} /> },
     ],
   },
   {
     // Saúde Ocupacional — PCMSO, exames, vencimentos médicos
     section: "Saude Ocupacional",
     items: [
-      { label: "PCMSO", href: "/admin/pcmso", notRoles: ["chefia"], icon: <Stethoscope size={16} /> },
-      { label: "Vencimentos", href: "/admin/vencimentos", notRoles: ["chefia"], icon: <Clock size={16} /> },
-      { label: "Certificados", href: "/admin/certificados", notRoles: ["chefia"], icon: <Award size={16} />, feature: "certificates" },
+      { label: "Referencia de Monitoramento", href: "/admin/pcmso", notRoles: ["chefia", "sesmt", "psicologo"], icon: <Stethoscope size={16} /> },
+      { label: "Vencimentos", href: "/admin/vencimentos", notRoles: ["chefia", "sesmt", "psicologo"], icon: <Clock size={16} /> },
+      { label: "Certificados", href: "/admin/certificados", notRoles: ["chefia", "sesmt", "psicologo"], icon: <Award size={16} />, feature: "certificates" },
+      { label: "Qualificacoes", href: "/admin/qualificacoes", notRoles: ["chefia", "sesmt", "psicologo"], icon: <IdCard size={16} /> },
     ],
   },
   {
@@ -108,32 +118,38 @@ const adminSections: NavSection[] = [
       { label: "Compliance", href: "/admin/compliance", notRoles: ["chefia"], icon: <ShieldQuestion size={16} /> },
       { label: "Auditoria", href: "/admin/auditoria", notRoles: ["chefia"], icon: <ShieldCheck size={16} /> },
       { label: "Evidencias", href: "/admin/evidencias", notRoles: ["chefia"], icon: <FileSearch size={16} /> },
+      { label: "Canal de Denuncia", href: "/admin/denuncias", notRoles: ["chefia"], icon: <Shield size={16} /> },
+      { label: "Central de Suporte", href: "/admin/suporte", roles: ["super_admin", "admin", "admin_global"], icon: <Headphones size={16} /> },
     ],
   },
   {
     section: "Gestao Avancada",
     items: [
-      { label: "Configurador", href: "/admin/configurador", notRoles: ["chefia"], icon: <Settings2 size={16} /> },
+      { label: "Configurador", href: "/admin/configurador", notRoles: ["chefia", "sesmt", "psicologo"], icon: <Settings2 size={16} /> },
+      { label: "E-mail / SMTP", href: "/admin/configuracoes/smtp", notRoles: ["chefia", "sesmt", "psicologo"], icon: <Mail size={16} /> },
     ],
   },
 ];
 
 const superAdminNav: NavItem[] = [
-  { label: "Painel Super Admin", href: "/super-admin", icon: <Shield size={16} /> },
-  { label: "Clientes", href: "/super-admin/clientes", icon: <Building2 size={16} /> },
-  { label: "Catalogo Master", href: "/super-admin/catalogo", icon: <Library size={16} /> },
+  { label: "Painel Super Admin", href: "/super-admin", notRoles: ["sesmt", "psicologo"], icon: <Shield size={16} /> },
+  { label: "Clientes", href: "/super-admin/clientes", notRoles: ["sesmt", "psicologo"], icon: <Building2 size={16} /> },
+  { label: "Catalogo Master", href: "/super-admin/catalogo", notRoles: ["sesmt", "psicologo"], icon: <Library size={16} /> },
 ];
 
 const ITEM_LABELS: Record<string, string> = {
+  "Suporte": "Suporte",
+  "Central de Suporte": "Central de Suporte",
   "Inicio": "Início",
   "Meus Cursos": "Meus Cursos",
-  "Minhas Licencas": "Minhas Licenças",
+  "Qualificacoes e Habilitacoes": "Qualificações e Habilitações",
   "Certificados": "Certificados",
   "Pesquisas": "Pesquisas",
   "Area de Descompressao": "Área de Descompressão",
   "Dashboard": "Dashboard",
   "Analises": "Análises",
   "Visao 360": "Visão 360°",
+  "Riscos Psicossociais": "Riscos Psicossociais",
   "Cursos": "Cursos",
   "Descompressao": "Descompressão",
   "Biblioteca": "Biblioteca",
@@ -144,6 +160,7 @@ const ITEM_LABELS: Record<string, string> = {
   "Colaboradores": "Colaboradores",
   "Campanhas": "Campanhas",
   "Lembretes": "Lembretes",
+  "Agendamentos": "Agendamentos",
   "Vencimentos": "Vencimentos",
   "Analise de Risco": "Análise de Risco",
   "Acoes Vinculadas": "Ações Vinculadas",
@@ -153,7 +170,8 @@ const ITEM_LABELS: Record<string, string> = {
   "Dashboard SST": "Dashboard SST",
   "Gerador de PGR": "Gerador de PGR",
   "Arquivos SST": "Arquivos SST",
-  "PCMSO": "PCMSO",
+  "Responsaveis Tecnicos": "Responsáveis Técnicos (Assinaturas)",
+  "Referencia de Monitoramento": "Referência de Monitoramento/Exame",
   "Compliance": "Compliance",
   "Configurador": "Configurador",
   "Auditoria": "Auditoria",
@@ -544,6 +562,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     user?.role === "rh" ||
     user?.role === "admin_global" ||
     user?.role === "company_admin" ||
+    user?.role === "sesmt" ||
     user?.role === "chefia";
 
   function isRouteActive(href: string): boolean {
@@ -565,6 +584,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     .filter((sec) => sec.items.length > 0);
 
   const filteredEmployeeNav: NavItem[] = employeeNav.filter(navAllowed);
+  // B3 — Programa de Acolhimento: visible only when eligible (non-managers).
+  const elig = trpc.scheduling.myEligibility.useQuery(undefined, { enabled: !!user });
+  const isManagerForAcolhimento = user && ["admin","rh","admin_global","company_admin","super_admin","psicologo","chefia"].includes(String((user as any)?.role));
+  if (!isManagerForAcolhimento && elig.data?.eligible) {
+    filteredEmployeeNav.push({ label: "Agendar Acolhimento", href: "/acolhimento", icon: <HeartHandshake size={16} /> });
+  }
   const homeHref = user?.role === "chefia" ? "/admin/chefia" : isAdmin ? "/dashboard" : "/inicio";
 
   const renderNavItem = (item: NavItem) => {
@@ -644,10 +669,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             )}
           </nav>
 
-          <div className="sdt-helpcard">
-            <div className="sdt-helpcard-title">Precisa de ajuda?</div>
-            <div className="sdt-helpcard-sub">Acesse a central de suporte ou fale com nossa equipe.</div>
-          </div>
+          <Link href="/suporte" onClick={() => setMobileOpen(false)}>
+            <div className="sdt-helpcard" style={{ cursor: "pointer" }}>
+              <div className="sdt-helpcard-title">Precisa de ajuda?</div>
+              <div className="sdt-helpcard-sub">Acesse a central de suporte ou fale com nossa equipe.</div>
+              <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 6, color: "#43C285", fontSize: 11.5, fontWeight: 700 }}><LifeBuoy size={13} /> Abrir chamado</div>
+            </div>
+          </Link>
 
           <button
             className="sdt-logout"
@@ -683,10 +711,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               </div>
             </div>
             <div className="sdt-topbar-right">
-              <div className="sdt-bell" title="Notificações">
-                <div className="sdt-bell-dot" />
-                <Bell size={15} />
-              </div>
+              <NotificationBell />
               <div className="sdt-user-chip">
                 <div className="sdt-avatar">
                   {(user?.name ?? user?.email ?? "U")[0].toUpperCase()}
