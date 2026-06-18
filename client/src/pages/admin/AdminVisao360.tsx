@@ -1,3 +1,4 @@
+import { useState } from "react";
 import AppLayout from "@/components/AppLayout";
 import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
@@ -203,6 +204,7 @@ const cardStyle: React.CSSProperties = {
 // ─── Main component ───────────────────────────────────────────────────────────
 export default function AdminVisao360() {
   const [, navigate] = useLocation();
+  const [activeTab, setActiveTab] = useState<"dashboard" | "importar">("dashboard");
 
   const usersQuery = trpc.admin.listUsers.useQuery({ page: 1, limit: 50 });
   const statsQuery = trpc.admin.stats.useQuery();
@@ -328,6 +330,75 @@ export default function AdminVisao360() {
           </div>
         </div>
 
+        {/* ── TAB NAV ──────────────────────────────────────────────────────── */}
+        <div style={{ display: "flex", gap: 4, borderBottom: `2px solid ${C.line}`, marginBottom: 24 }}>
+          {[
+            { id: "dashboard", label: "Visão Geral" },
+            { id: "importar",  label: "Importar Dados" },
+          ].map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setActiveTab(t.id as any)}
+              style={{
+                padding: "8px 20px",
+                fontSize: 14,
+                fontWeight: 600,
+                border: "none",
+                background: "none",
+                cursor: "pointer",
+                borderBottom: activeTab === t.id ? `2px solid ${C.navy}` : "2px solid transparent",
+                color: activeTab === t.id ? C.navy : C.ink2,
+                marginBottom: -2,
+                transition: "color .15s, border-color .15s",
+              }}
+            >{t.label}</button>
+          ))}
+        </div>
+
+        {/* ── IMPORTAR DADOS TAB ───────────────────────────────────────────── */}
+        {activeTab === "importar" && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(260px,1fr))", gap: 18 }}>
+            {[
+              {
+                href: "/admin/importar-rh",
+                title: "Importar Colaboradores (RH)",
+                desc: "Importe a base de colaboradores via planilha CSV. Cria ou atualiza usuários em lote.",
+                color: C.blue,
+              },
+              {
+                href: "/admin/importar-aso",
+                title: "Importar Exames (ASO)",
+                desc: "Importe atestados de saúde ocupacional e histórico de exames periódicos.",
+                color: C.green,
+              },
+              {
+                href: "/admin/importar-absenteismo",
+                title: "Importar Absenteísmo",
+                desc: "Importe dados de faltas, afastamentos e licenças médicas para análise.",
+                color: C.amber,
+              },
+            ].map((card) => (
+              <div
+                key={card.href}
+                onClick={() => navigate(card.href)}
+                style={{
+                  ...cardStyle,
+                  cursor: "pointer",
+                  borderLeft: `4px solid ${card.color}`,
+                  transition: "box-shadow .15s, transform .15s",
+                }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 4px 18px rgba(0,0,0,.1)"; (e.currentTarget as HTMLElement).style.transform = "translateY(-2px)"; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = (cardStyle as any).boxShadow ?? "none"; (e.currentTarget as HTMLElement).style.transform = ""; }}
+              >
+                <div style={{ fontWeight: 700, color: C.ink, fontSize: 15, marginBottom: 8 }}>{card.title}</div>
+                <div style={{ fontSize: 13, color: C.ink2, lineHeight: 1.6 }}>{card.desc}</div>
+                <div style={{ marginTop: 16, fontSize: 13, fontWeight: 600, color: card.color }}>Acessar →</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {activeTab === "dashboard" && <>
         {/* ── KPI STRIP ────────────────────────────────────────────────────── */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 18, marginBottom: 22 }}>
 
@@ -694,6 +765,7 @@ export default function AdminVisao360() {
             </div>
           </div>
         </div>
+        </>}
       </div>
     </AppLayout>
   );

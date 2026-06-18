@@ -15,7 +15,7 @@ import {
 import { toast } from "sonner";
 import {
   ShieldAlert, Plus, Calendar, Building2, Users, ChevronRight, Loader2, FileSearch, ClipboardCheck,
-  Download,
+  Download, Archive, RefreshCcw, Eye, EyeOff,
 } from "lucide-react";
 
 // ─── CSV template data ────────────────────────────────────────────────────────
@@ -51,11 +51,13 @@ const STATUS_BADGE: Record<string, { label: string; cls: string }> = {
   analyzing:  { label: "Em análise",            cls: "bg-amber-100 text-amber-700" },
   completed:  { label: "Concluído",             cls: "bg-emerald-100 text-emerald-700" },
   monitoring: { label: "Em monitoramento",      cls: "bg-purple-100 text-purple-700" },
+  archived:   { label: "Arquivado",             cls: "bg-gray-100 text-gray-500" },
 };
 
 export default function AdminRiskAssessments() {
   const [, setLocation] = useLocation();
   const [open, setOpen] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   const [form, setForm] = useState({
     cycleName: "",
     branchId: undefined as number | undefined,
@@ -70,6 +72,11 @@ export default function AdminRiskAssessments() {
   const branchesQ = trpc.branchesAdmin.list.useQuery();
   const sectorsQ = trpc.departmentsAdmin.list.useQuery(form.branchId ? { branchId: form.branchId } : undefined);
   const libraryQ = trpc.templateLibrary.list.useQuery();
+
+  const updateMut = trpc.riskAssessment.updateAssessment.useMutation({
+    onSuccess: () => { listQ.refetch(); toast.success("Ciclo atualizado."); },
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao atualizar"),
+  });
 
   const createMut = trpc.riskAssessment.createAssessment.useMutation({
     onSuccess: (data: any) => {
@@ -103,7 +110,10 @@ export default function AdminRiskAssessments() {
     });
   }
 
-  const assessments = (listQ.data ?? []) as any[];
+  const allAssessments = (listQ.data ?? []) as any[];
+  const assessments = showArchived
+    ? allAssessments.filter((a) => a.status === "archived")
+    : allAssessments.filter((a) => a.status !== "archived");
 
   return (
     <AppLayout>
@@ -128,6 +138,12 @@ export default function AdminRiskAssessments() {
             <Button variant="outline" size="sm" className="gap-1.5 text-xs"
               onClick={() => downloadCsv(AEP_TEMPLATE, "modelo-aep.csv")}>
               <Download size={13} /> Template AEP
+            </Button>
+            <Button variant="outline" size="sm"
+              className={`gap-1.5 text-xs ${showArchived ? "bg-gray-100 text-gray-700" : "text-gray-500"}`}
+              onClick={() => setShowArchived((v) => !v)}>
+              {showArchived ? <Eye size={13} /> : <EyeOff size={13} />}
+              {showArchived ? "Ocultar arquivados" : "Ver arquivados"}
             </Button>
 
           <Dialog open={open} onOpenChange={setOpen}>
@@ -274,10 +290,27 @@ export default function AdminRiskAssessments() {
                   <ChevronRight className="text-slate-400 group-hover:text-rose-600 group-hover:translate-x-1 transition-all" size={18} />
                 </div>
 
-                <div className="flex items-center gap-2 mt-3 flex-wrap">
-                  <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${badge.cls}`}>{badge.label}</span>
-                  {a.responsibleTechnician && (
-                    <span className="text-xs text-slate-500">{a.responsibleTechnician}</span>
+                <div className="flex items-center gap-2 mt-3 flex-wrap justify-between">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${badge.cls}`}>{badge.label}</span>
+                    {a.responsibleTechnician && (
+                      <span className="text-xs text-slate-500">{a.responsibleTechnician}</span>
+                    )}
+                  </div>
+                  {a.status === "archived" ? (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); updateMut.mutate({ id: a.id, status: "completed" }); }}
+                      className="flex items-center gap-1 text-xs text-emerald-600 hover:text-emerald-800 px-2 py-1 rounded hover:bg-emerald-50 transition-colors"
+                    >
+                      <RefreshCcw size={12} /> Reabrir
+                    </button>
+                  ) : (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); updateMut.mutate({ id: a.id, status: "archived" }); }}
+                      className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-700 px-2 py-1 rounded hover:bg-gray-100 transition-colors"
+                    >
+                      <Archive size={12} /> Arquivar
+                    </button>
                   )}
                 </div>
 

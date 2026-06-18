@@ -8,7 +8,7 @@ import {
   Shield, Library, Settings2, Store, Wrench, ShieldQuestion, ClipboardList,
   Mail, ShieldAlert, CreditCard, FolderOpen, GraduationCap, Stethoscope,
   Link2, Layers, RotateCcw, Activity, Search, LineChart, Signature,
-  LifeBuoy, Headphones, HeartHandshake, BarChart3, ListChecks,
+  LifeBuoy, Headphones, HeartHandshake, BarChart3, ListChecks, BookMarked,
 } from "lucide-react";
 import { useState } from "react";
 import { trpc } from "@/lib/trpc";
@@ -62,6 +62,7 @@ const adminSections: NavSection[] = [
       { label: "Pesquisas", href: "/admin/pesquisas", notRoles: ["chefia", "sesmt", "psicologo"], icon: <ClipboardList size={16} />, feature: "surveys" },
       { label: "Descompressao", href: "/admin/descompressao", notRoles: ["chefia", "sesmt", "psicologo"], icon: <Leaf size={16} />, feature: "decompression" },
       { label: "Biblioteca", href: "/admin/biblioteca", notRoles: ["chefia", "sesmt", "psicologo"], icon: <Library size={16} /> },
+      { label: "Biblioteca Preventiva", href: "/admin/biblioteca-preventiva", notRoles: ["chefia", "sesmt", "psicologo"], icon: <BookMarked size={16} /> },
     ],
   },
   {
@@ -154,6 +155,7 @@ const ITEM_LABELS: Record<string, string> = {
   "Cursos": "Cursos",
   "Descompressao": "Descompressão",
   "Biblioteca": "Biblioteca",
+  "Biblioteca Preventiva": "Biblioteca Preventiva",
   "Empresas": "Empresas",
   "Planos": "Planos",
   "Filiais": "Filiais",

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -31,6 +32,8 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export default function AdminScheduling() {
+  const { user } = useAuth();
+  const isPsicologo = user?.role === "psicologo";
   const [tab, setTab] = useState<"appointments" | "professionals">("appointments");
   const [showProfDialog, setShowProfDialog] = useState(false);
   const [editingProf, setEditingProf] = useState<any>(null);
@@ -82,8 +85,12 @@ export default function AdminScheduling() {
     updateStatusMut.mutate({ id: editingAppt.id, status: statusForm.status, meetingUrl: statusForm.meetingUrl || undefined, cancelReason: statusForm.cancelReason || undefined });
   }
 
-  const appts = apptQuery.data ?? [];
   const profs = profQuery.data ?? [];
+  const allAppts = apptQuery.data ?? [];
+  const myProf = isPsicologo ? profs.find((p) => p.email === user?.email) : null;
+  const appts = isPsicologo
+    ? allAppts.filter((a) => myProf ? a.professionalName === myProf.name : false)
+    : allAppts;
 
   return (
     <AppLayout>
@@ -98,8 +105,8 @@ export default function AdminScheduling() {
         {/* Tabs */}
         <div className="flex gap-2 border-b border-slate-200 pb-0">
           {[
-            { id: "appointments", label: "Agendamentos" },
-            { id: "professionals", label: "Profissionais" },
+            { id: "appointments", label: isPsicologo ? "Minha Agenda" : "Agendamentos" },
+            ...(!isPsicologo ? [{ id: "professionals", label: "Profissionais" }] : []),
           ].map(t => (
             <button
               key={t.id}
