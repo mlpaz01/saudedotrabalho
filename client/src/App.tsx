@@ -61,6 +61,7 @@ import AdminRiskAssessmentDetail from "@/pages/admin/AdminRiskAssessmentDetail";
 import AdminPGR from "@/pages/admin/AdminPGR";
 import AdminFiles from "@/pages/admin/AdminFiles";
 import AdminNRTraining from "@/pages/admin/AdminNRTraining";
+import AdminProgramas from "@/pages/admin/AdminProgramas";
 import AdminPCMSO from "@/pages/admin/AdminPCMSO";
 import SurveyBuilder from "@/pages/admin/SurveyBuilder";
 import SurveyResults from "@/pages/admin/SurveyResults";
@@ -170,6 +171,7 @@ function Router() {
       <Route path="/admin/pgr" component={() => <ProtectedRoute component={AdminPGR} adminOnly />} />
       <Route path="/admin/arquivos" component={() => <ProtectedRoute component={AdminFiles} adminOnly />} />
       <Route path="/admin/treinamentos-nr" component={() => <ProtectedRoute component={AdminNRTraining} adminOnly />} />
+      <Route path="/admin/programas" component={() => <ProtectedRoute component={AdminProgramas} adminOnly />} />
         <Route path="/admin/pcmso" component={() => <ProtectedRoute component={AdminPCMSO} adminOnly />} />
       <Route path="/admin/descompressao/estudio" component={() => <ProtectedRoute component={DecompressionStudio} adminOnly />} />
       <Route path="/admin/pesquisas/:id/editar" component={() => <ProtectedRoute component={SurveyBuilder} adminOnly />} />

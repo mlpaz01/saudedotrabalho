@@ -19330,6 +19330,337 @@ Return only the JSON content object (no wrapper). Format per type:
       }),
   }),
 
+  // ── Training Programs ──────────────────────────────────────────────────────
+  trainingPrograms: router({
+
+    list: adminOrRhProcedure.query(async ({ ctx }) => {
+      const db = await getDb();
+      if (!db) return [];
+      const cid = (ctx.user as any).companyId;
+      const rows: any = await db.execute(drzSql`
+        SELECT tp.*,
+          (SELECT COUNT(*) FROM training_program_modules tpm WHERE tpm.program_id = tp.id) AS module_count,
+          (SELECT COUNT(*) FROM training_program_factors tpf WHERE tpf.program_id = tp.id) AS factor_count
+        FROM training_programs tp
+        WHERE tp.is_active = 1
+          AND (tp.company_id = ${cid} OR tp.company_id IS NULL)
+        ORDER BY tp.order_index, tp.id
+      `);
+      const list = Array.isArray((rows as any)[0]) ? (rows as any)[0] : [];
+      return list.map((r: any) => ({
+        id: Number(r.id),
+        companyId: r.company_id ? Number(r.company_id) : null,
+        name: String(r.name ?? ""),
+        code: r.code ? String(r.code) : null,
+        technicalTitle: r.technical_title ? String(r.technical_title) : null,
+        description: r.description ? String(r.description) : null,
+        type: String(r.type ?? "obrigatorio"),
+        isActive: Number(r.is_active ?? 1),
+        orderIndex: Number(r.order_index ?? 0),
+        moduleCount: Number(r.module_count ?? 0),
+        factorCount: Number(r.factor_count ?? 0),
+      }));
+    }),
+
+    getModules: adminOrRhProcedure
+      .input(z.object({ programId: z.number() }))
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) return [];
+        const rows: any = await db.execute(drzSql`
+          SELECT tpm.id, tpm.program_id, tpm.module_id, tpm.order_index,
+                 m.title, m.description, m.durationMinutes
+          FROM training_program_modules tpm
+          JOIN modules m ON m.id = tpm.module_id
+          WHERE tpm.program_id = ${input.programId}
+          ORDER BY tpm.order_index, tpm.id
+        `);
+        const list = Array.isArray((rows as any)[0]) ? (rows as any)[0] : [];
+        return list.map((r: any) => ({
+          id: Number(r.id),
+          programId: Number(r.program_id),
+          moduleId: Number(r.module_id),
+          orderIndex: Number(r.order_index ?? 0),
+          title: String(r.title ?? ""),
+          description: r.description ? String(r.description) : null,
+          durationMinutes: Number(r.durationMinutes ?? 0),
+        }));
+      }),
+
+    getFactors: adminOrRhProcedure
+      .input(z.object({ programId: z.number() }))
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) return [];
+        const rows: any = await db.execute(drzSql`
+          SELECT tpf.id, tpf.factor_id, pf.code, pf.name
+          FROM training_program_factors tpf
+          JOIN psychosocial_factors pf ON pf.id = tpf.factor_id
+          WHERE tpf.program_id = ${input.programId}
+          ORDER BY pf.axis_order, pf.id
+        `);
+        const list = Array.isArray((rows as any)[0]) ? (rows as any)[0] : [];
+        return list.map((r: any) => ({
+          id: Number(r.id),
+          factorId: Number(r.factor_id),
+          code: String(r.code ?? ""),
+          name: String(r.name ?? ""),
+        }));
+      }),
+
+    create: adminOrRhProcedure
+      .input(z.object({
+        name: z.string().min(1),
+        code: z.string().optional(),
+        technicalTitle: z.string().optional(),
+        description: z.string().optional(),
+        type: z.enum(["obrigatorio", "opcional"]),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const cid = (ctx.user as any).companyId;
+        const r: any = await db.execute(drzSql`
+          INSERT INTO training_programs (company_id, name, code, technical_title, description, type)
+          VALUES (${cid}, ${input.name}, ${input.code ?? null}, ${input.technicalTitle ?? null}, ${input.description ?? null}, ${input.type})
+        `);
+        return { id: Number((r as any)[0]?.insertId ?? 0) };
+      }),
+
+    update: adminOrRhProcedure
+      .input(z.object({
+        id: z.number(),
+        name: z.string().min(1),
+        code: z.string().optional(),
+        technicalTitle: z.string().optional(),
+        description: z.string().optional(),
+        type: z.enum(["obrigatorio", "opcional"]),
+      }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await db.execute(drzSql`
+          UPDATE training_programs
+          SET name=${input.name}, code=${input.code ?? null}, technical_title=${input.technicalTitle ?? null},
+              description=${input.description ?? null}, type=${input.type}, updated_at=NOW()
+          WHERE id=${input.id}
+        `);
+        return { ok: true };
+      }),
+
+    delete: adminOrRhProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await db.execute(drzSql`UPDATE training_programs SET is_active=0 WHERE id=${input.id}`);
+        return { ok: true };
+      }),
+
+    addModule: adminOrRhProcedure
+      .input(z.object({ programId: z.number(), moduleId: z.number() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const cntR: any = await db.execute(drzSql`SELECT COUNT(*) as cnt FROM training_program_modules WHERE program_id=${input.programId}`);
+        const cnt = Number((Array.isArray((cntR as any)[0]) ? (cntR as any)[0][0] : null)?.cnt ?? 0);
+        await db.execute(drzSql`
+          INSERT IGNORE INTO training_program_modules (program_id, module_id, order_index)
+          VALUES (${input.programId}, ${input.moduleId}, ${cnt})
+        `);
+        return { ok: true };
+      }),
+
+    removeModule: adminOrRhProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await db.execute(drzSql`DELETE FROM training_program_modules WHERE id=${input.id}`);
+        return { ok: true };
+      }),
+
+    reorderModule: adminOrRhProcedure
+      .input(z.object({ id: z.number(), direction: z.enum(["up", "down"]) }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const rowR: any = await db.execute(drzSql`SELECT * FROM training_program_modules WHERE id=${input.id}`);
+        const row = Array.isArray((rowR as any)[0]) ? (rowR as any)[0][0] : null;
+        if (!row) return { ok: false };
+        const curIdx = Number(row.order_index);
+        const targetIdx = input.direction === "up" ? curIdx - 1 : curIdx + 1;
+        const swapR: any = await db.execute(drzSql`SELECT id FROM training_program_modules WHERE program_id=${row.program_id} AND order_index=${targetIdx} LIMIT 1`);
+        const swapRow = Array.isArray((swapR as any)[0]) ? (swapR as any)[0][0] : null;
+        if (swapRow) {
+          await db.execute(drzSql`UPDATE training_program_modules SET order_index=${targetIdx} WHERE id=${input.id}`);
+          await db.execute(drzSql`UPDATE training_program_modules SET order_index=${curIdx} WHERE id=${swapRow.id}`);
+        }
+        return { ok: true };
+      }),
+
+    addFactor: adminOrRhProcedure
+      .input(z.object({ programId: z.number(), factorId: z.number() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await db.execute(drzSql`
+          INSERT IGNORE INTO training_program_factors (program_id, factor_id)
+          VALUES (${input.programId}, ${input.factorId})
+        `);
+        return { ok: true };
+      }),
+
+    removeFactor: adminOrRhProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await db.execute(drzSql`DELETE FROM training_program_factors WHERE id=${input.id}`);
+        return { ok: true };
+      }),
+
+    listForEmployee: protectedProcedure.query(async ({ ctx }) => {
+      const db = await getDb();
+      if (!db) return { prioritarios: [], obrigatorios: [], modules: [] };
+      const userId = ctx.user.id;
+      const cid = (ctx.user as any).companyId;
+      const sectorId = (ctx.user as any).sectorId;
+
+      // Get all active programs for this company
+      const progsR: any = await db.execute(drzSql`
+        SELECT tp.*, GROUP_CONCAT(tpf.factor_id) AS factor_ids
+        FROM training_programs tp
+        LEFT JOIN training_program_factors tpf ON tpf.program_id = tp.id
+        WHERE tp.is_active = 1
+          AND (tp.company_id = ${cid} OR tp.company_id IS NULL)
+        GROUP BY tp.id
+        ORDER BY tp.order_index, tp.id
+      `);
+      const progs = Array.isArray((progsR as any)[0]) ? (progsR as any)[0] : [];
+
+      // Get high-risk factor IDs for user's sector (latest completed assessment)
+      let highRiskFactorIds: Set<number> = new Set();
+      if (sectorId) {
+        const riskR: any = await db.execute(drzSql`
+          SELECT rii.factor_id
+          FROM risk_inventory_items rii
+          JOIN risk_assessments ra ON ra.id = rii.assessment_id
+          WHERE ra.sector_id = ${sectorId}
+            AND ra.company_id = ${cid}
+            AND rii.risco_final IN ('alto', 'critico')
+          ORDER BY ra.id DESC
+          LIMIT 50
+        `);
+        const riskList = Array.isArray((riskR as any)[0]) ? (riskR as any)[0] : [];
+        for (const r of riskList) highRiskFactorIds.add(Number(r.factor_id));
+      }
+      if (highRiskFactorIds.size === 0 && cid) {
+        const riskR: any = await db.execute(drzSql`
+          SELECT rii.factor_id
+          FROM risk_inventory_items rii
+          JOIN risk_assessments ra ON ra.id = rii.assessment_id
+          WHERE ra.company_id = ${cid}
+            AND rii.risco_final IN ('alto', 'critico')
+          ORDER BY ra.id DESC
+          LIMIT 50
+        `);
+        const riskList = Array.isArray((riskR as any)[0]) ? (riskR as any)[0] : [];
+        for (const r of riskList) highRiskFactorIds.add(Number(r.factor_id));
+      }
+
+      // Get user progress
+      const progR: any = await db.execute(drzSql`
+        SELECT moduleId, isCompleted, percentWatched FROM user_progress WHERE userId=${userId}
+      `);
+      const progressMap = new Map<number, { isCompleted: boolean; pct: number }>();
+      for (const p of (Array.isArray((progR as any)[0]) ? (progR as any)[0] : [])) {
+        progressMap.set(Number(p.moduleId), { isCompleted: Boolean(p.isCompleted), pct: Number(p.percentWatched ?? 0) });
+      }
+
+      // Get program modules
+      const pmR: any = await db.execute(drzSql`
+        SELECT tpm.id, tpm.program_id, tpm.module_id, tpm.order_index,
+               m.title, m.description, m.durationMinutes
+        FROM training_program_modules tpm
+        JOIN modules m ON m.id = tpm.module_id
+        ORDER BY tpm.program_id, tpm.order_index, tpm.id
+      `);
+      const pmList = Array.isArray((pmR as any)[0]) ? (pmR as any)[0] : [];
+      const progModMap = new Map<number, any[]>();
+      for (const pm of pmList) {
+        const pid = Number(pm.program_id);
+        if (!progModMap.has(pid)) progModMap.set(pid, []);
+        progModMap.get(pid)!.push({
+          id: Number(pm.id),
+          moduleId: Number(pm.module_id),
+          orderIndex: Number(pm.order_index ?? 0),
+          title: String(pm.title ?? ""),
+          description: pm.description ? String(pm.description) : null,
+          durationMinutes: Number(pm.durationMinutes ?? 0),
+          progress: progressMap.get(Number(pm.module_id)) ?? { isCompleted: false, pct: 0 },
+        });
+      }
+
+      // Get all module IDs that belong to programs
+      const programModuleIds = new Set<number>(pmList.map((pm: any) => Number(pm.module_id)));
+
+      function buildProgram(r: any) {
+        const factorIds = r.factor_ids
+          ? String(r.factor_ids).split(",").map(Number).filter(Boolean)
+          : [];
+        const mods = progModMap.get(Number(r.id)) ?? [];
+        const isPrioritario = factorIds.some(fid => highRiskFactorIds.has(fid));
+        const totalMods = mods.length;
+        const completedMods = mods.filter((m: any) => m.progress.isCompleted).length;
+        const pct = totalMods > 0 ? Math.round((completedMods / totalMods) * 100) : 0;
+        return {
+          id: Number(r.id),
+          name: String(r.name ?? ""),
+          code: r.code ? String(r.code) : null,
+          description: r.description ? String(r.description) : null,
+          type: String(r.type ?? "obrigatorio"),
+          isPrioritario,
+          factorIds,
+          modules: mods,
+          totalMods,
+          completedMods,
+          pct,
+          isAllCompleted: totalMods > 0 && completedMods === totalMods,
+        };
+      }
+
+      const prioritarios: any[] = [];
+      const obrigatorios: any[] = [];
+
+      for (const r of progs) {
+        const p = buildProgram(r);
+        if (p.isPrioritario) prioritarios.push(p);
+        else if (String(r.type) === "obrigatorio") obrigatorios.push(p);
+      }
+
+      // Get standalone modules (not in any program) for "Complementares"
+      const modsR: any = await db.execute(drzSql`
+        SELECT id, title, description, durationMinutes, template_category
+        FROM modules
+        WHERE isActive = 1 AND publish_status = 'published'
+        ORDER BY orderIndex, id
+      `);
+      const allMods = (Array.isArray((modsR as any)[0]) ? (modsR as any)[0] : [])
+        .filter((m: any) => !programModuleIds.has(Number(m.id)))
+        .map((m: any) => ({
+          id: Number(m.id),
+          title: String(m.title ?? ""),
+          description: m.description ? String(m.description) : null,
+          durationMinutes: Number(m.durationMinutes ?? 0),
+          category: m.template_category ? String(m.template_category) : null,
+          progress: progressMap.get(Number(m.id)) ?? { isCompleted: false, pct: 0 },
+        }));
+
+      return { prioritarios, obrigatorios, modules: allMods };
+    }),
+  }),
+
 });
 
 

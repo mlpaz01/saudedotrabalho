@@ -544,3 +544,33 @@ export const riskCourseLinks = mysqlTable("risk_course_links", {
 
 export type RiskCourseLink = typeof riskCourseLinks.$inferSelect;
 
+// ─── Training Programs (Programas de Treinamento NR-01) ──────────────────────
+export const trainingPrograms = mysqlTable("training_programs", {
+  id: int("id").autoincrement().primaryKey(),
+  companyId: int("company_id"),
+  name: varchar("name", { length: 255 }).notNull(),
+  code: varchar("code", { length: 50 }),
+  technicalTitle: varchar("technical_title", { length: 255 }),
+  description: text("description"),
+  type: varchar("type", { length: 20 }).default("obrigatorio").notNull(),
+  isActive: tinyint("is_active").notNull().default(1),
+  orderIndex: int("order_index").default(0).notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const trainingProgramFactors = mysqlTable("training_program_factors", {
+  id: int("id").autoincrement().primaryKey(),
+  programId: int("program_id").notNull(),
+  factorId: int("factor_id").notNull(),
+});
+
+export const trainingProgramModules = mysqlTable("training_program_modules", {
+  id: int("id").autoincrement().primaryKey(),
+  programId: int("program_id").notNull(),
+  moduleId: int("module_id").notNull(),
+  orderIndex: int("order_index").default(0).notNull(),
+});
+
+export type TrainingProgram = typeof trainingPrograms.$inferSelect;
+export type InsertTrainingProgram = typeof trainingPrograms.$inferInsert;
