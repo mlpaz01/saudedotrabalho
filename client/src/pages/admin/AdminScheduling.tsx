@@ -34,6 +34,8 @@ function StatusBadge({ status }: { status: string }) {
 export default function AdminScheduling() {
   const { user } = useAuth();
   const isPsicologo = user?.role === "psicologo";
+  const isAdminRole = ["admin", "rh", "admin_global", "super_admin", "sesmt"].includes(user?.role ?? "");
+
   const [tab, setTab] = useState<"appointments" | "professionals">("appointments");
   const [showProfDialog, setShowProfDialog] = useState(false);
   const [editingProf, setEditingProf] = useState<any>(null);
@@ -41,12 +43,23 @@ export default function AdminScheduling() {
   const [selectedProf, setSelectedProf] = useState<any>(null);
   const [showStatusDialog, setShowStatusDialog] = useState(false);
   const [editingAppt, setEditingAppt] = useState<any>(null);
+  const [showBookDialog, setShowBookDialog] = useState(false);
 
   const profQuery = trpc.scheduling.listProfessionals.useQuery({});
   const apptQuery = trpc.scheduling.listAppointments.useQuery({});
-  const saveProfMut = trpc.scheduling.saveProfessional.useMutation({ onSuccess: () => { profQuery.refetch(); setShowProfDialog(false); toast.success("Profissional salvo."); } });
+  const collaboratorsQuery = trpc.scheduling.listCollaborators.useQuery(undefined, { enabled: isAdminRole });
+
+  const saveProfMut = trpc.scheduling.saveProfessional.useMutation({
+    onSuccess: () => { profQuery.refetch(); setShowProfDialog(false); toast.success("Profissional salvo."); },
+  });
   const deleteProfMut = trpc.scheduling.deleteProfessional.useMutation({ onSuccess: () => profQuery.refetch() });
-  const updateStatusMut = trpc.scheduling.updateAppointmentStatus.useMutation({ onSuccess: () => { apptQuery.refetch(); setShowStatusDialog(false); toast.success("Status atualizado."); } });
+  const updateStatusMut = trpc.scheduling.updateAppointmentStatus.useMutation({
+    onSuccess: () => { apptQuery.refetch(); setShowStatusDialog(false); toast.success("Status atualizado."); },
+  });
+  const bookMut = trpc.scheduling.bookAppointment.useMutation({
+    onSuccess: () => { apptQuery.refetch(); setShowBookDialog(false); toast.success("Consulta agendada com sucesso!"); },
+    onError: (e) => toast.error(e.message),
+  });
 
   // Professional form state
   const [profForm, setProfForm] = useState({ name: "", email: "", specialty: "", bio: "" });
@@ -62,9 +75,11 @@ export default function AdminScheduling() {
   const [availSlots, setAvailSlots] = useState<{dayOfWeek:number; startTime:string; endTime:string; slotDurationMinutes:number}[]>([]);
   const availQuery = trpc.scheduling.getAvailability.useQuery(
     { professionalId: selectedProf?.id ?? 0 },
-    { enabled: !!selectedProf, onSuccess: (d) => setAvailSlots(d) }
+    { enabled: !!selectedProf, onSuccess: (d: any) => setAvailSlots(d) }
   );
-  const saveAvailMut = trpc.scheduling.saveAvailability.useMutation({ onSuccess: () => { toast.success("Disponibilidade salva."); setShowAvailDialog(false); } });
+  const saveAvailMut = trpc.scheduling.saveAvailability.useMutation({
+    onSuccess: () => { toast.success("Disponibilidade salva."); setShowAvailDialog(false); },
+  });
 
   function openAvail(p: any) { setSelectedProf(p); setShowAvailDialog(true); }
   function addSlot() { setAvailSlots(prev => [...prev, { dayOfWeek: 1, startTime: "08:00", endTime: "17:00", slotDurationMinutes: 30 }]); }
@@ -85,8 +100,38 @@ export default function AdminScheduling() {
     updateStatusMut.mutate({ id: editingAppt.id, status: statusForm.status, meetingUrl: statusForm.meetingUrl || undefined, cancelReason: statusForm.cancelReason || undefined });
   }
 
+  // Book for employee form
+  const [bookForm, setBookForm] = useState({
+    collaboratorId: 0,
+    professionalId: 0,
+    date: "",
+    time: "09:00",
+    durationMinutes: 30,
+    notes: "",
+  });
+
+  function openBook() {
+    setBookForm({ collaboratorId: 0, professionalId: 0, date: "", time: "09:00", durationMinutes: 30, notes: "" });
+    setShowBookDialog(true);
+  }
+
+  function saveBook() {
+    if (!bookForm.collaboratorId) { toast.error("Selecione o funcionário"); return; }
+    if (!bookForm.professionalId) { toast.error("Selecione o profissional"); return; }
+    if (!bookForm.date) { toast.error("Informe a data"); return; }
+    bookMut.mutate({
+      professionalId: bookForm.professionalId,
+      date: bookForm.date,
+      time: bookForm.time,
+      durationMinutes: bookForm.durationMinutes,
+      notes: bookForm.notes || undefined,
+      collaboratorId: bookForm.collaboratorId,
+    });
+  }
+
   const profs = profQuery.data ?? [];
   const allAppts = apptQuery.data ?? [];
+  const collaborators = collaboratorsQuery.data ?? [];
   const myProf = isPsicologo ? profs.find((p) => p.email === user?.email) : null;
   const appts = isPsicologo
     ? allAppts.filter((a) => myProf ? a.professionalName === myProf.name : false)
@@ -100,6 +145,11 @@ export default function AdminScheduling() {
             <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><Calendar size={22} /> Agenda de Acolhimento</h1>
             <p className="text-sm text-slate-500 mt-0.5">Gerencie profissionais, disponibilidade e agendamentos</p>
           </div>
+          {isAdminRole && tab === "appointments" && (
+            <Button size="sm" onClick={openBook} className="gap-1">
+              <Plus size={14} /> Nova Consulta
+            </Button>
+          )}
         </div>
 
         {/* Tabs */}
@@ -124,7 +174,7 @@ export default function AdminScheduling() {
               <div className="text-center py-16 text-slate-400">
                 <Calendar size={40} className="mx-auto mb-3 opacity-30" />
                 <p>Nenhum agendamento ainda.</p>
-                <p className="text-xs mt-1">Colaboradores poderão agendar pelo painel de bem-estar.</p>
+                {isAdminRole && <p className="text-xs mt-1">Use "Nova Consulta" para agendar para um funcionário.</p>}
               </div>
             )}
             <div className="grid gap-3">
@@ -198,6 +248,77 @@ export default function AdminScheduling() {
         )}
       </div>
 
+      {/* ── Nova Consulta Dialog (RH agenda para funcionário) ── */}
+      <Dialog open={showBookDialog} onOpenChange={setShowBookDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Agendar Consulta para Funcionário</DialogTitle></DialogHeader>
+          <div className="space-y-3 py-2">
+            <div>
+              <label className="text-sm font-medium text-slate-700">Funcionário *</label>
+              <select
+                value={bookForm.collaboratorId}
+                onChange={e => setBookForm(f => ({ ...f, collaboratorId: Number(e.target.value) }))}
+                className="w-full border border-slate-200 rounded px-3 py-1.5 text-sm mt-1"
+              >
+                <option value={0}>Selecione o funcionário...</option>
+                {collaborators.map((c: any) => (
+                  <option key={c.id} value={c.id}>{c.name || c.email}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-sm font-medium text-slate-700">Profissional *</label>
+              <select
+                value={bookForm.professionalId}
+                onChange={e => setBookForm(f => ({ ...f, professionalId: Number(e.target.value) }))}
+                className="w-full border border-slate-200 rounded px-3 py-1.5 text-sm mt-1"
+              >
+                <option value={0}>Selecione o profissional...</option>
+                {profs.map((p: any) => (
+                  <option key={p.id} value={p.id}>{p.name}{p.specialty ? ` — ${p.specialty}` : ""}</option>
+                ))}
+              </select>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-sm font-medium text-slate-700">Data *</label>
+                <Input type="date" value={bookForm.date} onChange={e => setBookForm(f => ({ ...f, date: e.target.value }))} className="mt-1" />
+              </div>
+              <div>
+                <label className="text-sm font-medium text-slate-700">Horário</label>
+                <Input type="time" value={bookForm.time} onChange={e => setBookForm(f => ({ ...f, time: e.target.value }))} className="mt-1" />
+              </div>
+            </div>
+            <div>
+              <label className="text-sm font-medium text-slate-700">Duração</label>
+              <select
+                value={bookForm.durationMinutes}
+                onChange={e => setBookForm(f => ({ ...f, durationMinutes: Number(e.target.value) }))}
+                className="w-full border border-slate-200 rounded px-3 py-1.5 text-sm mt-1"
+              >
+                {[20, 30, 45, 60].map(d => <option key={d} value={d}>{d} minutos</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-sm font-medium text-slate-700">Observações</label>
+              <Textarea
+                value={bookForm.notes}
+                onChange={e => setBookForm(f => ({ ...f, notes: e.target.value }))}
+                rows={2}
+                placeholder="Motivo do agendamento, orientações..."
+                className="mt-1"
+              />
+            </div>
+            <div className="flex gap-2 justify-end pt-1">
+              <Button variant="outline" onClick={() => setShowBookDialog(false)}>Cancelar</Button>
+              <Button onClick={saveBook} disabled={bookMut.isPending}>
+                {bookMut.isPending ? "Agendando..." : "Confirmar Agendamento"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Professional Dialog */}
       <Dialog open={showProfDialog} onOpenChange={setShowProfDialog}>
         <DialogContent className="max-w-md">
@@ -232,7 +353,7 @@ export default function AdminScheduling() {
         <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Disponibilidade — {selectedProf?.name}</DialogTitle></DialogHeader>
           <div className="space-y-3 py-2">
-            <p className="text-xs text-slate-500">Defina os dias e horários em que este profissional atende. O sistema gerará os slots automaticamente.</p>
+            <p className="text-xs text-slate-500">Defina os dias e horários em que este profissional atende.</p>
             {availSlots.map((s, i) => (
               <div key={i} className="border border-slate-200 rounded-lg p-3 space-y-2">
                 <div className="flex items-center justify-between">

@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
-import { IdCard, Upload } from "lucide-react";
+import { IdCard, Upload, Paperclip } from "lucide-react";
+import AppLayout from "@/components/AppLayout";
 
 const STATUS_COLOR: Record<string, string> = {
   valido: "bg-emerald-500",
@@ -73,6 +74,7 @@ export default function Qualificacoes() {
   }
 
   return (
+    <AppLayout>
     <div className="max-w-5xl mx-auto p-6 space-y-8">
       <div className="flex items-center gap-3">
         <IdCard className="text-primary" />
@@ -165,7 +167,11 @@ export default function Qualificacoes() {
           </div>
           <div>
             <label className="block text-sm mb-1">Documento (PDF/imagem)</label>
-            <input type="file" accept="application/pdf,image/*" onChange={onFile} className="text-sm" />
+            <label className="inline-flex items-center gap-2 cursor-pointer border border-dashed border-slate-300 rounded px-3 py-2 text-sm text-slate-600 hover:border-primary hover:text-primary transition-colors">
+              <Paperclip size={14} />
+              {fileB64 ? "Arquivo selecionado ✓" : "Anexar arquivo"}
+              <input type="file" accept="application/pdf,image/*" onChange={onFile} className="sr-only" />
+            </label>
           </div>
           <div className="md:col-span-2">
             <button type="submit" disabled={createMut.isPending}
@@ -177,5 +183,6 @@ export default function Qualificacoes() {
         </form>
       </section>
     </div>
+    </AppLayout>
   );
 }

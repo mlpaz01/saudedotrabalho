@@ -28,6 +28,8 @@ import AdminPlans from "@/pages/admin/AdminPlans";
 import AdminCompanyDetail from "@/pages/admin/AdminCompanyDetail";
 import AdminAuditLogs from "@/pages/admin/AdminAuditLogs";
 import AdminEvidenceReport from "@/pages/admin/AdminEvidenceReport";
+import RelatorioFiscalizacao from "@/pages/admin/RelatorioFiscalizacao";
+import RelatorioMetodologia from "@/pages/admin/RelatorioMetodologia";
 import Denuncia from "@/pages/Denuncia";
 import DenunciaTrack from "@/pages/DenunciaTrack";
 import AdminDenuncias from "@/pages/admin/AdminDenuncias";
@@ -191,6 +193,8 @@ function Router() {
       <Route path="/admin/modulos/:id/editar" component={() => <ProtectedRoute component={CourseEditor} adminOnly />} />
       <Route path="/admin/cursos/:id/editar" component={() => <ProtectedRoute component={CourseEditor} adminOnly />} />
       <Route path="/admin/compliance" component={() => <ProtectedRoute component={ComplianceHub} adminOnly />} />
+      <Route path="/admin/compliance/relatorio-fiscalizacao" component={() => <ProtectedRoute component={RelatorioFiscalizacao} adminOnly />} />
+      <Route path="/admin/compliance/relatorio-metodologia" component={() => <ProtectedRoute component={RelatorioMetodologia} adminOnly />} />
       <Route path="/admin/pesquisas" component={() => <ProtectedRoute component={AdminSurveys} adminOnly />} />
       <Route path="/admin/pesquisas/estudio" component={() => <ProtectedRoute component={SurveyStudio} adminOnly />} />
       <Route path="/admin/biblioteca" component={() => <ProtectedRoute component={AdminLibrary} adminOnly />} />

@@ -79,31 +79,20 @@ export default function Suporte() {
   const [openId, setOpenId] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
 
-  if (creating) {
-    return (
-      <AppLayout>
+  return (
+    <AppLayout>
+      {creating ? (
         <NewTicketForm
           onCancel={() => setCreating(false)}
           onCreated={(id) => { setCreating(false); setOpenId(id); listQuery.refetch(); }}
         />
-      </AppLayout>
-    );
-  }
-
-  if (openId != null) {
-    return (
-      <AppLayout>
+      ) : openId != null ? (
         <TicketChat
           ticketId={openId}
           currentUserId={(user as any)?.id ?? null}
           onBack={() => { setOpenId(null); listQuery.refetch(); }}
         />
-      </AppLayout>
-    );
-  }
-
-  return (
-    <AppLayout>
+      ) : (
       <div style={{ padding: 24, maxWidth: 880, margin: "0 auto" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -170,6 +159,7 @@ export default function Suporte() {
           </div>
         )}
       </div>
+      )}
     </AppLayout>
   );
 }

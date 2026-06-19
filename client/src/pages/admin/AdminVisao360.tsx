@@ -331,7 +331,7 @@ export default function AdminVisao360() {
         </div>
 
         {/* ── TAB NAV ──────────────────────────────────────────────────────── */}
-        <div style={{ display: "flex", gap: 4, borderBottom: `2px solid ${C.line}`, marginBottom: 24 }}>
+        <div style={{ display: "flex", gap: 4, borderBottom: `2px solid ${C.line}`, marginBottom: 24, position: "relative", zIndex: 10, background: "#fff" }}>
           {[
             { id: "dashboard", label: "Visão Geral" },
             { id: "importar",  label: "Importar Dados" },

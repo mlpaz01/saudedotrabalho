@@ -15,7 +15,7 @@ import {
 import { toast } from "sonner";
 import {
   ShieldAlert, Plus, Calendar, Building2, Users, ChevronRight, Loader2, FileSearch, ClipboardCheck,
-  Download, Archive, RefreshCcw, Eye, EyeOff,
+  Download, Archive, RefreshCcw, Eye, EyeOff, Layers,
 } from "lucide-react";
 
 // ─── CSV template data ────────────────────────────────────────────────────────
@@ -131,6 +131,10 @@ export default function AdminRiskAssessments() {
           </div>
 
           <div className="flex flex-wrap gap-2 items-center">
+            <Button variant="outline" size="sm" className="gap-1.5 text-xs border-rose-300 text-rose-700 hover:bg-rose-50"
+              onClick={() => setLocation("/admin/risco-consolidado")}>
+              <Layers size={13} /> Visão por Filial e Setor
+            </Button>
             <Button variant="outline" size="sm" className="gap-1.5 text-xs"
               onClick={() => downloadCsv(DRPS_TEMPLATE, "modelo-drps.csv")}>
               <Download size={13} /> Template DRPS

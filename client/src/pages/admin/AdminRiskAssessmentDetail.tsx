@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import AppLayout from "@/components/AppLayout";
 import { trpc } from "@/lib/trpc";
@@ -73,6 +73,9 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
 
   const detailQ = trpc.riskAssessment.getAssessment.useQuery({ id });
   const [coursesEnabled, setCoursesEnabled] = useState(false);
+  useEffect(() => {
+    if (tab === "cursos" && !coursesEnabled) setCoursesEnabled(true);
+  }, [tab, coursesEnabled]);
   const coursesQ = trpc.riskCorrelation.getRecommendedCourses.useQuery(
     { assessmentId: id },
     { enabled: coursesEnabled }
@@ -114,19 +117,17 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
     onSuccess: (d: any) => { setPdfLink({ label: "Laudo AEP", url: d.url }); toast.success("Laudo AEP gerado!"); },
     onError: (e: any) => toast.error(e?.message ?? "Erro ao gerar PDF"),
   });
+  const updateCycleMut = trpc.riskAssessment.updateAssessment.useMutation({
+    onSuccess: () => { toast.success("Status do ciclo atualizado!"); detailQ.refetch(); },
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao atualizar ciclo"),
+  });
 
-  if (detailQ.isLoading) {
-    return <AppLayout><div className="p-6 flex items-center justify-center min-h-[60vh]"><Loader2 className="animate-spin" /></div></AppLayout>;
-  }
-  if (!detailQ.data) {
-    return <AppLayout><div className="p-6">Avaliação não encontrada.</div></AppLayout>;
-  }
-
-  const { assessment, inventory, actionPlan, stats } = detailQ.data as any;
-  const a = assessment;
-  const inv = inventory as any[];
-  const plan = (actionPlan as any[]).slice().sort((x, y) => (PRIORITY_RANK[y.priority] ?? 0) - (PRIORITY_RANK[x.priority] ?? 0));
-  const startDate = a.start_date ? new Date(a.start_date) : new Date();
+  const { assessment, inventory, actionPlan, stats: statsRaw } = (detailQ.data ?? {}) as any;
+  const a = assessment ?? {};
+  const stats = statsRaw ?? { drpsResponses: 0, aepResponses: 0 };
+  const inv = (inventory ?? []) as any[];
+  const plan = ((actionPlan ?? []) as any[]).slice().sort((x, y) => (PRIORITY_RANK[y.priority] ?? 0) - (PRIORITY_RANK[x.priority] ?? 0));
+  const startDate = a?.start_date ? new Date(a.start_date) : new Date();
   const monthCols = monthsBetween(startDate, 12);
 
   const TABS: { id: TabId; label: string; Icon: any }[] = [
@@ -140,6 +141,11 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
 
   return (
     <AppLayout>
+      {detailQ.isLoading ? (
+        <div className="p-6 flex items-center justify-center min-h-[60vh]"><Loader2 className="animate-spin" /></div>
+      ) : !detailQ.data ? (
+        <div className="p-6">Avaliação não encontrada.</div>
+      ) : (
       <div className="p-6 max-w-6xl mx-auto space-y-5">
         <button onClick={() => setLocation("/admin/analise-risco")} className="text-sm text-slate-500 hover:text-slate-800 inline-flex items-center gap-1">
           <ArrowLeft size={14} /> Voltar à lista
@@ -196,7 +202,51 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
                 <div><dt className="inline text-slate-500">DRPS survey id: </dt><dd className="inline text-slate-800">#{a.drps_survey_id}</dd></div>
                 <div><dt className="inline text-slate-500">AEP survey id: </dt><dd className="inline text-slate-800">#{a.aep_survey_id}</dd></div>
               </dl>
-              <div className="mt-3 flex gap-2">
+              {/* Gestão de Ciclo */}
+              <div className="mt-4 pt-3 border-t border-slate-100">
+                <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-2">Gestão do Ciclo</p>
+                <div className="flex flex-wrap gap-2">
+                  {a.status === "planning" && (
+                    <Button size="sm" className="gap-1 bg-blue-600 hover:bg-blue-700 text-white"
+                      onClick={() => { if (confirm("Iniciar coleta de respostas?")) updateCycleMut.mutate({ id: a.id, status: "collecting" }); }}
+                      disabled={updateCycleMut.isPending}>
+                      <CheckCircle2 size={13} /> Iniciar Coleta
+                    </Button>
+                  )}
+                  {a.status === "collecting" && (
+                    <Button size="sm" className="gap-1 bg-purple-600 hover:bg-purple-700 text-white"
+                      onClick={() => { if (confirm("Encerrar coleta e ir para análise?")) updateCycleMut.mutate({ id: a.id, status: "analyzing" }); }}
+                      disabled={updateCycleMut.isPending}>
+                      <BarChart3 size={13} /> Analisar Dados
+                    </Button>
+                  )}
+                  {a.status === "analyzing" && (
+                    <Button size="sm" className="gap-1 bg-emerald-600 hover:bg-emerald-700 text-white"
+                      onClick={() => { if (confirm("Concluir este ciclo de avaliação?")) updateCycleMut.mutate({ id: a.id, status: "completed" }); }}
+                      disabled={updateCycleMut.isPending}>
+                      <CheckCircle2 size={13} /> Concluir Ciclo
+                    </Button>
+                  )}
+                  {(a.status === "completed" || a.status === "monitoring") && (
+                    <Button size="sm" className="gap-1 bg-amber-600 hover:bg-amber-700 text-white"
+                      onClick={() => { if (confirm("Arquivar este ciclo?")) updateCycleMut.mutate({ id: a.id, status: "archived" }); }}
+                      disabled={updateCycleMut.isPending}>
+                      <Clock size={13} /> Arquivar
+                    </Button>
+                  )}
+                  {(a.status === "completed" || a.status === "archived") && (
+                    <Button size="sm" variant="outline" className="gap-1"
+                      onClick={() => { if (confirm("Reabrir ciclo para nova coleta?")) updateCycleMut.mutate({ id: a.id, status: "collecting" }); }}
+                      disabled={updateCycleMut.isPending}>
+                      <AlertCircle size={13} /> Reabrir
+                    </Button>
+                  )}
+                  <span className="text-xs px-2 py-1 rounded bg-slate-100 text-slate-600 self-center">
+                    Status atual: <strong>{a.status}</strong>
+                  </span>
+                </div>
+              </div>
+              <div className="mt-3 flex gap-2 flex-wrap">
                 <Button size="sm" variant="outline" onClick={() => setLocation(`/admin/pesquisas/${a.drps_survey_id}/editar`)}>Abrir DRPS</Button>
                 <Button size="sm" variant="outline" onClick={() => setLocation(`/admin/pesquisas/${a.aep_survey_id}/editar`)}>Abrir AEP</Button>
                 <Button size="sm" variant="outline" onClick={() => setLocation(`/admin/campanhas`)}>Enviar por campanha</Button>
@@ -588,9 +638,7 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
           </div>
         )}
 
-        {tab === "cursos" && (() => {
-          if (!coursesEnabled) setCoursesEnabled(true);
-          return (
+        {tab === "cursos" && (
             <div className="space-y-4">
               <p className="text-sm text-slate-600">
                 Cursos preventivos recomendados com base nos fatores de risco avaliados como alto ou crítico.
@@ -642,8 +690,7 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
                 </div>
               )}
             </div>
-          );
-        })()}
+        )}
 
         <ImportResponsesDialog
           open={showImport}
@@ -652,6 +699,7 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
           onDone={() => detailQ.refetch()}
         />
       </div>
+      )}
     </AppLayout>
   );
 }

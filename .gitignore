@@ -112,3 +112,20 @@ temp/
 # Manus version file (auto-generated, not part of source)
 client/public/__manus__/version.json
 .manus/
+
+# Scripts de deploy/diagnóstico (mantidos no disco, fora do versionamento da app)
+*.py
+*.bak_*
+*.vps_biggest_bak
+*.bak_before_restore
+*.bundle
+*.zip
+
+# Artefatos de auditoria/migração de arquitetura (temporários)
+_manifest_*.txt
+_vpsdiff/
+aep_diag.mjs
+hm_diag*.mjs
+migrate_appt_createdby.mjs
+*.cjs
+server/_item10_db_block.txt

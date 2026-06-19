@@ -117,9 +117,7 @@ const adminSections: NavSection[] = [
     section: "Conformidade",
     items: [
       { label: "Dashboard SST", href: "/admin/sst-dashboard", notRoles: ["chefia"], icon: <Activity size={16} />, feature: "risk_assessment" },
-      { label: "Compliance", href: "/admin/compliance", notRoles: ["chefia"], icon: <ShieldQuestion size={16} /> },
-      { label: "Auditoria", href: "/admin/auditoria", notRoles: ["chefia"], icon: <ShieldCheck size={16} /> },
-      { label: "Evidencias", href: "/admin/evidencias", notRoles: ["chefia"], icon: <FileSearch size={16} /> },
+      { label: "Central NR-01", href: "/admin/compliance", notRoles: ["chefia"], icon: <ShieldCheck size={16} /> },
       { label: "Canal de Denuncia", href: "/admin/denuncias", notRoles: ["chefia"], icon: <Shield size={16} /> },
       { label: "Central de Suporte", href: "/admin/suporte", roles: ["super_admin", "admin", "admin_global"], icon: <Headphones size={16} /> },
     ],
@@ -142,6 +140,7 @@ const superAdminNav: NavItem[] = [
 const ITEM_LABELS: Record<string, string> = {
   "Suporte": "Suporte",
   "Central de Suporte": "Central de Suporte",
+  "Canal de Denuncia": "Canal de Denúncia",
   "Inicio": "Início",
   "Meus Cursos": "Meus Cursos",
   "Qualificacoes e Habilitacoes": "Qualificações e Habilitações",
@@ -176,7 +175,8 @@ const ITEM_LABELS: Record<string, string> = {
   "Arquivos SST": "Arquivos SST",
   "Responsaveis Tecnicos": "Responsáveis Técnicos (Assinaturas)",
   "Referencia de Monitoramento": "Referência de Monitoramento/Exame",
-  "Compliance": "Compliance",
+  "Central NR-01": "Central de Conformidade NR-01",
+  "Compliance": "Central de Conformidade NR-01",
   "Configurador": "Configurador",
   "Auditoria": "Auditoria",
   "Evidencias": "Evidências",

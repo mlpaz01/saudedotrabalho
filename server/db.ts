@@ -3127,13 +3127,15 @@ export async function getVisibleModulesForUser(userId: number) {
   }
 
   // Own company-created modules
-
   const own = await db.select().from(modules).where(and(
-
     eq(modules.createdByCompanyId, cid),
-
     eq(modules.isActive, true),
+  ));
 
+  // Platform-level modules (no specific company — visible to all)
+  const platform = await db.select().from(modules).where(and(
+    sql`${modules.createdByCompanyId} IS NULL`,
+    eq(modules.isActive, true),
   ));
 
   let enrolled: any[] = [];
@@ -3151,10 +3153,9 @@ export async function getVisibleModulesForUser(userId: number) {
   }
 
   // Dedup by id
-
   const map = new Map<number, any>();
 
-  for (const m of [...enrolled, ...own]) map.set(m.id, m);
+  for (const m of [...enrolled, ...own, ...platform]) map.set(m.id, m);
 
   return Array.from(map.values()).sort((a, b) => { const oi = (a.orderIndex ?? 0) - (b.orderIndex ?? 0); return oi !== 0 ? oi : (b.id - a.id); });
 
@@ -4041,13 +4042,13 @@ export async function getHierarchyTreeForCompany(companyId: number | null) {
     sql.raw(`SELECT id, company_id AS companyId, name, city, state, is_active AS isActive
              FROM branches WHERE company_id IN (${companyIdsCsv}) ORDER BY name`)
   );
-  const branchesRows = (branchesRaw as any)[0] ?? (branchesRaw as any);
+  const branchesRows = Array.isArray((branchesRaw as any)[0]) ? (branchesRaw as any)[0] : Array.isArray(branchesRaw) ? branchesRaw : [];
 
   const sectorsRaw = await db.execute(
     sql.raw(`SELECT id, company_id AS companyId, branch_id AS branchId, name, is_active AS isActive
              FROM sectors WHERE company_id IN (${companyIdsCsv}) ORDER BY name`)
   );
-  const sectorsRows = (sectorsRaw as any)[0] ?? (sectorsRaw as any);
+  const sectorsRows = Array.isArray((sectorsRaw as any)[0]) ? (sectorsRaw as any)[0] : Array.isArray(sectorsRaw) ? sectorsRaw : [];
 
   const usersRaw = await db.execute(
     sql.raw(`SELECT u.id, u.name, u.email, u.role, u.lastSignedIn,
@@ -4063,12 +4064,12 @@ export async function getHierarchyTreeForCompany(companyId: number | null) {
              WHERE u.company_id IN (${companyIdsCsv}) AND u.is_active = 1
              ORDER BY u.name`)
   );
-  const usersRows = (usersRaw as any)[0] ?? (usersRaw as any);
+  const usersRows = Array.isArray((usersRaw as any)[0]) ? (usersRaw as any)[0] : Array.isArray(usersRaw) ? usersRaw : [];
 
   const modulesRaw = await db.execute(
     sql.raw(`SELECT COUNT(*) AS total FROM modules WHERE isActive = 1`)
   );
-  const totalModules = Number(((modulesRaw as any)[0] ?? (modulesRaw as any))[0]?.total ?? 0);
+  const totalModules = Number(_rows(modulesRaw)[0]?.total ?? 0);
 
   const surveysCountRaw = await db.execute(
     sql.raw(`SELECT company_id AS companyId, COUNT(*) AS total
@@ -4076,7 +4077,7 @@ export async function getHierarchyTreeForCompany(companyId: number | null) {
              GROUP BY company_id`)
   );
   const surveysCountByCompany = new Map<number, number>();
-  for (const row of ((surveysCountRaw as any)[0] ?? (surveysCountRaw as any)) as any[]) {
+  for (const row of _rows(surveysCountRaw)) {
     surveysCountByCompany.set(Number(row.companyId), Number(row.total));
   }
 
@@ -4216,7 +4217,7 @@ export async function getUserFullDetails(userId: number) {
              WHERE p.userId = ${userId}
              ORDER BY p.lastWatchedAt DESC`)
   );
-  const courses = (((progressRows as any)[0] ?? (progressRows as any)) as any[]) || [];
+  const courses = _rows(progressRows);
 
   const surveysRows = await db.execute(
     sql.raw(`SELECT r.survey_id AS surveyId, r.submitted_at AS submittedAt, s.title AS surveyTitle
@@ -4225,7 +4226,7 @@ export async function getUserFullDetails(userId: number) {
              WHERE r.user_id = ${userId}
              ORDER BY r.submitted_at DESC`)
   );
-  const surveys = (((surveysRows as any)[0] ?? (surveysRows as any)) as any[]) || [];
+  const surveys = _rows(surveysRows);
 
   const certRows = await db.execute(
     sql.raw(`SELECT c.id, c.certificateCode, c.issuedAt, c.expires_at AS expiresAt,
@@ -4235,7 +4236,7 @@ export async function getUserFullDetails(userId: number) {
              WHERE c.userId = ${userId}
              ORDER BY c.issuedAt DESC`)
   );
-  const certs = (((certRows as any)[0] ?? (certRows as any)) as any[]) || [];
+  const certs = _rows(certRows);
 
   return {
     user: {
@@ -4278,7 +4279,9 @@ export async function getUserFullDetails(userId: number) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 function _rows(raw: any): any[] {
-  return (((raw as any)[0] ?? (raw as any)) as any[]) || [];
+  if (Array.isArray((raw as any)[0])) return (raw as any)[0];
+  if (Array.isArray(raw)) return raw;
+  return [];
 }
 
 // Maps a 0-100 score to a semantic status. Higher score = better wellbeing.
@@ -4672,8 +4675,7 @@ export async function previewCampaignRecipients(opts: {
     return [];
   }
   const raw = await db.execute(sql.raw(query));
-  const rows = (((raw as any)[0] ?? (raw as any)) as any[]) || [];
-  return rows.map((r: any) => ({
+  return _rows(raw).map((r: any) => ({
     userId: Number(r.userId),
     name: r.name,
     email: r.email,
@@ -4695,7 +4697,7 @@ export async function listEmailCampaigns(companyId: number) {
              WHERE company_id = ${companyId}
              ORDER BY id DESC LIMIT 200`)
   );
-  return (((raw as any)[0] ?? (raw as any)) as any[]) || [];
+  return _rows(raw);
 }
 
 function mysqlString(v: string | null | undefined): string {
@@ -4766,7 +4768,7 @@ export async function getEmailCampaign(id: number) {
                     created_at AS createdAt, sent_at AS sentAt
              FROM email_campaigns WHERE id = ${id} LIMIT 1`)
   );
-  const rows = (((raw as any)[0] ?? (raw as any)) as any[]) || [];
+  const rows = _rows(raw);
   if (!rows.length) return null;
   const c = rows[0];
 
@@ -4777,7 +4779,7 @@ export async function getEmailCampaign(id: number) {
              WHERE campaign_id = ${id}
              ORDER BY id`)
   );
-  const recipients = (((rcpRaw as any)[0] ?? (rcpRaw as any)) as any[]) || [];
+  const recipients = _rows(rcpRaw);
   return { campaign: c, recipients };
 }
 
@@ -4843,7 +4845,7 @@ export async function getModulesForCompany(companyId: number) {
                         AND ce.is_active = 1))
              ORDER BY m.orderIndex, m.id`)
   );
-  return (((raw as any)[0] ?? (raw as any)) as any[]) || [];
+  return _rows(raw);
 }
 
 export async function getSurveysForCompanyShort(companyId: number) {
@@ -4854,7 +4856,7 @@ export async function getSurveysForCompanyShort(companyId: number) {
              WHERE company_id = ${companyId}
              ORDER BY id DESC`)
   );
-  return (((raw as any)[0] ?? (raw as any)) as any[]) || [];
+  return _rows(raw);
 }
 
 

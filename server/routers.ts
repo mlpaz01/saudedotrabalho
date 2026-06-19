@@ -1513,7 +1513,7 @@ const adminOrRhProcedure = protectedProcedure.use(({ ctx, next }) => {
 
 
 
-  if (ctx.user.role !== "admin" && ctx.user.role !== "rh" && ctx.user.role !== "admin_global" && ctx.user.role !== "company_admin") {
+  if (ctx.user.role !== "admin" && ctx.user.role !== "rh" && ctx.user.role !== "admin_global" && ctx.user.role !== "company_admin" && ctx.user.role !== "sesmt" && ctx.user.role !== "super_admin") {
 
 
 
@@ -2073,6 +2073,29 @@ const PLAN_FEATURE_CATALOG = [
   { code: "analytics",        label: "Análises & Dashboards",           group: "Gestão" },
   { code: "campaigns",        label: "Campanhas de Engajamento",        group: "Gestão" },
 ] as const;
+
+function decryptSmtpPass(encrypted: string): string {
+  const encKey = process.env.SMTP_ENC_KEY;
+  if (!encKey) throw new Error("SMTP_ENC_KEY not set");
+  const [ivHex, cipherHex] = encrypted.split(":");
+  if (!ivHex || !cipherHex) throw new Error("Invalid encrypted format");
+  const crypto = require("crypto");
+  const key = Buffer.from(encKey, "hex");
+  const iv = Buffer.from(ivHex, "hex");
+  const decipher = crypto.createDecipheriv("aes-256-cbc", key, iv);
+  return Buffer.concat([decipher.update(Buffer.from(cipherHex, "hex")), decipher.final()]).toString("utf8");
+}
+
+function encryptSmtpPass(plain: string): string {
+  const encKey = process.env.SMTP_ENC_KEY;
+  if (!encKey) throw new Error("SMTP_ENC_KEY not set");
+  const crypto = require("crypto");
+  const key = Buffer.from(encKey, "hex");
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv("aes-256-cbc", key, iv);
+  const encrypted = Buffer.concat([cipher.update(plain, "utf8"), cipher.final()]);
+  return iv.toString("hex") + ":" + encrypted.toString("hex");
+}
 
 export const appRouter = router({
 
@@ -13273,6 +13296,237 @@ export const appRouter = router({
 
       }),
 
+    // ── NR-01 auto-score ──────────────────────────────────────────────────────
+    nr01Status: adminOrRhProcedure.query(async ({ ctx }) => {
+      const cid = (ctx.user as any).companyId;
+      if (!cid) return { score: 0, axes: [], ranking: [] };
+      const db = await getDb();
+      const [[cycleRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM risk_assessments WHERE company_id=? AND status IN ('active','published','completed')`, [cid]) as any;
+      const hasCycle = Number((cycleRow as any).cnt) > 0;
+      const [[invRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM risk_inventory_items rii JOIN risk_assessments ra ON ra.id=rii.risk_assessment_id WHERE ra.company_id=?`, [cid]) as any;
+      const invCount = Number((invRow as any).cnt);
+      const [[planRow]] = await db.execute(`SELECT COUNT(*) AS cnt, SUM(CASE WHEN due_date < CURDATE() AND status NOT IN ('completed','done') THEN 1 ELSE 0 END) AS overdue FROM risk_action_plan_items WHERE company_id=?`, [cid]) as any;
+      const planCount = Number((planRow as any).cnt);
+      const planOverdue = Number((planRow as any).overdue ?? 0);
+      const [[survRow]] = await db.execute(`SELECT COUNT(DISTINCT sr.user_id) AS respondentes FROM survey_responses sr JOIN surveys s ON s.id=sr.survey_id WHERE s.company_id=?`, [cid]) as any;
+      const respondentes = Number((survRow as any).respondentes);
+      const [[empRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM users WHERE company_id=? AND role NOT IN ('admin','rh','admin_global','super_admin','sesmt','psicologo','chefia')`, [cid]) as any;
+      const totalEmp = Math.max(1, Number((empRow as any).cnt));
+      const partRate = Math.min(100, Math.round((respondentes / totalEmp) * 100));
+      const [[courseRow]] = await db.execute(`SELECT COUNT(DISTINCT rcl.module_id) AS linked FROM risk_course_links rcl`, []) as any;
+      const coursesLinked = Number((courseRow as any).linked);
+      const [[progRow]] = await db.execute(`SELECT COUNT(DISTINCT up.user_id) AS completers FROM user_progress up WHERE up.company_id=? AND up.completed=1`, [cid]) as any;
+      const completers = Number((progRow as any).completers);
+      const completionRate = Math.min(100, Math.round((completers / totalEmp) * 100));
+      const [[certRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM certificates WHERE company_id=?`, [cid]) as any;
+      const certCount = Number((certRow as any).cnt);
+      const [[termRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM term_acceptances ta JOIN users u ON u.id=ta.user_id WHERE u.company_id=?`, [cid]) as any;
+      const termCount = Number((termRow as any).cnt);
+      const [[respRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM responsible_technicians WHERE company_id=?`, [cid]) as any;
+      const hasResp = Number((respRow as any).cnt) > 0;
+      const cicloScore = hasCycle ? 100 : 0;
+      const invScore = invCount >= 5 ? 100 : Math.round((invCount / 5) * 100);
+      const planScore = planCount === 0 ? 0 : planOverdue === 0 ? 100 : Math.max(0, Math.round(((planCount - planOverdue) / planCount) * 100));
+      const partScore = partRate;
+      const trainScore = coursesLinked > 0 ? Math.round((completionRate + (coursesLinked >= 3 ? 100 : coursesLinked * 33)) / 2) : 0;
+      const evidScore = Math.min(100, (certCount > 0 ? 40 : 0) + (termCount > 0 ? 40 : 0) + (hasResp ? 20 : 0));
+      const axes = [
+        { axis: "ciclo", label: "Ciclo de Avaliação Ativo", score: cicloScore, details: [{ ok: hasCycle, warn: false, text: hasCycle ? "Ciclo de avaliação ativo encontrado" : "Nenhum ciclo de avaliação iniciado" }] },
+        { axis: "inventario", label: "Inventário de Riscos", score: invScore, details: [{ ok: invCount >= 5, warn: invCount > 0 && invCount < 5, text: `${invCount} itens de risco identificados` }] },
+        { axis: "plano", label: "Plano de Ação", score: planScore, details: [{ ok: planCount > 0, warn: false, text: `${planCount} ação(ões) no plano` }, { ok: planOverdue === 0, warn: planOverdue > 0, text: planOverdue > 0 ? `${planOverdue} ação(ões) com prazo vencido` : "Nenhuma ação vencida" }] },
+        { axis: "participacao", label: "Participação dos Trabalhadores", score: partScore, details: [{ ok: partRate >= 70, warn: partRate >= 30 && partRate < 70, text: `${respondentes}/${totalEmp} colaboradores responderam pesquisas (${partRate}%)` }] },
+        { axis: "treinamento", label: "Capacitação e Treinamentos", score: trainScore, details: [{ ok: coursesLinked >= 3, warn: coursesLinked > 0 && coursesLinked < 3, text: `${coursesLinked} curso(s) vinculados aos 13 fatores NR-01` }, { ok: completionRate >= 70, warn: completionRate >= 30 && completionRate < 70, text: `${completionRate}% de conclusão pelos colaboradores` }] },
+        { axis: "evidencias", label: "Evidências Documentais", score: evidScore, details: [{ ok: certCount > 0, warn: false, text: `${certCount} certificado(s) emitido(s)` }, { ok: termCount > 0, warn: false, text: `${termCount} aceite(s) eletrônico(s)` }, { ok: hasResp, warn: false, text: hasResp ? "Responsável técnico cadastrado" : "Sem responsável técnico" }] },
+      ];
+      const score = Math.round((cicloScore + invScore + planScore + partScore + trainScore + evidScore) / 6);
+      const [secRows] = await db.execute(`SELECT s.name, COUNT(DISTINCT up.user_id) AS completers, COUNT(DISTINCT u.id) AS total FROM sectors s JOIN users u ON u.sector_id=s.id AND u.company_id=? LEFT JOIN user_progress up ON up.user_id=u.id AND up.completed=1 WHERE s.company_id=? GROUP BY s.id, s.name ORDER BY completers DESC LIMIT 10`, [cid, cid]) as any;
+      const ranking = (secRows as any[]).map((r: any) => ({ name: r.name, score: r.total > 0 ? Math.min(100, Math.round((r.completers / r.total) * 100)) : 0 }));
+      return { score, axes, ranking };
+    }),
+
+    // ── Simular Fiscalização ──────────────────────────────────────────────────
+    simulateFiscalizacao: adminOrRhProcedure.mutation(async ({ ctx }) => {
+      const cid = (ctx.user as any).companyId;
+      if (!cid) throw new TRPCError({ code: "BAD_REQUEST" });
+      const db = await getDb();
+      const conformidades: any[] = [];
+      const alertas: any[] = [];
+      const nao_conf: any[] = [];
+      const push = (sev: string, item: any) => { if (sev === "ok") conformidades.push(item); else if (sev === "warn") alertas.push(item); else nao_conf.push(item); };
+      const [[invR]] = await db.execute(`SELECT COUNT(*) AS cnt FROM risk_inventory_items rii JOIN risk_assessments ra ON ra.id=rii.risk_assessment_id WHERE ra.company_id=?`, [cid]) as any;
+      const invCnt = Number((invR as any).cnt);
+      if (invCnt >= 5) push("ok", { eixo: "Inventário de Riscos", check: "Inventário identificado", detail: `${invCnt} itens catalogados` });
+      else if (invCnt > 0) push("warn", { eixo: "Inventário de Riscos", check: "Inventário incompleto", detail: `Apenas ${invCnt} item(s). Recomenda-se ao menos 5.`, acao: "Complementar o inventário de riscos no GRO" });
+      else push("nao_conf", { eixo: "Inventário de Riscos", check: "Sem inventário de riscos", detail: "Nenhum risco identificado", acao: "Iniciar ciclo de avaliação e cadastrar riscos psicossociais" });
+      const [[planR]] = await db.execute(`SELECT COUNT(*) AS cnt, SUM(CASE WHEN due_date < CURDATE() AND status NOT IN ('completed','done') THEN 1 ELSE 0 END) AS overdue FROM risk_action_plan_items WHERE company_id=?`, [cid]) as any;
+      const pCnt = Number((planR as any).cnt); const pOvd = Number((planR as any).overdue ?? 0);
+      if (pCnt === 0) push("nao_conf", { eixo: "Plano de Ação", check: "Plano de ação ausente", detail: "Nenhuma ação cadastrada", acao: "Elaborar plano de ação vinculado aos riscos identificados" });
+      else if (pOvd > 0) push("warn", { eixo: "Plano de Ação", check: "Ações vencidas", detail: `${pOvd} de ${pCnt} ação(ões) com prazo expirado`, acao: "Atualizar ou concluir ações vencidas" });
+      else push("ok", { eixo: "Plano de Ação", check: "Plano de ação em dia", detail: `${pCnt} ação(ões), nenhuma vencida` });
+      const [[sR]] = await db.execute(`SELECT COUNT(DISTINCT sr.user_id) AS cnt FROM survey_responses sr JOIN surveys s ON s.id=sr.survey_id WHERE s.company_id=?`, [cid]) as any;
+      const [[eR]] = await db.execute(`SELECT COUNT(*) AS cnt FROM users WHERE company_id=? AND role NOT IN ('admin','rh','admin_global','super_admin','sesmt','psicologo','chefia')`, [cid]) as any;
+      const resp2 = Number((sR as any).cnt); const emp2 = Math.max(1, Number((eR as any).cnt)); const pct2 = Math.min(100, Math.round((resp2 / emp2) * 100));
+      if (pct2 >= 70) push("ok", { eixo: "Participação", check: "Boa adesão às pesquisas", detail: `${pct2}% dos colaboradores responderam (${resp2}/${emp2})` });
+      else if (pct2 >= 30) push("warn", { eixo: "Participação", check: "Participação abaixo do esperado", detail: `${pct2}% de adesão`, acao: "Reforçar comunicação e acesso às pesquisas" });
+      else push("nao_conf", { eixo: "Participação", check: "Participação crítica", detail: `Apenas ${pct2}% de adesão`, acao: "Campanhas urgentes de mobilização e pesquisas simplificadas" });
+      const [[facR]] = await db.execute(`SELECT COUNT(DISTINCT module_id) AS cnt FROM risk_course_links`, []) as any;
+      const facLinked = Number((facR as any).cnt);
+      if (facLinked >= 13) push("ok", { eixo: "Fatores de Risco", check: "Todos os 13 fatores NR-01 endereçados", detail: "Cada fator possui ao menos um curso vinculado" });
+      else if (facLinked >= 5) push("warn", { eixo: "Fatores de Risco", check: "Fatores parcialmente endereçados", detail: `${facLinked}/13 fatores com curso vinculado`, acao: "Vincular cursos aos fatores restantes" });
+      else push("nao_conf", { eixo: "Fatores de Risco", check: "Fatores sem programa de controle", detail: `Apenas ${facLinked}/13 fatores endereçados`, acao: "Vincular cursos e ações preventivas para cada fator de risco" });
+      const [[cR2]] = await db.execute(`SELECT COUNT(DISTINCT up.user_id) AS cnt FROM user_progress up WHERE up.company_id=? AND up.completed=1`, [cid]) as any;
+      const compl2 = Number((cR2 as any).cnt); const cRate = Math.min(100, Math.round((compl2 / emp2) * 100));
+      if (cRate >= 70) push("ok", { eixo: "Capacitação", check: "Alta conclusão de treinamentos", detail: `${cRate}% dos colaboradores completaram ao menos 1 curso` });
+      else if (cRate >= 30) push("warn", { eixo: "Capacitação", check: "Conclusão de treinamentos abaixo do ideal", detail: `${cRate}% de conclusão`, acao: "Verificar disponibilidade de conteúdo em Meus Cursos" });
+      else push("nao_conf", { eixo: "Capacitação", check: "Baixíssima conclusão de treinamentos", detail: `Apenas ${cRate}% de conclusão`, acao: "Disponibilizar cursos e enviar lembretes automáticos" });
+      const [[certR2]] = await db.execute(`SELECT COUNT(*) AS cnt FROM certificates WHERE company_id=?`, [cid]) as any;
+      const [[trmR2]] = await db.execute(`SELECT COUNT(*) AS cnt FROM term_acceptances ta JOIN users u ON u.id=ta.user_id WHERE u.company_id=?`, [cid]) as any;
+      const [[resR2]] = await db.execute(`SELECT COUNT(*) AS cnt FROM responsible_technicians WHERE company_id=?`, [cid]) as any;
+      const certCnt2 = Number((certR2 as any).cnt); const trmCnt2 = Number((trmR2 as any).cnt); const resOk2 = Number((resR2 as any).cnt) > 0;
+      if (certCnt2 > 0) push("ok", { eixo: "Evidências", check: "Certificados emitidos", detail: `${certCnt2} certificado(s) auditáveis` });
+      else push("warn", { eixo: "Evidências", check: "Sem certificados emitidos", detail: "Nenhum certificado gerado", acao: "Completar treinamentos para emitir certificados" });
+      if (trmCnt2 > 0) push("ok", { eixo: "Evidências", check: "Aceites eletrônicos registrados", detail: `${trmCnt2} aceite(s) com IP e timestamp` });
+      else push("warn", { eixo: "Evidências", check: "Sem aceites eletrônicos", detail: "Nenhum termo aceito registrado", acao: "Ativar termos de aceite nos cursos e pesquisas" });
+      if (resOk2) push("ok", { eixo: "Evidências", check: "Responsável técnico cadastrado", detail: "Assinatura digital disponível para laudos" });
+      else push("nao_conf", { eixo: "Evidências", check: "Sem responsável técnico", detail: "Nenhum RT com assinatura digital cadastrado", acao: "Cadastrar Responsável Técnico em PGR > Responsáveis Técnicos" });
+      return { conformidades, alertas, nao_conf };
+    }),
+
+    // ── Evidências Vinculadas ─────────────────────────────────────────────────
+    nr01Evidences: adminOrRhProcedure.query(async ({ ctx }) => {
+      const cid = (ctx.user as any).companyId;
+      if (!cid) return [];
+      const db = await getDb();
+      const [cycles] = await db.execute(`SELECT id, title, status, created_at FROM risk_assessments WHERE company_id=? ORDER BY created_at DESC LIMIT 10`, [cid]) as any;
+      const [invItems] = await db.execute(`SELECT rii.id, rii.description, rii.risk_level, ra.title AS cycle FROM risk_inventory_items rii JOIN risk_assessments ra ON ra.id=rii.risk_assessment_id WHERE ra.company_id=? ORDER BY rii.created_at DESC LIMIT 20`, [cid]) as any;
+      const [planItems] = await db.execute(`SELECT id, title, status, due_date FROM risk_action_plan_items WHERE company_id=? ORDER BY created_at DESC LIMIT 20`, [cid]) as any;
+      const [certs2] = await db.execute(`SELECT c.id, c.certificate_code, c.issued_at, u.name AS user_name FROM certificates c JOIN users u ON u.id=c.user_id WHERE c.company_id=? ORDER BY c.issued_at DESC LIMIT 20`, [cid]) as any;
+      const [terms2] = await db.execute(`SELECT ta.id, ta.accepted_at, ta.ip_address, u.name AS user_name FROM term_acceptances ta JOIN users u ON u.id=ta.user_id WHERE u.company_id=? ORDER BY ta.accepted_at DESC LIMIT 20`, [cid]) as any;
+      const [surv2] = await db.execute(`SELECT s.id, s.title, COUNT(DISTINCT sr.user_id) AS respondentes FROM surveys s LEFT JOIN survey_responses sr ON sr.survey_id=s.id WHERE s.company_id=? GROUP BY s.id ORDER BY s.created_at DESC LIMIT 10`, [cid]) as any;
+      return [
+        { category: "Ciclos de Avaliação GRO", items: (cycles as any[]).map((r: any) => ({ label: r.title ?? `Ciclo #${r.id}`, detail: `Status: ${r.status} · ${r.created_at ? new Date(r.created_at).toLocaleDateString("pt-BR") : "—"}` })) },
+        { category: "Inventário de Riscos", items: (invItems as any[]).map((r: any) => ({ label: r.description ? String(r.description).substring(0, 80) : `Item #${r.id}`, detail: `Nível: ${r.risk_level ?? "—"} · Ciclo: ${r.cycle ?? "—"}` })) },
+        { category: "Plano de Ação", items: (planItems as any[]).map((r: any) => ({ label: r.title ?? `Ação #${r.id}`, detail: `Status: ${r.status} · Prazo: ${r.due_date ? new Date(r.due_date).toLocaleDateString("pt-BR") : "—"}` })) },
+        { category: "Certificados Emitidos", items: (certs2 as any[]).map((r: any) => ({ label: `${r.user_name ?? "Colaborador"} — Código: ${r.certificate_code}`, detail: `${r.issued_at ? new Date(r.issued_at).toLocaleDateString("pt-BR") : "—"}` })) },
+        { category: "Aceites Eletrônicos", items: (terms2 as any[]).map((r: any) => ({ label: `${r.user_name ?? "Colaborador"} — IP: ${r.ip_address ?? "—"}`, detail: `${r.accepted_at ? new Date(r.accepted_at).toLocaleDateString("pt-BR") : "—"}` })) },
+        { category: "Pesquisas Aplicadas", items: (surv2 as any[]).map((r: any) => ({ label: r.title ?? `Pesquisa #${r.id}`, detail: `${r.respondentes} respondente(s)` })) },
+      ];
+    }),
+
+    // ── Relatório para Fiscalização ───────────────────────────────────────────
+    relatorioFiscalizacaoData: adminOrRhProcedure.query(async ({ ctx }) => {
+      const cid = (ctx.user as any).companyId;
+      if (!cid) return null;
+      const db = await getDb();
+
+      // Empresa
+      const [[compRow]] = await db.execute(`SELECT id, name, cnpj, address, city, state FROM companies WHERE id=?`, [cid]) as any;
+      const company = compRow as any;
+
+      // Responsável técnico
+      const [respRows] = await db.execute(`SELECT name, council, council_number, role FROM responsible_technicians WHERE company_id=? LIMIT 1`, [cid]) as any;
+      const respTec = (respRows as any[])[0] ?? null;
+
+      // Score e eixos (replica nr01Status logic inline)
+      const [[cycleRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM risk_assessments WHERE company_id=? AND status IN ('active','published','completed')`, [cid]) as any;
+      const hasCycle = Number((cycleRow as any).cnt) > 0;
+      const [[invRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM risk_inventory_items rii JOIN risk_assessments ra ON ra.id=rii.risk_assessment_id WHERE ra.company_id=?`, [cid]) as any;
+      const invCount = Number((invRow as any).cnt);
+      const [[planRow]] = await db.execute(`SELECT COUNT(*) AS cnt, SUM(CASE WHEN due_date < CURDATE() AND status NOT IN ('completed','done') THEN 1 ELSE 0 END) AS overdue FROM risk_action_plan_items WHERE company_id=?`, [cid]) as any;
+      const planCount = Number((planRow as any).cnt);
+      const planOverdue = Number((planRow as any).overdue ?? 0);
+      const [[survRow]] = await db.execute(`SELECT COUNT(DISTINCT sr.user_id) AS respondentes FROM survey_responses sr JOIN surveys s ON s.id=sr.survey_id WHERE s.company_id=?`, [cid]) as any;
+      const respondentes = Number((survRow as any).respondentes);
+      const [[empRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM users WHERE company_id=? AND role NOT IN ('admin','rh','admin_global','super_admin','sesmt','psicologo','chefia')`, [cid]) as any;
+      const totalEmp = Math.max(1, Number((empRow as any).cnt));
+      const partRate = Math.min(100, Math.round((respondentes / totalEmp) * 100));
+      const [[courseRow]] = await db.execute(`SELECT COUNT(DISTINCT rcl.module_id) AS linked FROM risk_course_links rcl`, []) as any;
+      const coursesLinked = Number((courseRow as any).linked);
+      const [[progRow]] = await db.execute(`SELECT COUNT(DISTINCT up.user_id) AS completers FROM user_progress up WHERE up.company_id=? AND up.completed=1`, [cid]) as any;
+      const completers = Number((progRow as any).completers);
+      const completionRate = Math.min(100, Math.round((completers / totalEmp) * 100));
+      const [[certRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM certificates WHERE company_id=?`, [cid]) as any;
+      const certCount = Number((certRow as any).cnt);
+      const [[termRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM term_acceptances ta JOIN users u ON u.id=ta.user_id WHERE u.company_id=?`, [cid]) as any;
+      const termCount = Number((termRow as any).cnt);
+      const cicloScore = hasCycle ? 100 : 0;
+      const invScore = invCount >= 5 ? 100 : Math.round((invCount / 5) * 100);
+      const planScore = planCount === 0 ? 0 : planOverdue === 0 ? 100 : Math.max(0, Math.round(((planCount - planOverdue) / planCount) * 100));
+      const partScore = partRate;
+      const trainScore = coursesLinked > 0 ? Math.round((completionRate + (coursesLinked >= 3 ? 100 : coursesLinked * 33)) / 2) : 0;
+      const evidScore = Math.min(100, (certCount > 0 ? 40 : 0) + (termCount > 0 ? 40 : 0));
+      const score = Math.round((cicloScore + invScore + planScore + partScore + trainScore + evidScore) / 6);
+
+      // Inventário detalhado
+      const [invItems] = await db.execute(`SELECT rii.description, rii.risk_level, rii.risk_type, rii.sector_name, ra.title AS cycle FROM risk_inventory_items rii JOIN risk_assessments ra ON ra.id=rii.risk_assessment_id WHERE ra.company_id=? ORDER BY rii.risk_level DESC LIMIT 50`, [cid]) as any;
+
+      // Plano de ação
+      const [planItems] = await db.execute(`SELECT title, description, responsible, status, due_date, priority FROM risk_action_plan_items WHERE company_id=? ORDER BY due_date ASC LIMIT 50`, [cid]) as any;
+
+      // Certificados
+      const [certs] = await db.execute(`SELECT c.certificate_code, c.issued_at, u.name AS user_name, u.email FROM certificates c JOIN users u ON u.id=c.user_id WHERE c.company_id=? ORDER BY c.issued_at DESC LIMIT 50`, [cid]) as any;
+
+      // Pesquisas aplicadas
+      const [surveys] = await db.execute(`SELECT s.title, s.type, COUNT(DISTINCT sr.user_id) AS respondentes, s.created_at FROM surveys s LEFT JOIN survey_responses sr ON sr.survey_id=s.id WHERE s.company_id=? GROUP BY s.id ORDER BY s.created_at DESC LIMIT 10`, [cid]) as any;
+
+      // Fatores NR-01 endereçados
+      const [factors] = await db.execute(`SELECT pf.code, pf.name, COUNT(rcl.module_id) AS cursos FROM psychosocial_factors pf LEFT JOIN risk_course_links rcl ON rcl.factor_id=pf.id GROUP BY pf.id ORDER BY pf.axis_order`, []) as any;
+
+      return {
+        company, respTec, score,
+        stats: { hasCycle, invCount, planCount, planOverdue, respondentes, totalEmp, partRate, coursesLinked, completionRate, completers, certCount, termCount },
+        axes: [
+          { label: "Ciclo de Avaliação", score: cicloScore },
+          { label: "Inventário de Riscos", score: invScore },
+          { label: "Plano de Ação", score: planScore },
+          { label: "Participação", score: partScore },
+          { label: "Capacitação", score: trainScore },
+          { label: "Evidências", score: evidScore },
+        ],
+        inventory: invItems as any[],
+        planItems: planItems as any[],
+        certs: certs as any[],
+        surveys: surveys as any[],
+        factors: factors as any[],
+        generatedAt: new Date().toISOString(),
+      };
+    }),
+
+    // ── Relatório de Legitimidade Metodológica ────────────────────────────────
+    relatorioMetodologiaData: adminOrRhProcedure.query(async ({ ctx }) => {
+      const cid = (ctx.user as any).companyId;
+      if (!cid) return null;
+      const db = await getDb();
+
+      const [[compRow]] = await db.execute(`SELECT id, name, cnpj, address, city, state FROM companies WHERE id=?`, [cid]) as any;
+      const company = compRow as any;
+      const [respRows] = await db.execute(`SELECT name, council, council_number, role FROM responsible_technicians WHERE company_id=? LIMIT 1`, [cid]) as any;
+      const respTec = (respRows as any[])[0] ?? null;
+      const [[empRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM users WHERE company_id=? AND role NOT IN ('admin','rh','admin_global','super_admin','sesmt','psicologo','chefia')`, [cid]) as any;
+      const totalEmp = Number((empRow as any).cnt);
+      const [[survRow]] = await db.execute(`SELECT COUNT(DISTINCT sr.user_id) AS respondentes, COUNT(DISTINCT s.id) AS surveys FROM survey_responses sr JOIN surveys s ON s.id=sr.survey_id WHERE s.company_id=?`, [cid]) as any;
+      const respondentes = Number((survRow as any).respondentes);
+      const surveyCount = Number((survRow as any).surveys);
+      const [[certRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM certificates WHERE company_id=?`, [cid]) as any;
+      const certCount = Number((certRow as any).cnt);
+      const [[termRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM term_acceptances ta JOIN users u ON u.id=ta.user_id WHERE u.company_id=?`, [cid]) as any;
+      const termCount = Number((termRow as any).cnt);
+      const [[auditRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM audit_logs WHERE company_id=?`, [cid]) as any;
+      const auditCount = Number((auditRow as any).cnt);
+      const [survNames] = await db.execute(`SELECT DISTINCT title, type FROM surveys WHERE company_id=? ORDER BY created_at DESC LIMIT 5`, [cid]) as any;
+
+      return {
+        company, respTec,
+        stats: { totalEmp, respondentes, surveyCount, certCount, termCount, auditCount },
+        surveyNames: survNames as any[],
+        generatedAt: new Date().toISOString(),
+      };
+    }),
+
+
+
+
+
 
 
 
@@ -16124,6 +16378,99 @@ Return only the JSON content object (no wrapper). Format per type:
       return (r as any)[0] ?? [];
     }),
 
+    // Visão consolidada por Filial -> Setor -> Ciclos, com inventário e plano de ação
+    // de cada ciclo. Usado pela página "Análise de Risco — Visão por Filial e Setor".
+    getConsolidatedView: adminOrRhProcedure
+      .input(z.object({}).optional())
+      .query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb();
+        if (!db || !cid) return { branches: [] };
+        const unpack = (r: any): any[] =>
+          Array.isArray((r as any)?.[0]) ? (r as any)[0] : Array.isArray(r) ? r : [];
+
+        const ar: any = await db.execute(drzSql`
+          SELECT ra.id, ra.cycle_name AS cycleName, ra.status,
+                 ra.sector_id AS sectorId, ra.branch_id AS branchId,
+                 s.name AS sectorName, b.name AS branchName
+          FROM risk_assessments ra
+          LEFT JOIN sectors s ON s.id = ra.sector_id
+          LEFT JOIN branches b ON b.id = ra.branch_id
+          WHERE ra.company_id = ${cid}
+          ORDER BY b.name, s.name, ra.created_at DESC`);
+        const assessments = unpack(ar);
+        if (assessments.length === 0) return { branches: [] };
+
+        const ids = assessments.map((a: any) => Number(a.id)).filter((n: number) => !isNaN(n));
+        const idCsv = ids.join(",");
+
+        const invRaw: any = await db.execute(drzSql.raw(`
+          SELECT ii.id, ii.assessment_id AS assessmentId, ii.gravidade, ii.probabilidade,
+                 ii.risco_final, ii.fontes_geradoras, ii.medidas_existentes,
+                 f.code AS factor_code, f.name AS factor_name, f.axis_order
+          FROM risk_inventory_items ii
+          INNER JOIN psychosocial_factors f ON f.id = ii.factor_id
+          WHERE ii.assessment_id IN (${idCsv})
+          ORDER BY f.axis_order`));
+        const invRows = unpack(invRaw);
+
+        const planRaw: any = await db.execute(drzSql.raw(`
+          SELECT ap.id, ap.assessment_id AS assessmentId, ap.action_description,
+                 ap.responsible_party, ap.priority, ap.status,
+                 ap.start_date, ap.end_date,
+                 f.code AS factor_code, f.name AS factor_name
+          FROM risk_action_plan_items ap
+          INNER JOIN psychosocial_factors f ON f.id = ap.factor_id
+          WHERE ap.assessment_id IN (${idCsv})
+          ORDER BY ap.priority DESC, f.axis_order`));
+        const planRows = unpack(planRaw);
+
+        const invByAssessment = new Map<number, any[]>();
+        for (const it of invRows) {
+          const k = Number(it.assessmentId);
+          if (!invByAssessment.has(k)) invByAssessment.set(k, []);
+          invByAssessment.get(k)!.push(it);
+        }
+        const planByAssessment = new Map<number, any[]>();
+        for (const it of planRows) {
+          const k = Number(it.assessmentId);
+          if (!planByAssessment.has(k)) planByAssessment.set(k, []);
+          planByAssessment.get(k)!.push(it);
+        }
+
+        // Agrupa: branch -> sector -> assessments
+        const branchMap = new Map<string, any>();
+        for (const a of assessments) {
+          const bId = a.branchId != null ? Number(a.branchId) : null;
+          const bKey = bId != null ? `b${bId}` : "b_none";
+          const bName = a.branchName ?? "Empresa toda / sem filial";
+          if (!branchMap.has(bKey)) branchMap.set(bKey, { branchId: bId, branchName: bName, _sectors: new Map<string, any>() });
+          const branch = branchMap.get(bKey);
+
+          const sId = a.sectorId != null ? Number(a.sectorId) : null;
+          const sKey = sId != null ? `s${sId}` : "s_none";
+          const sName = a.sectorName ?? "Todos os setores";
+          if (!branch._sectors.has(sKey)) branch._sectors.set(sKey, { sectorId: sId, sectorName: sName, assessments: [] });
+          const sector = branch._sectors.get(sKey);
+
+          sector.assessments.push({
+            id: Number(a.id),
+            cycleName: a.cycleName,
+            status: a.status,
+            inventory: invByAssessment.get(Number(a.id)) ?? [],
+            actionPlan: planByAssessment.get(Number(a.id)) ?? [],
+          });
+        }
+
+        const branches = Array.from(branchMap.values()).map((b: any) => ({
+          branchId: b.branchId,
+          branchName: b.branchName,
+          sectors: Array.from(b._sectors.values()),
+        }));
+
+        return { branches };
+      }),
+
     getAssessment: adminOrRhProcedure
       .input(z.object({ id: z.number() }))
       .query(async ({ ctx, input }) => {
@@ -18835,6 +19182,14 @@ Return only the JSON content object (no wrapper). Format per type:
   // ─── Appointment Scheduling ───────────────────────────────────────────────
   scheduling: router({
     /** List professionals (admin: all in company; employee: active only) */
+    listCollaborators: adminOrRhProcedure.query(async ({ ctx }) => {
+      const cid = (ctx.user as any).companyId;
+      if (!cid) return [];
+      const db = await getDb();
+      const [rows] = await db.execute(`SELECT id, name, email FROM users WHERE company_id=? AND role NOT IN ('admin','rh','admin_global','super_admin','sesmt','psicologo','chefia') AND is_active=1 ORDER BY name ASC LIMIT 200`, [cid]) as any;
+      return (rows as any[]).map((r: any) => ({ id: r.id, name: r.name ?? r.email, email: r.email }));
+    }),
+
     listProfessionals: protectedProcedure
       .input(z.object({ companyId: z.number().int().optional() }))
       .query(async ({ ctx, input }) => {
@@ -19000,13 +19355,16 @@ Return only the JSON content object (no wrapper). Format per type:
         time: z.string(),      // "14:00"
         durationMinutes: z.number().int().default(30),
         notes: z.string().optional(),
+        collaboratorId: z.number().int().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
         const db2 = await getDb();
         if (!db2) throw new Error("DB unavailable");
         const scheduledAt = `${input.date} ${input.time}:00`;
         const companyId = (ctx.user as any).companyId ?? 0;
-        const collaboratorId = ctx.user.id;
+        const adminRoles = ['admin','rh','admin_global','super_admin','sesmt','super_admin'];
+        const isAdminRole = adminRoles.includes((ctx.user as any).role ?? '');
+        const collaboratorId = (input.collaboratorId && isAdminRole) ? input.collaboratorId : ctx.user.id;
         const res = await db2.execute(drzSql`
           INSERT INTO appointments (company_id, collaborator_id, professional_id, scheduled_at, duration_minutes, status, notes)
           VALUES (${companyId}, ${collaboratorId}, ${input.professionalId}, ${scheduledAt}, ${input.durationMinutes}, 'pending', ${input.notes || null})
@@ -19169,6 +19527,146 @@ Return only the JSON content object (no wrapper). Format per type:
         const db2 = await getDb();
         if (!db2) throw new Error("DB unavailable");
         await db2.execute(drzSql`DELETE FROM risk_course_links WHERE id=${input.id}`);
+        return { ok: true };
+      }),
+
+    // ── AdminFatores endpoints ─────────────────────────────────────────────
+    listFactorsWithLinks: adminOrRhProcedure.query(async () => {
+      const db = await getDb();
+      if (!db) return [] as any[];
+      await db.execute(drzSql`
+        CREATE TABLE IF NOT EXISTS psychosocial_factors (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          code VARCHAR(50) NOT NULL UNIQUE,
+          name VARCHAR(255) NOT NULL,
+          description TEXT,
+          preventive_program_module_id INT,
+          default_action TEXT,
+          axis_order INT DEFAULT 0
+        )
+      `);
+      await db.execute(drzSql`
+        CREATE TABLE IF NOT EXISTS risk_course_links (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          factor_id INT NOT NULL,
+          module_id INT NOT NULL,
+          criticality VARCHAR(20) DEFAULT 'media',
+          is_auto_linked TINYINT(1) DEFAULT 0,
+          notes TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY uq_factor_module (factor_id, module_id)
+        )
+      `);
+      const seed: [number, string, string, string][] = [
+        [1,  'assedio',        'Assédio de qualquer natureza no trabalho',      'Condutas abusivas, humilhações ou violência psicológica'],
+        [2,  'suporte',        'Falta de suporte/apoio no trabalho',            'Ausência de acolhimento e suporte organizacional'],
+        [3,  'mudancas',       'Má gestão de mudanças organizacionais',         'Mudanças sem comunicação e preparo adequado'],
+        [4,  'clareza',        'Baixa clareza de papel/função',                 'Incerteza sobre responsabilidades e atribuições'],
+        [5,  'reconhecimento', 'Baixas recompensas e reconhecimento',           'Falta de valorização profissional'],
+        [6,  'autonomia',      'Baixo controle no trabalho / Falta de autonomia','Pouca participação nas decisões e atividades'],
+        [7,  'justica',        'Baixa justiça organizacional',                  'Percepção de desigualdade e favoritismo'],
+        [8,  'trauma',         'Eventos violentos ou traumáticos',              'Vivência de situações críticas ou agressivas'],
+        [9,  'subcarga',       'Baixa demanda no trabalho (Subcarga)',          'Ociosidade excessiva e baixa estimulação'],
+        [10, 'sobrecarga',     'Excesso de demandas no trabalho (Sobrecarga)', 'Pressão excessiva e excesso de tarefas'],
+        [11, 'relacionamentos','Maus relacionamentos no local de trabalho',     'Conflitos interpessoais recorrentes'],
+        [12, 'comunicacao',    'Trabalho em condições de difícil comunicação',  'Falhas de comunicação operacional'],
+        [13, 'remoto',         'Trabalho remoto e isolado',                     'Isolamento e falta de integração com a equipe'],
+      ];
+      for (const [order, code, name, desc] of seed) {
+        await db.execute(drzSql`
+          INSERT IGNORE INTO psychosocial_factors (axis_order, code, name, description)
+          VALUES (${order}, ${code}, ${name}, ${desc})
+        `);
+      }
+      const fr: any = await db.execute(drzSql`
+        SELECT f.id, f.code, f.name, f.description, f.axis_order AS axisOrder,
+               m.title AS programTitle
+        FROM psychosocial_factors f
+        LEFT JOIN modules m ON m.id = f.preventive_program_module_id
+        ORDER BY f.axis_order
+      `);
+      const frows = Array.isArray((fr as any)[0]) ? (fr as any)[0] : Array.isArray(fr) ? fr : [];
+      const lr: any = await db.execute(drzSql`
+        SELECT rcl.factor_id, rcl.module_id, rcl.criticality, rcl.is_auto_linked,
+               m.title AS moduleTitle, m.template_category AS moduleCategory
+        FROM risk_course_links rcl
+        JOIN modules m ON m.id = rcl.module_id
+      `);
+      const lrows = Array.isArray((lr as any)[0]) ? (lr as any)[0] : Array.isArray(lr) ? lr : [];
+      const linksByFactor = new Map<number, any[]>();
+      for (const l of lrows) {
+        const fid = Number(l.factor_id);
+        if (!linksByFactor.has(fid)) linksByFactor.set(fid, []);
+        linksByFactor.get(fid)!.push({
+          module_id: Number(l.module_id),
+          moduleTitle: String(l.moduleTitle ?? ""),
+          moduleCategory: l.moduleCategory ? String(l.moduleCategory) : null,
+          criticality: String(l.criticality ?? "media"),
+          is_auto_linked: Boolean(l.is_auto_linked),
+        });
+      }
+      return frows.map((f: any) => ({
+        id: Number(f.id),
+        code: String(f.code ?? ""),
+        name: String(f.name ?? ""),
+        description: f.description ? String(f.description) : null,
+        axisOrder: Number(f.axisOrder ?? 0),
+        programTitle: f.programTitle ? String(f.programTitle) : null,
+        linkedCourses: linksByFactor.get(Number(f.id)) ?? [],
+      }));
+    }),
+
+    listAvailableCourses: adminOrRhProcedure.query(async () => {
+      const db = await getDb();
+      if (!db) return [] as any[];
+      const r: any = await db.execute(drzSql`
+        SELECT id, title, template_category AS templateCategory, is_mandatory AS isMandatory
+        FROM modules WHERE isActive = 1 ORDER BY title
+      `);
+      const rows = Array.isArray((r as any)[0]) ? (r as any)[0] : Array.isArray(r) ? r : [];
+      return rows.map((m: any) => ({
+        id: Number(m.id),
+        title: String(m.title ?? ""),
+        templateCategory: m.templateCategory ? String(m.templateCategory) : null,
+        isMandatory: Boolean(m.isMandatory),
+      }));
+    }),
+
+    linkCourseToFactor: adminOrRhProcedure
+      .input(z.object({
+        factorId: z.number().int(),
+        moduleId: z.number().int(),
+        criticality: z.enum(["baixa", "media", "alta", "critica"]).default("media"),
+      }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await db.execute(drzSql`
+          INSERT IGNORE INTO risk_course_links (factor_id, module_id, criticality, is_auto_linked)
+          VALUES (${input.factorId}, ${input.moduleId}, ${input.criticality}, 0)
+        `);
+        return { ok: true };
+      }),
+
+    unlinkCourseFromFactor: adminOrRhProcedure
+      .input(z.object({ factorId: z.number().int(), moduleId: z.number().int() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await db.execute(drzSql`
+          DELETE FROM risk_course_links WHERE factor_id=${input.factorId} AND module_id=${input.moduleId}
+        `);
+        return { ok: true };
+      }),
+
+    updateCourseCategory: adminOrRhProcedure
+      .input(z.object({ moduleId: z.number().int(), category: z.string() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await db.execute(drzSql`
+          UPDATE modules SET template_category=${input.category || null} WHERE id=${input.moduleId}
+        `);
         return { ok: true };
       }),
 
@@ -19640,11 +20138,20 @@ Return only the JSON content object (no wrapper). Format per type:
       }
 
       // Get standalone modules (not in any program) for "Complementares"
+      // Uses the same visibility logic as modules.list (enrollment-based OR company-created)
       const modsR: any = await db.execute(drzSql`
-        SELECT id, title, description, durationMinutes, template_category
-        FROM modules
-        WHERE isActive = 1 AND publish_status = 'published'
-        ORDER BY orderIndex, id
+        SELECT DISTINCT m.id, m.title, m.description, m.durationMinutes, m.template_category
+        FROM modules m
+        WHERE m.isActive = 1 AND (
+          EXISTS (
+            SELECT 1 FROM company_content_enrollments cce
+            WHERE cce.content_id = m.id AND cce.content_type = 'module'
+              AND cce.company_id = ${cid} AND cce.is_active = 1
+          )
+          OR m.createdByCompanyId = ${cid}
+          OR (m.publish_status = 'published' AND ${cid} IS NULL)
+        )
+        ORDER BY m.orderIndex, m.id
       `);
       const allMods = (Array.isArray((modsR as any)[0]) ? (modsR as any)[0] : [])
         .filter((m: any) => !programModuleIds.has(Number(m.id)))
@@ -19659,6 +20166,505 @@ Return only the JSON content object (no wrapper). Format per type:
 
       return { prioritarios, obrigatorios, modules: allMods };
     }),
+  }),
+
+  // ── Canal de Denúncia ─────────────────────────────────────────────────────
+  // ── Preventive Library ──────────────────────────────────────────────────────
+  preventiveLibrary: router({
+
+    listCampaigns: adminOrRhProcedure.query(async ({ ctx }) => {
+      const cid = (ctx.user as any).companyId;
+      if (!cid) return [];
+      const db = await getDb();
+      // Ensure tables exist with correct schema
+      await db.execute(`CREATE TABLE IF NOT EXISTS preventive_library_campaigns (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        company_id INT NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        code VARCHAR(100),
+        month_number TINYINT DEFAULT NULL,
+        theme VARCHAR(255),
+        color VARCHAR(50),
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_plc_company (company_id)
+      )`, []);
+      await db.execute(`CREATE TABLE IF NOT EXISTS preventive_library_materials (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        campaign_id INT NOT NULL,
+        title VARCHAR(255) NOT NULL,
+        material_type VARCHAR(50),
+        target_audience VARCHAR(50) DEFAULT 'todos',
+        file_name VARCHAR(255),
+        mime_type VARCHAR(100),
+        file_url MEDIUMTEXT,
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_plm_campaign (campaign_id)
+      )`, []);
+      await db.execute(`CREATE TABLE IF NOT EXISTS preventive_library_links (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        campaign_id INT NOT NULL,
+        link_type VARCHAR(50),
+        ref_id INT,
+        title VARCHAR(255),
+        notes TEXT,
+        target_audience VARCHAR(50) DEFAULT 'todos',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_pll_campaign (campaign_id)
+      )`, []);
+      // Add missing columns if table already existed without them
+      try { await db.execute(`ALTER TABLE preventive_library_campaigns ADD COLUMN month_number TINYINT DEFAULT NULL`, []); } catch(_) {}
+      try { await db.execute(`ALTER TABLE preventive_library_campaigns ADD COLUMN code VARCHAR(100)`, []); } catch(_) {}
+      try { await db.execute(`ALTER TABLE preventive_library_campaigns ADD COLUMN color VARCHAR(50)`, []); } catch(_) {}
+      try { await db.execute(`ALTER TABLE preventive_library_materials ADD COLUMN title VARCHAR(255)`, []); } catch(_) {}
+      try { await db.execute(`ALTER TABLE preventive_library_materials ADD COLUMN material_type VARCHAR(50)`, []); } catch(_) {}
+      try { await db.execute(`ALTER TABLE preventive_library_materials ADD COLUMN target_audience VARCHAR(50) DEFAULT 'todos'`, []); } catch(_) {}
+      try { await db.execute(`ALTER TABLE preventive_library_materials ADD COLUMN file_name VARCHAR(255)`, []); } catch(_) {}
+      try { await db.execute(`ALTER TABLE preventive_library_materials ADD COLUMN mime_type VARCHAR(100)`, []); } catch(_) {}
+      try { await db.execute(`ALTER TABLE preventive_library_links ADD COLUMN ref_id INT`, []); } catch(_) {}
+      try { await db.execute(`ALTER TABLE preventive_library_links ADD COLUMN title VARCHAR(255)`, []); } catch(_) {}
+      try { await db.execute(`ALTER TABLE preventive_library_links ADD COLUMN notes TEXT`, []); } catch(_) {}
+      try { await db.execute(`ALTER TABLE preventive_library_links ADD COLUMN target_audience VARCHAR(50) DEFAULT 'todos'`, []); } catch(_) {}
+      const [rows] = await db.execute(`SELECT * FROM preventive_library_campaigns WHERE company_id=? ORDER BY month_number ASC, created_at ASC`, [cid]) as any;
+      return rows as any[];
+    }),
+
+    listCampaignSummary: adminOrRhProcedure.query(async ({ ctx }) => {
+      const cid = (ctx.user as any).companyId;
+      if (!cid) return [];
+      const db = await getDb();
+      // Return array of { campaign_id, material_type, cnt } for frontend summaryFor()
+      const [rows] = await db.execute(
+        `SELECT m.campaign_id, m.material_type, COUNT(*) AS cnt
+         FROM preventive_library_materials m
+         JOIN preventive_library_campaigns c ON c.id = m.campaign_id
+         WHERE c.company_id = ?
+         GROUP BY m.campaign_id, m.material_type`,
+        [cid]
+      ) as any;
+      return rows as any[];
+    }),
+
+    upsertCampaign: adminOrRhProcedure
+      .input(z.object({
+        id: z.number().optional(),
+        monthNumber: z.number().int().min(1).max(12).optional(),
+        code: z.string().optional(),
+        name: z.string().min(1),
+        theme: z.string().optional(),
+        color: z.string().optional(),
+        description: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        if (!cid) throw new TRPCError({ code: 'BAD_REQUEST' });
+        const db = await getDb();
+        if (input.id) {
+          await db.execute(
+            `UPDATE preventive_library_campaigns SET name=?, code=?, month_number=?, theme=?, color=?, description=? WHERE id=? AND company_id=?`,
+            [input.name, input.code ?? null, input.monthNumber ?? null, input.theme ?? null, input.color ?? null, input.description ?? null, input.id, cid]
+          );
+          return { id: input.id };
+        }
+        const [res] = await db.execute(
+          `INSERT INTO preventive_library_campaigns (company_id, name, code, month_number, theme, color, description) VALUES (?,?,?,?,?,?,?)`,
+          [cid, input.name, input.code ?? null, input.monthNumber ?? null, input.theme ?? null, input.color ?? null, input.description ?? null]
+        ) as any;
+        return { id: (res as any).insertId };
+      }),
+
+    deleteCampaign: adminOrRhProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        if (!cid) throw new TRPCError({ code: 'BAD_REQUEST' });
+        const db = await getDb();
+        await db.execute(`DELETE FROM preventive_library_links WHERE campaign_id=?`, [input.id]);
+        await db.execute(`DELETE FROM preventive_library_materials WHERE campaign_id=?`, [input.id]);
+        await db.execute(`DELETE FROM preventive_library_campaigns WHERE id=? AND company_id=?`, [input.id, cid]);
+        return { ok: true };
+      }),
+
+    listMaterials: adminOrRhProcedure
+      .input(z.object({ campaignId: z.number() }))
+      .query(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        if (!cid) return [];
+        const db = await getDb();
+        const [rows] = await db.execute(
+          `SELECT m.* FROM preventive_library_materials m
+           JOIN preventive_library_campaigns c ON c.id=m.campaign_id
+           WHERE m.campaign_id=? AND c.company_id=?
+           ORDER BY m.created_at ASC`,
+          [input.campaignId, cid]
+        ) as any;
+        return rows as any[];
+      }),
+
+    uploadMaterial: adminOrRhProcedure
+      .input(z.object({
+        campaignId: z.number(),
+        materialType: z.string().optional(),
+        title: z.string().min(1),
+        description: z.string().optional(),
+        fileName: z.string().optional(),
+        fileBase64: z.string().optional(),
+        mimeType: z.string().optional(),
+        targetAudience: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        if (!cid) throw new TRPCError({ code: 'BAD_REQUEST' });
+        const db = await getDb();
+        const [[cr]] = await db.execute(`SELECT id FROM preventive_library_campaigns WHERE id=? AND company_id=?`, [input.campaignId, cid]) as any;
+        if (!(cr as any)?.id) throw new TRPCError({ code: 'NOT_FOUND' });
+        // For base64 files, store the data URL directly (no S3/CDN)
+        const fileUrl = input.fileBase64 ?? null;
+        const [res] = await db.execute(
+          `INSERT INTO preventive_library_materials (campaign_id, title, material_type, target_audience, file_name, mime_type, file_url, description) VALUES (?,?,?,?,?,?,?,?)`,
+          [input.campaignId, input.title, input.materialType ?? null, input.targetAudience ?? 'todos', input.fileName ?? null, input.mimeType ?? null, fileUrl, input.description ?? null]
+        ) as any;
+        return { id: (res as any).insertId };
+      }),
+
+    deleteMaterial: adminOrRhProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        if (!cid) throw new TRPCError({ code: 'BAD_REQUEST' });
+        const db = await getDb();
+        await db.execute(
+          `DELETE m FROM preventive_library_materials m
+           JOIN preventive_library_campaigns c ON c.id=m.campaign_id
+           WHERE m.id=? AND c.company_id=?`,
+          [input.id, cid]
+        );
+        return { ok: true };
+      }),
+
+    listCampaignLinks: adminOrRhProcedure
+      .input(z.object({ campaignId: z.number() }))
+      .query(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        if (!cid) return [];
+        const db = await getDb();
+        const [rows] = await db.execute(
+          `SELECT l.* FROM preventive_library_links l
+           JOIN preventive_library_campaigns c ON c.id=l.campaign_id
+           WHERE l.campaign_id=? AND c.company_id=?
+           ORDER BY l.created_at ASC`,
+          [input.campaignId, cid]
+        ) as any;
+        return rows as any[];
+      }),
+
+    listAvailableForLink: adminOrRhProcedure
+      .input(z.object({ linkType: z.string() }))
+      .query(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        if (!cid) return [];
+        const db = await getDb();
+        if (input.linkType === 'survey') {
+          const [rows] = await db.execute(`SELECT id, title FROM surveys WHERE company_id=? ORDER BY created_at DESC LIMIT 50`, [cid]) as any;
+          return rows as any[];
+        }
+        if (input.linkType === 'course' || input.linkType === 'module') {
+          const [rows] = await db.execute(`SELECT id, title FROM content_modules WHERE (company_id=? OR company_id IS NULL) AND is_active=1 ORDER BY title LIMIT 50`, [cid]) as any;
+          return rows as any[];
+        }
+        return [];
+      }),
+
+    addCampaignLink: adminOrRhProcedure
+      .input(z.object({
+        campaignId: z.number(),
+        linkType: z.string(),
+        refId: z.number(),
+        title: z.string().optional(),
+        notes: z.string().optional(),
+        targetAudience: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        if (!cid) throw new TRPCError({ code: 'BAD_REQUEST' });
+        const db = await getDb();
+        const [[cr]] = await db.execute(`SELECT id FROM preventive_library_campaigns WHERE id=? AND company_id=?`, [input.campaignId, cid]) as any;
+        if (!(cr as any)?.id) throw new TRPCError({ code: 'NOT_FOUND' });
+        // Check if already linked
+        const [[existing]] = await db.execute(`SELECT id FROM preventive_library_links WHERE campaign_id=? AND link_type=? AND ref_id=?`, [input.campaignId, input.linkType, input.refId]) as any;
+        if ((existing as any)?.id) return { alreadyLinked: true, id: (existing as any).id };
+        const [res] = await db.execute(
+          `INSERT INTO preventive_library_links (campaign_id, link_type, ref_id, title, notes, target_audience) VALUES (?,?,?,?,?,?)`,
+          [input.campaignId, input.linkType, input.refId, input.title ?? null, input.notes ?? null, input.targetAudience ?? 'todos']
+        ) as any;
+        return { id: (res as any).insertId, alreadyLinked: false };
+      }),
+
+    removeCampaignLink: adminOrRhProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        if (!cid) throw new TRPCError({ code: 'BAD_REQUEST' });
+        const db = await getDb();
+        await db.execute(
+          `DELETE l FROM preventive_library_links l
+           JOIN preventive_library_campaigns c ON c.id=l.campaign_id
+           WHERE l.id=? AND c.company_id=?`,
+          [input.id, cid]
+        );
+        return { ok: true };
+      }),
+
+  }),
+
+  companySmtp: router({
+    get: adminOrRhProcedure
+      .input(z.object({}).optional())
+      .query(async ({ ctx }) => {
+        const db = await getDb();
+        if (!db) return null;
+        const companyId = (ctx.user as any).companyId;
+        const r = await db.execute(drzSql`
+          SELECT smtp_host, smtp_port, smtp_secure, smtp_user, smtp_from, from_name,
+                 reject_unauthorized, is_active, last_test_at, last_test_ok, last_test_error,
+                 (smtp_pass_encrypted IS NOT NULL AND smtp_pass_encrypted != '') AS has_password
+          FROM company_smtp_settings WHERE company_id = ${companyId} LIMIT 1
+        `);
+        const rows = Array.isArray((r as any)[0]) ? (r as any)[0] : Array.isArray(r) ? r : [];
+        if (!rows.length) return null;
+        const row = rows[0];
+        return {
+          host: String(row.smtp_host ?? ""),
+          port: Number(row.smtp_port ?? 465),
+          secure: Boolean(row.smtp_secure),
+          user: String(row.smtp_user ?? ""),
+          from: String(row.smtp_from ?? ""),
+          fromName: row.from_name ? String(row.from_name) : null,
+          rejectUnauthorized: Boolean(row.reject_unauthorized),
+          isActive: Boolean(row.is_active),
+          lastTestAt: row.last_test_at ? String(row.last_test_at) : null,
+          lastTestOk: row.last_test_ok != null ? Boolean(row.last_test_ok) : null,
+          lastTestError: row.last_test_error ? String(row.last_test_error) : null,
+          hasPassword: Boolean(row.has_password),
+        };
+      }),
+
+    save: adminOrRhProcedure
+      .input(z.object({
+        host: z.string().min(1),
+        port: z.number().int(),
+        secure: z.boolean(),
+        user: z.string().min(1),
+        pass: z.string().optional(),
+        from: z.string().min(1),
+        fromName: z.string().optional(),
+        rejectUnauthorized: z.boolean().optional(),
+        isActive: z.boolean().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
+        const companyId = (ctx.user as any).companyId;
+
+        let encryptedPass: string | null = null;
+        if (input.pass && input.pass.trim()) {
+          encryptedPass = encryptSmtpPass(input.pass.trim());
+        }
+
+        const existing = await db.execute(drzSql`SELECT id FROM company_smtp_settings WHERE company_id = ${companyId} LIMIT 1`);
+        const existingRows = Array.isArray((existing as any)[0]) ? (existing as any)[0] : Array.isArray(existing) ? existing : [];
+
+        if (existingRows.length) {
+          if (encryptedPass) {
+            await db.execute(drzSql`
+              UPDATE company_smtp_settings SET
+                smtp_host = ${input.host}, smtp_port = ${input.port}, smtp_secure = ${input.secure ? 1 : 0},
+                smtp_user = ${input.user}, smtp_pass_encrypted = ${encryptedPass},
+                smtp_from = ${input.from}, from_name = ${input.fromName ?? null},
+                reject_unauthorized = ${input.rejectUnauthorized !== false ? 1 : 0},
+                is_active = ${input.isActive !== false ? 1 : 0}
+              WHERE company_id = ${companyId}
+            `);
+          } else {
+            await db.execute(drzSql`
+              UPDATE company_smtp_settings SET
+                smtp_host = ${input.host}, smtp_port = ${input.port}, smtp_secure = ${input.secure ? 1 : 0},
+                smtp_user = ${input.user},
+                smtp_from = ${input.from}, from_name = ${input.fromName ?? null},
+                reject_unauthorized = ${input.rejectUnauthorized !== false ? 1 : 0},
+                is_active = ${input.isActive !== false ? 1 : 0}
+              WHERE company_id = ${companyId}
+            `);
+          }
+        } else {
+          if (!encryptedPass) throw new TRPCError({ code: "BAD_REQUEST", message: "Senha é obrigatória na primeira configuração" });
+          await db.execute(drzSql`
+            INSERT INTO company_smtp_settings
+              (company_id, smtp_host, smtp_port, smtp_secure, smtp_user, smtp_pass_encrypted, smtp_from, from_name, reject_unauthorized, is_active)
+            VALUES
+              (${companyId}, ${input.host}, ${input.port}, ${input.secure ? 1 : 0}, ${input.user}, ${encryptedPass}, ${input.from}, ${input.fromName ?? null},
+               ${input.rejectUnauthorized !== false ? 1 : 0}, ${input.isActive !== false ? 1 : 0})
+          `);
+        }
+        return { ok: true };
+      }),
+
+    test: adminOrRhProcedure
+      .input(z.object({}).optional())
+      .mutation(async ({ ctx }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
+        const companyId = (ctx.user as any).companyId;
+
+        const r = await db.execute(drzSql`SELECT * FROM company_smtp_settings WHERE company_id = ${companyId} LIMIT 1`);
+        const rows = Array.isArray((r as any)[0]) ? (r as any)[0] : Array.isArray(r) ? r : [];
+        if (!rows.length) throw new TRPCError({ code: "NOT_FOUND", message: "Configuração SMTP não encontrada" });
+        const cfg = rows[0];
+
+        let pass: string;
+        try { pass = decryptSmtpPass(String(cfg.smtp_pass_encrypted)); }
+        catch (e: any) {
+          await db.execute(drzSql`UPDATE company_smtp_settings SET last_test_at = NOW(), last_test_ok = 0, last_test_error = ${"Erro ao decriptar senha"} WHERE company_id = ${companyId}`);
+          return { ok: false, error: "Erro ao decriptar senha" };
+        }
+
+        const nodemailer = require("nodemailer");
+        const transporter = nodemailer.createTransport({
+          host: String(cfg.smtp_host),
+          port: Number(cfg.smtp_port),
+          secure: Boolean(cfg.smtp_secure),
+          auth: { user: String(cfg.smtp_user), pass },
+          tls: { rejectUnauthorized: Boolean(cfg.reject_unauthorized) },
+        });
+
+        try {
+          await transporter.verify();
+          await db.execute(drzSql`UPDATE company_smtp_settings SET last_test_at = NOW(), last_test_ok = 1, last_test_error = NULL WHERE company_id = ${companyId}`);
+          return { ok: true };
+        } catch (e: any) {
+          const msg = (e?.message || String(e)).slice(0, 500);
+          await db.execute(drzSql`UPDATE company_smtp_settings SET last_test_at = NOW(), last_test_ok = 0, last_test_error = ${msg} WHERE company_id = ${companyId}`);
+          return { ok: false, error: msg };
+        }
+      }),
+
+    sendTestEmail: adminOrRhProcedure
+      .input(z.object({ to: z.string().optional() }))
+      .mutation(async ({ ctx, input }) => {
+        const companyId = (ctx.user as any).companyId;
+        const toEmail = input.to?.trim() || String((ctx.user as any).email || "");
+        if (!toEmail) throw new TRPCError({ code: "BAD_REQUEST", message: "Informe o e-mail de destino" });
+
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
+
+        const r = await db.execute(drzSql`SELECT * FROM company_smtp_settings WHERE company_id = ${companyId} LIMIT 1`);
+        const rows = Array.isArray((r as any)[0]) ? (r as any)[0] : Array.isArray(r) ? r : [];
+        if (!rows.length) throw new TRPCError({ code: "NOT_FOUND", message: "Configuração SMTP não encontrada" });
+        const cfg = rows[0];
+
+        let pass: string;
+        try { pass = decryptSmtpPass(String(cfg.smtp_pass_encrypted)); }
+        catch (e: any) { throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Erro ao decriptar senha" }); }
+
+        const nodemailer = require("nodemailer");
+        const transporter = nodemailer.createTransport({
+          host: String(cfg.smtp_host),
+          port: Number(cfg.smtp_port),
+          secure: Boolean(cfg.smtp_secure),
+          auth: { user: String(cfg.smtp_user), pass },
+          tls: { rejectUnauthorized: Boolean(cfg.reject_unauthorized) },
+        });
+
+        await transporter.sendMail({
+          from: cfg.from_name ? `"${cfg.from_name}" <${cfg.smtp_from}>` : String(cfg.smtp_from),
+          to: toEmail,
+          subject: "Teste de E-mail - Saúde do Trabalho",
+          html: "<p>Este é um e-mail de teste enviado pela plataforma <strong>Saúde do Trabalho</strong>.</p>",
+          text: "Este é um e-mail de teste enviado pela plataforma Saúde do Trabalho.",
+        });
+
+        return { ok: true };
+      }),
+  }),
+
+  denuncia: router({
+    submitReport: publicProcedure
+      .input(z.object({
+        category: z.string(),
+        severity: z.enum(["baixa", "media", "alta", "critica"]),
+        frequency: z.enum(["primeira_vez", "ocasional", "frequente", "continua"]),
+        perceivedRisk: z.enum(["baixo", "medio", "alto", "critico"]),
+        isAnonymous: z.boolean(),
+        reporterEmail: z.string().optional(),
+        reporterPhone: z.string().optional(),
+        incidentDate: z.string().optional(),
+        incidentLocation: z.string().optional(),
+        description: z.string().min(1),
+        witnesses: z.string().optional(),
+        lgpdConsent: z.boolean(),
+      }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Banco de dados indisponível." });
+        await db.execute(drzSql`
+          CREATE TABLE IF NOT EXISTS canal_denuncias (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            protocol_code VARCHAR(20) NOT NULL UNIQUE,
+            category VARCHAR(80) NOT NULL,
+            severity VARCHAR(20) NOT NULL,
+            frequency VARCHAR(30) NOT NULL,
+            perceived_risk VARCHAR(20) NOT NULL,
+            is_anonymous TINYINT(1) NOT NULL DEFAULT 1,
+            reporter_email VARCHAR(255),
+            reporter_phone VARCHAR(50),
+            incident_date DATE,
+            incident_location VARCHAR(255),
+            description TEXT NOT NULL,
+            witnesses TEXT,
+            lgpd_consent TINYINT(1) NOT NULL DEFAULT 0,
+            status VARCHAR(30) NOT NULL DEFAULT 'recebida',
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+          )
+        `);
+        const code = "SDT-" + Date.now().toString(36).toUpperCase().slice(-6) + Math.random().toString(36).substring(2, 5).toUpperCase();
+        await db.execute(drzSql`
+          INSERT INTO canal_denuncias
+            (protocol_code, category, severity, frequency, perceived_risk, is_anonymous,
+             reporter_email, reporter_phone, incident_date, incident_location,
+             description, witnesses, lgpd_consent)
+          VALUES
+            (${code}, ${input.category}, ${input.severity}, ${input.frequency}, ${input.perceivedRisk},
+             ${input.isAnonymous ? 1 : 0},
+             ${input.reporterEmail ?? null}, ${input.reporterPhone ?? null},
+             ${input.incidentDate ?? null}, ${input.incidentLocation ?? null},
+             ${input.description}, ${input.witnesses ?? null}, ${input.lgpdConsent ? 1 : 0})
+        `);
+        return { protocolCode: code };
+      }),
+
+    trackByProtocol: publicProcedure
+      .input(z.object({ protocolCode: z.string() }))
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Banco de dados indisponível." });
+        const r: any = await db.execute(drzSql`
+          SELECT protocol_code, category, severity, status, created_at
+          FROM canal_denuncias WHERE protocol_code = ${input.protocolCode} LIMIT 1
+        `);
+        const rows = Array.isArray((r as any)[0]) ? (r as any)[0] : [];
+        if (!rows.length) throw new TRPCError({ code: "NOT_FOUND", message: "Protocolo não encontrado." });
+        const row = rows[0];
+        return {
+          protocolCode: String(row.protocol_code),
+          category: String(row.category),
+          severity: String(row.severity),
+          status: String(row.status),
+          createdAt: String(row.created_at),
+        };
+      }),
   }),
 
 });

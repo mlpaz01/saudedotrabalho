@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
+import AppLayout from "@/components/AppLayout";
 
 // Signature files are written by the server to /var/www/saudedotrabalho/uploads/signatures
 // and served by nginx at the ORIGIN-absolute path "/uploads/...". The SPA itself is mounted
@@ -117,6 +118,7 @@ export default function AdminResponsaveisTecnicos() {
   }
 
   return (
+    <AppLayout>
     <div className="p-6 max-w-5xl mx-auto">
       <h1 className="text-2xl font-bold mb-1">Responsáveis Técnicos</h1>
       <p className="text-gray-600 mb-6">Cadastre os técnicos responsáveis e suas assinaturas digitais (PNG) para uso nos laudos.</p>
@@ -196,5 +198,6 @@ export default function AdminResponsaveisTecnicos() {
         </table>
       </div>
     </div>
+    </AppLayout>
   );
 }
