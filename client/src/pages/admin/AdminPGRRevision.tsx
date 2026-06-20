@@ -22,12 +22,12 @@ export default function AdminPGRRevision() {
     data: revisions,
     isLoading: loadingRevisions,
     refetch: refetchRevisions,
-  } = trpc.pgr.listPgrRevisions.useQuery(
+  } = trpc.analytics.listPgrRevisions.useQuery(
     { pgrId: selectedPgrId },
     { enabled: !!selectedPgrId }
   );
 
-  const saveRevision = trpc.pgr.savePgrRevision.useMutation({
+  const saveRevision = trpc.analytics.savePgrRevision.useMutation({
     onSuccess: () => {
       toast.success("Revisão salva com sucesso!");
       setShowForm(false);
@@ -39,7 +39,7 @@ export default function AdminPGRRevision() {
     },
   });
 
-  const deleteRevision = trpc.pgr.deletePgrRevision.useMutation({
+  const deleteRevision = trpc.analytics.deletePgrRevision.useMutation({
     onSuccess: () => {
       toast.success("Revisão excluída com sucesso!");
       refetchRevisions();
