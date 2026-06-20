@@ -14,7 +14,7 @@ import {
 import { toast } from "sonner";
 import {
   FileText, Plus, Loader2, Building2, Download, Trash2, ArrowLeft, Save, ShieldCheck,
-  ListPlus, X, Info, CheckCircle2, Clock, Send, History, Paperclip, ExternalLink, FolderOpen,
+  ListPlus, X, Info, CheckCircle2, Clock, Send, History, Paperclip, ExternalLink, FolderOpen, Sparkles,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";

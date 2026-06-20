@@ -1506,6 +1506,23 @@ async function computeStreakDays(userId: number): Promise<number> {
 
 
 
+// Salva uma assinatura (PNG/JPG em data URL) em disco e devolve a URL origin-absolute
+// servida pelo nginx em /uploads/signatures/...; retorna null se não houver imagem.
+async function saveSignatureFile(cid: number, base64?: string | null): Promise<string | null> {
+  if (!base64) return null;
+  const fsmod = await import("fs");
+  const pathmod = await import("path");
+  const dir = "/var/www/saudedotrabalho/uploads/signatures";
+  if (!fsmod.existsSync(dir)) fsmod.mkdirSync(dir, { recursive: true });
+  const m = /^data:image\/(png|jpe?g)/i.exec(base64);
+  const ext = m ? (m[1].toLowerCase().startsWith("jp") ? "jpg" : "png") : "png";
+  const data = base64.replace(/^data:[^;]+;base64,/, "");
+  const buf = Buffer.from(data, "base64");
+  const filename = `${cid}_${Date.now()}_sig.${ext}`;
+  fsmod.writeFileSync(pathmod.join(dir, filename), buf);
+  return `/uploads/signatures/${filename}`;
+}
+
 // Gestão da Agenda de Acolhimento (profissionais, disponibilidade, horários):
 // pertence ao Psicólogo/Profissional de Saúde e admins gerais — NÃO ao RH,
 // que tem apenas a visão de agendamentos/relatórios.
@@ -17130,16 +17147,16 @@ Return only the JSON content object (no wrapper). Format per type:
         if (!fsmod.existsSync(dir)) fsmod.mkdirSync(dir, { recursive: true });
 
         const safeName = input.fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
-        const filename = `\${cid}_\${Date.now()}_\${safeName}`;
+        const filename = `${cid}_${Date.now()}_${safeName}`;
         const filepath = pathmod.join(dir, filename);
         const base64Data = input.fileBase64.replace(/^data:[^;]+;base64,/, "");
         const buf = Buffer.from(base64Data, "base64");
         fsmod.writeFileSync(filepath, buf);
 
-        const fileUrl = `/uploads/documents/\${filename}`;
+        const fileUrl = `/uploads/documents/${filename}`;
         const res: any = await db.execute(drzSql`
           INSERT INTO company_documents (company_id, name, description, doc_type, file_url, file_name, file_size, mime_type, uploaded_by_user_id)
-          VALUES (\${cid}, \${input.name}, \${input.description ?? null}, \${input.docType}, \${fileUrl}, \${input.fileName}, \${buf.length}, \${input.mimeType}, \${uid})`);
+          VALUES (${cid}, ${input.name}, ${input.description ?? null}, ${input.docType}, ${fileUrl}, ${input.fileName}, ${buf.length}, ${input.mimeType}, ${uid})`);
         return { ok: true, id: Number((res as any)[0]?.insertId ?? 0), fileUrl };
       }),
 
@@ -17150,7 +17167,7 @@ Return only the JSON content object (no wrapper). Format per type:
         const cid = (ctx.user as any).companyId;
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const dr: any = await db.execute(drzSql`SELECT company_id, file_url FROM company_documents WHERE id=\${input.id} LIMIT 1`);
+        const dr: any = await db.execute(drzSql`SELECT company_id, file_url FROM company_documents WHERE id=${input.id} LIMIT 1`);
         const doc = (dr as any)[0]?.[0];
         if (!doc) throw new TRPCError({ code: "NOT_FOUND" });
         if (doc.company_id !== cid) throw new TRPCError({ code: "FORBIDDEN" });
@@ -17161,7 +17178,7 @@ Return only the JSON content object (no wrapper). Format per type:
           const filepath = pathmod.join("/var/www/saudedotrabalho", doc.file_url);
           if (fsmod.existsSync(filepath)) fsmod.unlinkSync(filepath);
         } catch {}
-        await db.execute(drzSql`DELETE FROM company_documents WHERE id=\${input.id}`);
+        await db.execute(drzSql`DELETE FROM company_documents WHERE id=${input.id}`);
         return { ok: true };
       }),
   }),
@@ -17393,6 +17410,92 @@ Return only the JSON content object (no wrapper). Format per type:
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
         await db.execute(drzSql`DELETE FROM nr_training_records WHERE id=${input.id} AND company_id=${cid}`);
+        return { ok: true };
+      }),
+  }),
+
+  // ─── Responsáveis Técnicos (assinaturas digitais para laudos) ──────────────
+  responsibleTechnicians: router({
+    list: adminOrRhProcedure
+      .input(z.object({}).optional())
+      .query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId;
+        if (!cid) return [];
+        const db = await getDb();
+        if (!db) return [];
+        const r: any = await db.execute(drzSql`SELECT id, name, registration, profession, art, signature_url, is_default FROM responsible_technicians WHERE company_id=${cid} ORDER BY is_default DESC, id ASC`);
+        const rows: any[] = (r as any)[0] ?? [];
+        return rows.map((x: any) => ({
+          id: Number(x.id),
+          name: x.name,
+          registration: x.registration ?? null,
+          profession: x.profession ?? null,
+          art: x.art ?? null,
+          signatureUrl: x.signature_url ?? null,
+          isDefault: !!x.is_default,
+        }));
+      }),
+
+    create: adminOrRhProcedure
+      .input(z.object({
+        name: z.string().min(1),
+        registration: z.string().nullable().optional(),
+        profession: z.string().nullable().optional(),
+        art: z.string().nullable().optional(),
+        signatureBase64: z.string().optional(),
+        isDefault: z.boolean().default(false),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        if (!cid) throw new TRPCError({ code: "BAD_REQUEST", message: "Empresa não definida." });
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const signatureUrl = await saveSignatureFile(cid, input.signatureBase64);
+        if (input.isDefault) await db.execute(drzSql`UPDATE responsible_technicians SET is_default=0 WHERE company_id=${cid}`);
+        const res: any = await db.execute(drzSql`INSERT INTO responsible_technicians (company_id, name, registration, profession, art, signature_url, is_default) VALUES (${cid}, ${input.name}, ${input.registration ?? null}, ${input.profession ?? null}, ${input.art ?? null}, ${signatureUrl}, ${input.isDefault ? 1 : 0})`);
+        return { ok: true, id: Number((res as any)[0]?.insertId ?? 0), signatureUrl };
+      }),
+
+    update: adminOrRhProcedure
+      .input(z.object({
+        id: z.number().int(),
+        name: z.string().min(1),
+        registration: z.string().nullable().optional(),
+        profession: z.string().nullable().optional(),
+        art: z.string().nullable().optional(),
+        signatureBase64: z.string().optional(),
+        isDefault: z.boolean().default(false),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        if (!cid) throw new TRPCError({ code: "BAD_REQUEST", message: "Empresa não definida." });
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const own: any = await db.execute(drzSql`SELECT company_id FROM responsible_technicians WHERE id=${input.id} LIMIT 1`);
+        const rec = (own as any)[0]?.[0];
+        if (!rec) throw new TRPCError({ code: "NOT_FOUND" });
+        if (Number(rec.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+        if (input.isDefault) await db.execute(drzSql`UPDATE responsible_technicians SET is_default=0 WHERE company_id=${cid}`);
+        const newSig = await saveSignatureFile(cid, input.signatureBase64);
+        if (newSig) {
+          await db.execute(drzSql`UPDATE responsible_technicians SET name=${input.name}, registration=${input.registration ?? null}, profession=${input.profession ?? null}, art=${input.art ?? null}, signature_url=${newSig}, is_default=${input.isDefault ? 1 : 0} WHERE id=${input.id}`);
+        } else {
+          await db.execute(drzSql`UPDATE responsible_technicians SET name=${input.name}, registration=${input.registration ?? null}, profession=${input.profession ?? null}, art=${input.art ?? null}, is_default=${input.isDefault ? 1 : 0} WHERE id=${input.id}`);
+        }
+        return { ok: true, signatureUrl: newSig };
+      }),
+
+    remove: adminOrRhProcedure
+      .input(z.object({ id: z.number().int() }))
+      .mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const own: any = await db.execute(drzSql`SELECT company_id FROM responsible_technicians WHERE id=${input.id} LIMIT 1`);
+        const rec = (own as any)[0]?.[0];
+        if (!rec) throw new TRPCError({ code: "NOT_FOUND" });
+        if (Number(rec.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+        await db.execute(drzSql`DELETE FROM responsible_technicians WHERE id=${input.id}`);
         return { ok: true };
       }),
   }),
@@ -18334,6 +18437,106 @@ Return only the JSON content object (no wrapper). Format per type:
         await db.execute(drzSql`UPDATE pgr_documents SET pdf_url=${url}, status='gerado' WHERE id=${row.id}`);
         return { ok: true, url };
       }),
+    listGheGse: adminOrRhProcedure
+      .input(z.object({ pgrId: z.number().int() }))
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) return [];
+        const r: any = await db.execute(drzSql`SELECT * FROM pgr_ghe_gse WHERE pgr_document_id = ${input.pgrId} ORDER BY id ASC`);
+        return (r as any)[0] ?? [];
+      }),
+
+    saveGheGse: adminOrRhProcedure
+      .input(z.object({
+        pgrId: z.number().int(),
+        items: z.array(z.object({
+          nome: z.string(),
+          tipo: z.string().default("GHE"),
+          setor: z.string().default(""),
+          funcao: z.string().default(""),
+          atividade: z.string().default(""),
+          qtdExpostos: z.number().int().default(0),
+          jornada: z.string().default(""),
+          ambienteOperacional: z.string().default(""),
+          exposicaoSimilar: z.string().default(""),
+        }))
+      }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new Error("DB unavailable");
+        await db.execute(drzSql`DELETE FROM pgr_ghe_gse WHERE pgr_document_id = ${input.pgrId}`);
+        for (const item of input.items) {
+          await db.execute(drzSql`INSERT INTO pgr_ghe_gse (pgr_document_id, nome, tipo, setor, funcao, atividade, qtd_expostos, jornada, ambiente_operacional, exposicao_similar) VALUES (${input.pgrId}, ${item.nome}, ${item.tipo}, ${item.setor}, ${item.funcao}, ${item.atividade}, ${item.qtdExpostos}, ${item.jornada}, ${item.ambienteOperacional}, ${item.exposicaoSimilar})`);
+        }
+        return { ok: true };
+      }),
+
+    listEpcEpi: adminOrRhProcedure
+      .input(z.object({ pgrId: z.number().int() }))
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) return [];
+        const r: any = await db.execute(drzSql`SELECT * FROM pgr_epc_epi WHERE pgr_document_id = ${input.pgrId} ORDER BY tipo ASC, id ASC`);
+        return (r as any)[0] ?? [];
+      }),
+
+    saveEpcEpi: adminOrRhProcedure
+      .input(z.object({
+        pgrId: z.number().int(),
+        items: z.array(z.object({
+          tipo: z.string(),
+          descricao: z.string(),
+          numeroCa: z.string().default(""),
+          riscoVinculado: z.string().default(""),
+          periodicidadeTroca: z.string().default(""),
+          nivelProtecao: z.string().default(""),
+          statusItem: z.string().default("obrigatorio"),
+          observacoes: z.string().default(""),
+        }))
+      }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new Error("DB unavailable");
+        await db.execute(drzSql`DELETE FROM pgr_epc_epi WHERE pgr_document_id = ${input.pgrId}`);
+        for (const item of input.items) {
+          await db.execute(drzSql`INSERT INTO pgr_epc_epi (pgr_document_id, tipo, descricao, numero_ca, risco_vinculado, periodicidade_troca, nivel_protecao, status_item, observacoes) VALUES (${input.pgrId}, ${item.tipo}, ${item.descricao}, ${item.numeroCa}, ${item.riscoVinculado}, ${item.periodicidadeTroca}, ${item.nivelProtecao}, ${item.statusItem}, ${item.observacoes})`);
+        }
+        return { ok: true };
+      }),
+
+    listPgrRevisions: adminOrRhProcedure
+      .input(z.object({ pgrId: z.number().int() }))
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) return [];
+        const r: any = await db.execute(drzSql`SELECT * FROM pgr_revision_history WHERE pgr_document_id = ${input.pgrId} ORDER BY id ASC`);
+        return (r as any)[0] ?? [];
+      }),
+
+    savePgrRevision: adminOrRhProcedure
+      .input(z.object({
+        pgrId: z.number().int(),
+        versao: z.string(),
+        dataRevisao: z.string().nullable().optional(),
+        responsavel: z.string().default(""),
+        alteracaoRealizada: z.string().default(""),
+      }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new Error("DB unavailable");
+        await db.execute(drzSql`INSERT INTO pgr_revision_history (pgr_document_id, versao, data_revisao, responsavel, alteracao_realizada) VALUES (${input.pgrId}, ${input.versao}, ${input.dataRevisao ?? null}, ${input.responsavel}, ${input.alteracaoRealizada})`);
+        return { ok: true };
+      }),
+
+    deletePgrRevision: adminOrRhProcedure
+      .input(z.object({ id: z.number().int() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new Error("DB unavailable");
+        await db.execute(drzSql`DELETE FROM pgr_revision_history WHERE id = ${input.id}`);
+        return { ok: true };
+      }),
+
   }),
 
 
@@ -19275,105 +19478,6 @@ Return only the JSON content object (no wrapper). Format per type:
         };
       }),
 
-    listGheGse: adminOrRhProcedure
-      .input(z.object({ pgrId: z.number().int() }))
-      .query(async ({ input }) => {
-        const db = await getDb();
-        if (!db) return [];
-        const r: any = await db.execute(drzSql`SELECT * FROM pgr_ghe_gse WHERE pgr_document_id = ${input.pgrId} ORDER BY id ASC`);
-        return (r as any)[0] ?? [];
-      }),
-
-    saveGheGse: adminOrRhProcedure
-      .input(z.object({
-        pgrId: z.number().int(),
-        items: z.array(z.object({
-          nome: z.string(),
-          tipo: z.string().default("GHE"),
-          setor: z.string().default(""),
-          funcao: z.string().default(""),
-          atividade: z.string().default(""),
-          qtdExpostos: z.number().int().default(0),
-          jornada: z.string().default(""),
-          ambienteOperacional: z.string().default(""),
-          exposicaoSimilar: z.string().default(""),
-        }))
-      }))
-      .mutation(async ({ input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("DB unavailable");
-        await db.execute(drzSql`DELETE FROM pgr_ghe_gse WHERE pgr_document_id = ${input.pgrId}`);
-        for (const item of input.items) {
-          await db.execute(drzSql`INSERT INTO pgr_ghe_gse (pgr_document_id, nome, tipo, setor, funcao, atividade, qtd_expostos, jornada, ambiente_operacional, exposicao_similar) VALUES (${input.pgrId}, ${item.nome}, ${item.tipo}, ${item.setor}, ${item.funcao}, ${item.atividade}, ${item.qtdExpostos}, ${item.jornada}, ${item.ambienteOperacional}, ${item.exposicaoSimilar})`);
-        }
-        return { ok: true };
-      }),
-
-    listEpcEpi: adminOrRhProcedure
-      .input(z.object({ pgrId: z.number().int() }))
-      .query(async ({ input }) => {
-        const db = await getDb();
-        if (!db) return [];
-        const r: any = await db.execute(drzSql`SELECT * FROM pgr_epc_epi WHERE pgr_document_id = ${input.pgrId} ORDER BY tipo ASC, id ASC`);
-        return (r as any)[0] ?? [];
-      }),
-
-    saveEpcEpi: adminOrRhProcedure
-      .input(z.object({
-        pgrId: z.number().int(),
-        items: z.array(z.object({
-          tipo: z.string(),
-          descricao: z.string(),
-          numeroCa: z.string().default(""),
-          riscoVinculado: z.string().default(""),
-          periodicidadeTroca: z.string().default(""),
-          nivelProtecao: z.string().default(""),
-          statusItem: z.string().default("obrigatorio"),
-          observacoes: z.string().default(""),
-        }))
-      }))
-      .mutation(async ({ input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("DB unavailable");
-        await db.execute(drzSql`DELETE FROM pgr_epc_epi WHERE pgr_document_id = ${input.pgrId}`);
-        for (const item of input.items) {
-          await db.execute(drzSql`INSERT INTO pgr_epc_epi (pgr_document_id, tipo, descricao, numero_ca, risco_vinculado, periodicidade_troca, nivel_protecao, status_item, observacoes) VALUES (${input.pgrId}, ${item.tipo}, ${item.descricao}, ${item.numeroCa}, ${item.riscoVinculado}, ${item.periodicidadeTroca}, ${item.nivelProtecao}, ${item.statusItem}, ${item.observacoes})`);
-        }
-        return { ok: true };
-      }),
-
-    listPgrRevisions: adminOrRhProcedure
-      .input(z.object({ pgrId: z.number().int() }))
-      .query(async ({ input }) => {
-        const db = await getDb();
-        if (!db) return [];
-        const r: any = await db.execute(drzSql`SELECT * FROM pgr_revision_history WHERE pgr_document_id = ${input.pgrId} ORDER BY id ASC`);
-        return (r as any)[0] ?? [];
-      }),
-
-    savePgrRevision: adminOrRhProcedure
-      .input(z.object({
-        pgrId: z.number().int(),
-        versao: z.string(),
-        dataRevisao: z.string().nullable().optional(),
-        responsavel: z.string().default(""),
-        alteracaoRealizada: z.string().default(""),
-      }))
-      .mutation(async ({ input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("DB unavailable");
-        await db.execute(drzSql`INSERT INTO pgr_revision_history (pgr_document_id, versao, data_revisao, responsavel, alteracao_realizada) VALUES (${input.pgrId}, ${input.versao}, ${input.dataRevisao ?? null}, ${input.responsavel}, ${input.alteracaoRealizada})`);
-        return { ok: true };
-      }),
-
-    deletePgrRevision: adminOrRhProcedure
-      .input(z.object({ id: z.number().int() }))
-      .mutation(async ({ input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("DB unavailable");
-        await db.execute(drzSql`DELETE FROM pgr_revision_history WHERE id = ${input.id}`);
-        return { ok: true };
-      }),
   }),
 
   // ─── Appointment Scheduling ───────────────────────────────────────────────
