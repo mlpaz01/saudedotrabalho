@@ -219,11 +219,11 @@ export default function ComplianceHub() {
                   {simRunning ? "Analisando dados..." : "Iniciar Simulação Agora"}
                 </Button>
                 <Button variant="outline" className="gap-2"
-                  onClick={() => window.open("/admin/compliance/relatorio-fiscalizacao", "_blank")}>
+                  onClick={() => window.open("/plataforma/admin/compliance/relatorio-fiscalizacao", "_blank")}>
                   <ScrollText size={15} /> Gerar Relatório para Fiscalização
                 </Button>
                 <Button variant="outline" className="gap-2"
-                  onClick={() => window.open("/admin/compliance/relatorio-metodologia", "_blank")}>
+                  onClick={() => window.open("/plataforma/admin/compliance/relatorio-metodologia", "_blank")}>
                   <FileText size={15} /> Gerar Relatório de Legitimidade Metodológica
                 </Button>
               </div>

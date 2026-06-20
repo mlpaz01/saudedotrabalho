@@ -13303,9 +13303,9 @@ export const appRouter = router({
       const db = await getDb();
       const [[cycleRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM risk_assessments WHERE company_id=? AND status IN ('active','published','completed')`, [cid]) as any;
       const hasCycle = Number((cycleRow as any).cnt) > 0;
-      const [[invRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM risk_inventory_items rii JOIN risk_assessments ra ON ra.id=rii.risk_assessment_id WHERE ra.company_id=?`, [cid]) as any;
+      const [[invRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM risk_inventory_items rii JOIN risk_assessments ra ON ra.id=rii.assessment_id WHERE ra.company_id=?`, [cid]) as any;
       const invCount = Number((invRow as any).cnt);
-      const [[planRow]] = await db.execute(`SELECT COUNT(*) AS cnt, SUM(CASE WHEN due_date < CURDATE() AND status NOT IN ('completed','done') THEN 1 ELSE 0 END) AS overdue FROM risk_action_plan_items WHERE company_id=?`, [cid]) as any;
+      const [[planRow]] = await db.execute(`SELECT COUNT(*) AS cnt, SUM(CASE WHEN ap.end_date < CURDATE() AND ap.status NOT IN ('concluido','cancelado','completed','done') THEN 1 ELSE 0 END) AS overdue FROM risk_action_plan_items ap JOIN risk_assessments ra ON ra.id=ap.assessment_id WHERE ra.company_id=?`, [cid]) as any;
       const planCount = Number((planRow as any).cnt);
       const planOverdue = Number((planRow as any).overdue ?? 0);
       const [[survRow]] = await db.execute(`SELECT COUNT(DISTINCT sr.user_id) AS respondentes FROM survey_responses sr JOIN surveys s ON s.id=sr.survey_id WHERE s.company_id=?`, [cid]) as any;
@@ -13315,12 +13315,12 @@ export const appRouter = router({
       const partRate = Math.min(100, Math.round((respondentes / totalEmp) * 100));
       const [[courseRow]] = await db.execute(`SELECT COUNT(DISTINCT rcl.module_id) AS linked FROM risk_course_links rcl`, []) as any;
       const coursesLinked = Number((courseRow as any).linked);
-      const [[progRow]] = await db.execute(`SELECT COUNT(DISTINCT up.user_id) AS completers FROM user_progress up WHERE up.company_id=? AND up.completed=1`, [cid]) as any;
+      const [[progRow]] = await db.execute(`SELECT COUNT(DISTINCT up.userId) AS completers FROM user_progress up JOIN users u ON u.id=up.userId WHERE u.company_id=? AND up.isCompleted=1`, [cid]) as any;
       const completers = Number((progRow as any).completers);
       const completionRate = Math.min(100, Math.round((completers / totalEmp) * 100));
-      const [[certRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM certificates WHERE company_id=?`, [cid]) as any;
+      const [[certRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM certificates c JOIN users u ON u.id=c.userId WHERE u.company_id=?`, [cid]) as any;
       const certCount = Number((certRow as any).cnt);
-      const [[termRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM term_acceptances ta JOIN users u ON u.id=ta.user_id WHERE u.company_id=?`, [cid]) as any;
+      const [[termRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM course_acceptance_terms ta JOIN users u ON u.id=ta.user_id WHERE u.company_id=?`, [cid]) as any;
       const termCount = Number((termRow as any).cnt);
       const [[respRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM responsible_technicians WHERE company_id=?`, [cid]) as any;
       const hasResp = Number((respRow as any).cnt) > 0;
@@ -13339,7 +13339,7 @@ export const appRouter = router({
         { axis: "evidencias", label: "Evidências Documentais", score: evidScore, details: [{ ok: certCount > 0, warn: false, text: `${certCount} certificado(s) emitido(s)` }, { ok: termCount > 0, warn: false, text: `${termCount} aceite(s) eletrônico(s)` }, { ok: hasResp, warn: false, text: hasResp ? "Responsável técnico cadastrado" : "Sem responsável técnico" }] },
       ];
       const score = Math.round((cicloScore + invScore + planScore + partScore + trainScore + evidScore) / 6);
-      const [secRows] = await db.execute(`SELECT s.name, COUNT(DISTINCT up.user_id) AS completers, COUNT(DISTINCT u.id) AS total FROM sectors s JOIN users u ON u.sector_id=s.id AND u.company_id=? LEFT JOIN user_progress up ON up.user_id=u.id AND up.completed=1 WHERE s.company_id=? GROUP BY s.id, s.name ORDER BY completers DESC LIMIT 10`, [cid, cid]) as any;
+      const [secRows] = await db.execute(`SELECT s.name, COUNT(DISTINCT up.userId) AS completers, COUNT(DISTINCT u.id) AS total FROM sectors s JOIN users u ON u.sector_id=s.id AND u.company_id=? LEFT JOIN user_progress up ON up.userId=u.id AND up.isCompleted=1 WHERE s.company_id=? GROUP BY s.id, s.name ORDER BY completers DESC LIMIT 10`, [cid, cid]) as any;
       const ranking = (secRows as any[]).map((r: any) => ({ name: r.name, score: r.total > 0 ? Math.min(100, Math.round((r.completers / r.total) * 100)) : 0 }));
       return { score, axes, ranking };
     }),
@@ -13353,12 +13353,12 @@ export const appRouter = router({
       const alertas: any[] = [];
       const nao_conf: any[] = [];
       const push = (sev: string, item: any) => { if (sev === "ok") conformidades.push(item); else if (sev === "warn") alertas.push(item); else nao_conf.push(item); };
-      const [[invR]] = await db.execute(`SELECT COUNT(*) AS cnt FROM risk_inventory_items rii JOIN risk_assessments ra ON ra.id=rii.risk_assessment_id WHERE ra.company_id=?`, [cid]) as any;
+      const [[invR]] = await db.execute(`SELECT COUNT(*) AS cnt FROM risk_inventory_items rii JOIN risk_assessments ra ON ra.id=rii.assessment_id WHERE ra.company_id=?`, [cid]) as any;
       const invCnt = Number((invR as any).cnt);
       if (invCnt >= 5) push("ok", { eixo: "Inventário de Riscos", check: "Inventário identificado", detail: `${invCnt} itens catalogados` });
       else if (invCnt > 0) push("warn", { eixo: "Inventário de Riscos", check: "Inventário incompleto", detail: `Apenas ${invCnt} item(s). Recomenda-se ao menos 5.`, acao: "Complementar o inventário de riscos no GRO" });
       else push("nao_conf", { eixo: "Inventário de Riscos", check: "Sem inventário de riscos", detail: "Nenhum risco identificado", acao: "Iniciar ciclo de avaliação e cadastrar riscos psicossociais" });
-      const [[planR]] = await db.execute(`SELECT COUNT(*) AS cnt, SUM(CASE WHEN due_date < CURDATE() AND status NOT IN ('completed','done') THEN 1 ELSE 0 END) AS overdue FROM risk_action_plan_items WHERE company_id=?`, [cid]) as any;
+      const [[planR]] = await db.execute(`SELECT COUNT(*) AS cnt, SUM(CASE WHEN ap.end_date < CURDATE() AND ap.status NOT IN ('concluido','cancelado','completed','done') THEN 1 ELSE 0 END) AS overdue FROM risk_action_plan_items ap JOIN risk_assessments ra ON ra.id=ap.assessment_id WHERE ra.company_id=?`, [cid]) as any;
       const pCnt = Number((planR as any).cnt); const pOvd = Number((planR as any).overdue ?? 0);
       if (pCnt === 0) push("nao_conf", { eixo: "Plano de Ação", check: "Plano de ação ausente", detail: "Nenhuma ação cadastrada", acao: "Elaborar plano de ação vinculado aos riscos identificados" });
       else if (pOvd > 0) push("warn", { eixo: "Plano de Ação", check: "Ações vencidas", detail: `${pOvd} de ${pCnt} ação(ões) com prazo expirado`, acao: "Atualizar ou concluir ações vencidas" });
@@ -13374,13 +13374,13 @@ export const appRouter = router({
       if (facLinked >= 13) push("ok", { eixo: "Fatores de Risco", check: "Todos os 13 fatores NR-01 endereçados", detail: "Cada fator possui ao menos um curso vinculado" });
       else if (facLinked >= 5) push("warn", { eixo: "Fatores de Risco", check: "Fatores parcialmente endereçados", detail: `${facLinked}/13 fatores com curso vinculado`, acao: "Vincular cursos aos fatores restantes" });
       else push("nao_conf", { eixo: "Fatores de Risco", check: "Fatores sem programa de controle", detail: `Apenas ${facLinked}/13 fatores endereçados`, acao: "Vincular cursos e ações preventivas para cada fator de risco" });
-      const [[cR2]] = await db.execute(`SELECT COUNT(DISTINCT up.user_id) AS cnt FROM user_progress up WHERE up.company_id=? AND up.completed=1`, [cid]) as any;
+      const [[cR2]] = await db.execute(`SELECT COUNT(DISTINCT up.userId) AS cnt FROM user_progress up JOIN users u ON u.id=up.userId WHERE u.company_id=? AND up.isCompleted=1`, [cid]) as any;
       const compl2 = Number((cR2 as any).cnt); const cRate = Math.min(100, Math.round((compl2 / emp2) * 100));
       if (cRate >= 70) push("ok", { eixo: "Capacitação", check: "Alta conclusão de treinamentos", detail: `${cRate}% dos colaboradores completaram ao menos 1 curso` });
       else if (cRate >= 30) push("warn", { eixo: "Capacitação", check: "Conclusão de treinamentos abaixo do ideal", detail: `${cRate}% de conclusão`, acao: "Verificar disponibilidade de conteúdo em Meus Cursos" });
       else push("nao_conf", { eixo: "Capacitação", check: "Baixíssima conclusão de treinamentos", detail: `Apenas ${cRate}% de conclusão`, acao: "Disponibilizar cursos e enviar lembretes automáticos" });
-      const [[certR2]] = await db.execute(`SELECT COUNT(*) AS cnt FROM certificates WHERE company_id=?`, [cid]) as any;
-      const [[trmR2]] = await db.execute(`SELECT COUNT(*) AS cnt FROM term_acceptances ta JOIN users u ON u.id=ta.user_id WHERE u.company_id=?`, [cid]) as any;
+      const [[certR2]] = await db.execute(`SELECT COUNT(*) AS cnt FROM certificates c JOIN users u ON u.id=c.userId WHERE u.company_id=?`, [cid]) as any;
+      const [[trmR2]] = await db.execute(`SELECT COUNT(*) AS cnt FROM course_acceptance_terms ta JOIN users u ON u.id=ta.user_id WHERE u.company_id=?`, [cid]) as any;
       const [[resR2]] = await db.execute(`SELECT COUNT(*) AS cnt FROM responsible_technicians WHERE company_id=?`, [cid]) as any;
       const certCnt2 = Number((certR2 as any).cnt); const trmCnt2 = Number((trmR2 as any).cnt); const resOk2 = Number((resR2 as any).cnt) > 0;
       if (certCnt2 > 0) push("ok", { eixo: "Evidências", check: "Certificados emitidos", detail: `${certCnt2} certificado(s) auditáveis` });
@@ -13397,11 +13397,11 @@ export const appRouter = router({
       const cid = (ctx.user as any).companyId;
       if (!cid) return [];
       const db = await getDb();
-      const [cycles] = await db.execute(`SELECT id, title, status, created_at FROM risk_assessments WHERE company_id=? ORDER BY created_at DESC LIMIT 10`, [cid]) as any;
-      const [invItems] = await db.execute(`SELECT rii.id, rii.description, rii.risk_level, ra.title AS cycle FROM risk_inventory_items rii JOIN risk_assessments ra ON ra.id=rii.risk_assessment_id WHERE ra.company_id=? ORDER BY rii.created_at DESC LIMIT 20`, [cid]) as any;
-      const [planItems] = await db.execute(`SELECT id, title, status, due_date FROM risk_action_plan_items WHERE company_id=? ORDER BY created_at DESC LIMIT 20`, [cid]) as any;
-      const [certs2] = await db.execute(`SELECT c.id, c.certificate_code, c.issued_at, u.name AS user_name FROM certificates c JOIN users u ON u.id=c.user_id WHERE c.company_id=? ORDER BY c.issued_at DESC LIMIT 20`, [cid]) as any;
-      const [terms2] = await db.execute(`SELECT ta.id, ta.accepted_at, ta.ip_address, u.name AS user_name FROM term_acceptances ta JOIN users u ON u.id=ta.user_id WHERE u.company_id=? ORDER BY ta.accepted_at DESC LIMIT 20`, [cid]) as any;
+      const [cycles] = await db.execute(`SELECT id, cycle_name AS title, status, created_at FROM risk_assessments WHERE company_id=? ORDER BY created_at DESC LIMIT 10`, [cid]) as any;
+      const [invItems] = await db.execute(`SELECT rii.id, f.name AS description, rii.risco_final AS risk_level, ra.cycle_name AS cycle FROM risk_inventory_items rii JOIN risk_assessments ra ON ra.id=rii.assessment_id LEFT JOIN psychosocial_factors f ON f.id=rii.factor_id WHERE ra.company_id=? ORDER BY rii.id DESC LIMIT 20`, [cid]) as any;
+      const [planItems] = await db.execute(`SELECT ap.id, ap.action_description AS title, ap.status, ap.end_date AS due_date FROM risk_action_plan_items ap JOIN risk_assessments ra ON ra.id=ap.assessment_id WHERE ra.company_id=? ORDER BY ap.id DESC LIMIT 20`, [cid]) as any;
+      const [certs2] = await db.execute(`SELECT c.id, c.certificateCode AS certificate_code, c.issuedAt AS issued_at, u.name AS user_name FROM certificates c JOIN users u ON u.id=c.userId WHERE u.company_id=? ORDER BY c.issuedAt DESC LIMIT 20`, [cid]) as any;
+      const [terms2] = await db.execute(`SELECT ta.id, ta.accepted_at, ta.ip_address, u.name AS user_name FROM course_acceptance_terms ta JOIN users u ON u.id=ta.user_id WHERE u.company_id=? ORDER BY ta.accepted_at DESC LIMIT 20`, [cid]) as any;
       const [surv2] = await db.execute(`SELECT s.id, s.title, COUNT(DISTINCT sr.user_id) AS respondentes FROM surveys s LEFT JOIN survey_responses sr ON sr.survey_id=s.id WHERE s.company_id=? GROUP BY s.id ORDER BY s.created_at DESC LIMIT 10`, [cid]) as any;
       return [
         { category: "Ciclos de Avaliação GRO", items: (cycles as any[]).map((r: any) => ({ label: r.title ?? `Ciclo #${r.id}`, detail: `Status: ${r.status} · ${r.created_at ? new Date(r.created_at).toLocaleDateString("pt-BR") : "—"}` })) },
@@ -13420,19 +13420,19 @@ export const appRouter = router({
       const db = await getDb();
 
       // Empresa
-      const [[compRow]] = await db.execute(`SELECT id, name, cnpj, address, city, state FROM companies WHERE id=?`, [cid]) as any;
+      const [[compRow]] = await db.execute(`SELECT id, name, cnpj, address, NULL AS city, NULL AS state FROM companies WHERE id=?`, [cid]) as any;
       const company = compRow as any;
 
       // Responsável técnico
-      const [respRows] = await db.execute(`SELECT name, council, council_number, role FROM responsible_technicians WHERE company_id=? LIMIT 1`, [cid]) as any;
+      const [respRows] = await db.execute(`SELECT name, profession AS council, registration AS council_number, profession AS role FROM responsible_technicians WHERE company_id=? LIMIT 1`, [cid]) as any;
       const respTec = (respRows as any[])[0] ?? null;
 
       // Score e eixos (replica nr01Status logic inline)
       const [[cycleRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM risk_assessments WHERE company_id=? AND status IN ('active','published','completed')`, [cid]) as any;
       const hasCycle = Number((cycleRow as any).cnt) > 0;
-      const [[invRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM risk_inventory_items rii JOIN risk_assessments ra ON ra.id=rii.risk_assessment_id WHERE ra.company_id=?`, [cid]) as any;
+      const [[invRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM risk_inventory_items rii JOIN risk_assessments ra ON ra.id=rii.assessment_id WHERE ra.company_id=?`, [cid]) as any;
       const invCount = Number((invRow as any).cnt);
-      const [[planRow]] = await db.execute(`SELECT COUNT(*) AS cnt, SUM(CASE WHEN due_date < CURDATE() AND status NOT IN ('completed','done') THEN 1 ELSE 0 END) AS overdue FROM risk_action_plan_items WHERE company_id=?`, [cid]) as any;
+      const [[planRow]] = await db.execute(`SELECT COUNT(*) AS cnt, SUM(CASE WHEN ap.end_date < CURDATE() AND ap.status NOT IN ('concluido','cancelado','completed','done') THEN 1 ELSE 0 END) AS overdue FROM risk_action_plan_items ap JOIN risk_assessments ra ON ra.id=ap.assessment_id WHERE ra.company_id=?`, [cid]) as any;
       const planCount = Number((planRow as any).cnt);
       const planOverdue = Number((planRow as any).overdue ?? 0);
       const [[survRow]] = await db.execute(`SELECT COUNT(DISTINCT sr.user_id) AS respondentes FROM survey_responses sr JOIN surveys s ON s.id=sr.survey_id WHERE s.company_id=?`, [cid]) as any;
@@ -13442,12 +13442,12 @@ export const appRouter = router({
       const partRate = Math.min(100, Math.round((respondentes / totalEmp) * 100));
       const [[courseRow]] = await db.execute(`SELECT COUNT(DISTINCT rcl.module_id) AS linked FROM risk_course_links rcl`, []) as any;
       const coursesLinked = Number((courseRow as any).linked);
-      const [[progRow]] = await db.execute(`SELECT COUNT(DISTINCT up.user_id) AS completers FROM user_progress up WHERE up.company_id=? AND up.completed=1`, [cid]) as any;
+      const [[progRow]] = await db.execute(`SELECT COUNT(DISTINCT up.userId) AS completers FROM user_progress up JOIN users u ON u.id=up.userId WHERE u.company_id=? AND up.isCompleted=1`, [cid]) as any;
       const completers = Number((progRow as any).completers);
       const completionRate = Math.min(100, Math.round((completers / totalEmp) * 100));
-      const [[certRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM certificates WHERE company_id=?`, [cid]) as any;
+      const [[certRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM certificates c JOIN users u ON u.id=c.userId WHERE u.company_id=?`, [cid]) as any;
       const certCount = Number((certRow as any).cnt);
-      const [[termRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM term_acceptances ta JOIN users u ON u.id=ta.user_id WHERE u.company_id=?`, [cid]) as any;
+      const [[termRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM course_acceptance_terms ta JOIN users u ON u.id=ta.user_id WHERE u.company_id=?`, [cid]) as any;
       const termCount = Number((termRow as any).cnt);
       const cicloScore = hasCycle ? 100 : 0;
       const invScore = invCount >= 5 ? 100 : Math.round((invCount / 5) * 100);
@@ -13458,16 +13458,16 @@ export const appRouter = router({
       const score = Math.round((cicloScore + invScore + planScore + partScore + trainScore + evidScore) / 6);
 
       // Inventário detalhado
-      const [invItems] = await db.execute(`SELECT rii.description, rii.risk_level, rii.risk_type, rii.sector_name, ra.title AS cycle FROM risk_inventory_items rii JOIN risk_assessments ra ON ra.id=rii.risk_assessment_id WHERE ra.company_id=? ORDER BY rii.risk_level DESC LIMIT 50`, [cid]) as any;
+      const [invItems] = await db.execute(`SELECT f.name AS description, rii.risco_final AS risk_level, rii.gravidade AS risk_type, '' AS sector_name, ra.cycle_name AS cycle FROM risk_inventory_items rii JOIN risk_assessments ra ON ra.id=rii.assessment_id LEFT JOIN psychosocial_factors f ON f.id=rii.factor_id WHERE ra.company_id=? ORDER BY rii.risco_final DESC LIMIT 50`, [cid]) as any;
 
       // Plano de ação
-      const [planItems] = await db.execute(`SELECT title, description, responsible, status, due_date, priority FROM risk_action_plan_items WHERE company_id=? ORDER BY due_date ASC LIMIT 50`, [cid]) as any;
+      const [planItems] = await db.execute(`SELECT ap.action_description AS title, ap.action_description AS description, ap.responsible_party AS responsible, ap.status, ap.end_date AS due_date, ap.priority FROM risk_action_plan_items ap JOIN risk_assessments ra ON ra.id=ap.assessment_id WHERE ra.company_id=? ORDER BY ap.end_date ASC LIMIT 50`, [cid]) as any;
 
       // Certificados
-      const [certs] = await db.execute(`SELECT c.certificate_code, c.issued_at, u.name AS user_name, u.email FROM certificates c JOIN users u ON u.id=c.user_id WHERE c.company_id=? ORDER BY c.issued_at DESC LIMIT 50`, [cid]) as any;
+      const [certs] = await db.execute(`SELECT c.certificateCode AS certificate_code, c.issuedAt AS issued_at, u.name AS user_name, u.email FROM certificates c JOIN users u ON u.id=c.userId WHERE u.company_id=? ORDER BY c.issuedAt DESC LIMIT 50`, [cid]) as any;
 
       // Pesquisas aplicadas
-      const [surveys] = await db.execute(`SELECT s.title, s.type, COUNT(DISTINCT sr.user_id) AS respondentes, s.created_at FROM surveys s LEFT JOIN survey_responses sr ON sr.survey_id=s.id WHERE s.company_id=? GROUP BY s.id ORDER BY s.created_at DESC LIMIT 10`, [cid]) as any;
+      const [surveys] = await db.execute(`SELECT s.title, s.category AS type, COUNT(DISTINCT sr.user_id) AS respondentes, s.created_at FROM surveys s LEFT JOIN survey_responses sr ON sr.survey_id=s.id WHERE s.company_id=? GROUP BY s.id ORDER BY s.created_at DESC LIMIT 10`, [cid]) as any;
 
       // Fatores NR-01 endereçados
       const [factors] = await db.execute(`SELECT pf.code, pf.name, COUNT(rcl.module_id) AS cursos FROM psychosocial_factors pf LEFT JOIN risk_course_links rcl ON rcl.factor_id=pf.id GROUP BY pf.id ORDER BY pf.axis_order`, []) as any;
@@ -13498,22 +13498,22 @@ export const appRouter = router({
       if (!cid) return null;
       const db = await getDb();
 
-      const [[compRow]] = await db.execute(`SELECT id, name, cnpj, address, city, state FROM companies WHERE id=?`, [cid]) as any;
+      const [[compRow]] = await db.execute(`SELECT id, name, cnpj, address, NULL AS city, NULL AS state FROM companies WHERE id=?`, [cid]) as any;
       const company = compRow as any;
-      const [respRows] = await db.execute(`SELECT name, council, council_number, role FROM responsible_technicians WHERE company_id=? LIMIT 1`, [cid]) as any;
+      const [respRows] = await db.execute(`SELECT name, profession AS council, registration AS council_number, profession AS role FROM responsible_technicians WHERE company_id=? LIMIT 1`, [cid]) as any;
       const respTec = (respRows as any[])[0] ?? null;
       const [[empRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM users WHERE company_id=? AND role NOT IN ('admin','rh','admin_global','super_admin','sesmt','psicologo','chefia')`, [cid]) as any;
       const totalEmp = Number((empRow as any).cnt);
       const [[survRow]] = await db.execute(`SELECT COUNT(DISTINCT sr.user_id) AS respondentes, COUNT(DISTINCT s.id) AS surveys FROM survey_responses sr JOIN surveys s ON s.id=sr.survey_id WHERE s.company_id=?`, [cid]) as any;
       const respondentes = Number((survRow as any).respondentes);
       const surveyCount = Number((survRow as any).surveys);
-      const [[certRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM certificates WHERE company_id=?`, [cid]) as any;
+      const [[certRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM certificates c JOIN users u ON u.id=c.userId WHERE u.company_id=?`, [cid]) as any;
       const certCount = Number((certRow as any).cnt);
-      const [[termRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM term_acceptances ta JOIN users u ON u.id=ta.user_id WHERE u.company_id=?`, [cid]) as any;
+      const [[termRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM course_acceptance_terms ta JOIN users u ON u.id=ta.user_id WHERE u.company_id=?`, [cid]) as any;
       const termCount = Number((termRow as any).cnt);
-      const [[auditRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM audit_logs WHERE company_id=?`, [cid]) as any;
+      const [[auditRow]] = await db.execute(`SELECT COUNT(*) AS cnt FROM audit_logs al JOIN users u ON u.id=al.user_id WHERE u.company_id=?`, [cid]) as any;
       const auditCount = Number((auditRow as any).cnt);
-      const [survNames] = await db.execute(`SELECT DISTINCT title, type FROM surveys WHERE company_id=? ORDER BY created_at DESC LIMIT 5`, [cid]) as any;
+      const [survNames] = await db.execute(`SELECT title, category AS type FROM surveys WHERE company_id=? GROUP BY title, category ORDER BY MAX(created_at) DESC LIMIT 5`, [cid]) as any;
 
       return {
         company, respTec,
