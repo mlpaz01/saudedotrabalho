@@ -1278,6 +1278,8 @@ import {
   getSurveysForCompanyShort,
 } from "./db";
 import { sendEmail, fillTemplate, plainToHtml } from "./_core/email";
+import crypto from "crypto";
+import nodemailer from "nodemailer";
 import { EMAIL_TEMPLATES } from "./_core/emailTemplates";
 
 
@@ -2099,7 +2101,7 @@ function decryptSmtpPass(encrypted: string): string {
   if (!encKey) throw new Error("SMTP_ENC_KEY not set");
   const [ivHex, cipherHex] = encrypted.split(":");
   if (!ivHex || !cipherHex) throw new Error("Invalid encrypted format");
-  const crypto = require("crypto");
+  
   const key = Buffer.from(encKey, "hex");
   const iv = Buffer.from(ivHex, "hex");
   const decipher = crypto.createDecipheriv("aes-256-cbc", key, iv);
@@ -2109,7 +2111,7 @@ function decryptSmtpPass(encrypted: string): string {
 function encryptSmtpPass(plain: string): string {
   const encKey = process.env.SMTP_ENC_KEY;
   if (!encKey) throw new Error("SMTP_ENC_KEY not set");
-  const crypto = require("crypto");
+  
   const key = Buffer.from(encKey, "hex");
   const iv = crypto.randomBytes(16);
   const cipher = crypto.createCipheriv("aes-256-cbc", key, iv);
@@ -20686,7 +20688,7 @@ Return only the JSON content object (no wrapper). Format per type:
           return { ok: false, error: "Erro ao decriptar senha" };
         }
 
-        const nodemailer = require("nodemailer");
+        
         const transporter = nodemailer.createTransport({
           host: String(cfg.smtp_host),
           port: Number(cfg.smtp_port),
@@ -20725,7 +20727,7 @@ Return only the JSON content object (no wrapper). Format per type:
         try { pass = decryptSmtpPass(String(cfg.smtp_pass_encrypted)); }
         catch (e: any) { throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Erro ao decriptar senha" }); }
 
-        const nodemailer = require("nodemailer");
+        
         const transporter = nodemailer.createTransport({
           host: String(cfg.smtp_host),
           port: Number(cfg.smtp_port),
