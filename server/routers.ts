@@ -20370,7 +20370,7 @@ Return only the JSON content object (no wrapper). Format per type:
           return rows as any[];
         }
         if (input.linkType === 'course' || input.linkType === 'module') {
-          const [rows] = await execP(db, `SELECT id, title FROM content_modules WHERE (company_id=? OR company_id IS NULL) AND is_active=1 ORDER BY title LIMIT 50`, [cid]) as any;
+          const [rows] = await execP(db, `SELECT id, title FROM modules WHERE (created_by_company_id=? OR created_by_company_id IS NULL) AND isActive=1 ORDER BY title LIMIT 50`, [cid]) as any;
           return rows as any[];
         }
         return [];
