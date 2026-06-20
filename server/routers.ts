@@ -4596,9 +4596,10 @@ export const appRouter = router({
       if (role === 'admin_global') return getAdminStats();
       const db2 = await getDb();
       if (!db2) return { totalUsers: 0, activeUsers: 0, completionRate: 0, totalCertificates: 0, completedModules: 0 };
-      const [uCount] = await db2.execute(sql`SELECT COUNT(*) as c FROM corporate_emails WHERE company_id = ${cid} AND isActive = 1`);
-      const [certCount] = await db2.execute(sql`SELECT COUNT(*) as c FROM certificates WHERE userId IN (SELECT id FROM users WHERE companyId = ${cid})`);
-      return { totalUsers: (uCount as any).c || 0, activeUsers: (uCount as any).c || 0, completionRate: 0, totalCertificates: (certCount as any).c || 0, completedModules: 0 };
+      const [uRows] = await execP(db2, `SELECT COUNT(*) as c FROM corporate_emails WHERE company_id = ? AND isActive = 1`, [cid]);
+      const [certRows] = await execP(db2, `SELECT COUNT(*) as c FROM certificates WHERE userId IN (SELECT id FROM users WHERE company_id = ?)`, [cid]);
+      const uCount = (uRows[0] ?? {}) as any; const certCount = (certRows[0] ?? {}) as any;
+      return { totalUsers: Number(uCount.c) || 0, activeUsers: Number(uCount.c) || 0, completionRate: 0, totalCertificates: Number(certCount.c) || 0, completedModules: 0 };
     }),
 
 
