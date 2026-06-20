@@ -20159,7 +20159,7 @@ Return only the JSON content object (no wrapper). Format per type:
       // Get standalone modules (not in any program) for "Complementares"
       // Uses the same visibility logic as modules.list (enrollment-based OR company-created)
       const modsR: any = await db.execute(drzSql`
-        SELECT DISTINCT m.id, m.title, m.description, m.durationMinutes, m.template_category
+        SELECT DISTINCT m.id, m.title, m.description, m.durationMinutes, m.template_category, m.orderIndex
         FROM modules m
         WHERE m.isActive = 1 AND (
           EXISTS (
@@ -20167,7 +20167,7 @@ Return only the JSON content object (no wrapper). Format per type:
             WHERE cce.content_id = m.id AND cce.content_type = 'module'
               AND cce.company_id = ${cid} AND cce.is_active = 1
           )
-          OR m.createdByCompanyId = ${cid}
+          OR m.created_by_company_id = ${cid}
           OR (m.publish_status = 'published' AND ${cid} IS NULL)
         )
         ORDER BY m.orderIndex, m.id
