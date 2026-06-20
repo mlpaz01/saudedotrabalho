@@ -4596,7 +4596,7 @@ export const appRouter = router({
       if (role === 'admin_global') return getAdminStats();
       const db2 = await getDb();
       if (!db2) return { totalUsers: 0, activeUsers: 0, completionRate: 0, totalCertificates: 0, completedModules: 0 };
-      const [uCount] = await db2.execute(sql`SELECT COUNT(*) as c FROM corporate_emails WHERE companyId = ${cid} AND isActive = 1`);
+      const [uCount] = await db2.execute(sql`SELECT COUNT(*) as c FROM corporate_emails WHERE company_id = ${cid} AND isActive = 1`);
       const [certCount] = await db2.execute(sql`SELECT COUNT(*) as c FROM certificates WHERE userId IN (SELECT id FROM users WHERE companyId = ${cid})`);
       return { totalUsers: (uCount as any).c || 0, activeUsers: (uCount as any).c || 0, completionRate: 0, totalCertificates: (certCount as any).c || 0, completedModules: 0 };
     }),
@@ -20255,14 +20255,11 @@ Return only the JSON content object (no wrapper). Format per type:
       if (!cid) return [];
       const db = await getDb();
       // Return array of { campaign_id, material_type, cnt } for frontend summaryFor()
-      const [rows] = await db.execute(
-        `SELECT m.campaign_id, m.material_type, COUNT(*) AS cnt
+      const [rows] = await execP(db, `SELECT m.campaign_id, m.material_type, COUNT(*) AS cnt
          FROM preventive_library_materials m
          JOIN preventive_library_campaigns c ON c.id = m.campaign_id
          WHERE c.company_id = ?
-         GROUP BY m.campaign_id, m.material_type`,
-        [cid]
-      ) as any;
+         GROUP BY m.campaign_id, m.material_type`, [cid]) as any;
       return rows as any[];
     }),
 
@@ -20281,16 +20278,10 @@ Return only the JSON content object (no wrapper). Format per type:
         if (!cid) throw new TRPCError({ code: 'BAD_REQUEST' });
         const db = await getDb();
         if (input.id) {
-          await db.execute(
-            `UPDATE preventive_library_campaigns SET name=?, code=?, month_number=?, theme=?, color=?, description=? WHERE id=? AND company_id=?`,
-            [input.name, input.code ?? null, input.monthNumber ?? null, input.theme ?? null, input.color ?? null, input.description ?? null, input.id, cid]
-          );
+          await execP(db, `UPDATE preventive_library_campaigns SET name=?, code=?, month_number=?, theme=?, color=?, description=? WHERE id=? AND company_id=?`, [input.name, input.code ?? null, input.monthNumber ?? null, input.theme ?? null, input.color ?? null, input.description ?? null, input.id, cid]);
           return { id: input.id };
         }
-        const [res] = await db.execute(
-          `INSERT INTO preventive_library_campaigns (company_id, name, code, month_number, theme, color, description) VALUES (?,?,?,?,?,?,?)`,
-          [cid, input.name, input.code ?? null, input.monthNumber ?? null, input.theme ?? null, input.color ?? null, input.description ?? null]
-        ) as any;
+        const [res] = await execP(db, `INSERT INTO preventive_library_campaigns (company_id, name, code, month_number, theme, color, description) VALUES (?,?,?,?,?,?,?)`, [cid, input.name, input.code ?? null, input.monthNumber ?? null, input.theme ?? null, input.color ?? null, input.description ?? null]) as any;
         return { id: (res as any).insertId };
       }),
 
@@ -20312,13 +20303,10 @@ Return only the JSON content object (no wrapper). Format per type:
         const cid = (ctx.user as any).companyId;
         if (!cid) return [];
         const db = await getDb();
-        const [rows] = await db.execute(
-          `SELECT m.* FROM preventive_library_materials m
+        const [rows] = await execP(db, `SELECT m.* FROM preventive_library_materials m
            JOIN preventive_library_campaigns c ON c.id=m.campaign_id
            WHERE m.campaign_id=? AND c.company_id=?
-           ORDER BY m.created_at ASC`,
-          [input.campaignId, cid]
-        ) as any;
+           ORDER BY m.created_at ASC`, [input.campaignId, cid]) as any;
         return rows as any[];
       }),
 
@@ -20341,10 +20329,7 @@ Return only the JSON content object (no wrapper). Format per type:
         if (!(cr as any)?.id) throw new TRPCError({ code: 'NOT_FOUND' });
         // For base64 files, store the data URL directly (no S3/CDN)
         const fileUrl = input.fileBase64 ?? null;
-        const [res] = await db.execute(
-          `INSERT INTO preventive_library_materials (campaign_id, title, material_type, target_audience, file_name, mime_type, file_url, description) VALUES (?,?,?,?,?,?,?,?)`,
-          [input.campaignId, input.title, input.materialType ?? null, input.targetAudience ?? 'todos', input.fileName ?? null, input.mimeType ?? null, fileUrl, input.description ?? null]
-        ) as any;
+        const [res] = await execP(db, `INSERT INTO preventive_library_materials (campaign_id, title, material_type, target_audience, file_name, mime_type, file_url, description) VALUES (?,?,?,?,?,?,?,?)`, [input.campaignId, input.title, input.materialType ?? null, input.targetAudience ?? 'todos', input.fileName ?? null, input.mimeType ?? null, fileUrl, input.description ?? null]) as any;
         return { id: (res as any).insertId };
       }),
 
@@ -20354,12 +20339,9 @@ Return only the JSON content object (no wrapper). Format per type:
         const cid = (ctx.user as any).companyId;
         if (!cid) throw new TRPCError({ code: 'BAD_REQUEST' });
         const db = await getDb();
-        await db.execute(
-          `DELETE m FROM preventive_library_materials m
+        await execP(db, `DELETE m FROM preventive_library_materials m
            JOIN preventive_library_campaigns c ON c.id=m.campaign_id
-           WHERE m.id=? AND c.company_id=?`,
-          [input.id, cid]
-        );
+           WHERE m.id=? AND c.company_id=?`, [input.id, cid]);
         return { ok: true };
       }),
 
@@ -20369,13 +20351,10 @@ Return only the JSON content object (no wrapper). Format per type:
         const cid = (ctx.user as any).companyId;
         if (!cid) return [];
         const db = await getDb();
-        const [rows] = await db.execute(
-          `SELECT l.* FROM preventive_library_links l
+        const [rows] = await execP(db, `SELECT l.* FROM preventive_library_links l
            JOIN preventive_library_campaigns c ON c.id=l.campaign_id
            WHERE l.campaign_id=? AND c.company_id=?
-           ORDER BY l.created_at ASC`,
-          [input.campaignId, cid]
-        ) as any;
+           ORDER BY l.created_at ASC`, [input.campaignId, cid]) as any;
         return rows as any[];
       }),
 
@@ -20414,10 +20393,7 @@ Return only the JSON content object (no wrapper). Format per type:
         // Check if already linked
         const [[existing]] = await execP(db, `SELECT id FROM preventive_library_links WHERE campaign_id=? AND link_type=? AND ref_id=?`, [input.campaignId, input.linkType, input.refId]) as any;
         if ((existing as any)?.id) return { alreadyLinked: true, id: (existing as any).id };
-        const [res] = await db.execute(
-          `INSERT INTO preventive_library_links (campaign_id, link_type, ref_id, title, notes, target_audience) VALUES (?,?,?,?,?,?)`,
-          [input.campaignId, input.linkType, input.refId, input.title ?? null, input.notes ?? null, input.targetAudience ?? 'todos']
-        ) as any;
+        const [res] = await execP(db, `INSERT INTO preventive_library_links (campaign_id, link_type, ref_id, title, notes, target_audience) VALUES (?,?,?,?,?,?)`, [input.campaignId, input.linkType, input.refId, input.title ?? null, input.notes ?? null, input.targetAudience ?? 'todos']) as any;
         return { id: (res as any).insertId, alreadyLinked: false };
       }),
 
@@ -20427,12 +20403,9 @@ Return only the JSON content object (no wrapper). Format per type:
         const cid = (ctx.user as any).companyId;
         if (!cid) throw new TRPCError({ code: 'BAD_REQUEST' });
         const db = await getDb();
-        await db.execute(
-          `DELETE l FROM preventive_library_links l
+        await execP(db, `DELETE l FROM preventive_library_links l
            JOIN preventive_library_campaigns c ON c.id=l.campaign_id
-           WHERE l.id=? AND c.company_id=?`,
-          [input.id, cid]
-        );
+           WHERE l.id=? AND c.company_id=?`, [input.id, cid]);
         return { ok: true };
       }),
 
