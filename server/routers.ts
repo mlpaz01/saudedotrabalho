@@ -20777,7 +20777,7 @@ Return only the JSON content object (no wrapper). Format per type:
       return { absenteismo: await cnt("hr_absenteismo"), atestados: await cnt("hr_atestados"), acidentes: await cnt("hr_acidentes"), turnover: await cnt("hr_turnover"), disciplinares: await cnt("hr_disciplinares") };
     }),
     importRows: adminOrRhProcedure
-      .input(z.object({ kind: z.enum(["absenteismo","atestados","acidentes","turnover","disciplinares"]), rows: z.array(z.record(z.string())).max(5000) }))
+      .input(z.object({ kind: z.enum(["absenteismo","atestados","acidentes","turnover","disciplinares"]), rows: z.array(z.record(z.string(), z.any())).max(5000) }))
       .mutation(async ({ ctx, input }) => {
         const cid = (ctx.user as any).companyId; const db = await getDb();
         if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST", message: "Empresa não definida." });
