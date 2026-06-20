@@ -361,25 +361,25 @@ export default function AdminVisao360() {
             {[
               {
                 href: "/admin/importar-rh",
-                title: "Importar Colaboradores (RH)",
-                desc: "Importe a base de colaboradores via planilha CSV. Cria ou atualiza usuários em lote.",
-                color: C.blue,
-              },
-              {
-                href: "/admin/importar-aso",
-                title: "Importar Exames (ASO)",
-                desc: "Importe atestados de saúde ocupacional e histórico de exames periódicos.",
+                title: "Atestados e Afastamentos",
+                desc: "Importe atestados, absenteísmo e licenças médicas via planilha CSV. Os dados enriquecem a Visão 360 do colaborador (vínculo pelo e-mail).",
                 color: C.green,
               },
               {
-                href: "/admin/importar-absenteismo",
-                title: "Importar Absenteísmo",
-                desc: "Importe dados de faltas, afastamentos e licenças médicas para análise.",
+                href: "/admin/importar-rh",
+                title: "Acidentes de Trabalho",
+                desc: "Importe registros de acidentes (tipo, gravidade, afastamento) para o histórico ocupacional e indicadores.",
                 color: C.amber,
+              },
+              {
+                href: "/admin/importar-rh",
+                title: "Turnover e Disciplinares",
+                desc: "Importe admissões/desligamentos e ocorrências disciplinares para análise de clima e risco psicossocial.",
+                color: C.blue,
               },
             ].map((card) => (
               <div
-                key={card.href}
+                key={card.title}
                 onClick={() => navigate(card.href)}
                 style={{
                   ...cardStyle,

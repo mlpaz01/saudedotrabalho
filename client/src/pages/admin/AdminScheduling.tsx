@@ -35,6 +35,9 @@ export default function AdminScheduling() {
   const { user } = useAuth();
   const isPsicologo = user?.role === "psicologo";
   const isAdminRole = ["admin", "rh", "admin_global", "super_admin", "sesmt"].includes(user?.role ?? "");
+  // Gestão de profissionais/disponibilidade pertence ao Psicólogo/Profissional de Saúde
+  // (e admins gerais). O RH fica apenas com a visão de agendamentos/relatórios.
+  const canManageProfessionals = ["psicologo", "admin", "admin_global", "company_admin", "super_admin"].includes(user?.role ?? "");
 
   const [tab, setTab] = useState<"appointments" | "professionals">("appointments");
   const [showProfDialog, setShowProfDialog] = useState(false);
@@ -156,7 +159,7 @@ export default function AdminScheduling() {
         <div className="flex gap-2 border-b border-slate-200 pb-0">
           {[
             { id: "appointments", label: isPsicologo ? "Minha Agenda" : "Agendamentos" },
-            ...(!isPsicologo ? [{ id: "professionals", label: "Profissionais" }] : []),
+            ...(canManageProfessionals ? [{ id: "professionals", label: "Profissionais" }] : []),
           ].map(t => (
             <button
               key={t.id}

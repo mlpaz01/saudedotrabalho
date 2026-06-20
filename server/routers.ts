@@ -1506,6 +1506,17 @@ async function computeStreakDays(userId: number): Promise<number> {
 
 
 
+// Gestão da Agenda de Acolhimento (profissionais, disponibilidade, horários):
+// pertence ao Psicólogo/Profissional de Saúde e admins gerais — NÃO ao RH,
+// que tem apenas a visão de agendamentos/relatórios.
+const careManagerProcedure = protectedProcedure.use(({ ctx, next }) => {
+  const allowed = ["psicologo", "admin", "admin_global", "company_admin", "super_admin"];
+  if (!allowed.includes((ctx.user as any).role ?? "")) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Apenas o profissional de saúde gerencia a Agenda de Acolhimento." });
+  }
+  return next({ ctx });
+});
+
 const adminOrRhProcedure = protectedProcedure.use(({ ctx, next }) => {
 
 
@@ -19397,7 +19408,7 @@ Return only the JSON content object (no wrapper). Format per type:
         }));
       }),
 
-    saveProfessional: adminOrRhProcedure
+    saveProfessional: careManagerProcedure
       .input(z.object({
         id: z.number().int().optional(),
         name: z.string().min(1),
@@ -19427,7 +19438,7 @@ Return only the JSON content object (no wrapper). Format per type:
         }
       }),
 
-    deleteProfessional: adminOrRhProcedure
+    deleteProfessional: careManagerProcedure
       .input(z.object({ id: z.number().int() }))
       .mutation(async ({ ctx, input }) => {
         const db2 = await getDb();
@@ -19456,7 +19467,7 @@ Return only the JSON content object (no wrapper). Format per type:
         }));
       }),
 
-    saveAvailability: adminOrRhProcedure
+    saveAvailability: careManagerProcedure
       .input(z.object({
         professionalId: z.number().int(),
         slots: z.array(z.object({
@@ -20745,6 +20756,65 @@ Return only the JSON content object (no wrapper). Format per type:
         });
 
         return { ok: true };
+      }),
+  }),
+
+  // Importação de dados HR (Visão 360): absenteísmo, atestados, acidentes,
+  // turnover e disciplinares via CSV, vinculados ao colaborador pelo e-mail.
+  hr360: router({
+    templates: adminOrRhProcedure.query(() => ({
+      absenteismo: { headers: ["employee_email","employee_name","branch_name","sector_name","data_inicial","data_final","dias_afastados","motivo","cid","tipo_afastamento"], example: ["joao@empresa.com","João Silva","Matriz","Produção","2026-05-02","2026-05-06","4","Gripe","J11","atestado"] },
+      atestados: { headers: ["employee_email","employee_name","branch_name","sector_name","data_atestado","dias","cid","medico_emissor","especialidade"], example: ["joao@empresa.com","João Silva","Matriz","Produção","2026-05-02","2","J11","Dra. Ana","Clínico Geral"] },
+      acidentes: { headers: ["employee_email","employee_name","branch_name","sector_name","cargo","data_acidente","tipo_acidente","gravidade","houve_afastamento","dias_afastados"], example: ["joao@empresa.com","João Silva","Matriz","Produção","Operador","2026-04-10","típico","leve","sim","3"] },
+      turnover: { headers: ["employee_email","employee_name","branch_name","sector_name","cargo","data_admissao","data_desligamento","motivo_desligamento"], example: ["joao@empresa.com","João Silva","Matriz","Produção","Operador","2022-01-15","2026-03-20","pedido_demissao"] },
+      disciplinares: { headers: ["employee_email","employee_name","branch_name","sector_name","data_ocorrencia","tipo_ocorrencia","acao","observacao"], example: ["joao@empresa.com","João Silva","Matriz","Produção","2026-02-11","advertência","verbal","atraso recorrente"] },
+    })),
+    overview: adminOrRhProcedure.query(async ({ ctx }) => {
+      const cid = (ctx.user as any).companyId; const db = await getDb();
+      const empty = { absenteismo: 0, atestados: 0, acidentes: 0, turnover: 0, disciplinares: 0 };
+      if (!db || !cid) return empty;
+      const cnt = async (t: string) => { const [r] = await execP(db, `SELECT COUNT(*) AS c FROM ${t} WHERE company_id=?`, [cid]); return Number((r[0] as any)?.c || 0); };
+      return { absenteismo: await cnt("hr_absenteismo"), atestados: await cnt("hr_atestados"), acidentes: await cnt("hr_acidentes"), turnover: await cnt("hr_turnover"), disciplinares: await cnt("hr_disciplinares") };
+    }),
+    importRows: adminOrRhProcedure
+      .input(z.object({ kind: z.enum(["absenteismo","atestados","acidentes","turnover","disciplinares"]), rows: z.array(z.record(z.string())).max(5000) }))
+      .mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId; const db = await getDb();
+        if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST", message: "Empresa não definida." });
+        const MAP: Record<string, { table: string; cols: string[] }> = {
+          absenteismo: { table: "hr_absenteismo", cols: ["employee_email","employee_name","branch_name","sector_name","data_inicial","data_final","dias_afastados","motivo","cid","tipo_afastamento"] },
+          atestados: { table: "hr_atestados", cols: ["employee_email","employee_name","branch_name","sector_name","data_atestado","dias","cid","medico_emissor","especialidade"] },
+          acidentes: { table: "hr_acidentes", cols: ["employee_email","employee_name","branch_name","sector_name","cargo","data_acidente","tipo_acidente","gravidade","houve_afastamento","dias_afastados"] },
+          turnover: { table: "hr_turnover", cols: ["employee_email","employee_name","branch_name","sector_name","cargo","data_admissao","data_desligamento","motivo_desligamento"] },
+          disciplinares: { table: "hr_disciplinares", cols: ["employee_email","employee_name","branch_name","sector_name","data_ocorrencia","tipo_ocorrencia","acao","observacao"] },
+        };
+        const cfg = MAP[input.kind];
+        const normDate = (v: string): string | null => {
+          const sv = String(v || "").trim(); if (!sv) return null;
+          if (/^\d{4}-\d{2}-\d{2}/.test(sv)) return sv.slice(0, 10);
+          const m = sv.match(/^(\d{2})\/(\d{2})\/(\d{4})/); if (m) return `${m[3]}-${m[2]}-${m[1]}`;
+          return null;
+        };
+        let inserted = 0, skipped = 0; const errors: string[] = [];
+        for (const row of input.rows) {
+          const email = String(row.employee_email || "").trim().toLowerCase();
+          if (!email) { skipped++; continue; }
+          const [u] = await execP(db, `SELECT id FROM users WHERE email=? AND company_id=? LIMIT 1`, [email, cid]);
+          const userId = (u[0] as any)?.id ?? null;
+          const fields = ["company_id", "user_id", ...cfg.cols];
+          const values: any[] = [cid, userId, ...cfg.cols.map((c) => {
+            const v: any = row[c];
+            if (v === undefined || v === "") return null;
+            if (c.startsWith("data_")) return normDate(v);
+            if (c === "dias" || c === "dias_afastados") { const n = parseInt(v, 10); return isNaN(n) ? null : n; }
+            return String(v);
+          })];
+          try {
+            await execP(db, `INSERT INTO ${cfg.table} (${fields.join(",")}) VALUES (${fields.map(() => "?").join(",")})`, values);
+            inserted++;
+          } catch (e: any) { if (errors.length < 10) errors.push(`${email}: ${(e?.message || "erro").slice(0, 80)}`); skipped++; }
+        }
+        return { inserted, skipped, errors };
       }),
   }),
 
