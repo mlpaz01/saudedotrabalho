@@ -17674,6 +17674,56 @@ Return only the JSON content object (no wrapper). Format per type:
         };
       }),
 
+    // Auditoria automática de um PGR: aponta não conformidades (lacunas) por
+    // categoria e severidade. Usado pela aba "Auditoria" (AdminPGRAudit).
+    auditPgr: adminOrRhProcedure
+      .input(z.object({ pgrId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        const isGlobal = role === "admin_global" || role === "super_admin";
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const [rows] = await execP(db, `SELECT * FROM pgr_documents WHERE id=?`, [input.pgrId]);
+        const doc = (rows as any[])[0];
+        if (!doc) throw new TRPCError({ code: "NOT_FOUND", message: "PGR não encontrado" });
+        if (!isGlobal && Number(doc.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+        const J = (s: any): any[] => { try { const a = JSON.parse(s || "[]"); return Array.isArray(a) ? a : []; } catch { return []; } };
+        const inv = J(doc.inventario), epi = J(doc.epi_itens);
+        const now = new Date();
+        const parsePrazo = (p: any): Date | null => {
+          const s = String(p ?? "").trim(); if (!s) return null;
+          if (/^\d{4}-\d{2}-\d{2}/.test(s)) return new Date(s);
+          if (/^\d{2}\/\d{2}\/\d{4}/.test(s)) { const [d, m, y] = s.split("/"); return new Date(`${y}-${m}-${d}`); }
+          if (/^\d{2}\/\d{4}/.test(s)) { const [m, y] = s.split("/"); return new Date(`${y}-${m}-01`); }
+          return null;
+        };
+        const findings: any[] = [];
+        const add = (severity: string, category: string, message: string, fix: string | null, code: string) =>
+          findings.push({ severity, category, message, fix, code });
+        if (!String(doc.cnpj ?? "").trim()) add("media", "Cadastro", "CNPJ da empresa não informado", "Preencha o CNPJ na identificação do PGR.", "PGR-CAD-01");
+        if (!String(doc.title ?? doc.razao_social ?? "").trim()) add("baixa", "Cadastro", "Título / razão social não informado", "Informe o título do documento.", "PGR-CAD-02");
+        if (!String(doc.resp_tecnico_nome ?? "").trim()) add("alta", "Responsabilidade Técnica", "PGR sem responsável técnico cadastrado", "Cadastre o RT em PGR › Responsáveis Técnicos.", "PGR-RT-01");
+        if (inv.length === 0) add("alta", "Inventário de Riscos", "Inventário de riscos vazio", "Cadastre os fatores de risco identificados no GHE/GSE.", "PGR-INV-01");
+        let semControle = 0, vencidas = 0, semResp = 0, semSev = 0;
+        for (const it of inv) {
+          if (!String(it.controles ?? "").trim()) semControle++;
+          if (!String(it.severidade ?? "").trim()) semSev++;
+          if (String(it.acoes ?? "").trim() && !String(it.responsavel ?? "").trim()) semResp++;
+          const prazo = parsePrazo(it.prazo);
+          if (prazo && prazo < now && !String(it.status ?? "").toLowerCase().includes("conclu")) vencidas++;
+        }
+        if (semControle > 0) add("media", "Inventário de Riscos", `${semControle} fator(es) sem medidas de controle`, "Defina controles (EPC/EPI/administrativos) para cada fator.", "PGR-INV-02");
+        if (semSev > 0) add("baixa", "Inventário de Riscos", `${semSev} fator(es) sem classificação de severidade`, "Classifique a severidade de cada fator.", "PGR-INV-03");
+        if (semResp > 0) add("media", "Plano de Ação", `${semResp} ação(ões) sem responsável definido`, "Atribua um responsável a cada ação.", "PGR-PA-01");
+        if (vencidas > 0) add("alta", "Plano de Ação", `${vencidas} ação(ões) com prazo vencido`, "Atualize ou conclua as ações vencidas.", "PGR-PA-02");
+        let epiVenc = 0;
+        for (const e of epi) { const v = parsePrazo(e.validade); if (v && v < now) epiVenc++; }
+        if (epiVenc > 0) add("media", "EPI / EPC", `${epiVenc} EPI(s) com validade/CA vencida`, "Substitua ou atualize os EPIs vencidos.", "PGR-EPI-01");
+        if (String(doc.status ?? "") === "rascunho") add("baixa", "Documento", "PGR ainda em rascunho (não publicado)", "Conclua a revisão e publique o PGR.", "PGR-DOC-01");
+        return { findings, total: findings.length, auditedAt: null };
+      }),
+
     getPsychosocialForPGR: adminOrRhProcedure
       .input(z.object({ companyId: z.number().optional() }))
       .query(async ({ ctx, input }) => {
@@ -18289,7 +18339,58 @@ Return only the JSON content object (no wrapper). Format per type:
         for (const u of (rows as any[])) {
           try { await computeWellbeingIndex(Number(u.id), cid); n++; } catch (_) { /* segue */ }
         }
-        return { recomputed: n };
+        return { processed: n, snapshotted: n, recomputed: n };
+      }),
+
+    // Dashboard de Riscos Psicossociais: classifica colaboradores por faixa de
+    // risco a partir do último Índice de Bem-Estar. Faixas: >=80 sem_risco,
+    // 60-79 sinal_precoce, 40-59 risco_moderado, <40 risco_elevado.
+    psychosocialDashboard: adminOrRhProcedure
+      .input(z.object({ branchId: z.number().nullable().optional(), sectorId: z.number().nullable().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        if (!cid) return { bands: { sem_risco: 0, sinal_precoce: 0, risco_moderado: 0, risco_elevado: 0 }, total: 0, evolution: [], bySector: [], topRisk: [] };
+        const db = await getDb();
+        if (!db) return { bands: { sem_risco: 0, sinal_precoce: 0, risco_moderado: 0, risco_elevado: 0 }, total: 0, evolution: [], bySector: [], topRisk: [] };
+        const bId = input?.branchId ?? null, sId = input?.sectorId ?? null;
+        const band = (sc: number) => sc >= 80 ? "sem_risco" : sc >= 60 ? "sinal_precoce" : sc >= 40 ? "risco_moderado" : "risco_elevado";
+        let where = "WHERE u.company_id=? AND u.is_active=1";
+        const params: any[] = [cid];
+        if (bId) { where += " AND u.branch_id=?"; params.push(bId); }
+        if (sId) { where += " AND u.sector_id=?"; params.push(sId); }
+        // último snapshot por colaborador
+        const [rows] = await execP(db, `
+          SELECT u.id AS userId, u.name, b.name AS branch, s.name AS sector, wi.score
+          FROM users u
+          LEFT JOIN branches b ON b.id=u.branch_id
+          LEFT JOIN sectors s ON s.id=u.sector_id
+          LEFT JOIN wellbeing_index wi ON wi.user_id=u.id
+            AND wi.snapshot_month=(SELECT MAX(w2.snapshot_month) FROM wellbeing_index w2 WHERE w2.user_id=u.id)
+          ${where}`, params);
+        const people = (rows as any[]).filter((r) => r.score != null).map((r) => ({ ...r, score: Number(r.score), band: band(Number(r.score)) }));
+        const bands = { sem_risco: 0, sinal_precoce: 0, risco_moderado: 0, risco_elevado: 0 } as Record<string, number>;
+        const bySectorMap = new Map<string, any>();
+        for (const p of people) {
+          bands[p.band]++;
+          const sk = p.sector ?? "Sem setor";
+          if (!bySectorMap.has(sk)) bySectorMap.set(sk, { name: sk, sem_risco: 0, sinal_precoce: 0, risco_moderado: 0, risco_elevado: 0 });
+          bySectorMap.get(sk)[p.band]++;
+        }
+        const bySector = [...bySectorMap.values()].map((s) => {
+          const tot = s.sem_risco + s.sinal_precoce + s.risco_moderado + s.risco_elevado;
+          return { ...s, riskPct: tot ? Math.round(((s.risco_moderado + s.risco_elevado) / tot) * 100) : 0 };
+        }).sort((a, b) => b.riskPct - a.riskPct);
+        const topRisk = people.filter((p) => p.band !== "sem_risco").sort((a, b) => a.score - b.score).slice(0, 15)
+          .map((p) => ({ userId: p.userId, name: p.name, branch: p.branch, sector: p.sector, band: p.band, score: p.score }));
+        // evolução (média mensal, últimos 6 meses)
+        const [evoRows] = await execP(db, `
+          SELECT wi.snapshot_month AS month, ROUND(AVG(wi.score)) AS avgScore,
+                 SUM(wi.score < 40) AS elevado, SUM(wi.score >= 40 AND wi.score < 60) AS moderado
+          FROM wellbeing_index wi JOIN users u ON u.id=wi.user_id
+          ${where}
+          GROUP BY wi.snapshot_month ORDER BY wi.snapshot_month DESC LIMIT 6`, params);
+        const evolution = (evoRows as any[]).reverse().map((e) => ({ month: e.month, avgScore: Number(e.avgScore) || 0, elevado: Number(e.elevado) || 0, moderado: Number(e.moderado) || 0 }));
+        return { bands, total: people.length, evolution, bySector, topRisk };
       }),
     // === Overview KPIs ===
     overview: adminOrRhProcedure
