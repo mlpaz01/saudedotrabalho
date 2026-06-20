@@ -17921,8 +17921,8 @@ Return only the JSON content object (no wrapper). Format per type:
       const db = await getDb();
       if (!db) return null;
       const rows: any = isGlobal
-        ? await db.execute(drzSql`SELECT id, titulo, status, inventario, epi_itens, gse_grupos, epc_itens, updated_at FROM pgr_documents ORDER BY updated_at DESC LIMIT 200`)
-        : await db.execute(drzSql`SELECT id, titulo, status, inventario, epi_itens, gse_grupos, epc_itens, updated_at FROM pgr_documents WHERE company_id=${cid} ORDER BY updated_at DESC LIMIT 200`);
+        ? await db.execute(drzSql`SELECT id, title AS titulo, status, inventario, epi_itens, gse_grupos, epc_itens, updated_at FROM pgr_documents ORDER BY updated_at DESC LIMIT 200`)
+        : await db.execute(drzSql`SELECT id, title AS titulo, status, inventario, epi_itens, gse_grupos, epc_itens, updated_at FROM pgr_documents WHERE company_id=${cid} ORDER BY updated_at DESC LIMIT 200`);
       const docs = (rows as any)[0] ?? [];
 
       const statusCounts: Record<string, number> = { rascunho: 0, em_revisao: 0, aprovado: 0, publicado: 0 };
@@ -20051,7 +20051,6 @@ Return only the JSON content object (no wrapper). Format per type:
         FROM training_programs tp
         LEFT JOIN training_program_factors tpf ON tpf.program_id = tp.id
         WHERE tp.is_active = 1
-          AND (tp.company_id = ${cid} OR tp.company_id IS NULL)
         GROUP BY tp.id
         ORDER BY tp.order_index, tp.id
       `);
