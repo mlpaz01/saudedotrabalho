@@ -38,7 +38,7 @@ function Kpi({ icon, label, value, tone }: { icon: React.ReactNode; label: strin
 
 export default function AdminDenunciaIndicadores() {
   const { user } = useAuth();
-  const tree = trpc.admin.hierarchyTree.useQuery();
+  const tree = trpc.lessons.hierarchyTree.useQuery();
   const companies = useMemo(
     () => (tree.data ?? []).map((c: any) => ({ id: c.company.id, name: c.company.name })),
     [tree.data]

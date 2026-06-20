@@ -135,7 +135,7 @@ function CampaignWizard({ onDone }: { onDone: () => void }) {
   const [scheduleType, setScheduleType] = useState<"now" | "scheduled" | "recurring">("now");
   const [scheduledAt, setScheduledAt] = useState<string>("");
 
-  const tree = trpc.admin.hierarchyTree.useQuery();
+  const tree = trpc.lessons.hierarchyTree.useQuery();
 
   // Companies the current user can act on. RH sees only their own (1); Admin Global sees many.
   const companies = useMemo(
