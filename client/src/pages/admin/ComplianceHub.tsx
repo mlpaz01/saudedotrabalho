@@ -1,4 +1,4 @@
-﻿import { useState } from "react";
+import { useState } from "react";
 import AppLayout from "@/components/AppLayout";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -23,17 +23,17 @@ const AXIS_ICONS: Record<string, any> = {
 };
 
 const DOCS_OFICIAIS = [
-  { titulo: "Texto Oficial NR-01 Atualizado", descricao: "Portaria MTE nÂº 1.419/2024 â€” DisposiÃ§Ãµes Gerais e GRO", url: "https://www.gov.br/trabalho-e-emprego/pt-br/acesso-a-informacao/participacao-social/consultas-publicas/arquivos/nr-01_atualizada2024.pdf", tag: "NR-01" },
-  { titulo: "Guia de Fatores de Risco Psicossociais", descricao: "Guia prÃ¡tico do MTE sobre identificaÃ§Ã£o e gestÃ£o de riscos psicossociais", url: "https://www.gov.br/trabalho-e-emprego/pt-br/acesso-a-informacao/participacao-social/consultas-publicas/arquivos/guia-riscos-psicossociais.pdf", tag: "Psicossocial" },
-  { titulo: "Manual do GRO / PGR", descricao: "Manual de orientaÃ§Ãµes para elaboraÃ§Ã£o do Programa de Gerenciamento de Riscos", url: "https://www.gov.br/trabalho-e-emprego/pt-br/acesso-a-informacao/participacao-social/consultas-publicas/arquivos/manual-gro-pgr.pdf", tag: "GRO/PGR" },
-  { titulo: "Perguntas e Respostas â€” NR-01", descricao: "FAQ oficial do MinistÃ©rio do Trabalho e Emprego sobre a NR-01", url: "https://www.gov.br/trabalho-e-emprego/pt-br/assuntos/inspecao-do-trabalho/seguranca-e-saude-no-trabalho/ctpp-nrs/normas-regulamentadoras/nr-01", tag: "FAQ" },
-  { titulo: "Portaria MTE 1.419/2024", descricao: "Portaria que aprova as alteraÃ§Ãµes da NR-01 incluindo riscos psicossociais", url: "https://www.gov.br/trabalho-e-emprego/pt-br/acesso-a-informacao/participacao-social/consultas-publicas/arquivos/portaria-1419-2024.pdf", tag: "LegislaÃ§Ã£o" },
-  { titulo: "Nota TÃ©cnica â€” AvaliaÃ§Ã£o Psicossocial", descricao: "OrientaÃ§Ãµes tÃ©cnicas sobre instrumentos e metodologias aceitas pela fiscalizaÃ§Ã£o", url: "https://www.gov.br/trabalho-e-emprego/pt-br/acesso-a-informacao/participacao-social/consultas-publicas/arquivos/nota-tecnica-psicossocial.pdf", tag: "Nota TÃ©cnica" },
+  { titulo: "Texto Oficial NR-01 Atualizado", descricao: "Portaria MTE nº 1.419/2024 — Disposições Gerais e GRO", url: "https://www.gov.br/trabalho-e-emprego/pt-br/acesso-a-informacao/participacao-social/consultas-publicas/arquivos/nr-01_atualizada2024.pdf", tag: "NR-01" },
+  { titulo: "Guia de Fatores de Risco Psicossociais", descricao: "Guia prático do MTE sobre identificação e gestão de riscos psicossociais", url: "https://www.gov.br/trabalho-e-emprego/pt-br/acesso-a-informacao/participacao-social/consultas-publicas/arquivos/guia-riscos-psicossociais.pdf", tag: "Psicossocial" },
+  { titulo: "Manual do GRO / PGR", descricao: "Manual de orientações para elaboração do Programa de Gerenciamento de Riscos", url: "https://www.gov.br/trabalho-e-emprego/pt-br/acesso-a-informacao/participacao-social/consultas-publicas/arquivos/manual-gro-pgr.pdf", tag: "GRO/PGR" },
+  { titulo: "Perguntas e Respostas — NR-01", descricao: "FAQ oficial do Ministério do Trabalho e Emprego sobre a NR-01", url: "https://www.gov.br/trabalho-e-emprego/pt-br/assuntos/inspecao-do-trabalho/seguranca-e-saude-no-trabalho/ctpp-nrs/normas-regulamentadoras/nr-01", tag: "FAQ" },
+  { titulo: "Portaria MTE 1.419/2024", descricao: "Portaria que aprova as alterações da NR-01 incluindo riscos psicossociais", url: "https://www.gov.br/trabalho-e-emprego/pt-br/acesso-a-informacao/participacao-social/consultas-publicas/arquivos/portaria-1419-2024.pdf", tag: "Legislação" },
+  { titulo: "Nota Técnica — Avaliação Psicossocial", descricao: "Orientações técnicas sobre instrumentos e metodologias aceitas pela fiscalização", url: "https://www.gov.br/trabalho-e-emprego/pt-br/acesso-a-informacao/participacao-social/consultas-publicas/arquivos/nota-tecnica-psicossocial.pdf", tag: "Nota Técnica" },
 ];
 
 function ScoreGauge({ score }: { score: number }) {
   const color = score >= 70 ? "#059669" : score >= 40 ? "#D97706" : "#DC2626";
-  const label = score >= 70 ? "Pronto para FiscalizaÃ§Ã£o" : score >= 40 ? "Conformidade parcial" : "AtenÃ§Ã£o necessÃ¡ria";
+  const label = score >= 70 ? "Pronto para Fiscalização" : score >= 40 ? "Conformidade parcial" : "Atenção necessária";
   const dash = Math.round((score / 100) * 188);
   return (
     <div className="text-center flex-shrink-0">
@@ -49,8 +49,8 @@ function ScoreGauge({ score }: { score: number }) {
 
 function ComplianceSeal({ score }: { score: number }) {
   const seals = [
-    { min: 40, label: "GestÃ£o Psicossocial Ativa" },
-    { min: 60, label: "EvidÃªncias AuditÃ¡veis" },
+    { min: 40, label: "Gestão Psicossocial Ativa" },
+    { min: 60, label: "Evidências Auditáveis" },
     { min: 80, label: "Conformidade NR-01 Monitorada" },
   ].filter(s => score >= s.min);
   if (!seals.length) return null;
@@ -58,10 +58,10 @@ function ComplianceSeal({ score }: { score: number }) {
     <div className="flex flex-wrap gap-2 mt-3">
       {seals.map(s => (
         <span key={s.label} className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold">
-          ðŸ† {s.label}
+          🏆 {s.label}
         </span>
       ))}
-      <p className="w-full text-xs text-slate-400 mt-0.5">Selos calculados com base em evidÃªncias reais na plataforma. NÃ£o representam certificaÃ§Ã£o oficial.</p>
+      <p className="w-full text-xs text-slate-400 mt-0.5">Selos calculados com base em evidências reais na plataforma. Não representam certificação oficial.</p>
     </div>
   );
 }
@@ -79,7 +79,7 @@ export default function ComplianceHub() {
   const evidQ    = trpc.compliance.nr01Evidences.useQuery();
   const simMut   = trpc.compliance.simulateFiscalizacao.useMutation({
     onSuccess: (r) => { setSimResult(r); setSimRunning(false); },
-    onError:   (e) => { toast.error(e?.message ?? "Erro na simulaÃ§Ã£o"); setSimRunning(false); },
+    onError:   (e) => { toast.error(e?.message ?? "Erro na simulação"); setSimRunning(false); },
   });
 
   const st    = statusQ.data;
@@ -87,10 +87,10 @@ export default function ComplianceHub() {
   const axes  = (st?.axes ?? []) as any[];
 
   const TABS: { id: TabId; label: string; icon: any }[] = [
-    { id: "overview",     label: "VisÃ£o Geral",          icon: BarChart3 },
-    { id: "fiscalizacao", label: "Simular FiscalizaÃ§Ã£o", icon: ClipboardCheck },
-    { id: "evidencias",   label: "EvidÃªncias",           icon: FileSearch },
-    { id: "dossie",       label: "DossiÃª Individual",    icon: Users },
+    { id: "overview",     label: "Visão Geral",          icon: BarChart3 },
+    { id: "fiscalizacao", label: "Simular Fiscalização", icon: ClipboardCheck },
+    { id: "evidencias",   label: "Evidências",           icon: FileSearch },
+    { id: "dossie",       label: "Dossiê Individual",    icon: Users },
     { id: "documentos",   label: "Documentos Oficiais",  icon: Download },
   ];
 
@@ -106,7 +106,7 @@ export default function ComplianceHub() {
             </div>
             <div>
               <h1 className="text-2xl font-bold" style={{ fontFamily: "'Playfair Display', serif" }}>Central de Conformidade NR-01</h1>
-              <p className="text-sm text-slate-500">ProntidÃ£o para fiscalizaÃ§Ãµes Â· EvidÃªncias auditÃ¡veis Â· GestÃ£o dos 13 fatores de risco psicossocial</p>
+              <p className="text-sm text-slate-500">Prontidão para fiscalizações · Evidências auditáveis · Gestão dos 13 fatores de risco psicossocial</p>
             </div>
           </div>
         </div>
@@ -121,7 +121,7 @@ export default function ComplianceHub() {
           ))}
         </div>
 
-        {/* â”€â”€ VISÃƒO GERAL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+        {/* ── VISÃO GERAL ───────────────────────────────────────────────────── */}
         {tab === "overview" && (
           <div className="space-y-5">
             {statusQ.isLoading ? (
@@ -131,10 +131,10 @@ export default function ComplianceHub() {
                 <div className="bg-white rounded-xl border p-6 flex flex-col md:flex-row items-center gap-8">
                   <ScoreGauge score={score} />
                   <div className="flex-1 min-w-0">
-                    <h2 className="font-semibold text-lg mb-1">Ãndice de Conformidade NR-01</h2>
+                    <h2 className="font-semibold text-lg mb-1">Índice de Conformidade NR-01</h2>
                     <p className="text-sm text-slate-500 mb-3">
-                      Calculado automaticamente: ciclos ativos, inventÃ¡rio, plano de aÃ§Ã£o,
-                      participaÃ§Ã£o nas pesquisas, treinamentos e evidÃªncias documentais.
+                      Calculado automaticamente: ciclos ativos, inventário, plano de ação,
+                      participação nas pesquisas, treinamentos e evidências documentais.
                     </p>
                     <ComplianceSeal score={score} />
                   </div>
@@ -182,7 +182,7 @@ export default function ComplianceHub() {
 
                 {(st?.ranking ?? []).length > 0 && (
                   <div className="bg-white rounded-xl border p-5">
-                    <h3 className="font-semibold text-sm mb-3 flex items-center gap-2"><Building2 size={15} /> Ranking de ConclusÃ£o por Setor</h3>
+                    <h3 className="font-semibold text-sm mb-3 flex items-center gap-2"><Building2 size={15} /> Ranking de Conclusão por Setor</h3>
                     <div className="space-y-2">
                       {(st!.ranking as any[]).map((r: any, i: number) => (
                         <div key={i} className="flex items-center gap-3 text-sm">
@@ -202,15 +202,15 @@ export default function ComplianceHub() {
           </div>
         )}
 
-        {/* â”€â”€ SIMULAR FISCALIZAÃ‡ÃƒO â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+        {/* ── SIMULAR FISCALIZAÇÃO ──────────────────────────────────────────── */}
         {tab === "fiscalizacao" && (
           <div className="space-y-5">
             <div className="bg-white rounded-xl border p-6">
-              <h2 className="font-semibold text-lg mb-2">SimulaÃ§Ã£o de FiscalizaÃ§Ã£o NR-01</h2>
+              <h2 className="font-semibold text-lg mb-2">Simulação de Fiscalização NR-01</h2>
               <p className="text-sm text-slate-500 mb-4">
                 Analisa automaticamente os mesmos 6 eixos verificados por um Auditor Fiscal do Trabalho
-                em fiscalizaÃ§Ãµes de riscos psicossociais: inventÃ¡rio, plano de aÃ§Ã£o, participaÃ§Ã£o,
-                fatores de risco, capacitaÃ§Ã£o e evidÃªncias.
+                em fiscalizações de riscos psicossociais: inventário, plano de ação, participação,
+                fatores de risco, capacitação e evidências.
               </p>
               <div className="flex flex-wrap gap-3">
                 <Button onClick={() => { setSimRunning(true); setSimResult(null); simMut.mutate(); }}
@@ -232,8 +232,8 @@ export default function ComplianceHub() {
             {simRunning && (
               <div className="text-center py-12 bg-white rounded-xl border">
                 <Loader2 size={32} className="mx-auto mb-3 animate-spin text-emerald-500" />
-                <p className="font-medium text-slate-700">Cruzando dados da empresa com os critÃ©rios da NR-01...</p>
-                <p className="text-xs text-slate-400 mt-1">InventÃ¡rio Â· Plano de aÃ§Ã£o Â· ParticipaÃ§Ã£o Â· CapacitaÃ§Ã£o Â· EvidÃªncias</p>
+                <p className="font-medium text-slate-700">Cruzando dados da empresa com os critérios da NR-01...</p>
+                <p className="text-xs text-slate-400 mt-1">Inventário · Plano de ação · Participação · Capacitação · Evidências</p>
               </div>
             )}
 
@@ -243,7 +243,7 @@ export default function ComplianceHub() {
                   {[
                     { key: "conformidades", label: "Conformidades",     Icon: CheckCircle2,  bg: "emerald" },
                     { key: "alertas",       label: "Alertas",           Icon: AlertTriangle, bg: "amber" },
-                    { key: "nao_conf",      label: "NÃ£o Conformidades", Icon: AlertOctagon,  bg: "rose" },
+                    { key: "nao_conf",      label: "Não Conformidades", Icon: AlertOctagon,  bg: "rose" },
                   ].map(({ key, label, Icon, bg }) => (
                     <div key={key} className={`bg-${bg}-50 border border-${bg}-200 rounded-xl p-4 text-center`}>
                       <Icon size={22} className={`mx-auto text-${bg}-600 mb-1`} />
@@ -254,9 +254,9 @@ export default function ComplianceHub() {
                 </div>
 
                 {[
-                  { key: "conformidades", title: "âœ… Conformidades",       c: "emerald" },
-                  { key: "alertas",       title: "âš ï¸ Alertas",             c: "amber" },
-                  { key: "nao_conf",      title: "âŒ NÃ£o Conformidades",   c: "rose" },
+                  { key: "conformidades", title: "✅ Conformidades",       c: "emerald" },
+                  { key: "alertas",       title: "⚠️ Alertas",             c: "amber" },
+                  { key: "nao_conf",      title: "❌ Não Conformidades",   c: "rose" },
                 ].map(({ key, title, c }) => {
                   const items: any[] = simResult[key] ?? [];
                   if (!items.length) return null;
@@ -268,9 +268,9 @@ export default function ComplianceHub() {
                       <div className="divide-y">
                         {items.map((item: any, i: number) => (
                           <div key={i} className="px-5 py-3">
-                            <div className="font-medium text-sm">{item.eixo} â€” {item.check}</div>
+                            <div className="font-medium text-sm">{item.eixo} — {item.check}</div>
                             {item.detail && <div className="text-xs text-slate-500 mt-0.5">{item.detail}</div>}
-                            {item.acao  && <div className={`text-xs text-${c}-700 mt-1 font-medium`}>ðŸ’¡ {item.acao}</div>}
+                            {item.acao  && <div className={`text-xs text-${c}-700 mt-1 font-medium`}>💡 {item.acao}</div>}
                           </div>
                         ))}
                       </div>
@@ -279,19 +279,19 @@ export default function ComplianceHub() {
                 })}
 
                 <Button variant="outline" className="w-full gap-2" onClick={() => window.print()}>
-                  <Printer size={15} /> Imprimir RelatÃ³rio da SimulaÃ§Ã£o
+                  <Printer size={15} /> Imprimir Relatório da Simulação
                 </Button>
               </div>
             )}
           </div>
         )}
 
-        {/* â”€â”€ EVIDÃŠNCIAS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+        {/* ── EVIDÊNCIAS ────────────────────────────────────────────────────── */}
         {tab === "evidencias" && (
           <div className="space-y-4">
             <div className="bg-white rounded-xl border p-5">
-              <h2 className="font-semibold text-lg mb-1">EvidÃªncias Vinculadas NR-01</h2>
-              <p className="text-sm text-slate-500">Registros auditÃ¡veis gerados automaticamente â€” disponÃ­veis para fiscalizaÃ§Ãµes e processos judiciais.</p>
+              <h2 className="font-semibold text-lg mb-1">Evidências Vinculadas NR-01</h2>
+              <p className="text-sm text-slate-500">Registros auditáveis gerados automaticamente — disponíveis para fiscalizações e processos judiciais.</p>
             </div>
             {evidQ.isLoading ? (
               <div className="flex justify-center py-8"><Loader2 className="animate-spin text-slate-400" /></div>
@@ -332,20 +332,20 @@ export default function ComplianceHub() {
           </div>
         )}
 
-        {/* â”€â”€ DOSSIÃŠ INDIVIDUAL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+        {/* ── DOSSIÊ INDIVIDUAL ─────────────────────────────────────────────── */}
         {tab === "dossie" && (
           <div className="space-y-4">
             <div className="bg-white rounded-xl border p-5 print:hidden">
-              <h2 className="font-semibold text-lg mb-3">DossiÃª Individual do Colaborador</h2>
+              <h2 className="font-semibold text-lg mb-3">Dossiê Individual do Colaborador</h2>
               <p className="text-sm text-slate-500 mb-4">
-                Trilha completa por colaborador: cursos, certificados, aceites eletrÃ´nicos (com IP e timestamp),
+                Trilha completa por colaborador: cursos, certificados, aceites eletrônicos (com IP e timestamp),
                 tentativas de quiz e trilha de auditoria.
               </p>
               <div className="flex gap-3 items-center">
                 <select className="flex-1 max-w-sm border rounded-lg px-3 py-2 text-sm bg-white"
                   value={dossieUserId ?? ""}
                   onChange={(e) => setDossieUserId(e.target.value ? Number(e.target.value) : null)}>
-                  <option value="">â€” Selecione um colaborador â€”</option>
+                  <option value="">— Selecione um colaborador —</option>
                   {(usersQ.data ?? []).map((u: any) => (
                     <option key={u.id} value={u.id}>{u.name ?? u.email} ({u.email})</option>
                   ))}
@@ -367,7 +367,7 @@ export default function ComplianceHub() {
                   <div className="bg-white rounded-xl border p-5">
                     <h3 className="font-semibold mb-3 text-sm flex items-center gap-2"><Users size={14} /> Dados do Colaborador</h3>
                     <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
-                      {[["Nome", r.user?.name ?? "â€”"], ["E-mail", r.user?.email ?? "â€”"], ["FunÃ§Ã£o", r.user?.role ?? "â€”"], ["ID", String(r.user?.id ?? "â€”")], ["Cadastro", r.user?.createdAt ? new Date(r.user.createdAt).toLocaleDateString("pt-BR") : "â€”"]].map(([k, v]) => (
+                      {[["Nome", r.user?.name ?? "—"], ["E-mail", r.user?.email ?? "—"], ["Função", r.user?.role ?? "—"], ["ID", String(r.user?.id ?? "—")], ["Cadastro", r.user?.createdAt ? new Date(r.user.createdAt).toLocaleDateString("pt-BR") : "—"]].map(([k, v]) => (
                         <div key={k}><div className="text-xs text-slate-400 mb-0.5">{k}</div><div className="font-medium">{v}</div></div>
                       ))}
                     </div>
@@ -377,13 +377,13 @@ export default function ComplianceHub() {
                     <h3 className="font-semibold mb-3 text-sm flex items-center gap-2"><BookOpen size={14} /> Certificados ({r.certs?.length ?? 0})</h3>
                     {!r.certs?.length ? <p className="text-sm text-slate-400">Nenhum certificado emitido.</p> : (
                       <table className="w-full text-xs">
-                        <thead className="bg-slate-50 text-left"><tr><th className="p-2">CÃ³digo</th><th className="p-2">Curso</th><th className="p-2">Data</th></tr></thead>
+                        <thead className="bg-slate-50 text-left"><tr><th className="p-2">Código</th><th className="p-2">Curso</th><th className="p-2">Data</th></tr></thead>
                         <tbody>
                           {r.certs.map((c: any) => (
                             <tr key={c.id} className="border-t">
                               <td className="p-2 font-mono">{c.certificateCode}</td>
                               <td className="p-2">Curso #{c.moduleId}</td>
-                              <td className="p-2">{c.issuedAt ? new Date(c.issuedAt).toLocaleString("pt-BR") : "â€”"}</td>
+                              <td className="p-2">{c.issuedAt ? new Date(c.issuedAt).toLocaleString("pt-BR") : "—"}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -392,12 +392,12 @@ export default function ComplianceHub() {
                   </div>
 
                   <div className="bg-white rounded-xl border p-5">
-                    <h3 className="font-semibold mb-3 text-sm flex items-center gap-2"><CheckCircle2 size={14} /> Aceites EletrÃ´nicos ({r.acceptances?.length ?? 0})</h3>
+                    <h3 className="font-semibold mb-3 text-sm flex items-center gap-2"><CheckCircle2 size={14} /> Aceites Eletrônicos ({r.acceptances?.length ?? 0})</h3>
                     {!r.acceptances?.length ? <p className="text-sm text-slate-400">Nenhum aceite registrado.</p> : (
                       <div className="space-y-2">
                         {r.acceptances.map((a: any) => (
                           <div key={a.id} className="border rounded-lg p-3 text-xs">
-                            <div className="text-slate-400 mb-1">Curso #{a.moduleId} Â· {a.acceptedAt ? new Date(a.acceptedAt).toLocaleString("pt-BR") : "â€”"} Â· IP: {a.ipAddress ?? "â€”"}</div>
+                            <div className="text-slate-400 mb-1">Curso #{a.moduleId} · {a.acceptedAt ? new Date(a.acceptedAt).toLocaleString("pt-BR") : "—"} · IP: {a.ipAddress ?? "—"}</div>
                             <p className="italic text-slate-700">"{a.termText}"</p>
                           </div>
                         ))}
@@ -406,18 +406,18 @@ export default function ComplianceHub() {
                   </div>
 
                   <div className="bg-white rounded-xl border p-5">
-                    <h3 className="font-semibold mb-3 text-sm flex items-center gap-2"><ClipboardCheck size={14} /> AvaliaÃ§Ãµes ({r.attempts?.length ?? 0})</h3>
+                    <h3 className="font-semibold mb-3 text-sm flex items-center gap-2"><ClipboardCheck size={14} /> Avaliações ({r.attempts?.length ?? 0})</h3>
                     {!r.attempts?.length ? <p className="text-sm text-slate-400">Nenhuma tentativa registrada.</p> : (
                       <table className="w-full text-xs">
-                        <thead className="bg-slate-50 text-left"><tr><th className="p-2">Quiz</th><th className="p-2">PontuaÃ§Ã£o</th><th className="p-2">Status</th><th className="p-2">Data</th><th className="p-2">IP</th></tr></thead>
+                        <thead className="bg-slate-50 text-left"><tr><th className="p-2">Quiz</th><th className="p-2">Pontuação</th><th className="p-2">Status</th><th className="p-2">Data</th><th className="p-2">IP</th></tr></thead>
                         <tbody>
                           {r.attempts.map((a: any) => (
                             <tr key={a.id} className="border-t">
                               <td className="p-2">#{a.quizId}</td>
                               <td className="p-2">{a.score}%</td>
                               <td className="p-2">{a.passed ? <span className="text-emerald-600 font-medium">Aprovado</span> : <span className="text-rose-600">Reprovado</span>}</td>
-                              <td className="p-2">{a.startedAt ? new Date(a.startedAt).toLocaleString("pt-BR") : "â€”"}</td>
-                              <td className="p-2 font-mono">{a.ipAddress ?? "â€”"}</td>
+                              <td className="p-2">{a.startedAt ? new Date(a.startedAt).toLocaleString("pt-BR") : "—"}</td>
+                              <td className="p-2 font-mono">{a.ipAddress ?? "—"}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -428,16 +428,16 @@ export default function ComplianceHub() {
                   <div className="bg-white rounded-xl border p-5">
                     <h3 className="font-semibold mb-3 text-sm flex items-center gap-2"><FileSearch size={14} /> Trilha de Auditoria</h3>
                     <table className="w-full text-xs">
-                      <thead className="bg-slate-50 text-left"><tr><th className="p-2">Quando</th><th className="p-2">AÃ§Ã£o</th><th className="p-2">Entidade</th><th className="p-2">IP</th></tr></thead>
+                      <thead className="bg-slate-50 text-left"><tr><th className="p-2">Quando</th><th className="p-2">Ação</th><th className="p-2">Entidade</th><th className="p-2">IP</th></tr></thead>
                       <tbody>
                         {!(r.auditTrail ?? []).length ? (
                           <tr><td colSpan={4} className="p-3 text-center text-slate-400">Nenhum evento registrado.</td></tr>
                         ) : r.auditTrail.map((l: any) => (
                           <tr key={l.id} className="border-t">
-                            <td className="p-2">{l.createdAt ? new Date(l.createdAt).toLocaleString("pt-BR") : "â€”"}</td>
+                            <td className="p-2">{l.createdAt ? new Date(l.createdAt).toLocaleString("pt-BR") : "—"}</td>
                             <td className="p-2 font-mono">{l.action}</td>
-                            <td className="p-2">{l.entityType ? `${l.entityType}#${l.entityId}` : "â€”"}</td>
-                            <td className="p-2 font-mono">{l.ipAddress ?? "â€”"}</td>
+                            <td className="p-2">{l.entityType ? `${l.entityType}#${l.entityId}` : "—"}</td>
+                            <td className="p-2 font-mono">{l.ipAddress ?? "—"}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -449,12 +449,12 @@ export default function ComplianceHub() {
           </div>
         )}
 
-        {/* â”€â”€ DOCUMENTOS OFICIAIS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+        {/* ── DOCUMENTOS OFICIAIS ───────────────────────────────────────────── */}
         {tab === "documentos" && (
           <div className="space-y-4">
             <div className="bg-white rounded-xl border p-5">
               <h2 className="font-semibold text-lg mb-1">Documentos Oficiais NR-01</h2>
-              <p className="text-sm text-slate-500">Links diretos para fontes oficiais do MinistÃ©rio do Trabalho e Emprego relacionados Ã  NR-01.</p>
+              <p className="text-sm text-slate-500">Links diretos para fontes oficiais do Ministério do Trabalho e Emprego relacionados à NR-01.</p>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {DOCS_OFICIAIS.map((doc) => (
@@ -477,8 +477,8 @@ export default function ComplianceHub() {
               ))}
             </div>
             <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-xs text-amber-800">
-              <strong>Aviso:</strong> Links apontam para documentos do MinistÃ©rio do Trabalho e Emprego.
-              Se algum link estiver indisponÃ­vel, acesse diretamente{" "}
+              <strong>Aviso:</strong> Links apontam para documentos do Ministério do Trabalho e Emprego.
+              Se algum link estiver indisponível, acesse diretamente{" "}
               <a href="https://www.gov.br/trabalho-e-emprego" target="_blank" rel="noreferrer" className="underline font-medium">www.gov.br/trabalho-e-emprego</a>.
             </div>
           </div>

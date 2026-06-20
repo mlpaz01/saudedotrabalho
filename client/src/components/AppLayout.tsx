@@ -1,5 +1,6 @@
 ﻿import { useAuth } from "@/_core/hooks/useAuth";
 import { useEntitlements } from "@/_core/hooks/useEntitlements";
+import { APP_VERSION } from "@/version";
 import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard, BookOpen, Award, Leaf, LogOut,
@@ -728,6 +729,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <ImpersonationBanner />
 
           <main className="sdt-content">{children}</main>
+          <footer style={{ textAlign: "center", padding: "12px 0 16px", fontSize: 11, color: "#9aa0a6" }}>
+            Saúde do Trabalho · v{APP_VERSION}
+          </footer>
         </div>
       </div>
     </>
