@@ -17628,6 +17628,52 @@ Return only the JSON content object (no wrapper). Format per type:
         return { ok: true };
       }),
 
+    // Resumo executivo de um PGR: indicadores de inventário, matriz e plano de ação.
+    // Usado pela aba "Executivo" (AdminPGRExecutive).
+    executiveOverview: adminOrRhProcedure
+      .input(z.object({ pgrId: z.number() }))
+      .query(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        const isGlobal = role === "admin_global" || role === "super_admin";
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const [rows] = await execP(db, `SELECT * FROM pgr_documents WHERE id=?`, [input.pgrId]);
+        const doc = (rows as any[])[0];
+        if (!doc) throw new TRPCError({ code: "NOT_FOUND", message: "PGR não encontrado" });
+        if (!isGlobal && Number(doc.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+        const J = (s: any): any[] => { try { const a = JSON.parse(s || "[]"); return Array.isArray(a) ? a : []; } catch { return []; } };
+        const inv = J(doc.inventario), ghe = J(doc.ghe_funcoes), gse = J(doc.gse_grupos), epc = J(doc.epc_itens), epi = J(doc.epi_itens);
+        const matrix: Record<"baixo" | "medio" | "alto" | "critico", number> = { baixo: 0, medio: 0, alto: 0, critico: 0 };
+        const sevMap: Record<string, "baixo" | "medio" | "alto" | "critico"> = { baixa: "baixo", baixo: "baixo", moderada: "medio", media: "medio", medio: "medio", alta: "alto", alto: "alto", critica: "critico", critico: "critico" };
+        const actionPlan = { pendente: 0, em_andamento: 0, concluido: 0, vencido: 0 };
+        const now = new Date();
+        const parsePrazo = (p: any): Date | null => {
+          const s = String(p ?? "").trim(); if (!s) return null;
+          if (/^\d{4}-\d{2}-\d{2}/.test(s)) return new Date(s);
+          if (/^\d{2}\/\d{2}\/\d{4}/.test(s)) { const [d, m, y] = s.split("/"); return new Date(`${y}-${m}-${d}`); }
+          return null;
+        };
+        for (const it of inv) {
+          const sev = sevMap[String(it.severidade ?? "").toLowerCase()];
+          if (sev) matrix[sev]++;
+          const hasAction = String(it.acoes ?? "").trim() || String(it.responsavel ?? "").trim();
+          if (hasAction) {
+            const status = String(it.status ?? "").toLowerCase();
+            const prazo = parsePrazo(it.prazo);
+            if (status.includes("conclu")) actionPlan.concluido++;
+            else if (status.includes("andamento")) actionPlan.em_andamento++;
+            else if (prazo && prazo < now) actionPlan.vencido++;
+            else actionPlan.pendente++;
+          }
+        }
+        return {
+          inventory: { totalGheGse: ghe.length + gse.length, trabalhadoresExpostos: Number(doc.num_funcionarios) || 0, epc: epc.length, epi: epi.length },
+          matrix,
+          actionPlan,
+        };
+      }),
+
     getPsychosocialForPGR: adminOrRhProcedure
       .input(z.object({ companyId: z.number().optional() }))
       .query(async ({ ctx, input }) => {
@@ -18229,6 +18275,22 @@ Return only the JSON content object (no wrapper). Format per type:
 
 
   analytics: router({
+    // Recalcula o Índice de Bem-Estar de todos os colaboradores ativos da empresa.
+    // Usado pelo botão "Recalcular índice" do Dashboard de Riscos Psicossociais.
+    recomputeWellbeing: adminOrRhProcedure
+      .input(z.object({}).optional())
+      .mutation(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId;
+        if (!cid) return { recomputed: 0 };
+        const db = await getDb();
+        if (!db) return { recomputed: 0 };
+        const [rows] = await execP(db, `SELECT id FROM users WHERE company_id=? AND is_active=1`, [cid]);
+        let n = 0;
+        for (const u of (rows as any[])) {
+          try { await computeWellbeingIndex(Number(u.id), cid); n++; } catch (_) { /* segue */ }
+        }
+        return { recomputed: n };
+      }),
     // === Overview KPIs ===
     overview: adminOrRhProcedure
       .input(z.object({
