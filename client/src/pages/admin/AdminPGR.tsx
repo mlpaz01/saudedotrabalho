@@ -637,14 +637,22 @@ export default function AdminPGR() {
           <p className="text-xs text-muted-foreground">A logomarca e a assinatura aparecem na capa e na seção de responsabilidade técnica do PDF. Cole URLs de imagens (PNG/JPG).</p>
         </section>
 
-        {/* GSE / Grupos Similares de Exposição */}
-        <section className="bg-white border rounded-xl p-5 space-y-3">
+        {/* GSE / Grupos Similares de Exposição — MODELO LEGADO (será removido na Sprint 2) */}
+        <section className="bg-amber-50/40 border border-amber-200 rounded-xl p-5 space-y-3">
           <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-foreground">Grupos Similares de Exposição (GSE)</h2>
+            <h2 className="font-semibold text-foreground flex items-center gap-2">
+              Grupos Similares de Exposição (GSE)
+              <Badge className="bg-amber-100 text-amber-700 border-amber-200 text-[10px]">Modelo legado</Badge>
+            </h2>
             <Button size="sm" variant="outline" onClick={() => addRow("gse_grupos", { grupo: "", funcoes: "", atividades: "", num: "", sexoM: "", sexoF: "", horario: "", local: "" })} className="gap-1">
               <ListPlus size={14} /> Adicionar grupo
             </Button>
           </div>
+          <p className="text-xs text-amber-700">
+            ⚠ Esta seção será removida na Sprint 2. Use o novo bloco "Grupos Similares de Exposição (GSE)" no topo
+            do editor — ele suporta riscos, EPC, EPI, plano 5W2H, treinamentos e evidências por GSE,
+            e alimenta direto o PDF. PGRs com dados aqui podem ser migrados com 1 clique no banner ambar do bloco novo.
+          </p>
           <p className="text-xs text-muted-foreground">GSE agrupa trabalhadores com perfil de exposição similar para avaliação quantitativa.</p>
           {doc.gse_grupos.length === 0 ? (
             <p className="text-sm text-muted-foreground">Nenhum GSE cadastrado.</p>
@@ -698,10 +706,13 @@ export default function AdminPGR() {
           )}
         </section>
 
-        {/* Inventário de Riscos */}
-        <section className="bg-white border rounded-xl p-5 space-y-3">
+        {/* Inventário de Riscos — MODELO LEGADO (será removido na Sprint 2) */}
+        <section className="bg-amber-50/40 border border-amber-200 rounded-xl p-5 space-y-3">
           <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-foreground">Inventário de Riscos</h2>
+            <h2 className="font-semibold text-foreground flex items-center gap-2">
+              Inventário de Riscos
+              <Badge className="bg-amber-100 text-amber-700 border-amber-200 text-[10px]">Modelo legado</Badge>
+            </h2>
             <div className="flex gap-2">
               <Button size="sm" variant="outline" onClick={async () => {
                 setImportingPsy(true);
@@ -832,10 +843,13 @@ export default function AdminPGR() {
           ))}
         </section>
 
-        {/* EPC - Equipamentos de Proteção Coletiva */}
-        <section className="bg-white border rounded-xl p-5 space-y-3">
+        {/* EPC — MODELO LEGADO (será removido na Sprint 2) */}
+        <section className="bg-amber-50/40 border border-amber-200 rounded-xl p-5 space-y-3">
           <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-foreground">EPC — Equipamentos de Proteção Coletiva</h2>
+            <h2 className="font-semibold text-foreground flex items-center gap-2">
+              EPC — Equipamentos de Proteção Coletiva
+              <Badge className="bg-amber-100 text-amber-700 border-amber-200 text-[10px]">Modelo legado</Badge>
+            </h2>
             <Button size="sm" variant="outline" onClick={() => addRow("epc_itens", { descricao: "", aplicacao: "" })} className="gap-1">
               <ListPlus size={14} /> Adicionar EPC
             </Button>
@@ -926,10 +940,13 @@ export default function AdminPGR() {
           ))}
         </section>
 
-        {/* EPI - Equipamentos de Proteção Individual */}
-        <section className="bg-white border rounded-xl p-5 space-y-3">
+        {/* EPI — MODELO LEGADO (será removido na Sprint 2) */}
+        <section className="bg-amber-50/40 border border-amber-200 rounded-xl p-5 space-y-3">
           <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-foreground">EPI — Equipamentos de Proteção Individual</h2>
+            <h2 className="font-semibold text-foreground flex items-center gap-2">
+              EPI — Equipamentos de Proteção Individual
+              <Badge className="bg-amber-100 text-amber-700 border-amber-200 text-[10px]">Modelo legado</Badge>
+            </h2>
             <Button size="sm" variant="outline" onClick={() => addRow("epi_itens", { descricao: "", ca: "", aplicacao: "", validade: "", periodicidade: "", fichaEntrega: "" })} className="gap-1">
               <ListPlus size={14} /> Adicionar EPI
             </Button>
