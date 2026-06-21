@@ -17572,6 +17572,9 @@ Return only the JSON content object (no wrapper). Format per type:
   }),
 
   pgr: router({
+    // Helpers de posse compartilhados pelas procedures do sub-router gse (final do bloco pgr).
+    // Verificam que PGR/GSE pertencem à empresa do usuário antes de qualquer leitura ou
+    // mutação — sem isso, qualquer admin de outra empresa poderia mexer no PGR alheio.
     // Lista as empresas que o usuário pode gerenciar (admin global vê todas).
     listCompanies: adminOrRhProcedure.query(async ({ ctx }) => {
       const role = (ctx.user as any).role;
@@ -18813,6 +18816,395 @@ Return only the JSON content object (no wrapper). Format per type:
         return { ok: true };
       }),
 
+    // ─── PGR Inteligente: GSE (Grupo Similar de Exposição) — Sprint 1 ─────
+    // Sub-router que substitui aos poucos o JSON `pgr_documents.ghe_funcoes`.
+    // Posse é sempre validada via JOIN com pgr_documents.company_id.
+    gse: router({
+      // Lista os GSEs de um PGR + contagens rápidas (cargos/setores/riscos/ações).
+      list: adminOrRhProcedure
+        .input(z.object({ pgrId: z.number().int() }))
+        .query(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb();
+          if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          const ownr: any = await db.execute(drzSql`SELECT company_id FROM pgr_documents WHERE id=${input.pgrId} LIMIT 1`);
+          const own = (ownr as any)[0]?.[0];
+          if (!own) throw new TRPCError({ code: "NOT_FOUND", message: "PGR não encontrado." });
+          if (Number(own.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+          const r: any = await db.execute(drzSql`
+            SELECT g.id, g.nome, g.descricao, g.num_trabalhadores AS numTrabalhadores,
+                   g.num_homens AS numHomens, g.num_mulheres AS numMulheres,
+                   g.ai_suggested AS aiSuggested, g.migrated_from_legacy AS migratedFromLegacy,
+                   (SELECT COUNT(*) FROM pgr_gse_cargos    WHERE gse_id=g.id) AS cargosCount,
+                   (SELECT COUNT(*) FROM pgr_gse_setores   WHERE gse_id=g.id) AS setoresCount,
+                   (SELECT COUNT(*) FROM pgr_gse_riscos    WHERE gse_id=g.id) AS riscosCount,
+                   (SELECT COUNT(*) FROM pgr_gse_epc       WHERE gse_id=g.id) AS epcCount,
+                   (SELECT COUNT(*) FROM pgr_gse_epi       WHERE gse_id=g.id) AS epiCount,
+                   (SELECT COUNT(*) FROM pgr_gse_acoes     WHERE gse_id=g.id) AS acoesCount,
+                   (SELECT COUNT(*) FROM pgr_gse_evidencias WHERE gse_id=g.id) AS evidenciasCount,
+                   (SELECT COUNT(*) FROM pgr_gse_treinamentos WHERE gse_id=g.id) AS treinamentosCount
+            FROM pgr_gse g WHERE g.pgr_id=${input.pgrId} ORDER BY g.id`);
+          return (r as any)[0] ?? [];
+        }),
+
+      // Detalhe completo de um GSE com todos os relacionamentos. Uma única chamada
+      // para o drawer de edição não precisar fazer 8 round-trips.
+      get: adminOrRhProcedure
+        .input(z.object({ id: z.number().int() }))
+        .query(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb();
+          if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          const r: any = await db.execute(drzSql`
+            SELECT g.*, p.company_id FROM pgr_gse g
+            INNER JOIN pgr_documents p ON p.id = g.pgr_id
+            WHERE g.id=${input.id} LIMIT 1`);
+          const gse = (r as any)[0]?.[0];
+          if (!gse) throw new TRPCError({ code: "NOT_FOUND", message: "GSE não encontrado." });
+          if (Number(gse.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+          const [cargos, setores, riscos, epc, epi, acoes, evid, trein]: any[] = await Promise.all([
+            db.execute(drzSql`SELECT id, cargo FROM pgr_gse_cargos WHERE gse_id=${input.id} ORDER BY cargo`),
+            db.execute(drzSql`SELECT c.id, c.sector_id AS sectorId, s.name AS sectorName
+                              FROM pgr_gse_setores c LEFT JOIN sectors s ON s.id=c.sector_id
+                              WHERE c.gse_id=${input.id} ORDER BY s.name`),
+            db.execute(drzSql`SELECT * FROM pgr_gse_riscos WHERE gse_id=${input.id} ORDER BY id`),
+            db.execute(drzSql`SELECT * FROM pgr_gse_epc    WHERE gse_id=${input.id} ORDER BY id`),
+            db.execute(drzSql`SELECT * FROM pgr_gse_epi    WHERE gse_id=${input.id} ORDER BY id`),
+            db.execute(drzSql`SELECT * FROM pgr_gse_acoes  WHERE gse_id=${input.id} ORDER BY id`),
+            db.execute(drzSql`SELECT * FROM pgr_gse_evidencias WHERE gse_id=${input.id} ORDER BY id`),
+            db.execute(drzSql`SELECT * FROM pgr_gse_treinamentos WHERE gse_id=${input.id} ORDER BY nr_code`),
+          ]);
+          return {
+            gse: { id: gse.id, pgrId: gse.pgr_id, nome: gse.nome, descricao: gse.descricao,
+                   numTrabalhadores: gse.num_trabalhadores, numHomens: gse.num_homens,
+                   numMulheres: gse.num_mulheres, aiSuggested: !!gse.ai_suggested,
+                   migratedFromLegacy: !!gse.migrated_from_legacy },
+            cargos: (cargos as any)[0] ?? [],
+            setores: (setores as any)[0] ?? [],
+            riscos: (riscos as any)[0] ?? [],
+            epc: (epc as any)[0] ?? [],
+            epi: (epi as any)[0] ?? [],
+            acoes: (acoes as any)[0] ?? [],
+            evidencias: (evid as any)[0] ?? [],
+            treinamentos: (trein as any)[0] ?? [],
+          };
+        }),
+
+      create: adminOrRhProcedure
+        .input(z.object({
+          pgrId: z.number().int(),
+          nome: z.string().min(1),
+          descricao: z.string().nullable().optional(),
+          numTrabalhadores: z.number().int().default(0),
+          numHomens: z.number().int().default(0),
+          numMulheres: z.number().int().default(0),
+          aiSuggested: z.boolean().default(false),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb();
+          if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          const ownr: any = await db.execute(drzSql`SELECT company_id FROM pgr_documents WHERE id=${input.pgrId} LIMIT 1`);
+          const own = (ownr as any)[0]?.[0];
+          if (!own) throw new TRPCError({ code: "NOT_FOUND" });
+          if (Number(own.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+          const res: any = await db.execute(drzSql`
+            INSERT INTO pgr_gse (pgr_id, nome, descricao, num_trabalhadores, num_homens, num_mulheres, ai_suggested)
+            VALUES (${input.pgrId}, ${input.nome}, ${input.descricao ?? null},
+                    ${input.numTrabalhadores}, ${input.numHomens}, ${input.numMulheres},
+                    ${input.aiSuggested ? 1 : 0})`);
+          return { ok: true, id: Number((res as any)[0]?.insertId ?? 0) };
+        }),
+
+      update: adminOrRhProcedure
+        .input(z.object({
+          id: z.number().int(),
+          nome: z.string().min(1),
+          descricao: z.string().nullable().optional(),
+          numTrabalhadores: z.number().int().default(0),
+          numHomens: z.number().int().default(0),
+          numMulheres: z.number().int().default(0),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb();
+          if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          const r: any = await db.execute(drzSql`
+            SELECT p.company_id FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
+            WHERE g.id=${input.id} LIMIT 1`);
+          const own = (r as any)[0]?.[0];
+          if (!own) throw new TRPCError({ code: "NOT_FOUND" });
+          if (Number(own.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+          await db.execute(drzSql`
+            UPDATE pgr_gse SET nome=${input.nome}, descricao=${input.descricao ?? null},
+              num_trabalhadores=${input.numTrabalhadores}, num_homens=${input.numHomens},
+              num_mulheres=${input.numMulheres}
+            WHERE id=${input.id}`);
+          return { ok: true };
+        }),
+
+      remove: adminOrRhProcedure
+        .input(z.object({ id: z.number().int() }))
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb();
+          if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          const r: any = await db.execute(drzSql`
+            SELECT p.company_id FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
+            WHERE g.id=${input.id} LIMIT 1`);
+          const own = (r as any)[0]?.[0];
+          if (!own) throw new TRPCError({ code: "NOT_FOUND" });
+          if (Number(own.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+          // FKs ON DELETE CASCADE limpam cargos/setores/riscos/epc/epi/acoes/evidencias/treinamentos.
+          await db.execute(drzSql`DELETE FROM pgr_gse WHERE id=${input.id}`);
+          return { ok: true };
+        }),
+
+      // Os "set*" substituem TODA a coleção do GSE pelo conteúdo enviado — simples,
+      // previsível e idempotente. Para evitar drift entre frontend (que mantém a
+      // lista inteira em estado local) e backend.
+      setCargos: adminOrRhProcedure
+        .input(z.object({ gseId: z.number().int(), cargos: z.array(z.string().min(1)).max(200) }))
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb();
+          if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          const r: any = await db.execute(drzSql`
+            SELECT p.company_id FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
+            WHERE g.id=${input.gseId} LIMIT 1`);
+          const own = (r as any)[0]?.[0];
+          if (!own || Number(own.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+          await db.execute(drzSql`DELETE FROM pgr_gse_cargos WHERE gse_id=${input.gseId}`);
+          for (const c of input.cargos) {
+            await db.execute(drzSql`INSERT INTO pgr_gse_cargos (gse_id, cargo) VALUES (${input.gseId}, ${c})`);
+          }
+          return { ok: true, count: input.cargos.length };
+        }),
+
+      setSetores: adminOrRhProcedure
+        .input(z.object({ gseId: z.number().int(), sectorIds: z.array(z.number().int()).max(200) }))
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb();
+          if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          const r: any = await db.execute(drzSql`
+            SELECT p.company_id FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
+            WHERE g.id=${input.gseId} LIMIT 1`);
+          const own = (r as any)[0]?.[0];
+          if (!own || Number(own.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+          // Valida que cada setor pertence à mesma empresa (LGPD).
+          if (input.sectorIds.length > 0) {
+            const sids = input.sectorIds.map(String).join(",");
+            const sr: any = await db.execute(drzSql.raw(
+              `SELECT id FROM sectors WHERE id IN (${sids}) AND company_id=${cid}`));
+            const valid = ((sr as any)[0] ?? []).map((x: any) => Number(x.id));
+            if (valid.length !== input.sectorIds.length)
+              throw new TRPCError({ code: "FORBIDDEN", message: "Setor de outra empresa rejeitado." });
+          }
+          await db.execute(drzSql`DELETE FROM pgr_gse_setores WHERE gse_id=${input.gseId}`);
+          for (const sid of input.sectorIds) {
+            await db.execute(drzSql`INSERT INTO pgr_gse_setores (gse_id, sector_id) VALUES (${input.gseId}, ${sid})`);
+          }
+          return { ok: true, count: input.sectorIds.length };
+        }),
+
+      setRiscos: adminOrRhProcedure
+        .input(z.object({
+          gseId: z.number().int(),
+          riscos: z.array(z.object({
+            tipo: z.enum(["fisico","quimico","biologico","ergonomico","acidente","psicossocial"]),
+            agente: z.string().min(1),
+            fonteGeradora: z.string().nullable().optional(),
+            possivelDano: z.string().nullable().optional(),
+            tipoExposicao: z.string().nullable().optional(),
+            severidade: z.string().default("baixa"),
+            probabilidade: z.string().default("baixa"),
+            riscoFinal: z.string().default("baixo"),
+            fromAssessmentId: z.number().nullable().optional(),
+            fromFactorId: z.number().nullable().optional(),
+            notes: z.string().nullable().optional(),
+          })).max(500),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb();
+          if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          const r: any = await db.execute(drzSql`
+            SELECT p.company_id FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
+            WHERE g.id=${input.gseId} LIMIT 1`);
+          const own = (r as any)[0]?.[0];
+          if (!own || Number(own.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+          await db.execute(drzSql`DELETE FROM pgr_gse_riscos WHERE gse_id=${input.gseId}`);
+          for (const it of input.riscos) {
+            await db.execute(drzSql`
+              INSERT INTO pgr_gse_riscos (gse_id, tipo, agente, fonte_geradora, possivel_dano,
+                tipo_exposicao, severidade, probabilidade, risco_final, from_assessment_id,
+                from_factor_id, notes)
+              VALUES (${input.gseId}, ${it.tipo}, ${it.agente}, ${it.fonteGeradora ?? null},
+                ${it.possivelDano ?? null}, ${it.tipoExposicao ?? null}, ${it.severidade},
+                ${it.probabilidade}, ${it.riscoFinal}, ${it.fromAssessmentId ?? null},
+                ${it.fromFactorId ?? null}, ${it.notes ?? null})`);
+          }
+          return { ok: true, count: input.riscos.length };
+        }),
+
+      setEpc: adminOrRhProcedure
+        .input(z.object({
+          gseId: z.number().int(),
+          items: z.array(z.object({
+            descricao: z.string().min(1),
+            aplicacao: z.string().nullable().optional(),
+          })).max(200),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb();
+          if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          const r: any = await db.execute(drzSql`
+            SELECT p.company_id FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
+            WHERE g.id=${input.gseId} LIMIT 1`);
+          const own = (r as any)[0]?.[0];
+          if (!own || Number(own.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+          await db.execute(drzSql`DELETE FROM pgr_gse_epc WHERE gse_id=${input.gseId}`);
+          for (const it of input.items) {
+            await db.execute(drzSql`
+              INSERT INTO pgr_gse_epc (gse_id, descricao, aplicacao)
+              VALUES (${input.gseId}, ${it.descricao}, ${it.aplicacao ?? null})`);
+          }
+          return { ok: true, count: input.items.length };
+        }),
+
+      setEpi: adminOrRhProcedure
+        .input(z.object({
+          gseId: z.number().int(),
+          items: z.array(z.object({
+            descricao: z.string().min(1),
+            ca: z.string().nullable().optional(),
+            aplicacao: z.string().nullable().optional(),
+            validade: z.string().nullable().optional(),
+          })).max(200),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb();
+          if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          const r: any = await db.execute(drzSql`
+            SELECT p.company_id FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
+            WHERE g.id=${input.gseId} LIMIT 1`);
+          const own = (r as any)[0]?.[0];
+          if (!own || Number(own.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+          await db.execute(drzSql`DELETE FROM pgr_gse_epi WHERE gse_id=${input.gseId}`);
+          for (const it of input.items) {
+            await db.execute(drzSql`
+              INSERT INTO pgr_gse_epi (gse_id, descricao, ca, aplicacao, validade)
+              VALUES (${input.gseId}, ${it.descricao}, ${it.ca ?? null},
+                      ${it.aplicacao ?? null}, ${it.validade ?? null})`);
+          }
+          return { ok: true, count: input.items.length };
+        }),
+
+      setAcoes: adminOrRhProcedure
+        .input(z.object({
+          gseId: z.number().int(),
+          items: z.array(z.object({
+            what: z.string().min(1),
+            why: z.string().nullable().optional(),
+            where: z.string().nullable().optional(),
+            whenStart: z.string().nullable().optional(),
+            whenEnd: z.string().nullable().optional(),
+            who: z.string().nullable().optional(),
+            how: z.string().nullable().optional(),
+            howMuch: z.string().nullable().optional(),
+            priority: z.string().default("media"),
+            status: z.string().default("programado"),
+            gseRiscoId: z.number().int().nullable().optional(),
+          })).max(500),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb();
+          if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          const r: any = await db.execute(drzSql`
+            SELECT p.company_id FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
+            WHERE g.id=${input.gseId} LIMIT 1`);
+          const own = (r as any)[0]?.[0];
+          if (!own || Number(own.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+          await db.execute(drzSql`DELETE FROM pgr_gse_acoes WHERE gse_id=${input.gseId}`);
+          for (const it of input.items) {
+            await db.execute(drzSql`
+              INSERT INTO pgr_gse_acoes (gse_id, what, why, where_loc, when_start, when_end,
+                who, how, how_much, priority, status, gse_risco_id)
+              VALUES (${input.gseId}, ${it.what}, ${it.why ?? null}, ${it.where ?? null},
+                ${it.whenStart ?? null}, ${it.whenEnd ?? null}, ${it.who ?? null},
+                ${it.how ?? null}, ${it.howMuch ?? null}, ${it.priority}, ${it.status},
+                ${it.gseRiscoId ?? null})`);
+          }
+          return { ok: true, count: input.items.length };
+        }),
+
+      setEvidencias: adminOrRhProcedure
+        .input(z.object({
+          gseId: z.number().int(),
+          items: z.array(z.object({
+            tipo: z.enum(["foto","video","documento","medicao","laudo"]),
+            titulo: z.string().nullable().optional(),
+            descricao: z.string().nullable().optional(),
+            fileUrl: z.string().nullable().optional(),
+            gseRiscoId: z.number().int().nullable().optional(),
+            gseAcaoId: z.number().int().nullable().optional(),
+          })).max(500),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const uid = (ctx.user as any).id ?? (ctx.user as any).userId ?? null;
+          const db = await getDb();
+          if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          const r: any = await db.execute(drzSql`
+            SELECT p.company_id FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
+            WHERE g.id=${input.gseId} LIMIT 1`);
+          const own = (r as any)[0]?.[0];
+          if (!own || Number(own.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+          await db.execute(drzSql`DELETE FROM pgr_gse_evidencias WHERE gse_id=${input.gseId}`);
+          for (const it of input.items) {
+            await db.execute(drzSql`
+              INSERT INTO pgr_gse_evidencias (gse_id, tipo, titulo, descricao, file_url,
+                gse_risco_id, gse_acao_id, uploaded_by_user_id)
+              VALUES (${input.gseId}, ${it.tipo}, ${it.titulo ?? null},
+                ${it.descricao ?? null}, ${it.fileUrl ?? null},
+                ${it.gseRiscoId ?? null}, ${it.gseAcaoId ?? null}, ${uid})`);
+          }
+          return { ok: true, count: input.items.length };
+        }),
+
+      setTreinamentos: adminOrRhProcedure
+        .input(z.object({
+          gseId: z.number().int(),
+          items: z.array(z.object({
+            nrCode: z.string().min(1),
+            nome: z.string().min(1),
+            cargaHoraria: z.number().int().nullable().optional(),
+            obrigatorio: z.boolean().default(true),
+          })).max(200),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb();
+          if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          const r: any = await db.execute(drzSql`
+            SELECT p.company_id FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
+            WHERE g.id=${input.gseId} LIMIT 1`);
+          const own = (r as any)[0]?.[0];
+          if (!own || Number(own.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+          await db.execute(drzSql`DELETE FROM pgr_gse_treinamentos WHERE gse_id=${input.gseId}`);
+          for (const it of input.items) {
+            await db.execute(drzSql`
+              INSERT INTO pgr_gse_treinamentos (gse_id, nr_code, nome, carga_horaria, obrigatorio)
+              VALUES (${input.gseId}, ${it.nrCode}, ${it.nome},
+                ${it.cargaHoraria ?? null}, ${it.obrigatorio ? 1 : 0})`);
+          }
+          return { ok: true, count: input.items.length };
+        }),
+    }),
   }),
 
 
