@@ -20073,13 +20073,15 @@ Return only the JSON content object (no wrapper). Format per type:
         const byStatus: Record<string, number> = {};
         let total = 0;
         for (const row of rows) { byStatus[String(row.status)] = Number(row.c); total += Number(row.c); }
-        const completed = byStatus.completed ?? 0;
-        const noShow = byStatus.no_show ?? 0;
-        const cancelled = byStatus.cancelled ?? 0;
+        // Aceita tanto os novos rótulos (completed/no_show/cancelled) quanto os legados em PT
+        // que já existem no banco ("realizado", "faltou", "cancelado").
+        const completed = (byStatus.completed ?? 0) + (byStatus.realizado ?? 0);
+        const noShow = (byStatus.no_show ?? 0) + (byStatus.faltou ?? 0);
+        const cancelled = (byStatus.cancelled ?? 0) + (byStatus.cancelado ?? 0);
         const denom = completed + noShow + cancelled;
         const m: any = await db2.execute(drzSql`
           SELECT DATE_FORMAT(scheduled_at, '%Y-%m') AS ym, COUNT(*) AS total,
-                 SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed
+                 SUM(CASE WHEN status IN ('completed','realizado') THEN 1 ELSE 0 END) AS completed
           FROM appointments WHERE company_id=${cid}
             AND scheduled_at >= DATE_SUB(NOW(), INTERVAL 12 MONTH)
           GROUP BY ym ORDER BY ym`);
