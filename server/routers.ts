@@ -1863,82 +1863,66 @@ async function loadAssessmentForPDF(db: any, assessmentId: number, companyId: nu
   const drpsCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${ra.drps_survey_id}`);
   const aepCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${ra.aep_survey_id}`);
 
-  // When consolidated (no sector_id), load sector-level sub-assessments for per-sector sections
+  // Quando a avaliação é da empresa/filial (sem setor fixo), fragmenta o item 7 por setor
+  // agrupando o próprio inventário/plano pelo sector_id de cada item (modelo NR-01).
+  function mapInvRow(it: any) {
+    return {
+      factorCode: it.factor_code,
+      factorName: it.factor_name,
+      description: it.factor_description,
+      gravidade: it.gravidade,
+      probabilidade: it.probabilidade,
+      riscoFinal: it.risco_final,
+      fontesGeradoras: it.fontes_geradoras,
+      medidasExistentes: it.medidas_existentes,
+      drpsScoreAvg: it.drps_score_avg != null ? Number(it.drps_score_avg) : null,
+      drpsResponsesCount: it.drps_responses_count,
+    };
+  }
+  function mapActRow(ac: any) {
+    return {
+      factorCode: ac.factor_code,
+      factorName: ac.factor_name,
+      actionDescription: ac.action_description,
+      responsibleParty: ac.responsible_party,
+      priority: ac.priority,
+      status: ac.status,
+      monthlyProgress: ac.monthly_progress,
+      startDate: ac.start_date ? new Date(ac.start_date).toISOString() : null,
+      endDate: ac.end_date ? new Date(ac.end_date).toISOString() : null,
+    };
+  }
+
   let sectorGroups: any[] = [];
   if (!ra.sector_id) {
-    const subR: any = ra.branch_id != null
-      ? await db.execute(drzSql`
-          SELECT ra2.*, s.name AS sector_name
-          FROM risk_assessments ra2
-          INNER JOIN sectors s ON s.id = ra2.sector_id
-          WHERE ra2.company_id=${ra.company_id}
-            AND ra2.branch_id=${ra.branch_id}
-            AND ra2.sector_id IS NOT NULL
-          ORDER BY s.name`)
-      : await db.execute(drzSql`
-          SELECT ra2.*, s.name AS sector_name
-          FROM risk_assessments ra2
-          INNER JOIN sectors s ON s.id = ra2.sector_id
-          WHERE ra2.company_id=${ra.company_id}
-            AND ra2.sector_id IS NOT NULL
-          ORDER BY s.name`);
-    const subAssessments = (subR as any)[0] ?? [];
-    for (const sub of subAssessments) {
-      const siR: any = await db.execute(drzSql`
-        SELECT ii.*, f.code AS factor_code, f.name AS factor_name, f.description AS factor_description
-        FROM risk_inventory_items ii
-        INNER JOIN psychosocial_factors f ON f.id = ii.factor_id
-        WHERE ii.assessment_id=${sub.id} ORDER BY f.axis_order`);
-      const subInv = (siR as any)[0] ?? [];
-      const saR: any = await db.execute(drzSql`
-        SELECT ap.*, f.code AS factor_code, f.name AS factor_name
-        FROM risk_action_plan_items ap
-        INNER JOIN psychosocial_factors f ON f.id = ap.factor_id
-        WHERE ap.assessment_id=${sub.id} ORDER BY f.axis_order`);
-      const subAct = (saR as any)[0] ?? [];
-      const sDrps: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${sub.drps_survey_id}`);
-      const sAep: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${sub.aep_survey_id}`);
+    const sids = Array.from(new Set(
+      [...inv, ...act].map((x: any) => x.sector_id).filter((s: any) => s != null).map((s: any) => Number(s))
+    )).sort((x, y) => x - y);
+    for (const sid of sids) {
+      const snR: any = await db.execute(drzSql`SELECT name FROM sectors WHERE id=${sid} LIMIT 1`);
+      const sName = (snR as any)[0]?.[0]?.name ?? `Setor ${sid}`;
+      const sDrps: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${ra.drps_survey_id} AND sector_id=${sid}`);
+      const sAep: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${ra.aep_survey_id} AND sector_id=${sid}`);
       sectorGroups.push({
-        sectorId: sub.id,
-        sectorName: sub.sector_name,
+        sectorId: sid,
+        sectorName: sName,
         assessment: {
-          id: sub.id,
-          cycleName: sub.cycle_name,
-          status: sub.status,
-          startDate: sub.start_date ? new Date(sub.start_date).toISOString() : null,
-          endDate: sub.end_date ? new Date(sub.end_date).toISOString() : null,
-          responsibleTechnician: sub.responsible_technician,
-          notes: sub.notes,
+          id: ra.id,
+          cycleName: ra.cycle_name,
+          status: ra.status,
+          startDate: ra.start_date ? new Date(ra.start_date).toISOString() : null,
+          endDate: ra.end_date ? new Date(ra.end_date).toISOString() : null,
+          responsibleTechnician: ra.responsible_technician,
+          notes: ra.notes,
           companyName: ra.company_name,
           companyCnpj: ra.company_cnpj,
           branchName: ra.branch_name,
-          sectorName: sub.sector_name,
+          sectorName: sName,
           drpsResponses: Number((sDrps as any)[0]?.[0]?.c ?? 0),
           aepResponses: Number((sAep as any)[0]?.[0]?.c ?? 0),
         },
-        inventory: subInv.map((it: any) => ({
-          factorCode: it.factor_code,
-          factorName: it.factor_name,
-          description: it.factor_description,
-          gravidade: it.gravidade,
-          probabilidade: it.probabilidade,
-          riscoFinal: it.risco_final,
-          fontesGeradoras: it.fontes_geradoras,
-          medidasExistentes: it.medidas_existentes,
-          drpsScoreAvg: it.drps_score_avg != null ? Number(it.drps_score_avg) : null,
-          drpsResponsesCount: it.drps_responses_count,
-        })),
-        actions: subAct.map((ac: any) => ({
-          factorCode: ac.factor_code,
-          factorName: ac.factor_name,
-          actionDescription: ac.action_description,
-          responsibleParty: ac.responsible_party,
-          priority: ac.priority,
-          status: ac.status,
-          monthlyProgress: ac.monthly_progress,
-          startDate: ac.start_date ? new Date(ac.start_date).toISOString() : null,
-          endDate: ac.end_date ? new Date(ac.end_date).toISOString() : null,
-        })),
+        inventory: inv.filter((it: any) => Number(it.sector_id) === sid).map(mapInvRow),
+        actions: act.filter((ac: any) => Number(ac.sector_id) === sid).map(mapActRow),
       });
     }
   }
@@ -2038,35 +2022,65 @@ async function loadAEPForPDF(db: any, assessmentId: number, companyId: number) {
     FROM survey_questions WHERE survey_id=${aepSurveyId} ORDER BY order_index`);
   const questions = (qr as any)[0] ?? [];
 
+  // Respostas COM o setor do respondente → permite detalhar a AEP por setor (item 5),
+  // sem misturar respostas de setores diferentes.
   const ansR: any = await db.execute(drzSql`
-    SELECT sa.question_id, sa.answer_value
+    SELECT sa.question_id, sa.answer_value, sr.id AS response_id, sr.sector_id
     FROM survey_answers sa
     INNER JOIN survey_responses sr ON sr.id = sa.response_id
     WHERE sr.survey_id = ${aepSurveyId}`);
   const answers = (ansR as any)[0] ?? [];
 
-  const byQ = new Map<number, string[]>();
-  for (const an of answers) {
-    const qid = Number(an.question_id);
-    if (!byQ.has(qid)) byQ.set(qid, []);
-    const v = an.answer_value == null ? "" : String(an.answer_value).trim();
-    if (v) byQ.get(qid)!.push(v);
+  // Constrói os itens (qualitativos + Likert) a partir de um subconjunto de respostas.
+  function buildItems(ansList: any[]) {
+    const byQ = new Map<number, string[]>();
+    for (const an of ansList) {
+      const qid = Number(an.question_id);
+      if (!byQ.has(qid)) byQ.set(qid, []);
+      const v = an.answer_value == null ? "" : String(an.answer_value).trim();
+      if (v) byQ.get(qid)!.push(v);
+    }
+    return questions.map((q: any) => {
+      const qid = Number(q.id);
+      const vals = byQ.get(qid) ?? [];
+      const type = String(q.question_type || "text").toLowerCase();
+      if (type === "likert") {
+        const nums = vals.map((v) => parseFloat(v)).filter((n) => !Number.isNaN(n));
+        const avg = nums.length ? nums.reduce((s, n) => s + n, 0) / nums.length : null;
+        const max = nums.length ? Math.max(...nums) : 0;
+        return { orderIndex: Number(q.order_index), type, questionText: q.question_text, likertAvg: avg, likertCount: nums.length, likertMax: max };
+      }
+      return { orderIndex: Number(q.order_index), type, questionText: q.question_text, textAnswers: vals };
+    });
   }
 
+  const items = buildItems(answers);
   const respCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${aepSurveyId}`);
 
-  const items = questions.map((q: any) => {
-    const qid = Number(q.id);
-    const vals = byQ.get(qid) ?? [];
-    const type = String(q.question_type || "text").toLowerCase();
-    if (type === "likert") {
-      const nums = vals.map((v) => parseFloat(v)).filter((n) => !Number.isNaN(n));
-      const avg = nums.length ? nums.reduce((s, n) => s + n, 0) / nums.length : null;
-      const max = nums.length ? Math.max(...nums) : 0;
-      return { orderIndex: Number(q.order_index), type, questionText: q.question_text, likertAvg: avg, likertCount: nums.length, likertMax: max };
+  // Agrupa respostas por setor para o "Detalhamento por Setor".
+  const ansBySector = new Map<number, any[]>();
+  const respBySector = new Map<number, Set<number>>();
+  for (const an of answers) {
+    if (an.sector_id == null) continue;
+    const sid = Number(an.sector_id);
+    if (!ansBySector.has(sid)) ansBySector.set(sid, []);
+    ansBySector.get(sid)!.push(an);
+    if (an.response_id) {
+      if (!respBySector.has(sid)) respBySector.set(sid, new Set());
+      respBySector.get(sid)!.add(Number(an.response_id));
     }
-    return { orderIndex: Number(q.order_index), type, questionText: q.question_text, textAnswers: vals };
-  });
+  }
+  const sectorGroups: any[] = [];
+  for (const sid of Array.from(ansBySector.keys()).sort((x, y) => x - y)) {
+    const snR: any = await db.execute(drzSql`SELECT name FROM sectors WHERE id=${sid} LIMIT 1`);
+    const sName = (snR as any)[0]?.[0]?.name ?? `Setor ${sid}`;
+    sectorGroups.push({
+      sectorId: sid,
+      sectorName: sName,
+      aepResponses: respBySector.get(sid)?.size ?? 0,
+      items: buildItems(ansBySector.get(sid)!),
+    });
+  }
 
   return {
     assessment: {
@@ -2085,6 +2099,7 @@ async function loadAEPForPDF(db: any, assessmentId: number, companyId: number) {
       aepResponses: Number((respCount as any)[0]?.[0]?.c ?? 0),
     },
     items,
+    sectorGroups,
   };
 }
 
@@ -16693,17 +16708,28 @@ Return only the JSON content object (no wrapper). Format per type:
           qInfo[Number(q.id)] = { factor: code, reverse: reverseSet.has(oi) };
         }
 
-        // Fetch answers. DRPS is anonymous (user_id NULL), so we track the response (submission)
-        // id to count respondents — each survey_responses row is one respondent.
+        // Fetch answers WITH the respondent's sector/branch. DRPS is anonymous (user_id NULL),
+        // but survey_responses carries sector_id/branch_id → segmentamos por setor (NR-01: o
+        // inventário e o plano de ação devem ser estratificados por filial/setor).
         const ansR: any = await db.execute(drzSql`
-          SELECT sa.question_id, sa.answer_value, sr.id AS response_id
+          SELECT sa.question_id, sa.answer_value, sr.id AS response_id, sr.sector_id, sr.branch_id
           FROM survey_answers sa
           INNER JOIN survey_responses sr ON sr.id = sa.response_id
           WHERE sr.survey_id = ${a.drps_survey_id}`);
         const answers = (ansR as any)[0] ?? [];
 
-        // Aggregate per factor
-        const agg: Record<string, { sum: number; n: number; resp: Set<number> }> = {};
+        type Agg = Record<string, { sum: number; n: number; resp: Set<number> }>;
+        function addToAgg(agg: Agg, factor: string, raw: number, respId: number) {
+          if (!agg[factor]) agg[factor] = { sum: 0, n: 0, resp: new Set() };
+          agg[factor].sum += raw;
+          agg[factor].n += 1;
+          if (respId) agg[factor].resp.add(respId);
+        }
+
+        // Agregação consolidada (aggAll) E por setor (aggBySector)
+        const aggAll: Agg = {};
+        const aggBySector: Record<string, Agg> = {};
+        const sectorBranch: Record<string, number | null> = {};
         for (const ans of answers) {
           const info = qInfo[Number(ans.question_id)];
           if (!info) continue;
@@ -16711,10 +16737,14 @@ Return only the JSON content object (no wrapper). Format per type:
           if (Number.isNaN(raw)) continue;
           // assume 0-4 scale
           if (info.reverse) raw = 4 - raw;
-          if (!agg[info.factor]) agg[info.factor] = { sum: 0, n: 0, resp: new Set() };
-          agg[info.factor].sum += raw;
-          agg[info.factor].n += 1;
-          if (ans.response_id) agg[info.factor].resp.add(Number(ans.response_id));
+          const respId = ans.response_id ? Number(ans.response_id) : 0;
+          addToAgg(aggAll, info.factor, raw, respId);
+          if (ans.sector_id != null) {
+            const sk = String(ans.sector_id);
+            if (!aggBySector[sk]) aggBySector[sk] = {};
+            addToAgg(aggBySector[sk], info.factor, raw, respId);
+            sectorBranch[sk] = ans.branch_id != null ? Number(ans.branch_id) : null;
+          }
         }
 
         // Matrix mapping for risco_final from gravidade & probabilidade
@@ -16735,41 +16765,68 @@ Return only the JSON content object (no wrapper). Format per type:
           if (sum >= 2) return "medio";
           return "baixo";
         }
+        function gravFor(agg: Agg, code: string) {
+          const a2 = agg[code];
+          if (a2 && a2.n > 0) return { grav: classify(a2.sum / a2.n), avg: a2.sum / a2.n, userCount: a2.resp.size };
+          return { grav: "baixa", avg: 0, userCount: 0 };
+        }
 
-        // Get inventory items
-        const ir: any = await db.execute(drzSql`
-          SELECT ii.id, ii.factor_id, ii.probabilidade, f.code
-          FROM risk_inventory_items ii
-          INNER JOIN psychosocial_factors f ON f.id = ii.factor_id
-          WHERE ii.assessment_id=${input.assessmentId}`);
-        const items = (ir as any)[0] ?? [];
+        // Catálogo de fatores (id + code)
+        const fr: any = await db.execute(drzSql`SELECT id, code FROM psychosocial_factors ORDER BY axis_order`);
+        const factorRows = (fr as any)[0] ?? [];
+
+        const sectorKeys = Object.keys(aggBySector);
+        // Modo POR SETOR quando a avaliação é da empresa/filial (sem setor fixo) e há
+        // respostas marcadas por setor. Caso contrário, mantém o modo consolidado.
+        const perSector = a.sector_id == null && sectorKeys.length > 0;
 
         let updated = 0;
-        for (const item of items) {
-          const a2 = agg[item.code];
-          let grav = "baixa";
-          let avg = 0;
-          let n = 0;
-          let userCount = 0;
-          if (a2 && a2.n > 0) {
-            avg = a2.sum / a2.n;
-            grav = classify(avg);
-            n = a2.n;
-            userCount = a2.resp.size;
+        if (perSector) {
+          // Remove os itens-semente consolidados (sector_id NULL) e faz upsert por setor.
+          // O upsert preserva 'probabilidade' editada manualmente entre reexecuções.
+          await db.execute(drzSql`DELETE FROM risk_inventory_items WHERE assessment_id=${input.assessmentId} AND sector_id IS NULL`);
+          for (const sk of sectorKeys) {
+            const sid = Number(sk);
+            const bid = sectorBranch[sk] ?? null;
+            const sAgg = aggBySector[sk];
+            for (const f of factorRows) {
+              const { grav, avg, userCount } = gravFor(sAgg, f.code);
+              const exR: any = await db.execute(drzSql`SELECT id, probabilidade FROM risk_inventory_items WHERE assessment_id=${input.assessmentId} AND factor_id=${f.id} AND sector_id=${sid} LIMIT 1`);
+              const ex = (exR as any)[0]?.[0];
+              const prob = ex?.probabilidade || "baixa";
+              const risco = finalRisk(grav, prob);
+              if (ex) {
+                await db.execute(drzSql`UPDATE risk_inventory_items SET gravidade=${grav}, risco_final=${risco}, drps_score_avg=${avg.toFixed(2)}, drps_responses_count=${userCount}, branch_id=${bid} WHERE id=${ex.id}`);
+              } else {
+                await db.execute(drzSql`INSERT INTO risk_inventory_items (assessment_id, factor_id, sector_id, branch_id, gravidade, probabilidade, risco_final, drps_score_avg, drps_responses_count) VALUES (${input.assessmentId}, ${f.id}, ${sid}, ${bid}, ${grav}, ${prob}, ${risco}, ${avg.toFixed(2)}, ${userCount})`);
+              }
+              updated++;
+            }
           }
-          const prob = item.probabilidade || grav;
-          const risco = finalRisk(grav, prob);
-          await db.execute(drzSql`
-            UPDATE risk_inventory_items
-            SET gravidade=${grav}, risco_final=${risco}, drps_score_avg=${avg.toFixed(2)}, drps_responses_count=${userCount}
-            WHERE id=${item.id}`);
-          updated++;
+        } else {
+          // Consolidado: atualiza os itens-semente existentes (sector_id NULL).
+          const ir: any = await db.execute(drzSql`
+            SELECT ii.id, ii.factor_id, ii.probabilidade, f.code
+            FROM risk_inventory_items ii
+            INNER JOIN psychosocial_factors f ON f.id = ii.factor_id
+            WHERE ii.assessment_id=${input.assessmentId}`);
+          const items = (ir as any)[0] ?? [];
+          for (const item of items) {
+            const { grav, avg, userCount } = gravFor(aggAll, item.code);
+            const prob = item.probabilidade || grav;
+            const risco = finalRisk(grav, prob);
+            await db.execute(drzSql`
+              UPDATE risk_inventory_items
+              SET gravidade=${grav}, risco_final=${risco}, drps_score_avg=${avg.toFixed(2)}, drps_responses_count=${userCount}
+              WHERE id=${item.id}`);
+            updated++;
+          }
         }
 
         // Mark assessment as analyzing
         await db.execute(drzSql`UPDATE risk_assessments SET status='analyzing' WHERE id=${input.assessmentId}`);
 
-        return { ok: true, updated, factorsWithData: Object.keys(agg).length };
+        return { ok: true, updated, factorsWithData: Object.keys(aggAll).length, perSector, sectors: sectorKeys.length };
       }),
 
     updateInventoryItem: adminOrRhProcedure
@@ -16859,8 +16916,8 @@ Return only the JSON content object (no wrapper). Format per type:
 
           await db.execute(drzSql`
             INSERT INTO risk_action_plan_items
-              (assessment_id, factor_id, preventive_program_module_id, action_description, responsible_party, priority, start_date, end_date, status, monthly_progress)
-            VALUES (${input.assessmentId}, ${it.factor_id}, ${it.programId ?? null}, ${it.defaultAction ?? "Ação a definir"},
+              (assessment_id, factor_id, sector_id, branch_id, preventive_program_module_id, action_description, responsible_party, priority, start_date, end_date, status, monthly_progress)
+            VALUES (${input.assessmentId}, ${it.factor_id}, ${it.sector_id ?? null}, ${it.branch_id ?? null}, ${it.programId ?? null}, ${it.defaultAction ?? "Ação a definir"},
                     'Consultoria Saúde do Trabalho', ${priority},
                     ${sD.toISOString().slice(0, 10)}, ${eD.toISOString().slice(0, 10)},
                     'programado', ${JSON.stringify(progress)})`);
@@ -16999,7 +17056,7 @@ Return only the JSON content object (no wrapper). Format per type:
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
         const { generateAEPLaudoPDF } = await import("./_core/risk_pdf");
         const data = await loadAEPForPDF(db, input.assessmentId, cid);
-        const url = await generateAEPLaudoPDF(data.assessment, data.items);
+        const url = await generateAEPLaudoPDF(data.assessment, data.items, data.sectorGroups);
         return { ok: true, url };
       }),
 

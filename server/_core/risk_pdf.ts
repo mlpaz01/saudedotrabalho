@@ -648,45 +648,68 @@ export type AEPItem = {
   likertMax?: number;           // limite superior observado da escala (para barra)
 };
 
+export type AEPSectorGroup = {
+  sectorId: number;
+  sectorName: string;
+  aepResponses: number;
+  items: AEPItem[];
+};
+
 export async function generateAEPLaudoPDF(
   a: AssessmentData,
-  items: AEPItem[]
+  items: AEPItem[],
+  sectorGroups?: AEPSectorGroup[]
 ): Promise<string> {
   await fs.mkdir(UPLOAD_DIR, { recursive: true });
   const outPath = path.join(UPLOAD_DIR, `laudo_aep_${a.id}.pdf`);
   const now = new Date();
   const mesAno = `${now.toLocaleDateString("pt-BR", { month: "long" })} / ${now.getFullYear()}`;
 
-  const ordered = [...items].sort((x, y) => x.orderIndex - y.orderIndex);
-  const qualit = ordered.filter((i) => i.type !== "likert");
-  const likert = ordered.filter((i) => i.type === "likert");
-  const scaleMax = Math.max(4, ...likert.map((i) => i.likertMax || 0));
+  // Monta os blocos qualitativos e a tabela Likert para um conjunto de itens (todo o ciclo
+  // ou de um único setor). Usado tanto no modo consolidado quanto no detalhamento por setor.
+  function aepParts(its: AEPItem[]) {
+    const ordered = [...its].sort((x, y) => x.orderIndex - y.orderIndex);
+    const qualit = ordered.filter((i) => i.type !== "likert");
+    const likert = ordered.filter((i) => i.type === "likert");
+    const sMax = Math.max(4, ...likert.map((i) => i.likertMax || 0));
+    const qual = qualit.length
+      ? qualit.map((i) => `
+        <div class="aep-qa">
+          <div class="aep-q">${esc(i.questionText)}</div>
+          ${(i.textAnswers && i.textAnswers.length)
+            ? i.textAnswers.map((t) => `<div class="aep-a">${esc(t)}</div>`).join("")
+            : `<div class="aep-a muted"><i>Sem resposta registrada.</i></div>`}
+        </div>`).join("")
+      : `<p><i>Nenhuma questão qualitativa registrada.</i></p>`;
+    const rows = likert.length
+      ? likert.map((i) => {
+          const avg = i.likertAvg;
+          const pct = avg != null && sMax > 0 ? Math.max(0, Math.min(100, (avg / sMax) * 100)) : 0;
+          return `
+          <tr>
+            <td>${esc(i.questionText)}</td>
+            <td style="text-align:center">${avg != null ? avg.toFixed(2) : "—"}</td>
+            <td>
+              <div class="bar-track"><div class="bar-fill" style="width:${pct.toFixed(0)}%"></div></div>
+            </td>
+            <td style="text-align:center">${i.likertCount ?? 0}</td>
+          </tr>`;
+        }).join("")
+      : "";
+    const likertTable = rows ? `<table>
+      <tr><th style="width:55%">Afirmação avaliada</th><th style="width:10%">Média</th><th>Intensidade</th><th style="width:10%">Nº resp.</th></tr>
+      ${rows}
+    </table>
+    <p><small class="muted">Escala 0–${sMax}. A barra indica a intensidade média da resposta; a leitura de risco
+    depende do enunciado (afirmações positivas: média alta é favorável; afirmações de sobrecarga: média alta indica
+    atenção).</small></p>` : `<p><i>Nenhum indicador quantitativo registrado.</i></p>`;
+    return { qual, likertTable, scaleMax: sMax };
+  }
 
-  const qualBlocks = qualit.length
-    ? qualit.map((i) => `
-      <div class="aep-qa">
-        <div class="aep-q">${esc(i.questionText)}</div>
-        ${(i.textAnswers && i.textAnswers.length)
-          ? i.textAnswers.map((t) => `<div class="aep-a">${esc(t)}</div>`).join("")
-          : `<div class="aep-a muted"><i>Sem resposta registrada.</i></div>`}
-      </div>`).join("")
-    : `<p><i>Nenhuma questão qualitativa registrada.</i></p>`;
-
-  const likertRows = likert.length
-    ? likert.map((i) => {
-        const avg = i.likertAvg;
-        const pct = avg != null && scaleMax > 0 ? Math.max(0, Math.min(100, (avg / scaleMax) * 100)) : 0;
-        return `
-        <tr>
-          <td>${esc(i.questionText)}</td>
-          <td style="text-align:center">${avg != null ? avg.toFixed(2) : "—"}</td>
-          <td>
-            <div class="bar-track"><div class="bar-fill" style="width:${pct.toFixed(0)}%"></div></div>
-          </td>
-          <td style="text-align:center">${i.likertCount ?? 0}</td>
-        </tr>`;
-      }).join("")
-    : "";
+  const hasSectors = !!(sectorGroups && sectorGroups.length > 0);
+  const main = aepParts(items);
+  const qualBlocks = main.qual;
+  const scaleMax = main.scaleMax;
 
   const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -722,9 +745,9 @@ export async function generateAEPLaudoPDF(
     <li><b>2.</b> Objetivo</li>
     <li><b>3.</b> Fundamentação Legal e Normativa</li>
     <li><b>4.</b> Metodologia Aplicada</li>
-    <li><b>5.</b> Caracterização do Setor Avaliado</li>
+    ${hasSectors ? `<li><b>5.</b> Detalhamento por Setor Avaliado (achados + indicadores de cada setor)</li>` : `<li><b>5.</b> Caracterização do Setor Avaliado</li>
     <li><b>6.</b> Achados Qualitativos</li>
-    <li><b>7.</b> Indicadores Quantitativos (escala Likert)</li>
+    <li><b>7.</b> Indicadores Quantitativos (escala Likert)</li>`}
     <li><b>8.</b> Conclusão e Encaminhamentos</li>
     <li><b>9.</b> Responsabilidade Técnica e Assinatura</li>
     <li><b>10.</b> Referências</li>
@@ -753,6 +776,29 @@ export async function generateAEPLaudoPDF(
   considerando o enunciado de cada questão (afirmações favoráveis e desfavoráveis), servindo como indicadores de
   atenção, não como classificação isolada de risco.</p>
 
+  ${hasSectors ? `
+  <h2>5. Detalhamento por Setor Avaliado</h2>
+  <p>Esta Análise Ergonômica Preliminar abrange <b>${sectorGroups!.length} setor(es)</b>. Cada setor é
+  detalhado individualmente abaixo, com seus próprios achados qualitativos e indicadores quantitativos,
+  sem mistura de respostas entre setores.</p>
+  <table>
+    <tr><th style="width:35%">Item</th><th>Descrição</th></tr>
+    <tr><td>Empresa</td><td>${esc(a.companyName)}</td></tr>
+    ${a.branchName ? `<tr><td>Filial</td><td>${esc(a.branchName)}</td></tr>` : ""}
+    <tr><td>Ciclo</td><td>${esc(a.cycleName)}</td></tr>
+    <tr><td>Setores avaliados</td><td>${sectorGroups!.map((sg) => esc(sg.sectorName)).join(", ")}</td></tr>
+    <tr><td>Respostas AEP coletadas</td><td>${a.aepResponses}</td></tr>
+  </table>
+  ${sectorGroups!.map((sg, idx) => {
+    const p = aepParts(sg.items);
+    return `
+    <h3 style="margin-top:14px;font-size:11pt;color:${PRIMARY};">${idx + 1}. Setor: ${esc(sg.sectorName)} — ${sg.aepResponses} resposta(s)</h3>
+    <p style="font-weight:600;margin:6px 0 2px;">Achados Qualitativos</p>
+    ${p.qual}
+    <p style="font-weight:600;margin:8px 0 2px;">Indicadores Quantitativos</p>
+    ${p.likertTable}`;
+  }).join("")}
+  ` : `
   <h2>5. Caracterização do Setor Avaliado</h2>
   <table>
     <tr><th style="width:35%">Item</th><th>Descrição</th></tr>
@@ -767,13 +813,8 @@ export async function generateAEPLaudoPDF(
   ${qualBlocks}
 
   <h2>7. Indicadores Quantitativos</h2>
-  ${likertRows ? `<table>
-    <tr><th style="width:55%">Afirmação avaliada</th><th style="width:10%">Média</th><th>Intensidade</th><th style="width:10%">Nº resp.</th></tr>
-    ${likertRows}
-  </table>
-  <p><small class="muted">Escala 0–${scaleMax}. A barra indica a intensidade média da resposta; a leitura de risco
-  depende do enunciado (afirmações positivas: média alta é favorável; afirmações de sobrecarga: média alta indica
-  atenção).</small></p>` : `<p><i>Nenhum indicador quantitativo registrado.</i></p>`}
+  ${main.likertTable}
+  `}
 
   <h2>8. Conclusão e Encaminhamentos</h2>
   <p>A presente Análise Ergonômica Preliminar consolida a percepção inicial sobre as condições de trabalho do
