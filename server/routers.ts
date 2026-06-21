@@ -19204,6 +19204,182 @@ Return only the JSON content object (no wrapper). Format per type:
           }
           return { ok: true, count: input.items.length };
         }),
+
+      // Migração idempotente do JSON legado (pgr_documents.ghe_funcoes/inventario/
+      // plano_psicossocial/epc_itens/epi_itens) para as tabelas novas. Cria UM GSE
+      // "Migrado do PGR legacy" com tudo dentro e marca migrated_from_legacy=true.
+      // Se já existe GSE migrado pro mesmo PGR, retorna { alreadyMigrated:true }
+      // sem duplicar nada. O JSON legado NÃO é apagado — convive para rollback.
+      // Mapeia setor (string) → sector_id por fuzzy match case-insensitive contra
+      // sectors da empresa.
+      migrateFromLegacy: adminOrRhProcedure
+        .input(z.object({ pgrId: z.number().int() }))
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb();
+          if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          const pr: any = await db.execute(drzSql`
+            SELECT company_id, branch_id, ghe_funcoes, inventario, plano_psicossocial,
+                   epc_itens, epi_itens, gse_grupos
+            FROM pgr_documents WHERE id=${input.pgrId} LIMIT 1`);
+          const pgr = (pr as any)[0]?.[0];
+          if (!pgr) throw new TRPCError({ code: "NOT_FOUND", message: "PGR não encontrado." });
+          if (Number(pgr.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+
+          // Idempotência: se já existe GSE migrado, devolve estatísticas atuais.
+          const ex: any = await db.execute(drzSql`
+            SELECT id FROM pgr_gse WHERE pgr_id=${input.pgrId} AND migrated_from_legacy=1 LIMIT 1`);
+          if ((ex as any)[0]?.[0]) {
+            return { ok: true, alreadyMigrated: true, gseId: Number((ex as any)[0][0].id) };
+          }
+
+          const parseJson = (v: any): any[] => {
+            if (Array.isArray(v)) return v;
+            if (typeof v === "string") { try { return JSON.parse(v) || []; } catch { return []; } }
+            return [];
+          };
+          const ghes: any[] = parseJson(pgr.ghe_funcoes);
+          const inv: any[]  = parseJson(pgr.inventario);
+          const plano: any[]= parseJson(pgr.plano_psicossocial);
+          const epcs: any[] = parseJson(pgr.epc_itens);
+          const epis: any[] = parseJson(pgr.epi_itens);
+
+          // Nada legado pra migrar?
+          if (ghes.length + inv.length + plano.length + epcs.length + epis.length === 0) {
+            return { ok: true, alreadyMigrated: false, empty: true };
+          }
+
+          // Totais
+          const totalTrab = ghes.reduce((s, g) => s + (Number(g.num) || 0), 0);
+          const cargosSet = new Set(ghes.map((g) => String(g.funcao || "").trim()).filter((x) => x && x !== "(sem cargo)"));
+
+          // Mapa de setores existentes (case-insensitive) para resolver strings → IDs
+          const sectRows: any = await db.execute(drzSql`SELECT id, name FROM sectors WHERE company_id=${cid}`);
+          const sectMap = new Map<string, number>();
+          for (const r of (sectRows as any)[0] ?? []) {
+            sectMap.set(String(r.name || "").trim().toLowerCase(), Number(r.id));
+          }
+          const sectoresVinculados = new Set<number>();
+          const lookupSector = (nome: any): number | null => {
+            const k = String(nome || "").trim().toLowerCase();
+            if (!k) return null;
+            const id = sectMap.get(k);
+            if (id) sectoresVinculados.add(id);
+            return id ?? null;
+          };
+
+          // Cria o GSE container
+          const insGse: any = await db.execute(drzSql`
+            INSERT INTO pgr_gse (pgr_id, nome, descricao, num_trabalhadores, ai_suggested, migrated_from_legacy)
+            VALUES (${input.pgrId}, ${'GSE Migrado do PGR legacy — revisar'},
+              ${'Gerado automaticamente a partir do JSON antigo (ghe_funcoes/inventario/plano_psicossocial). Reorganize em múltiplos GSEs conforme exposições reais.'},
+              ${totalTrab}, 0, 1)`);
+          const gseId = Number((insGse as any)[0]?.insertId ?? 0);
+
+          // Cargos
+          for (const c of cargosSet) {
+            await db.execute(drzSql`INSERT INTO pgr_gse_cargos (gse_id, cargo) VALUES (${gseId}, ${c})`);
+          }
+
+          // Riscos (inventario) — mapeia tipoRisco PT → enum
+          const tipoMap: Record<string, string> = {
+            "psicossocial": "psicossocial", "fisico": "fisico", "físico": "fisico",
+            "quimico": "quimico", "químico": "quimico", "biologico": "biologico",
+            "biológico": "biologico", "ergonomico": "ergonomico", "ergonômico": "ergonomico",
+            "acidente": "acidente", "mecanico": "acidente", "mecânico": "acidente",
+          };
+          for (const it of inv) {
+            const tipoKey = String(it.tipoRisco || "").trim().toLowerCase();
+            const tipo = tipoMap[tipoKey] || "fisico";
+            const sid = lookupSector(it.setor);
+            await db.execute(drzSql`
+              INSERT INTO pgr_gse_riscos (gse_id, tipo, agente, fonte_geradora, possivel_dano,
+                severidade, probabilidade, risco_final, notes)
+              VALUES (${gseId}, ${tipo}, ${String(it.fator || "Sem nome").slice(0, 250)},
+                ${it.causas ?? null}, ${it.agravos ?? null}, ${'baixa'}, ${'baixa'}, ${'baixo'},
+                ${`Migrado. Setor original: ${it.setor || "—"}. Resp: ${it.responsavel || "—"}. Obs: ${it.observacoes || ""}`.slice(0, 1000)})`);
+            void sid; // só pra registrar setor encontrado em sectoresVinculados
+          }
+
+          // Plano psicossocial → ações 5W2H
+          for (const a of plano) {
+            const sid = lookupSector(a.setor); void sid;
+            await db.execute(drzSql`
+              INSERT INTO pgr_gse_acoes (gse_id, what, why, where_loc, when_end, who, priority, status)
+              VALUES (${gseId},
+                ${String(a.acao || "Sem descrição")},
+                ${a.fator ? `Vinculado ao fator: ${a.fator}` : null},
+                ${a.setor ?? null},
+                ${a.prazo ?? null},
+                ${a.responsavel ?? null},
+                ${String(a.prioridade || "media")},
+                ${String(a.status || "programado")})`);
+          }
+
+          // EPC / EPI
+          for (const e of epcs) {
+            await db.execute(drzSql`
+              INSERT INTO pgr_gse_epc (gse_id, descricao, aplicacao)
+              VALUES (${gseId}, ${String(e.descricao || "—")}, ${e.aplicacao ?? null})`);
+          }
+          for (const e of epis) {
+            await db.execute(drzSql`
+              INSERT INTO pgr_gse_epi (gse_id, descricao, ca, aplicacao, validade)
+              VALUES (${gseId}, ${String(e.descricao || "—")}, ${e.ca ?? null},
+                ${e.aplicacao ?? null}, ${e.validade ?? null})`);
+          }
+
+          // Vincula setores resolvidos por fuzzy match
+          for (const sid of sectoresVinculados) {
+            await db.execute(drzSql`INSERT INTO pgr_gse_setores (gse_id, sector_id) VALUES (${gseId}, ${sid})`);
+          }
+
+          return {
+            ok: true, alreadyMigrated: false, gseId,
+            counts: {
+              cargos: cargosSet.size,
+              setores: sectoresVinculados.size,
+              riscos: inv.length,
+              acoes: plano.length,
+              epc: epcs.length,
+              epi: epis.length,
+              setoresNaoResolvidos: inv.concat(plano).filter((x: any) =>
+                x.setor && !sectMap.has(String(x.setor).trim().toLowerCase())
+              ).map((x: any) => x.setor),
+            },
+          };
+        }),
+
+      // Marca um PGR como elegível pra migração (apenas leitura — usado pela UI
+      // pra decidir se mostra o botão "Migrar"). Devolve contagens do JSON legado
+      // e indica se já existe GSE migrado.
+      legacyStatus: adminOrRhProcedure
+        .input(z.object({ pgrId: z.number().int() }))
+        .query(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb();
+          if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          const r: any = await db.execute(drzSql`
+            SELECT company_id,
+              JSON_LENGTH(ghe_funcoes) AS ghes,
+              JSON_LENGTH(inventario) AS inv,
+              JSON_LENGTH(plano_psicossocial) AS plano,
+              JSON_LENGTH(epc_itens) AS epc,
+              JSON_LENGTH(epi_itens) AS epi
+            FROM pgr_documents WHERE id=${input.pgrId} LIMIT 1`);
+          const row = (r as any)[0]?.[0];
+          if (!row) throw new TRPCError({ code: "NOT_FOUND" });
+          if (Number(row.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+          const ex: any = await db.execute(drzSql`
+            SELECT id FROM pgr_gse WHERE pgr_id=${input.pgrId} AND migrated_from_legacy=1 LIMIT 1`);
+          const migratedGseId = (ex as any)[0]?.[0]?.id ?? null;
+          const total = Number(row.ghes ?? 0) + Number(row.inv ?? 0) + Number(row.plano ?? 0) + Number(row.epc ?? 0) + Number(row.epi ?? 0);
+          return {
+            legacyCount: { ghes: Number(row.ghes ?? 0), inv: Number(row.inv ?? 0), plano: Number(row.plano ?? 0), epc: Number(row.epc ?? 0), epi: Number(row.epi ?? 0) },
+            hasLegacy: total > 0,
+            migratedGseId: migratedGseId ? Number(migratedGseId) : null,
+          };
+        }),
     }),
   }),
 

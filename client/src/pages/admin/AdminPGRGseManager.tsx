@@ -51,6 +51,10 @@ export default function AdminPGRGseManager({ pgrId, companyId }: { pgrId: number
   const listQ = trpc.pgr.gse.list.useQuery({ pgrId }, { enabled: pgrId > 0 });
   const gseList = (listQ.data ?? []) as any[];
 
+  // Status do legado: usado pra decidir se mostra o botão "Migrar PGR legado".
+  const legacyQ = trpc.pgr.gse.legacyStatus.useQuery({ pgrId }, { enabled: pgrId > 0 });
+  const legacy = legacyQ.data as any;
+
   const [showNew, setShowNew] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
@@ -62,6 +66,22 @@ export default function AdminPGRGseManager({ pgrId, companyId }: { pgrId: number
   const removeMut = trpc.pgr.gse.remove.useMutation({
     onSuccess: () => { toast.success("GSE removido."); setConfirmDelete(null); listQ.refetch(); },
     onError: (e: any) => toast.error(e?.message ?? "Erro ao remover"),
+  });
+  const migrateMut = trpc.pgr.gse.migrateFromLegacy.useMutation({
+    onSuccess: (r: any) => {
+      if (r.alreadyMigrated) toast.info("Este PGR já foi migrado anteriormente.");
+      else if (r.empty) toast.warning("Nada para migrar — PGR sem dados legados.");
+      else {
+        const c = r.counts ?? {};
+        toast.success(`Migrado: ${c.cargos ?? 0} cargos · ${c.setores ?? 0} setores · ${c.riscos ?? 0} riscos · ${c.acoes ?? 0} ações · ${c.epc ?? 0} EPC · ${c.epi ?? 0} EPI.`);
+        if (c.setoresNaoResolvidos && c.setoresNaoResolvidos.length > 0) {
+          toast.warning(`Setores não resolvidos automaticamente: ${[...new Set(c.setoresNaoResolvidos)].slice(0,5).join(", ")} — vincule manualmente.`, { duration: 8000 });
+        }
+        if (r.gseId) setEditingId(r.gseId);
+      }
+      listQ.refetch(); legacyQ.refetch();
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Falha na migração"),
   });
 
   // Form do "Novo GSE"
@@ -91,6 +111,24 @@ export default function AdminPGRGseManager({ pgrId, companyId }: { pgrId: number
         </div>
         <Button size="sm" onClick={openNew} className="gap-1"><Plus size={14} /> Novo GSE</Button>
       </div>
+
+      {/* Banner de migração: aparece só quando há JSON legado E ainda não foi migrado. */}
+      {legacy?.hasLegacy && legacy?.migratedGseId == null && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-start justify-between gap-3">
+          <div className="text-xs text-amber-900 flex-1">
+            <div className="font-semibold mb-0.5">Este PGR tem dados no modelo antigo (JSON)</div>
+            <div>
+              {legacy.legacyCount?.ghes ?? 0} cargos · {legacy.legacyCount?.inv ?? 0} riscos ·{" "}
+              {legacy.legacyCount?.plano ?? 0} ações psicossociais · {legacy.legacyCount?.epc ?? 0} EPC ·{" "}
+              {legacy.legacyCount?.epi ?? 0} EPI. Migre para o modelo GSE para usar inventário, matriz e plano por grupo.
+            </div>
+          </div>
+          <Button size="sm" onClick={() => migrateMut.mutate({ pgrId })} disabled={migrateMut.isPending} className="gap-1 shrink-0">
+            {migrateMut.isPending ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+            Migrar PGR legado
+          </Button>
+        </div>
+      )}
 
       {listQ.isLoading && <p className="text-xs text-slate-400">Carregando GSEs...</p>}
       {!listQ.isLoading && gseList.length === 0 && (
