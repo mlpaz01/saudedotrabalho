@@ -16557,20 +16557,24 @@ Return only the JSON content object (no wrapper). Format per type:
         const ir: any = await db.execute(drzSql`
           SELECT ii.*, f.code AS factor_code, f.name AS factor_name, f.description AS factor_description,
                  f.preventive_program_module_id AS factor_program_id,
-                 f.default_action AS factor_default_action, f.axis_order
+                 f.default_action AS factor_default_action, f.axis_order,
+                 sec.name AS sector_name
           FROM risk_inventory_items ii
           INNER JOIN psychosocial_factors f ON f.id = ii.factor_id
+          LEFT JOIN sectors sec ON sec.id = ii.sector_id
           WHERE ii.assessment_id=${input.id}
-          ORDER BY f.axis_order`);
+          ORDER BY sec.name, f.axis_order`);
         const inventory = (ir as any)[0] ?? [];
 
         const ar: any = await db.execute(drzSql`
-          SELECT ap.*, f.code AS factor_code, f.name AS factor_name, m.title AS program_title
+          SELECT ap.*, f.code AS factor_code, f.name AS factor_name, m.title AS program_title,
+                 sec.name AS sector_name
           FROM risk_action_plan_items ap
           INNER JOIN psychosocial_factors f ON f.id = ap.factor_id
           LEFT JOIN modules m ON m.id = ap.preventive_program_module_id
+          LEFT JOIN sectors sec ON sec.id = ap.sector_id
           WHERE ap.assessment_id=${input.id}
-          ORDER BY ap.priority DESC, f.axis_order`);
+          ORDER BY sec.name, ap.priority DESC, f.axis_order`);
         const actionPlan = (ar as any)[0] ?? [];
 
         const drpsCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${assessment.drps_survey_id}`);

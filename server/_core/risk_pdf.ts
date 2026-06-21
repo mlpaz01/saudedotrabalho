@@ -732,7 +732,7 @@ export async function generateAEPLaudoPDF(
       <div><b>Empresa:</b> ${esc(a.companyName)}</div>
       ${a.companyCnpj ? `<div><b>CNPJ:</b> ${esc(a.companyCnpj)}</div>` : ""}
       ${a.branchName ? `<div><b>Filial:</b> ${esc(a.branchName)}</div>` : ""}
-      <div><b>Setor avaliado:</b> ${esc(a.sectorName || "Não especificado")}</div>
+      <div><b>Setor avaliado:</b> ${hasSectors ? `${sectorGroups!.length} setor(es) — detalhados no item 5` : esc(a.sectorName || "Não especificado")}</div>
       <div><b>Ciclo:</b> ${esc(a.cycleName)}</div>
       <div><b>Mês/Ano:</b> ${esc(mesAno)}</div>
     </div>
@@ -754,8 +754,9 @@ export async function generateAEPLaudoPDF(
   </ol>
 
   <h2>1. Introdução</h2>
-  <p>Este documento apresenta a <b>Análise Ergonômica Preliminar (AEP)</b> do setor
-  <b>${esc(a.sectorName || "—")}</b> de <b>${esc(a.companyName)}</b>. A AEP é uma etapa de apreciação
+  <p>Este documento apresenta a <b>Análise Ergonômica Preliminar (AEP)</b> ${hasSectors
+    ? `dos setores avaliados`
+    : `do setor <b>${esc(a.sectorName || "—")}</b>`} de <b>${esc(a.companyName)}</b>. A AEP é uma etapa de apreciação
   inicial que identifica, de forma qualitativa e exploratória, as condições de trabalho, a organização das
   atividades e potenciais fontes de risco ergonômico e psicossocial, orientando a necessidade (ou não) de uma
   Análise Ergonômica do Trabalho (AET) aprofundada.</p>
