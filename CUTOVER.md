@@ -30,6 +30,7 @@ Fonte da verdade = GitHub. Deploy é sempre `git pull` + build (nunca SFTP).
 2. **Backup do DB de prod** antes de qualquer mudança de schema (`mysqldump`).
 3. **deploy.sh** na VPS de prod: `git reset --hard origin/main` → `pnpm install` → `npm run build` → `pm2 restart`.
 4. **Migrações**: `pnpm db:push` (gera + aplica). Seguro mesmo sem mudanças de schema.
+   - **Nova coluna em jun/2026**: `users.position VARCHAR(120) NULL` (cargo, exigido pelo PGR). Se `db:push` não detectar, rodar manualmente: `mysql -u root saudedotrabalho -e "ALTER TABLE users ADD COLUMN position VARCHAR(120) NULL"`.
 5. **Pós-checks**:
    - [ ] `pm2` status = `online`, sem reinícios em loop (`pm2 logs --lines 30`).
    - [ ] `https://saudedotrabalho.com/` responde (302/200).
