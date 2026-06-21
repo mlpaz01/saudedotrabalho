@@ -25,6 +25,8 @@ export const users = mysqlTable("users", {
   companyId: int("company_id"),
   branchId: int("branch_id"),
   sectorId: int("sector_id"),
+  // Cargo do colaborador — usado por PGR/AEP/EPI/Treinamentos. Migração: ALTER TABLE users ADD COLUMN position VARCHAR(120) NULL.
+  position: varchar("position", { length: 120 }),
 });
 
 export type User = typeof users.$inferSelect;

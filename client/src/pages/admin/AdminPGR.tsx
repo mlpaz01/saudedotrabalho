@@ -17,7 +17,7 @@ import {
   ListPlus, X, Info, CheckCircle2, Clock, Send, History, Paperclip, ExternalLink, FolderOpen, Sparkles,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 const SEV_OPTS = [
   { v: "insignificante", label: "Insignificante (1)" },
@@ -141,6 +141,37 @@ export default function AdminPGR() {
     },
     onError: (e: any) => toast.error(e?.message ?? "Erro ao gerar"),
   });
+  // Modal de escopo do novo PGR: filial específica ou consolidado (todas as filiais).
+  const [scopeOpen, setScopeOpen] = useState(false);
+  const [scopeMode, setScopeMode] = useState<"branch" | "consolidated">("consolidated");
+  const [scopeBranchId, setScopeBranchId] = useState<number | null>(null);
+  const branchesQ = trpc.pgr.listBranches.useQuery(
+    companyId ? { companyId } : undefined,
+    { enabled: companyId != null && scopeOpen }
+  );
+  const branches = (branchesQ.data ?? []) as any[];
+
+  // Importações inteligentes — RH e Ciclo Psicossocial.
+  const cyclesQ = trpc.pgr.listPsicossocialCycles.useQuery(
+    typeof editId === "number" && companyId ? { companyId, branchId: doc.branch_id ?? null } : undefined,
+    { enabled: typeof editId === "number" && companyId != null }
+  );
+  const importRhM = trpc.pgr.importFromRH.useMutation({
+    onSuccess: (r: any) => {
+      toast.success(`Importado do RH: ${r.setores} setor(es), ${r.cargos} cargo(s), ${r.totalColaboradores} colaborador(es).`);
+      if (typeof editId === "number") openEditor(editId);
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao importar do RH"),
+  });
+  const importCycleM = trpc.pgr.importFromCycle.useMutation({
+    onSuccess: (r: any) => {
+      toast.success(`Ciclo importado: ${r.inventario} item(ns) de inventário e ${r.plano} ação(ões).`);
+      if (typeof editId === "number") openEditor(editId);
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao importar ciclo"),
+  });
+  const [cycleSelect, setCycleSelect] = useState<string>("");
+
   const importAepM = trpc.pgr.importFromAEP.useMutation({
     onSuccess: (r: any) => {
       toast.success(r?.message ?? "Importado!");
@@ -182,11 +213,11 @@ export default function AdminPGR() {
     return <Badge className={`${d.cls} gap-1`}>{d.label}</Badge>;
   }
 
-  async function openEditor(id: number | "new") {
+  async function openEditor(id: number | "new", branchId: number | null = null) {
     setPdfUrl(null);
     try {
       const res: any = await utils.pgr.get.fetch(
-        id === "new" ? { companyId: companyId ?? undefined } : { id }
+        id === "new" ? { companyId: companyId ?? undefined, branchId } : { id }
       );
       const d = res.doc;
       setDoc({
@@ -220,6 +251,7 @@ export default function AdminPGR() {
     upsert.mutate({
       id: editId === "new" ? undefined : (editId as number),
       companyId: companyId ?? undefined,
+      branchId: doc.branch_id ?? null,
       title: doc.title,
       razaoSocial: doc.razao_social, nomeFantasia: doc.nome_fantasia, cnpj: doc.cnpj,
       endereco: doc.endereco, atividadePrincipal: doc.atividade_principal, grauRisco: doc.grau_risco,
@@ -309,7 +341,7 @@ export default function AdminPGR() {
             </button>
             <div className="flex-1"/>
             {dashTab === "lista" && (
-              <Button onClick={() => openEditor("new")} disabled={companyId == null} className="gap-2 mb-1" size="sm">
+              <Button onClick={() => { setScopeMode("consolidated"); setScopeBranchId(null); setScopeOpen(true); }} disabled={companyId == null} className="gap-2 mb-1" size="sm">
                 <Plus size={14} /> Novo PGR
               </Button>
             )}
@@ -353,6 +385,60 @@ export default function AdminPGR() {
               ))}
             </div>
           )}
+
+          {/* Modal: escopo do novo PGR — Filial específica vs Consolidado */}
+          <Dialog open={scopeOpen} onOpenChange={setScopeOpen}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Como deseja gerar o PGR?</DialogTitle>
+                <DialogDescription>
+                  O escopo do PGR define quais colaboradores, setores e ciclos serão importados.
+                  Você pode mudar isso depois editando o PGR.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-3 pt-2">
+                <label className="flex items-start gap-3 p-3 border rounded-lg cursor-pointer hover:bg-slate-50">
+                  <input type="radio" name="pgr-scope" checked={scopeMode === "consolidated"}
+                    onChange={() => setScopeMode("consolidated")} className="mt-1" />
+                  <div>
+                    <div className="font-semibold text-slate-900">Consolidado (todas as filiais)</div>
+                    <div className="text-xs text-slate-500">PGR abrangente da empresa, consolidando todas as filiais e setores.</div>
+                  </div>
+                </label>
+                <label className="flex items-start gap-3 p-3 border rounded-lg cursor-pointer hover:bg-slate-50">
+                  <input type="radio" name="pgr-scope" checked={scopeMode === "branch"}
+                    onChange={() => setScopeMode("branch")} className="mt-1" />
+                  <div className="flex-1">
+                    <div className="font-semibold text-slate-900">Apenas uma filial</div>
+                    <div className="text-xs text-slate-500 mb-2">PGR restrito aos colaboradores, setores e ciclos da filial escolhida.</div>
+                    {scopeMode === "branch" && (
+                      <Select value={scopeBranchId ? String(scopeBranchId) : ""} onValueChange={(v) => setScopeBranchId(Number(v))}>
+                        <SelectTrigger className="text-sm"><SelectValue placeholder="Selecione a filial" /></SelectTrigger>
+                        <SelectContent>
+                          {branches.length === 0 && (
+                            <div className="px-3 py-2 text-xs text-slate-500">Nenhuma filial cadastrada para esta empresa.</div>
+                          )}
+                          {branches.map((b: any) => (
+                            <SelectItem key={b.id} value={String(b.id)}>
+                              {b.name}{b.location ? ` — ${b.location}` : ""}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </div>
+                </label>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setScopeOpen(false)}>Cancelar</Button>
+                <Button onClick={() => {
+                  if (scopeMode === "branch" && !scopeBranchId) { toast.error("Selecione a filial."); return; }
+                  setScopeOpen(false);
+                  openEditor("new", scopeMode === "branch" ? scopeBranchId : null);
+                }}>Continuar</Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
       </AppLayout>
     );
@@ -382,6 +468,11 @@ export default function AdminPGR() {
               <ShieldCheck className="text-primary" /> {editId === "new" ? "Novo PGR" : "Editar PGR"}
             </h1>
             <p className="text-sm text-muted-foreground mt-1">Preencha os dados do cliente. O texto normativo é inserido automaticamente.</p>
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
+              <Badge className={doc.branch_id ? "bg-blue-100 text-blue-700 border-blue-200" : "bg-emerald-100 text-emerald-700 border-emerald-200"}>
+                Escopo: {doc.branch_id ? `Filial — ${doc.branch_name ?? doc.branch_id}` : "Consolidado (todas as filiais)"}
+              </Badge>
+            </div>
           </div>
           <div className="flex gap-2">
             <Button variant="outline" onClick={save} disabled={upsert.isPending} className="gap-2">
@@ -421,6 +512,49 @@ export default function AdminPGR() {
               <Button size="sm" className="gap-2"><Download size={14} /> Abrir PDF</Button>
             </a>
           </div>
+        )}
+
+        {/* Importações inteligentes — reaproveita dados já existentes na plataforma. */}
+        {editId !== "new" && (
+          <section className="bg-indigo-50/50 border border-indigo-200 rounded-xl p-4 space-y-3">
+            <div>
+              <h2 className="font-semibold text-indigo-900 flex items-center gap-2"><Sparkles size={16} /> Importações Inteligentes</h2>
+              <p className="text-xs text-indigo-700 mt-0.5">Reaproveite informações já existentes (RH, ciclos psicossociais) — sem redigitar.</p>
+            </div>
+            <div className="grid md:grid-cols-2 gap-3">
+              <div className="bg-white border rounded-lg p-3 flex flex-col gap-2">
+                <div className="font-medium text-sm text-slate-900">Importar do RH</div>
+                <div className="text-xs text-slate-600">Puxa filiais, setores, cargos e contagem de colaboradores cadastrados na plataforma.</div>
+                <Button size="sm" onClick={() => importRhM.mutate({ pgrId: editId as number })} disabled={importRhM.isPending} className="gap-1 w-fit">
+                  {importRhM.isPending ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} Importar
+                </Button>
+              </div>
+              <div className="bg-white border rounded-lg p-3 flex flex-col gap-2">
+                <div className="font-medium text-sm text-slate-900">Importar Ciclo Psicossocial</div>
+                <div className="text-xs text-slate-600">Traz inventário e plano de ação do ciclo selecionado para dentro do PGR.</div>
+                <div className="flex gap-2">
+                  <Select value={cycleSelect} onValueChange={setCycleSelect}>
+                    <SelectTrigger className="text-sm h-9"><SelectValue placeholder="Selecione o ciclo" /></SelectTrigger>
+                    <SelectContent>
+                      {(cyclesQ.data ?? []).length === 0 && (
+                        <div className="px-3 py-2 text-xs text-slate-500">Nenhum ciclo cadastrado.</div>
+                      )}
+                      {((cyclesQ.data ?? []) as any[]).map((c: any) => (
+                        <SelectItem key={c.id} value={String(c.id)}>
+                          {c.cycleName} {c.branchName ? `· ${c.branchName}` : "· Consolidado"} ({c.invCount} riscos · {c.planCount} ações)
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button size="sm" disabled={!cycleSelect || importCycleM.isPending}
+                    onClick={() => importCycleM.mutate({ pgrId: editId as number, assessmentId: Number(cycleSelect) })}
+                    className="gap-1">
+                    {importCycleM.isPending ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} Importar
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </section>
         )}
 
         {/* Identificação Contratada */}

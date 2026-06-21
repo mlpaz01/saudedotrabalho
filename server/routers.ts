@@ -4387,6 +4387,7 @@ export const appRouter = router({
           nome: z.string().optional().nullable(),
           filial: z.string().optional().nullable(),
           setor: z.string().optional().nullable(),
+          cargo: z.string().optional().nullable(),
           perfil: z.string().optional().nullable(),
         })),
       }))
@@ -4446,12 +4447,17 @@ export const appRouter = router({
           const nome = norm(raw.nome);
           const filial = norm(raw.filial);
           const setor = norm(raw.setor);
+          const cargo = norm(raw.cargo);
           let role = mapRole(raw.perfil);
           if (role === "admin" && !canAssignAdmin) role = "rh"; // clamp for RH importers
           const res: any = {
             email, nome, role, roleLabel: roleLabel[role] ?? role,
-            filial, setor, status: "ok", branchAction: "none", sectorAction: "none", message: "",
+            filial, setor, cargo, status: "ok", branchAction: "none", sectorAction: "none", message: "",
           };
+          // Cargo é obrigatório (NR-01) — sem ele PGR/AEP/EPI ficam sem base.
+          if (!cargo) {
+            res.status = "invalid"; res.message = "Cargo é obrigatório"; skipped++; results.push(res); continue;
+          }
 
           if (!email || !emailRe.test(email)) {
             res.status = "invalid"; res.message = "E-mail invalido"; skipped++; results.push(res); continue;
@@ -4517,7 +4523,7 @@ export const appRouter = router({
             await db.execute(drzSql`UPDATE corporate_emails SET company = ${companyName}, sector = ${setor || null}, employeeName = ${nome || null}, isActive = 1, company_id = ${companyId}, branch_id = ${branchId}, sector_id = ${sectorId}, role = ${role} WHERE id = ${exrow.id}`);
             updated++; res.action = "updated";
             if (exrow.userId) {
-              await db.execute(drzSql`UPDATE users SET company_id = ${companyId}, branch_id = ${branchId}, sector_id = ${sectorId}, role = ${role} WHERE id = ${exrow.userId}`);
+              await db.execute(drzSql`UPDATE users SET company_id = ${companyId}, branch_id = ${branchId}, sector_id = ${sectorId}, role = ${role}, position = ${cargo} WHERE id = ${exrow.userId}`);
             }
           } else {
             // ON DUPLICATE KEY UPDATE prevents race between concurrent imports on same email
@@ -4529,7 +4535,7 @@ export const appRouter = router({
           const urRows = Array.isArray(ur) ? ((ur as any)[0] ?? []) : [];
           const urow = Array.isArray(urRows) ? (urRows[0] ?? null) : urRows ?? null;
           if (urow) {
-            await db.execute(drzSql`UPDATE users SET company_id = ${companyId}, branch_id = ${branchId}, sector_id = ${sectorId}, role = ${role} WHERE id = ${urow.id}`);
+            await db.execute(drzSql`UPDATE users SET company_id = ${companyId}, branch_id = ${branchId}, sector_id = ${sectorId}, role = ${role}, position = ${cargo} WHERE id = ${urow.id}`);
             await db.execute(drzSql`UPDATE corporate_emails SET userId = ${urow.id} WHERE email = ${email} AND (userId IS NULL OR userId = 0)`);
           }
           results.push(res);
@@ -4549,6 +4555,7 @@ export const appRouter = router({
         role: z.enum(["user", "chefia", "rh", "admin"]).optional(),
         branchId: z.number().nullable().optional(),
         sectorId: z.number().nullable().optional(),
+        position: z.string().nullable().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
         const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
@@ -4605,6 +4612,9 @@ export const appRouter = router({
           const s = input.sectorId ?? null;
           await db.execute(drzSql`UPDATE users SET branch_id = ${b}, sector_id = ${s} WHERE id = ${input.userId}`);
           await db.execute(drzSql`UPDATE corporate_emails SET branch_id = ${b}, sector_id = ${s} WHERE userId = ${input.userId}`);
+        }
+        if (input.position !== undefined) {
+          await db.execute(drzSql`UPDATE users SET position = ${input.position} WHERE id = ${input.userId}`);
         }
         return { ok: true };
       }),
@@ -17585,15 +17595,18 @@ Return only the JSON content object (no wrapper). Format per type:
         const db = await getDb();
         if (!db || !cid) return [] as any[];
         const r: any = await db.execute(drzSql`
-          SELECT id, title, razao_social AS razaoSocial, status, pdf_url AS pdfUrl,
-                 vigencia_inicio AS vigenciaInicio, vigencia_fim AS vigenciaFim, updated_at AS updatedAt
-          FROM pgr_documents WHERE company_id=${cid} ORDER BY updated_at DESC`);
+          SELECT p.id, p.title, p.razao_social AS razaoSocial, p.status, p.pdf_url AS pdfUrl,
+                 p.vigencia_inicio AS vigenciaInicio, p.vigencia_fim AS vigenciaFim, p.updated_at AS updatedAt,
+                 p.branch_id AS branchId, b.name AS branchName
+          FROM pgr_documents p
+          LEFT JOIN branches b ON b.id = p.branch_id
+          WHERE p.company_id=${cid} ORDER BY p.updated_at DESC`);
         return (r as any)[0] ?? [];
       }),
 
     // Carrega um PGR por id, ou retorna defaults pré-preenchidos da empresa para um novo.
     get: adminOrRhProcedure
-      .input(z.object({ id: z.number().optional(), companyId: z.number().optional() }))
+      .input(z.object({ id: z.number().optional(), companyId: z.number().optional(), branchId: z.number().nullable().optional() }))
       .query(async ({ ctx, input }) => {
         const role = (ctx.user as any).role;
         const isGlobal = role === "admin_global" || role === "super_admin";
@@ -17601,30 +17614,52 @@ Return only the JSON content object (no wrapper). Format per type:
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
 
         if (input.id) {
-          const r: any = await db.execute(drzSql`SELECT * FROM pgr_documents WHERE id=${input.id} LIMIT 1`);
+          const r: any = await db.execute(drzSql`
+            SELECT p.*, b.name AS branch_name
+            FROM pgr_documents p
+            LEFT JOIN branches b ON b.id = p.branch_id
+            WHERE p.id=${input.id} LIMIT 1`);
           const row = (r as any)[0]?.[0];
           if (!row) throw new TRPCError({ code: "NOT_FOUND" });
           if (!isGlobal && row.company_id !== (ctx.user as any).companyId) throw new TRPCError({ code: "FORBIDDEN" });
           return { mode: "edit" as const, doc: row };
         }
 
-        // Novo PGR → prefill com dados da empresa.
+        // Novo PGR → prefill com dados da empresa e (opcional) filial.
         const cid = isGlobal ? (input.companyId ?? (ctx.user as any).companyId) : (ctx.user as any).companyId;
         if (!cid) throw new TRPCError({ code: "BAD_REQUEST", message: "Selecione a empresa do PGR." });
         const cr: any = await db.execute(drzSql`SELECT id, name, cnpj, logo_url AS logoUrl, address, phone FROM companies WHERE id=${cid} LIMIT 1`);
         const company = (cr as any)[0]?.[0];
         if (!company) throw new TRPCError({ code: "NOT_FOUND", message: "Empresa não encontrada." });
-        const empCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM users WHERE company_id=${cid}`);
+
+        // Quando o usuário escolheu uma filial específica, restringe colaboradores e usa o
+        // endereço/contato da filial. Caso contrário, conta colaboradores da empresa toda.
+        let branchName: string | null = null;
+        let branchAddress: string | null = null;
+        let branchPhone: string | null = null;
+        if (input.branchId != null) {
+          const br: any = await db.execute(drzSql`SELECT id, name, city, state, company_id FROM branches WHERE id=${input.branchId} LIMIT 1`);
+          const branch = (br as any)[0]?.[0];
+          if (!branch) throw new TRPCError({ code: "NOT_FOUND", message: "Filial não encontrada." });
+          if (Number(branch.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+          branchName = branch.name;
+          branchAddress = [branch.city, branch.state].filter(Boolean).join(" / ") || null;
+        }
+        const empCount: any = input.branchId != null
+          ? await db.execute(drzSql`SELECT COUNT(*) AS c FROM users WHERE company_id=${cid} AND branch_id=${input.branchId}`)
+          : await db.execute(drzSql`SELECT COUNT(*) AS c FROM users WHERE company_id=${cid}`);
         return {
           mode: "new" as const,
           doc: {
             company_id: cid,
+            branch_id: input.branchId ?? null,
+            branch_name: branchName,
             title: "PGR - Programa de Gerenciamento de Riscos",
             razao_social: company.name,
             nome_fantasia: company.name,
             cnpj: company.cnpj,
-            endereco: company.address,
-            contato: company.phone,
+            endereco: branchAddress ?? company.address,
+            contato: branchPhone ?? company.phone,
             num_funcionarios: String((empCount as any)[0]?.[0]?.c ?? ""),
             logo_url: company.logoUrl,
             contratante_ativo: 0,
@@ -17639,6 +17674,7 @@ Return only the JSON content object (no wrapper). Format per type:
       .input(z.object({
         id: z.number().optional(),
         companyId: z.number().optional(),
+        branchId: z.number().nullable().optional(),
         title: z.string().optional(),
         razaoSocial: z.string().optional().nullable(),
         nomeFantasia: z.string().optional().nullable(),
@@ -17742,6 +17778,7 @@ Return only the JSON content object (no wrapper). Format per type:
           if (!isGlobal && row.company_id !== (ctx.user as any).companyId) throw new TRPCError({ code: "FORBIDDEN" });
           await db.execute(drzSql`
             UPDATE pgr_documents SET
+              branch_id=${input.branchId ?? null},
               title=${input.title ?? null}, razao_social=${input.razaoSocial ?? null}, nome_fantasia=${input.nomeFantasia ?? null},
               cnpj=${input.cnpj ?? null}, endereco=${input.endereco ?? null}, atividade_principal=${input.atividadePrincipal ?? null},
               grau_risco=${input.grauRisco ?? null}, contato=${input.contato ?? null}, email=${input.email ?? null},
@@ -17769,13 +17806,13 @@ Return only the JSON content object (no wrapper). Format per type:
         if (!cid) throw new TRPCError({ code: "BAD_REQUEST", message: "Selecione a empresa do PGR." });
         const ins: any = await db.execute(drzSql`
           INSERT INTO pgr_documents (
-            company_id, title, razao_social, nome_fantasia, cnpj, endereco, atividade_principal, grau_risco,
+            company_id, branch_id, title, razao_social, nome_fantasia, cnpj, endereco, atividade_principal, grau_risco,
             contato, email, num_funcionarios, objeto_contrato, horarios_trabalho, regime_trabalho, obra,
             vigencia_inicio, vigencia_fim, contratante_ativo, contratante_razao, contratante_cnpj, contratante_endereco,
             contratante_atividade, contratante_grau_risco, contratante_contato, contratante_email,
             resp_tecnico_nome, resp_tecnico_registro, resp_tecnico_profissao, resp_tecnico_art, resp_tecnico_empresa, resp_tecnico_assinatura_url, resp_tecnico_validade_ate, logo_url, ghe_funcoes, revisoes, inventario, gse_grupos, epc_itens, epi_itens, plano_psicossocial, notas_tecnicas, caracterizacao_setores, cronograma_preventivo, hierarquia_controle, nao_conformidades, treinamentos_nr, created_by_user_id
           ) VALUES (
-            ${cid}, ${input.title ?? "PGR - Programa de Gerenciamento de Riscos"}, ${input.razaoSocial ?? null}, ${input.nomeFantasia ?? null},
+            ${cid}, ${input.branchId ?? null}, ${input.title ?? "PGR - Programa de Gerenciamento de Riscos"}, ${input.razaoSocial ?? null}, ${input.nomeFantasia ?? null},
             ${input.cnpj ?? null}, ${input.endereco ?? null}, ${input.atividadePrincipal ?? null}, ${input.grauRisco ?? null},
             ${input.contato ?? null}, ${input.email ?? null}, ${input.numFuncionarios ?? null}, ${input.objetoContrato ?? null},
             ${input.horariosTrabalho ?? null}, ${input.regimeTrabalho ?? null}, ${input.obra ?? null},
@@ -17788,6 +17825,184 @@ Return only the JSON content object (no wrapper). Format per type:
           )`);
         const newId = Number((ins as any)[0]?.insertId ?? 0);
         return { id: newId };
+      }),
+
+    // Lista filiais da empresa para o seletor de escopo do PGR (Filial específica).
+    listBranches: adminOrRhProcedure
+      .input(z.object({ companyId: z.number().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        const isGlobal = role === "admin_global" || role === "super_admin";
+        const cid = isGlobal ? (input?.companyId ?? (ctx.user as any).companyId) : (ctx.user as any).companyId;
+        const db = await getDb();
+        if (!db || !cid) return [] as any[];
+        const r: any = await db.execute(drzSql`
+          SELECT id, name, city, state FROM branches WHERE company_id=${cid} AND is_active=1 ORDER BY name`);
+        return ((r as any)[0] ?? []).map((b: any) => ({
+          id: Number(b.id),
+          name: String(b.name ?? ""),
+          location: [b.city, b.state].filter(Boolean).join(" / ") || null,
+        }));
+      }),
+
+    // Lista ciclos psicossociais (risk_assessments) disponíveis para importação no PGR,
+    // opcionalmente filtrando pela filial do PGR.
+    listPsicossocialCycles: adminOrRhProcedure
+      .input(z.object({ companyId: z.number().optional(), branchId: z.number().nullable().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        const isGlobal = role === "admin_global" || role === "super_admin";
+        const cid = isGlobal ? (input?.companyId ?? (ctx.user as any).companyId) : (ctx.user as any).companyId;
+        const db = await getDb();
+        if (!db || !cid) return [] as any[];
+        // Quando branchId é fornecido, mostra ciclos da filial OU da empresa toda (consolidados).
+        const r: any = input?.branchId != null
+          ? await db.execute(drzSql`
+              SELECT ra.id, ra.cycle_name AS cycleName, ra.status, ra.branch_id AS branchId,
+                     b.name AS branchName, ra.start_date AS startDate, ra.end_date AS endDate,
+                     (SELECT COUNT(*) FROM risk_inventory_items WHERE assessment_id=ra.id) AS invCount,
+                     (SELECT COUNT(*) FROM risk_action_plan_items WHERE assessment_id=ra.id) AS planCount
+              FROM risk_assessments ra
+              LEFT JOIN branches b ON b.id = ra.branch_id
+              WHERE ra.company_id=${cid} AND (ra.branch_id=${input.branchId} OR ra.branch_id IS NULL)
+              ORDER BY ra.created_at DESC LIMIT 50`)
+          : await db.execute(drzSql`
+              SELECT ra.id, ra.cycle_name AS cycleName, ra.status, ra.branch_id AS branchId,
+                     b.name AS branchName, ra.start_date AS startDate, ra.end_date AS endDate,
+                     (SELECT COUNT(*) FROM risk_inventory_items WHERE assessment_id=ra.id) AS invCount,
+                     (SELECT COUNT(*) FROM risk_action_plan_items WHERE assessment_id=ra.id) AS planCount
+              FROM risk_assessments ra
+              LEFT JOIN branches b ON b.id = ra.branch_id
+              WHERE ra.company_id=${cid}
+              ORDER BY ra.created_at DESC LIMIT 50`);
+        return (r as any)[0] ?? [];
+      }),
+
+    // Copia o inventário e o plano de ação de um ciclo psicossocial para o PGR (campos
+    // inventario e plano_psicossocial). Substitui o conteúdo atual desses campos.
+    importFromCycle: adminOrRhProcedure
+      .input(z.object({ pgrId: z.number(), assessmentId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        // Verifica posse do PGR e do ciclo
+        const pr: any = await db.execute(drzSql`SELECT company_id, branch_id FROM pgr_documents WHERE id=${input.pgrId} LIMIT 1`);
+        const pgr = (pr as any)[0]?.[0];
+        if (!pgr) throw new TRPCError({ code: "NOT_FOUND", message: "PGR não encontrado." });
+        if (pgr.company_id !== cid) throw new TRPCError({ code: "FORBIDDEN" });
+        const ar: any = await db.execute(drzSql`SELECT company_id FROM risk_assessments WHERE id=${input.assessmentId} LIMIT 1`);
+        const a = (ar as any)[0]?.[0];
+        if (!a) throw new TRPCError({ code: "NOT_FOUND", message: "Ciclo não encontrado." });
+        if (a.company_id !== cid) throw new TRPCError({ code: "FORBIDDEN" });
+
+        const ir: any = await db.execute(drzSql`
+          SELECT ii.*, f.code AS factor_code, f.name AS factor_name, f.description AS factor_description, sec.name AS sector_name
+          FROM risk_inventory_items ii
+          INNER JOIN psychosocial_factors f ON f.id = ii.factor_id
+          LEFT JOIN sectors sec ON sec.id = ii.sector_id
+          WHERE ii.assessment_id=${input.assessmentId} ORDER BY sec.name, f.axis_order`);
+        const invRows: any[] = (ir as any)[0] ?? [];
+        const ar2: any = await db.execute(drzSql`
+          SELECT ap.*, f.code AS factor_code, f.name AS factor_name, sec.name AS sector_name
+          FROM risk_action_plan_items ap
+          INNER JOIN psychosocial_factors f ON f.id = ap.factor_id
+          LEFT JOIN sectors sec ON sec.id = ap.sector_id
+          WHERE ap.assessment_id=${input.assessmentId} ORDER BY sec.name, ap.priority DESC`);
+        const planRows: any[] = (ar2 as any)[0] ?? [];
+
+        const invItens = invRows.map((it: any) => ({
+          fator: it.factor_name,
+          tipoRisco: "Psicossocial",
+          setor: it.sector_name ?? "",
+          funcoes: "",
+          agravos: it.factor_description ?? "",
+          causas: it.fontes_geradoras ?? "",
+          controles: it.medidas_existentes ?? "",
+          probabilidade: it.probabilidade,
+          severidade: it.gravidade,
+          observacoes: `Importado do ciclo psicossocial ${input.assessmentId}. Risco final: ${it.risco_final}.`,
+        }));
+        const planoItens = planRows.map((ap: any) => ({
+          fator: ap.factor_name,
+          setor: ap.sector_name ?? "",
+          acao: ap.action_description,
+          responsavel: ap.responsible_party ?? "",
+          prazo: ap.end_date ? new Date(ap.end_date).toISOString().slice(0, 10) : "",
+          prioridade: ap.priority,
+          status: ap.status,
+        }));
+
+        await db.execute(drzSql`
+          UPDATE pgr_documents
+          SET inventario=${JSON.stringify(invItens)},
+              plano_psicossocial=${JSON.stringify(planoItens)}
+          WHERE id=${input.pgrId}`);
+        return { ok: true, inventario: invItens.length, plano: planoItens.length };
+      }),
+
+    // Importa caracterização (filiais/setores/cargos/colaboradores) e GHE inicial a partir
+    // do RH cadastrado na plataforma — alimenta caracterizacao_setores e ghe_funcoes do PGR.
+    importFromRH: adminOrRhProcedure
+      .input(z.object({ pgrId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const pr: any = await db.execute(drzSql`SELECT company_id, branch_id FROM pgr_documents WHERE id=${input.pgrId} LIMIT 1`);
+        const pgr = (pr as any)[0]?.[0];
+        if (!pgr) throw new TRPCError({ code: "NOT_FOUND" });
+        if (pgr.company_id !== cid) throw new TRPCError({ code: "FORBIDDEN" });
+
+        // Setores da empresa (e da filial, se escopo for filial)
+        const sectRows: any = pgr.branch_id != null
+          ? await db.execute(drzSql`
+              SELECT s.id, s.name, b.name AS branch_name,
+                     (SELECT COUNT(*) FROM users WHERE sector_id=s.id) AS num_users
+              FROM sectors s LEFT JOIN branches b ON b.id = s.branch_id
+              WHERE s.company_id=${cid} AND s.branch_id=${pgr.branch_id} AND s.is_active=1 ORDER BY s.name`)
+          : await db.execute(drzSql`
+              SELECT s.id, s.name, b.name AS branch_name,
+                     (SELECT COUNT(*) FROM users WHERE sector_id=s.id) AS num_users
+              FROM sectors s LEFT JOIN branches b ON b.id = s.branch_id
+              WHERE s.company_id=${cid} AND s.is_active=1 ORDER BY b.name, s.name`);
+        const sectors: any[] = (sectRows as any)[0] ?? [];
+
+        // Cargos distintos dos colaboradores (position) — base do GHE.
+        const usrRows: any = pgr.branch_id != null
+          ? await db.execute(drzSql`
+              SELECT COALESCE(position,'(sem cargo)') AS funcao, COUNT(*) AS num
+              FROM users WHERE company_id=${cid} AND branch_id=${pgr.branch_id} GROUP BY position ORDER BY funcao`)
+          : await db.execute(drzSql`
+              SELECT COALESCE(position,'(sem cargo)') AS funcao, COUNT(*) AS num
+              FROM users WHERE company_id=${cid} GROUP BY position ORDER BY funcao`);
+        const cargos: any[] = (usrRows as any)[0] ?? [];
+
+        const caracItens = sectors.map((s: any) => ({
+          setor: s.name,
+          filial: s.branch_name ?? "",
+          descricao: "",
+          numTrabalhadores: Number(s.num_users ?? 0),
+        }));
+        const gheItens = cargos.map((c: any) => ({
+          funcao: c.funcao,
+          descricao: "",
+          num: Number(c.num ?? 0),
+        }));
+
+        // Total para num_funcionarios
+        const totalRow: any = pgr.branch_id != null
+          ? await db.execute(drzSql`SELECT COUNT(*) AS c FROM users WHERE company_id=${cid} AND branch_id=${pgr.branch_id}`)
+          : await db.execute(drzSql`SELECT COUNT(*) AS c FROM users WHERE company_id=${cid}`);
+        const total = Number((totalRow as any)[0]?.[0]?.c ?? 0);
+
+        await db.execute(drzSql`
+          UPDATE pgr_documents
+          SET caracterizacao_setores=${JSON.stringify(caracItens)},
+              ghe_funcoes=${JSON.stringify(gheItens)},
+              num_funcionarios=${String(total)}
+          WHERE id=${input.pgrId}`);
+        return { ok: true, setores: caracItens.length, cargos: gheItens.length, totalColaboradores: total };
       }),
 
     remove: adminOrRhProcedure
@@ -19770,9 +19985,12 @@ Return only the JSON content object (no wrapper). Format per type:
         if (!db2) throw new Error("DB unavailable");
         const role = (ctx.user as any).role;
         const isAdmin = ["admin", "rh", "admin_global", "company_admin", "super_admin", "chefia"].includes(role);
+        // Apenas o psicólogo (e admins) podem ver as observações profissionais sigilosas.
+        // RH/chefia/colaborador NÃO veem outcome_notes — exigência LGPD/ética clínica.
+        const canSeeOutcome = ["psicologo", "admin", "admin_global", "company_admin", "super_admin"].includes(role);
         const cid = input.companyId ?? (ctx.user as any).companyId;
         let q: any;
-        if (isAdmin) {
+        if (isAdmin || role === "psicologo") {
           q = cid
             ? drzSql`SELECT a.*, u.name as collaborator_name, u.email as collaborator_email, p.name as professional_name, p.specialty FROM appointments a JOIN users u ON u.id=a.collaborator_id JOIN appointment_professionals p ON p.id=a.professional_id WHERE a.company_id=${cid} ORDER BY a.scheduled_at DESC LIMIT 200`
             : drzSql`SELECT a.*, u.name as collaborator_name, u.email as collaborator_email, p.name as professional_name, p.specialty FROM appointments a JOIN users u ON u.id=a.collaborator_id JOIN appointment_professionals p ON p.id=a.professional_id ORDER BY a.scheduled_at DESC LIMIT 200`;
@@ -19792,28 +20010,90 @@ Return only the JSON content object (no wrapper). Format per type:
           status: String(r.status ?? "pending"),
           meetingUrl: r.meeting_url ?? null,
           notes: r.notes ?? null,
+          cancelReason: r.cancel_reason ?? null,
+          // outcomeNotes só é devolvido para psicólogo/admins — para RH/chefia vem como null.
+          outcomeNotes: canSeeOutcome ? (r.outcome_notes ?? null) : null,
         }));
       }),
 
-    updateAppointmentStatus: adminOrRhProcedure
+    updateAppointmentStatus: protectedProcedure
       .input(z.object({
         id: z.number().int(),
-        status: z.enum(["pending", "confirmed", "cancelled", "completed"]),
+        status: z.enum(["pending", "confirmed", "cancelled", "completed", "no_show", "rescheduled"]),
         meetingUrl: z.string().optional(),
         cancelReason: z.string().optional(),
+        outcomeNotes: z.string().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
         const db2 = await getDb();
         if (!db2) throw new Error("DB unavailable");
-        await db2.execute(drzSql`
-          UPDATE appointments
-          SET status=${input.status},
-              meeting_url=${input.meetingUrl || null},
-              cancel_reason=${input.cancelReason || null},
-              updated_at=NOW()
-          WHERE id=${input.id}
-        `);
+        const role = (ctx.user as any).role;
+        const isAdminLike = ["admin", "rh", "admin_global", "company_admin", "super_admin", "psicologo"].includes(role);
+        if (!isAdminLike) throw new TRPCError({ code: "FORBIDDEN", message: "Sem permissão para atualizar status." });
+        // Observações profissionais só podem ser gravadas pelo psicólogo ou admin (não RH).
+        const canWriteOutcome = ["psicologo", "admin", "admin_global", "company_admin", "super_admin"].includes(role);
+        if (input.outcomeNotes !== undefined && !canWriteOutcome) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Observações profissionais são sigilosas; apenas o psicólogo registra." });
+        }
+        if (input.outcomeNotes !== undefined) {
+          await db2.execute(drzSql`
+            UPDATE appointments
+            SET status=${input.status},
+                meeting_url=${input.meetingUrl || null},
+                cancel_reason=${input.cancelReason || null},
+                outcome_notes=${input.outcomeNotes || null},
+                updated_at=NOW()
+            WHERE id=${input.id}`);
+        } else {
+          await db2.execute(drzSql`
+            UPDATE appointments
+            SET status=${input.status},
+                meeting_url=${input.meetingUrl || null},
+                cancel_reason=${input.cancelReason || null},
+                updated_at=NOW()
+            WHERE id=${input.id}`);
+        }
         return { ok: true };
+      }),
+
+    // Indicadores agregados dos atendimentos — RH vê estes (sem outcome_notes).
+    indicators: protectedProcedure
+      .input(z.object({ companyId: z.number().int().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        const db2 = await getDb();
+        if (!db2) return null;
+        const role = (ctx.user as any).role;
+        const allowed = ["psicologo", "admin", "rh", "admin_global", "company_admin", "super_admin", "chefia"];
+        if (!allowed.includes(role)) throw new TRPCError({ code: "FORBIDDEN" });
+        const cid = input?.companyId ?? (ctx.user as any).companyId ?? null;
+        if (!cid) return { total: 0, byStatus: {}, attendanceRate: 0, noShowRate: 0, cancelRate: 0, byMonth: [] };
+        const r: any = await db2.execute(drzSql`
+          SELECT status, COUNT(*) AS c FROM appointments WHERE company_id=${cid} GROUP BY status`);
+        const rows: any[] = (r as any)[0] ?? [];
+        const byStatus: Record<string, number> = {};
+        let total = 0;
+        for (const row of rows) { byStatus[String(row.status)] = Number(row.c); total += Number(row.c); }
+        const completed = byStatus.completed ?? 0;
+        const noShow = byStatus.no_show ?? 0;
+        const cancelled = byStatus.cancelled ?? 0;
+        const denom = completed + noShow + cancelled;
+        const m: any = await db2.execute(drzSql`
+          SELECT DATE_FORMAT(scheduled_at, '%Y-%m') AS ym, COUNT(*) AS total,
+                 SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed
+          FROM appointments WHERE company_id=${cid}
+            AND scheduled_at >= DATE_SUB(NOW(), INTERVAL 12 MONTH)
+          GROUP BY ym ORDER BY ym`);
+        const byMonth = ((m as any)[0] ?? []).map((x: any) => ({
+          month: String(x.ym), total: Number(x.total ?? 0), completed: Number(x.completed ?? 0),
+        }));
+        return {
+          total,
+          byStatus,
+          attendanceRate: denom > 0 ? Math.round((completed / denom) * 100) : 0,
+          noShowRate: denom > 0 ? Math.round((noShow / denom) * 100) : 0,
+          cancelRate: denom > 0 ? Math.round((cancelled / denom) * 100) : 0,
+          byMonth,
+        };
       }),
 
     cancelMyAppointment: protectedProcedure
