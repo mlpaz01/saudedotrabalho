@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import AdminPGRGseManager from "./AdminPGRGseManager";
 
 const SEV_OPTS = [
   { v: "insignificante", label: "Insignificante (1)" },
@@ -555,6 +556,11 @@ export default function AdminPGR() {
               </div>
             </div>
           </section>
+        )}
+
+        {/* Gestão de GSE (Sprint 1 PGR Inteligente) — só faz sentido após salvar o PGR. */}
+        {typeof editId === "number" && (
+          <AdminPGRGseManager pgrId={editId as number} companyId={companyId} />
         )}
 
         {/* Identificação Contratada */}
