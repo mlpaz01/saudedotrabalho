@@ -100,9 +100,21 @@ Esta sequência mantém o ritmo de entrega sem regressão.
 
 ## Acréscimos da mensagem 21/06 (PGR Inteligente / GSE-first)
 
-### Mudança arquitetural — Sprint 1 do "PGR Inteligente"
+### Mudança arquitetural — Sprint 1 do "PGR Inteligente" — ✅ CONCLUÍDA (2026-06-21)
 
-**O que muda no modelo de dados** (1-2 semanas de trabalho focado, com testes):
+**Sprint 1 entregue em ~1 dia de trabalho focado:**
+
+```
+✅ Dia 1-2    Schema: 9 tabelas pgr_gse* + FKs ON DELETE CASCADE
+✅ Dia 3-4    13 procedures tRPC (CRUD + 8 set* idempotentes + migrate + legacyStatus)
+✅ Dia 5-6    UI AdminPGRGseManager.tsx com 8 abas internas
+✅ Dia 7-8    Migração JSON → tabelas, idempotente, com fuzzy match de setor
+✅ Dia 9-10   generatePDF refatorado (parallel-write, sem regressão no caminho legado)
+✅ Dia 11-12  Banners "Modelo legado" + suite E2E 10/10 (LGPD não regrediu)
+✅ Dia 13-14  Cutover preparado (cutover_prod.py com DDLs idempotentes + smoke checks)
+```
+
+**O que ficou no modelo de dados** (decisões consolidadas):
 
 - Nova tabela `pgr_gse` com colunas próprias: `id, pgr_id, nome, descricao,
   num_trabalhadores, num_homens, num_mulheres, ai_suggested (bool)`.
