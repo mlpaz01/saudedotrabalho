@@ -18662,6 +18662,58 @@ Return only the JSON content object (no wrapper). Format per type:
           try { return JSON.parse(typeof v === "string" ? v : String(v)); } catch { return []; }
         };
 
+        // Sprint 1 PGR Inteligente: se este PGR tem GSEs nas tabelas novas,
+        // carrega tudo (cargos/setores/riscos/EPC/EPI/ações/treinamentos/evidências)
+        // e passa pro PDF; senão `gseGroups` fica vazio e o PDF segue só com JSON legado.
+        const gseRows: any = await db.execute(drzSql`
+          SELECT id, nome, descricao, num_trabalhadores AS numTrabalhadores,
+                 num_homens AS numHomens, num_mulheres AS numMulheres,
+                 ai_suggested AS aiSuggested, migrated_from_legacy AS migratedFromLegacy
+          FROM pgr_gse WHERE pgr_id=${input.id} ORDER BY id`);
+        const gseList: any[] = (gseRows as any)[0] ?? [];
+        const gseGroups: any[] = [];
+        for (const g of gseList) {
+          const [cR, sR, rR, ecR, eiR, aR, tR, vR]: any[] = await Promise.all([
+            db.execute(drzSql`SELECT cargo FROM pgr_gse_cargos WHERE gse_id=${g.id} ORDER BY cargo`),
+            db.execute(drzSql`SELECT c.sector_id AS id, s.name, b.name AS branchName
+                              FROM pgr_gse_setores c LEFT JOIN sectors s ON s.id=c.sector_id
+                              LEFT JOIN branches b ON b.id=s.branch_id
+                              WHERE c.gse_id=${g.id} ORDER BY s.name`),
+            db.execute(drzSql`SELECT * FROM pgr_gse_riscos WHERE gse_id=${g.id} ORDER BY id`),
+            db.execute(drzSql`SELECT * FROM pgr_gse_epc    WHERE gse_id=${g.id} ORDER BY id`),
+            db.execute(drzSql`SELECT * FROM pgr_gse_epi    WHERE gse_id=${g.id} ORDER BY id`),
+            db.execute(drzSql`SELECT * FROM pgr_gse_acoes  WHERE gse_id=${g.id} ORDER BY id`),
+            db.execute(drzSql`SELECT * FROM pgr_gse_treinamentos WHERE gse_id=${g.id} ORDER BY nr_code`),
+            db.execute(drzSql`SELECT * FROM pgr_gse_evidencias WHERE gse_id=${g.id} ORDER BY id`),
+          ]);
+          gseGroups.push({
+            id: Number(g.id), nome: g.nome, descricao: g.descricao,
+            numTrabalhadores: g.numTrabalhadores ? Number(g.numTrabalhadores) : 0,
+            numHomens: g.numHomens != null ? Number(g.numHomens) : null,
+            numMulheres: g.numMulheres != null ? Number(g.numMulheres) : null,
+            aiSuggested: !!g.aiSuggested, migratedFromLegacy: !!g.migratedFromLegacy,
+            cargos: ((cR as any)[0] ?? []).map((x: any) => x.cargo),
+            setores: ((sR as any)[0] ?? []).map((x: any) => ({ id: Number(x.id), name: x.name, branchName: x.branchName })),
+            riscos: ((rR as any)[0] ?? []).map((x: any) => ({
+              tipo: x.tipo, agente: x.agente, fonteGeradora: x.fonte_geradora, possivelDano: x.possivel_dano,
+              tipoExposicao: x.tipo_exposicao, severidade: x.severidade, probabilidade: x.probabilidade,
+              riscoFinal: x.risco_final, notes: x.notes,
+            })),
+            epc: ((ecR as any)[0] ?? []).map((x: any) => ({ descricao: x.descricao, aplicacao: x.aplicacao })),
+            epi: ((eiR as any)[0] ?? []).map((x: any) => ({ descricao: x.descricao, ca: x.ca, aplicacao: x.aplicacao, validade: x.validade })),
+            acoes: ((aR as any)[0] ?? []).map((x: any) => ({
+              what: x.what, why: x.why, where: x.where_loc, whenStart: x.when_start, whenEnd: x.when_end,
+              who: x.who, how: x.how, howMuch: x.how_much, priority: x.priority, status: x.status,
+            })),
+            evidencias: ((vR as any)[0] ?? []).map((x: any) => ({
+              tipo: x.tipo, titulo: x.titulo, descricao: x.descricao, fileUrl: x.file_url,
+            })),
+            treinamentos: ((tR as any)[0] ?? []).map((x: any) => ({
+              nrCode: x.nr_code, nome: x.nome, cargaHoraria: x.carga_horaria, obrigatorio: !!x.obrigatorio,
+            })),
+          });
+        }
+
         const { generatePGRPDF } = await import("./_core/pgr_pdf");
         const url = await generatePGRPDF({
           id: row.id,
@@ -18712,9 +18764,10 @@ Return only the JSON content object (no wrapper). Format per type:
           hierarquiaControle: parseJson(row.hierarquia_controle),
           naoConformidades: parseJson(row.nao_conformidades),
           treinamentosNr: parseJson(row.treinamentos_nr),
+          gseGroups,
         });
         await db.execute(drzSql`UPDATE pgr_documents SET pdf_url=${url}, status='gerado' WHERE id=${row.id}`);
-        return { ok: true, url };
+        return { ok: true, url, gseGroupsCount: gseGroups.length };
       }),
     listGheGse: adminOrRhProcedure
       .input(z.object({ pgrId: z.number().int() }))

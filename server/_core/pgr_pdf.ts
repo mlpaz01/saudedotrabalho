@@ -142,6 +142,36 @@ export type PgrData = {
   hierarquiaControle?: any[] | null;
   naoConformidades?: any[] | null;
   treinamentosNr?: any[] | null;
+  // Sprint 1 PGR Inteligente: quando preenchido, o PDF usa a estrutura GSE-first
+  // (tabelas relacionais) em vez do JSON legado. Os dois NUNCA aparecem juntos.
+  gseGroups?: PgrGseGroup[] | null;
+};
+
+export type PgrGseGroup = {
+  id: number;
+  nome: string;
+  descricao?: string | null;
+  numTrabalhadores?: number | null;
+  numHomens?: number | null;
+  numMulheres?: number | null;
+  aiSuggested?: boolean;
+  migratedFromLegacy?: boolean;
+  cargos: string[];
+  setores: { id: number; name: string; branchName?: string | null }[];
+  riscos: {
+    tipo: string; agente: string; fonteGeradora?: string | null; possivelDano?: string | null;
+    tipoExposicao?: string | null; severidade: string; probabilidade: string; riscoFinal: string;
+    notes?: string | null;
+  }[];
+  epc: { descricao: string; aplicacao?: string | null }[];
+  epi: { descricao: string; ca?: string | null; aplicacao?: string | null; validade?: string | null }[];
+  acoes: {
+    what: string; why?: string | null; where?: string | null; whenStart?: string | null;
+    whenEnd?: string | null; who?: string | null; how?: string | null; howMuch?: string | null;
+    priority: string; status: string;
+  }[];
+  evidencias: { tipo: string; titulo?: string | null; descricao?: string | null; fileUrl?: string | null }[];
+  treinamentos: { nrCode: string; nome: string; cargaHoraria?: number | null; obrigatorio: boolean }[];
 };
 
 export type GseRow = { grupo: string; funcoes?: string | null; atividades?: string | null; num?: string | number | null; sexoM?: string | null; sexoF?: string | null; horario?: string | null; local?: string | null; };
@@ -694,6 +724,107 @@ function treinamentosNrSection(d: PgrData): string {
   </table>`;
 }
 
+// Renderiza a seção "Grupos Similares de Exposição (GSE) — Modelo NR-01" a partir
+// das tabelas relacionais novas (Sprint 1 PGR Inteligente). Cada GSE vira sub-seção
+// com cargos / setores / riscos / EPC / EPI / ações 5W2H / treinamentos / evidências.
+function gseGroupsSection(d: PgrData): string {
+  const groups = d.gseGroups ?? [];
+  if (groups.length === 0) return "";
+
+  const tipoLabel: Record<string, string> = {
+    fisico: "Físico", quimico: "Químico", biologico: "Biológico",
+    ergonomico: "Ergonômico", acidente: "Acidente", psicossocial: "Psicossocial",
+  };
+  const sevColor = (n: string) => {
+    const v = String(n || "").toLowerCase();
+    if (v === "critica" || v === "critico") return "#b91c1c";
+    if (v === "alta"    || v === "alto")    return "#ea580c";
+    if (v === "media"   || v === "medio")   return "#ca8a04";
+    return "#16a34a";
+  };
+
+  const groupHtml = groups.map((g, idx) => {
+    const riscosRows = g.riscos.map((r) => `
+      <tr>
+        <td><b>${esc(tipoLabel[r.tipo] || r.tipo)}</b></td>
+        <td>${esc(r.agente)}</td>
+        <td>${esc(r.fonteGeradora || "—")}</td>
+        <td>${esc(r.possivelDano || "—")}</td>
+        <td>${esc(r.tipoExposicao || "—")}</td>
+        <td style="text-align:center;color:#fff;background:${sevColor(r.severidade)};font-size:7.5pt;padding:2px 4px;border-radius:3px">${esc(r.severidade)}</td>
+        <td style="text-align:center;color:#fff;background:${sevColor(r.probabilidade)};font-size:7.5pt;padding:2px 4px;border-radius:3px">${esc(r.probabilidade)}</td>
+        <td style="text-align:center;color:#fff;background:${sevColor(r.riscoFinal)};font-size:7.5pt;padding:2px 4px;border-radius:3px"><b>${esc(r.riscoFinal)}</b></td>
+      </tr>`).join("");
+
+    const epcRows = g.epc.map((x) => `<tr><td>${esc(x.descricao)}</td><td>${esc(x.aplicacao || "—")}</td></tr>`).join("");
+    const epiRows = g.epi.map((x) => `<tr><td>${esc(x.descricao)}</td><td style="text-align:center">${esc(x.ca || "—")}</td><td>${esc(x.aplicacao || "—")}</td><td style="text-align:center">${esc(x.validade || "—")}</td></tr>`).join("");
+
+    const acoesRows = g.acoes.map((a) => `
+      <tr>
+        <td><b>${esc(a.what)}</b>${a.why ? `<br><small class="muted">${esc(a.why)}</small>` : ""}</td>
+        <td>${esc(a.where || "—")}</td>
+        <td>${esc(a.who || "—")}</td>
+        <td style="text-align:center">${esc(a.whenStart || "—")} → ${esc(a.whenEnd || "—")}</td>
+        <td>${esc(a.how || "—")}</td>
+        <td style="text-align:center">${esc(a.howMuch || "—")}</td>
+        <td style="text-align:center;color:#fff;background:${sevColor(a.priority)};font-size:7.5pt;padding:2px 4px;border-radius:3px">${esc(a.priority)}</td>
+        <td style="text-align:center">${esc(a.status)}</td>
+      </tr>`).join("");
+
+    const treinRows = g.treinamentos.map((t) =>
+      `<tr><td><b>${esc(t.nrCode)}</b></td><td>${esc(t.nome)}</td><td style="text-align:center">${t.cargaHoraria ?? "—"}h</td><td style="text-align:center">${t.obrigatorio ? "Sim" : "Não"}</td></tr>`).join("");
+
+    const evidRows = g.evidencias.map((e) =>
+      `<tr><td>${esc(e.tipo)}</td><td>${esc(e.titulo || "—")}</td><td>${esc(e.descricao || "—")}</td><td>${e.fileUrl ? `<a href="${esc(e.fileUrl)}">link</a>` : "—"}</td></tr>`).join("");
+
+    return `
+    <h3>GSE ${String(idx + 1).padStart(2, "0")} — ${esc(g.nome)}
+      ${g.aiSuggested ? `<span style="font-size:7pt;background:#ede9fe;color:#6d28d9;padding:1px 4px;border-radius:3px;margin-left:6px">IA</span>` : ""}
+      ${g.migratedFromLegacy ? `<span style="font-size:7pt;background:#fef3c7;color:#92400e;padding:1px 4px;border-radius:3px;margin-left:6px">migrado</span>` : ""}
+    </h3>
+    ${g.descricao ? `<p>${esc(g.descricao)}</p>` : ""}
+    <table style="font-size:9pt">
+      <tr><th style="width:30%">Item</th><th>Descrição</th></tr>
+      <tr><td>Cargos</td><td>${g.cargos.length ? g.cargos.map(esc).join(", ") : "<i>nenhum</i>"}</td></tr>
+      <tr><td>Setores</td><td>${g.setores.length ? g.setores.map((s) => esc(s.name) + (s.branchName ? ` <small class="muted">(${esc(s.branchName)})</small>` : "")).join(", ") : "<i>nenhum vinculado</i>"}</td></tr>
+      <tr><td>Trabalhadores expostos</td><td>${g.numTrabalhadores ?? 0}${g.numHomens != null || g.numMulheres != null ? ` (H: ${g.numHomens ?? 0} · M: ${g.numMulheres ?? 0})` : ""}</td></tr>
+    </table>
+
+    ${riscosRows ? `
+    <h4>Inventário de riscos do GSE</h4>
+    <table style="font-size:8.5pt">
+      <tr><th>Tipo</th><th>Agente</th><th>Fonte geradora</th><th>Possível dano</th><th>Tipo exposição</th><th>Sev.</th><th>Prob.</th><th>Risco</th></tr>
+      ${riscosRows}
+    </table>` : `<p><small class="muted"><i>Nenhum risco inventariado neste GSE.</i></small></p>`}
+
+    ${epcRows ? `<h4>EPC — Equipamentos de Proteção Coletiva</h4>
+    <table style="font-size:9pt"><tr><th>Descrição</th><th>Aplicação</th></tr>${epcRows}</table>` : ""}
+
+    ${epiRows ? `<h4>EPI — Equipamentos de Proteção Individual</h4>
+    <table style="font-size:9pt"><tr><th>Descrição</th><th>CA</th><th>Aplicação</th><th>Validade</th></tr>${epiRows}</table>` : ""}
+
+    ${acoesRows ? `<h4>Plano de Ação (5W2H)</h4>
+    <table style="font-size:8pt">
+      <tr><th>O que (Why)</th><th>Onde</th><th>Quem</th><th>Quando</th><th>Como</th><th>Quanto</th><th>Pri.</th><th>Status</th></tr>
+      ${acoesRows}
+    </table>` : ""}
+
+    ${treinRows ? `<h4>Treinamentos obrigatórios</h4>
+    <table style="font-size:9pt"><tr><th>NR</th><th>Treinamento</th><th>C.H.</th><th>Obrigatório</th></tr>${treinRows}</table>` : ""}
+
+    ${evidRows ? `<h4>Evidências</h4>
+    <table style="font-size:9pt"><tr><th>Tipo</th><th>Título</th><th>Descrição</th><th>Arquivo</th></tr>${evidRows}</table>` : ""}
+    `;
+  }).join('<div style="margin:6mm 0;border-top:1px dashed #cbd5e1"></div>');
+
+  return `
+  <h2>Grupos Similares de Exposição (GSE) — Modelo NR-01</h2>
+  <p>A análise de riscos deste PGR é estruturada por <b>Grupos Similares de Exposição (GSE)</b>,
+  conforme a NR-01. Cada GSE concentra cargos, setores, inventário de riscos, EPC, EPI, plano de ação
+  (5W2H), treinamentos obrigatórios e evidências documentais.</p>
+  ${groupHtml}`;
+}
+
 export async function generatePGRPDF(d: PgrData): Promise<string> {
   await fs.mkdir(UPLOAD_DIR, { recursive: true });
   const outPath = path.join(UPLOAD_DIR, `pgr_${d.id}.pdf`);
@@ -725,6 +856,8 @@ export async function generatePGRPDF(d: PgrData): Promise<string> {
   <div class="section">${regimeEGhe(d)}</div>
   <div class="section">${revisaoTable(d)}</div>
   <div class="page-break"></div>
+
+  ${(d.gseGroups && d.gseGroups.length > 0) ? `<div class="section">${gseGroupsSection(d)}</div><div class="page-break"></div>` : ""}
 
   <div class="section">${parteI(d)}</div>
   <div class="page-break"></div>
