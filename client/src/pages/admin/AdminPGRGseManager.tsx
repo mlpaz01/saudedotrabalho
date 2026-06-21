@@ -226,18 +226,22 @@ function GseEditorDialog({
   const [evidencias, setEvidencias] = useState<any[]>([]);
   const [treinamentos, setTreinamentos] = useState<any[]>([]);
 
-  // Setores da empresa (para o multi-select)
+  // Setores da empresa (para o multi-select). hierarchyTree retorna uma lista de
+  // empresas (admin global pode ter várias); pegamos a do usuário ou a primeira.
   const branchesAndSectorsQ = trpc.lessons.hierarchyTree.useQuery(undefined, { enabled: companyId != null });
   const allSectors: { id: number; name: string; branchName?: string }[] = (() => {
     const tree = branchesAndSectorsQ.data as any;
-    if (!tree) return [];
+    if (!Array.isArray(tree)) return [];
+    const myCompany = tree.find((c: any) => c.company?.id === companyId) ?? tree[0];
+    if (!myCompany) return [];
     const out: any[] = [];
-    for (const b of (tree.branches ?? [])) {
+    for (const b of (myCompany.branches ?? [])) {
+      const branchName = b.branch?.name;
       for (const s of (b.sectors ?? [])) {
-        out.push({ id: s.id, name: s.name, branchName: b.name });
+        out.push({ id: s.sector?.id, name: s.sector?.name, branchName });
       }
     }
-    return out;
+    return out.filter((x) => x.id);
   })();
 
   useEffect(() => {
