@@ -576,3 +576,127 @@ export const trainingProgramModules = mysqlTable("training_program_modules", {
 
 export type TrainingProgram = typeof trainingPrograms.$inferSelect;
 export type InsertTrainingProgram = typeof trainingPrograms.$inferInsert;
+
+// ─── PGR Inteligente — GSE como espinha dorsal (Sprint 1 / 2026-06-21) ──────
+// Tabelas relacionais que substituem `pgr_documents.ghe_funcoes` (JSON). O JSON
+// legado continua existindo durante a migração — parallel-write. Cada GSE
+// (Grupo Similar de Exposição) é um nó central a que se ligam riscos, EPC,
+// EPI, ações, evidências e treinamentos. Sem `references()` explícito porque
+// `pgr_documents` foi criado fora do Drizzle (SQL direto); FK é garantida via
+// DDL ao criar a tabela em migração.
+export const pgrGse = mysqlTable("pgr_gse", {
+  id: int("id").autoincrement().primaryKey(),
+  pgrId: int("pgr_id").notNull(),
+  nome: varchar("nome", { length: 255 }).notNull(),
+  descricao: text("descricao"),
+  numTrabalhadores: int("num_trabalhadores").default(0),
+  numHomens: int("num_homens").default(0),
+  numMulheres: int("num_mulheres").default(0),
+  aiSuggested: boolean("ai_suggested").default(false).notNull(),
+  migratedFromLegacy: boolean("migrated_from_legacy").default(false).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(),
+});
+
+export const pgrGseCargos = mysqlTable("pgr_gse_cargos", {
+  id: int("id").autoincrement().primaryKey(),
+  gseId: int("gse_id").notNull(),
+  cargo: varchar("cargo", { length: 120 }).notNull(),
+});
+
+export const pgrGseSetores = mysqlTable("pgr_gse_setores", {
+  id: int("id").autoincrement().primaryKey(),
+  gseId: int("gse_id").notNull(),
+  sectorId: int("sector_id").notNull(),
+});
+
+export const pgrGseRiscos = mysqlTable("pgr_gse_riscos", {
+  id: int("id").autoincrement().primaryKey(),
+  gseId: int("gse_id").notNull(),
+  // Tipo amplo: fisico/quimico/biologico/ergonomico/acidente/psicossocial
+  tipo: varchar("tipo", { length: 40 }).notNull(),
+  agente: varchar("agente", { length: 255 }).notNull(),
+  fonteGeradora: text("fonte_geradora"),
+  possivelDano: text("possivel_dano"),
+  // Tipo de exposição (referência do PGR K3M): qualitativa/quantitativa, continua/intermitente
+  tipoExposicao: varchar("tipo_exposicao", { length: 40 }),
+  severidade: varchar("severidade", { length: 30 }).default("baixa"),
+  probabilidade: varchar("probabilidade", { length: 30 }).default("baixa"),
+  riscoFinal: varchar("risco_final", { length: 30 }).default("baixo"),
+  // Quando importado do ciclo psicossocial, guarda o assessment_id de origem.
+  fromAssessmentId: int("from_assessment_id"),
+  fromFactorId: int("from_factor_id"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const pgrGseEpc = mysqlTable("pgr_gse_epc", {
+  id: int("id").autoincrement().primaryKey(),
+  gseId: int("gse_id").notNull(),
+  descricao: text("descricao").notNull(),
+  aplicacao: text("aplicacao"),
+});
+
+export const pgrGseEpi = mysqlTable("pgr_gse_epi", {
+  id: int("id").autoincrement().primaryKey(),
+  gseId: int("gse_id").notNull(),
+  descricao: text("descricao").notNull(),
+  ca: varchar("ca", { length: 30 }),
+  aplicacao: text("aplicacao"),
+  validade: varchar("validade", { length: 60 }),
+});
+
+export const pgrGseAcoes = mysqlTable("pgr_gse_acoes", {
+  id: int("id").autoincrement().primaryKey(),
+  gseId: int("gse_id").notNull(),
+  // 5W2H — what, why, where, when, who, how, howMuch
+  what: text("what").notNull(),
+  why: text("why"),
+  where: text("where_loc"), // "where" é palavra reservada em MySQL
+  whenStart: varchar("when_start", { length: 30 }),
+  whenEnd: varchar("when_end", { length: 30 }),
+  who: varchar("who", { length: 255 }),
+  how: text("how"),
+  howMuch: varchar("how_much", { length: 100 }),
+  priority: varchar("priority", { length: 30 }).default("media"),
+  status: varchar("status", { length: 30 }).default("programado"),
+  // Cruza com risco específico do GSE (opcional)
+  gseRiscoId: int("gse_risco_id"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const pgrGseEvidencias = mysqlTable("pgr_gse_evidencias", {
+  id: int("id").autoincrement().primaryKey(),
+  gseId: int("gse_id").notNull(),
+  // foto, video, documento, medicao, laudo
+  tipo: varchar("tipo", { length: 30 }).notNull(),
+  titulo: varchar("titulo", { length: 255 }),
+  descricao: text("descricao"),
+  fileUrl: varchar("file_url", { length: 1024 }),
+  // Vínculo opcional a risco e/ou ação específica do GSE
+  gseRiscoId: int("gse_risco_id"),
+  gseAcaoId: int("gse_acao_id"),
+  uploadedByUserId: int("uploaded_by_user_id"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const pgrGseTreinamentos = mysqlTable("pgr_gse_treinamentos", {
+  id: int("id").autoincrement().primaryKey(),
+  gseId: int("gse_id").notNull(),
+  // Código da NR (ex.: NR-06, NR-10, NR-35)
+  nrCode: varchar("nr_code", { length: 20 }).notNull(),
+  nome: varchar("nome", { length: 255 }).notNull(),
+  cargaHoraria: int("carga_horaria"),
+  obrigatorio: boolean("obrigatorio").default(true).notNull(),
+});
+
+export type PgrGse = typeof pgrGse.$inferSelect;
+export type InsertPgrGse = typeof pgrGse.$inferInsert;
+export type PgrGseCargo = typeof pgrGseCargos.$inferSelect;
+export type PgrGseSetor = typeof pgrGseSetores.$inferSelect;
+export type PgrGseRisco = typeof pgrGseRiscos.$inferSelect;
+export type PgrGseEpc = typeof pgrGseEpc.$inferSelect;
+export type PgrGseEpi = typeof pgrGseEpi.$inferSelect;
+export type PgrGseAcao = typeof pgrGseAcoes.$inferSelect;
+export type PgrGseEvidencia = typeof pgrGseEvidencias.$inferSelect;
+export type PgrGseTreinamento = typeof pgrGseTreinamentos.$inferSelect;

@@ -1,5 +1,16 @@
 # Cutover de Produção — Saúde do Trabalho
 
+> ⏸️ **CUTOVER ADIADO (decisão 2026-06-21):** após a análise do Bruno (PGR de
+> referência K3M), Marcio decidiu adiar o cutover por ~2 semanas para fazer
+> primeiro a **Sprint 1 do "PGR Inteligente" (GSE-first)** — reestruturação
+> arquitetural do modelo de dados do PGR (tabelas relacionais com GSE como
+> espinha dorsal, substituindo o JSON em `pgr_documents`). Plano detalhado em
+> [PGR_PSICOLOGO_ROADMAP.md](./PGR_PSICOLOGO_ROADMAP.md).
+>
+> A versão estabilizada hoje (bugs corrigidos + PGR escopo/import/cargo + Psicólogo
+> agenda/observações sigilosas/indicadores) **continua em dev** para Bruno
+> testar enquanto Sprint 1 roda em paralelo.
+
 Promoção **dev → produção**. Só executar **após o OK do Bruno** em todas as pendências
 e **com aviso explícito do Marcio**. Dev continua sendo o ambiente de testes do Bruno.
 
