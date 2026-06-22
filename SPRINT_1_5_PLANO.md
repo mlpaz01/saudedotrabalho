@@ -1,7 +1,26 @@
 # Sprint 1.5 — Plano consolidado (mensagens do Bruno 21/06 noite + 22/06 manhã)
 
-> Cutover novamente adiado. As 2 mensagens do Bruno juntam **bloqueios reais
+> ✅ **SPRINT 1.5 ENTREGUE em 2026-06-22.** Todos os 3 bloqueios corrigidos.
+> Cutover liberado para disparar após OK final do Bruno em dev.
+>
+> As 2 mensagens do Bruno juntam **bloqueios reais
 > do cutover** (Sprint 1.5) + **épicos novos** (Sprint 2+). Esta é a separação.
+
+## ✅ Sprint 1.5 entregue
+
+| # | Item | Status | Verificação |
+|---|---|---|---|
+| A1 | Novo PGR mostra GSE/Imports desde o início | ✅ | `pgr.createBlank` cria PGR id=10 numérico, `gse.list` responde OK imediato |
+| A2 | Importador colaboradores: Cargo obrigatório + template + UI | ✅ | dryRun: linha com cargo OK; linha sem cargo → "Cargo é obrigatório" |
+| A3 | "Marise Paiva" hardcoded (9 lugares) | ✅ | 0 ocorrências em código vivo; PDFs novos sem RT mostram banner vermelho + sentinel |
+| B1 | "MF Conexões" hardcoded — confirmação | ✅ | Varredura: 0 matches. Vem de `companies.name` do tenant |
+| Smoke E2E | "Novo PGR do zero" como SESMT | ✅ | 6/6 verde |
+
+**Nota dado×código sobre A3:** o código novo nunca mais grava "Marise" como RT
+default. Mas **6 assessments antigos em dev** (id 13-18) têm "Marise" gravada
+no banco — foram criados antes do fix. PRODUÇÃO nasce limpa, zero risco.
+Para limpar dev, opção é: `UPDATE risk_assessments SET responsible_technician=NULL
+WHERE created_at < '2026-06-22'` — mas só com autorização do Marcio (não apaguei).
 
 ## Status do cutover
 
