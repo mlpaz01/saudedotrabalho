@@ -2135,8 +2135,14 @@ async function execP(db: any, text: string, params: any[] = []): Promise<[any[],
     return "'" + String(p).replace(/\\/g, "\\\\").replace(/'/g, "''") + "'";
   });
   const r: any = await db.execute(drzSql.raw(finalSql));
-  const rows = Array.isArray(r) && Array.isArray(r[0]) ? r[0] : (Array.isArray(r) ? r : []);
-  return [rows, []];
+  // r normalmente é [data, fields]. data pode ser:
+  //  - array de rows (SELECT)
+  //  - ResultSetHeader (INSERT/UPDATE/DELETE — objeto com {insertId, affectedRows, ...})
+  // Para SELECT retornamos rows; para INSERT/UPDATE/DELETE retornamos o
+  // ResultSetHeader (consumidores fazem `const [res] = ...; res.insertId`).
+  let data: any = Array.isArray(r) ? r[0] : r;
+  if (data === undefined) data = [];
+  return [data, []];
 }
 
 function decryptSmtpPass(encrypted: string): string {
