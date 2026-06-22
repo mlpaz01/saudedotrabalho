@@ -64,7 +64,7 @@ export default function AdminRiskAssessments() {
     sectorId: undefined as number | undefined,
     drpsTemplateId: undefined as number | undefined,
     aepTemplateId: undefined as number | undefined,
-    responsibleTechnician: "Marise Paiva — CRP 55-33301",
+    responsibleTechnician: "",
     aepOnly: false,
   });
 

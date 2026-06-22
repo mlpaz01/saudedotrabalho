@@ -127,7 +127,7 @@ export default function AdminResponsaveisTecnicos() {
         <h2 className="font-semibold">{editingId ? "Editar responsável" : "Novo responsável"}</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <input className="border rounded px-3 py-2" placeholder="Nome completo *" value={name} onChange={e=>setName(e.target.value)} />
-          <input className="border rounded px-3 py-2" placeholder="Registro profissional (ex: CRP 55-33301)" value={registration} onChange={e=>setRegistration(e.target.value)} />
+          <input className="border rounded px-3 py-2" placeholder="Registro profissional (ex.: CRP 06/12345, CREA 123456-D)" value={registration} onChange={e=>setRegistration(e.target.value)} />
           <input className="border rounded px-3 py-2" placeholder="Profissão (ex: Psicóloga, Engenheiro de Segurança)" value={profession} onChange={e=>setProfession(e.target.value)} />
           <input className="border rounded px-3 py-2" placeholder="ART / Nº documento (opcional)" value={art} onChange={e=>setArt(e.target.value)} />
         </div>
