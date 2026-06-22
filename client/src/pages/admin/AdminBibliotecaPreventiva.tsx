@@ -4,9 +4,11 @@ import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
+import { useAuth } from "@/_core/hooks/useAuth";
 import {
   FileText, Image as ImageIcon, Video, Megaphone, BookOpen, BarChart3, FileQuestion,
   Trash2, Upload, CalendarDays, Plus, ChevronDown, ChevronRight, Pencil, Sparkles, ClipboardList, Brain,
+  Globe, Lock,
 } from "lucide-react";
 
 const MONTH_NAMES = [
@@ -50,6 +52,12 @@ const AUDIENCES = [
 ];
 
 export default function AdminBibliotecaPreventiva() {
+  const { user } = useAuth();
+  // Super Admin/admin global pode criar e editar TEMPLATES GLOBAIS (acervo padrão
+  // da plataforma, visível para todas as empresas). Demais perfis só criam para
+  // a própria empresa e leem (sem editar) os templates globais.
+  const isGlobal = user?.role === "admin_global" || user?.role === "super_admin";
+
   const [openMonth, setOpenMonth] = useState<number | null>(1);
   const [openCampaignId, setOpenCampaignId] = useState<number | null>(null);
   const [showNewCampaign, setShowNewCampaign] = useState<number | null>(null);
@@ -92,6 +100,23 @@ export default function AdminBibliotecaPreventiva() {
             Cada mês é um agrupador. Dentro do mês podem existir múltiplas campanhas (Janeiro Branco, Janeiro Roxo, Janeiro Verde...).
             Cada campanha aceita <b>materiais estáticos</b> (cartazes, PDFs, e-books, vídeos) e <b>conteúdo interativo da plataforma</b> (cursos, pesquisas, quizzes, trilhas) — para gerar indicadores reais de engajamento.
           </p>
+
+          {/* Banner explicativo do conceito de template (varia por role) */}
+          {isGlobal ? (
+            <div className="mt-3 bg-indigo-50 border border-indigo-200 rounded-lg p-3 text-xs flex items-start gap-2">
+              <Globe size={16} className="text-indigo-700 shrink-0 mt-0.5" />
+              <div className="text-indigo-900">
+                <b>Modo Super Admin — Biblioteca-mestre.</b> As campanhas que você criar aqui ficam disponíveis automaticamente como <b>acervo padrão</b> para TODAS as empresas da plataforma (badge "Padrão da plataforma"). Cada empresa pode usar como está; a personalização individual virá na Fase 2 (clonagem).
+              </div>
+            </div>
+          ) : (
+            <div className="mt-3 bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs flex items-start gap-2">
+              <Sparkles size={14} className="text-indigo-600 shrink-0 mt-0.5" />
+              <div className="text-slate-700">
+                Campanhas marcadas com <b className="text-indigo-700">Padrão da plataforma</b> vêm da biblioteca-mestre (Super Admin) e estão disponíveis para sua empresa. Você não pode editá-las, mas pode criar suas próprias campanhas para complementar.
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="space-y-3">
@@ -119,28 +144,49 @@ export default function AdminBibliotecaPreventiva() {
                     {monthCampaigns.map((c: any) => {
                       const isCampOpen = openCampaignId === c.id;
                       const sf = summaryFor(c.id);
+                      const isTemplate = !!c.is_template;
+                      // Não-Super-Admin não pode editar/excluir templates (backend rejeita 403,
+                      // UI bloqueia antes pra feedback claro).
+                      const canEdit = isGlobal || !isTemplate;
                       return (
-                        <div key={c.id} className="bg-white border rounded-lg overflow-hidden" style={{ borderColor: c.color || "#cbd5e1" }}>
+                        <div key={c.id}
+                             className={`border rounded-lg overflow-hidden ${isTemplate ? "bg-indigo-50/40" : "bg-white"}`}
+                             style={{ borderColor: c.color || (isTemplate ? "#a5b4fc" : "#cbd5e1") }}>
                           <div className="px-4 py-2 flex items-center gap-3 cursor-pointer hover:bg-slate-50" onClick={() => setOpenCampaignId(isCampOpen ? null : c.id)}>
                             <div className="w-3 h-3 rounded-full shrink-0" style={{ background: c.color || "#cbd5e1" }} />
                             <div className="flex-1 min-w-0">
-                              <div className="font-medium text-sm">{c.name}</div>
+                              <div className="font-medium text-sm flex items-center gap-2 flex-wrap">
+                                {c.name}
+                                {isTemplate && (
+                                  <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 border border-indigo-200">
+                                    <Globe size={10} /> Padrão da plataforma
+                                  </span>
+                                )}
+                              </div>
                               {c.theme && <div className="text-xs text-muted-foreground">{c.theme}</div>}
                             </div>
                             <span className="text-xs text-muted-foreground shrink-0">{sf.total} material(is)</span>
                             <button
-                              onClick={(e) => { e.stopPropagation(); setEditingCampaign(c); setShowNewCampaign(month); }}
-                              className="text-slate-400 hover:text-primary p-1"
-                              title="Editar"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (!canEdit) { toast.info("Templates da plataforma só podem ser editados pelo Super Admin."); return; }
+                                setEditingCampaign(c); setShowNewCampaign(month);
+                              }}
+                              className={`p-1 ${canEdit ? "text-slate-400 hover:text-primary" : "text-slate-300 cursor-not-allowed"}`}
+                              title={canEdit ? "Editar" : "Somente Super Admin pode editar templates"}
                             >
-                              <Pencil size={13} />
+                              {canEdit ? <Pencil size={13} /> : <Lock size={13} />}
                             </button>
                             <button
-                              onClick={(e) => { e.stopPropagation(); if (confirm(`Arquivar a campanha "${c.name}"?`)) deleteMut.mutate({ id: c.id }); }}
-                              className="text-slate-400 hover:text-rose-600 p-1"
-                              title="Arquivar"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (!canEdit) { toast.info("Templates da plataforma só podem ser removidos pelo Super Admin."); return; }
+                                if (confirm(`Arquivar a campanha "${c.name}"?`)) deleteMut.mutate({ id: c.id });
+                              }}
+                              className={`p-1 ${canEdit ? "text-slate-400 hover:text-rose-600" : "text-slate-300 cursor-not-allowed"}`}
+                              title={canEdit ? "Arquivar" : "Somente Super Admin pode arquivar templates"}
                             >
-                              <Trash2 size={13} />
+                              {canEdit ? <Trash2 size={13} /> : <Lock size={13} />}
                             </button>
                           </div>
                           {isCampOpen && (
@@ -156,6 +202,7 @@ export default function AdminBibliotecaPreventiva() {
                       <CampaignForm
                         month={month}
                         initial={editingCampaign}
+                        isGlobal={isGlobal}
                         onSubmit={(data) => upsertMut.mutate(data)}
                         onCancel={() => { setShowNewCampaign(null); setEditingCampaign(null); }}
                         loading={upsertMut.isPending}
@@ -179,7 +226,7 @@ export default function AdminBibliotecaPreventiva() {
   );
 }
 
-function CampaignForm({ month, initial, onSubmit, onCancel, loading }: any) {
+function CampaignForm({ month, initial, isGlobal, onSubmit, onCancel, loading }: any) {
   const [form, setForm] = useState({
     id: initial?.id,
     monthNumber: month,
@@ -188,10 +235,20 @@ function CampaignForm({ month, initial, onSubmit, onCancel, loading }: any) {
     theme: initial?.theme ?? "",
     color: initial?.color ?? "#3b82f6",
     description: initial?.description ?? "",
+    // Super Admin: default true (cria como template global por padrão).
+    // Demais: ignorado pelo backend.
+    isTemplate: initial ? !!initial.is_template : !!isGlobal,
   });
   return (
-    <div className="bg-white border border-border rounded-lg p-4 space-y-3">
-      <h3 className="font-semibold text-sm">{initial ? "Editar campanha" : "Nova campanha"}</h3>
+    <div className={`border border-border rounded-lg p-4 space-y-3 ${form.isTemplate && isGlobal ? "bg-indigo-50/60" : "bg-white"}`}>
+      <h3 className="font-semibold text-sm flex items-center gap-2">
+        {initial ? "Editar campanha" : "Nova campanha"}
+        {form.isTemplate && isGlobal && (
+          <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 border border-indigo-200">
+            <Globe size={10} /> Template Global
+          </span>
+        )}
+      </h3>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div>
           <label className="text-xs text-muted-foreground">Nome *</label>
@@ -214,10 +271,32 @@ function CampaignForm({ month, initial, onSubmit, onCancel, loading }: any) {
           <Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Breve contexto da campanha" className="text-sm" />
         </div>
       </div>
+
+      {/* Toggle Template Global — só Super Admin vê. Quando ativo, cria como acervo
+          padrão da plataforma (visível pra todas as empresas). */}
+      {isGlobal && (
+        <label className="flex items-start gap-2 bg-indigo-50/40 border border-indigo-200 rounded-md p-2 cursor-pointer text-xs">
+          <input
+            type="checkbox"
+            checked={form.isTemplate}
+            onChange={(e) => setForm({ ...form, isTemplate: e.target.checked })}
+            className="mt-0.5"
+          />
+          <span className="flex-1">
+            <b className="text-indigo-900">Salvar como Template Global (Padrão da plataforma)</b>
+            <br />
+            <span className="text-indigo-700">
+              Quando marcado, esta campanha fica disponível para TODAS as empresas. Desmarque para
+              criar uma campanha vinculada a uma empresa específica.
+            </span>
+          </span>
+        </label>
+      )}
+
       <div className="flex gap-2 justify-end pt-2">
         <Button variant="outline" size="sm" onClick={onCancel}>Cancelar</Button>
         <Button size="sm" onClick={() => onSubmit(form)} disabled={loading || !form.name.trim() || !form.code.trim()}>
-          {loading ? "Salvando..." : initial ? "Atualizar" : "Criar campanha"}
+          {loading ? "Salvando..." : initial ? "Atualizar" : (form.isTemplate && isGlobal ? "Criar template" : "Criar campanha")}
         </Button>
       </div>
     </div>
