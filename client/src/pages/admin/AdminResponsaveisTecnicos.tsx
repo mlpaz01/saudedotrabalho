@@ -2,6 +2,7 @@ import { useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import AppLayout from "@/components/AppLayout";
+import { useAuth } from "@/_core/hooks/useAuth";
 
 // Signature files are written by the server to /var/www/saudedotrabalho/uploads/signatures
 // and served by nginx at the ORIGIN-absolute path "/uploads/...". The SPA itself is mounted
@@ -16,7 +17,19 @@ function signatureSrc(url?: string | null): string | undefined {
 }
 
 export default function AdminResponsaveisTecnicos() {
-  const list = trpc.responsibleTechnicians.list.useQuery({});
+  const { user } = useAuth();
+  const isGlobal = (user?.role ?? "") === "admin_global" || (user?.role ?? "") === "super_admin";
+  // Super Admin (companyId NULL) precisa escolher a empresa antes de cadastrar/listar.
+  // Demais perfis usam a empresa do usuário automaticamente (campo nem aparece).
+  const [pickedCompanyId, setPickedCompanyId] = useState<number | null>(null);
+  const companiesQ = trpc.pgr.listCompanies.useQuery(undefined, { enabled: isGlobal });
+  const companies = (companiesQ.data ?? []) as Array<{ id: number; name: string }>;
+  const effectiveCompanyId = isGlobal ? pickedCompanyId : (user?.companyId ?? null);
+
+  const list = trpc.responsibleTechnicians.list.useQuery(
+    isGlobal && pickedCompanyId ? { companyId: pickedCompanyId } : {},
+    { enabled: !isGlobal || !!pickedCompanyId }
+  );
   const utils = trpc.useUtils();
   const create = trpc.responsibleTechnicians.create.useMutation({
     onSuccess: (res: any) => {
@@ -90,6 +103,9 @@ export default function AdminResponsaveisTecnicos() {
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) { toast.error("Informe o nome."); return; }
+    if (isGlobal && !pickedCompanyId) {
+      toast.error("Super Admin: selecione a empresa antes de cadastrar."); return;
+    }
     const payload = {
       name: name.trim(),
       registration: registration || null,
@@ -100,7 +116,7 @@ export default function AdminResponsaveisTecnicos() {
     };
     try {
       if (editingId) update.mutate({ id: editingId, ...payload });
-      else create.mutate(payload);
+      else create.mutate({ ...(isGlobal ? { companyId: pickedCompanyId! } : {}), ...payload });
     } catch (err: any) {
       toast.error(`Erro ao enviar: ${err?.message ?? "desconhecido"}`);
     }
@@ -123,7 +139,31 @@ export default function AdminResponsaveisTecnicos() {
       <h1 className="text-2xl font-bold mb-1">Responsáveis Técnicos</h1>
       <p className="text-gray-600 mb-6">Cadastre os técnicos responsáveis e suas assinaturas digitais (PNG) para uso nos laudos.</p>
 
-      <form onSubmit={onSubmit} className="border rounded p-4 mb-6 bg-white space-y-3">
+      {isGlobal && (
+        <div className="border border-blue-200 bg-blue-50 rounded p-3 mb-4">
+          <label className="block text-xs font-semibold text-blue-900 mb-1">
+            Empresa (obrigatório para Super Admin)
+          </label>
+          <select
+            value={pickedCompanyId ?? ""}
+            onChange={(e) => setPickedCompanyId(e.target.value ? Number(e.target.value) : null)}
+            className="w-full border rounded px-3 py-2 bg-white"
+          >
+            <option value="">— selecione a empresa —</option>
+            {companies.map((c) => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+          {!pickedCompanyId && (
+            <p className="text-xs text-blue-700 mt-1">
+              Escolha a empresa para a qual está cadastrando o Responsável Técnico.
+              O cadastro fica vinculado a ela e aparece nos laudos dessa empresa.
+            </p>
+          )}
+        </div>
+      )}
+
+      <form onSubmit={onSubmit} className={`border rounded p-4 mb-6 bg-white space-y-3 ${isGlobal && !pickedCompanyId ? 'opacity-50 pointer-events-none' : ''}`}>
         <h2 className="font-semibold">{editingId ? "Editar responsável" : "Novo responsável"}</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <input className="border rounded px-3 py-2" placeholder="Nome completo *" value={name} onChange={e=>setName(e.target.value)} />

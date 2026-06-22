@@ -3035,6 +3035,96 @@ export const appRouter = router({
 
 
 
+
+    // ─── Ativação de primeiro acesso (Sprint 1.6) ─────────────────────────
+    // /activate?token=... chama estas procedures. Token + validade ficam em
+    // corporate_emails.activation_token / activation_expires_at.
+    validateActivationToken: publicProcedure
+      .input(z.object({ token: z.string().min(20) }))
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) return { valid: false };
+        const r: any = await db.execute(drzSql`
+          SELECT email, employeeName, activation_expires_at, hasSetPassword
+          FROM corporate_emails WHERE activation_token = ${input.token} LIMIT 1`);
+        const rec = (r as any)[0]?.[0];
+        if (!rec) return { valid: false };
+        if (rec.hasSetPassword) return { valid: false, reason: "Conta já ativada." };
+        const exp = rec.activation_expires_at ? new Date(rec.activation_expires_at) : null;
+        if (exp && exp < new Date()) return { valid: false, reason: "Link expirado." };
+        return { valid: true, email: rec.email, employeeName: rec.employeeName };
+      }),
+
+    activateAccount: publicProcedure
+      .input(z.object({ token: z.string().min(20), password: z.string().min(8) }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const r: any = await db.execute(drzSql`
+          SELECT id, email, employeeName, company_id, branch_id, sector_id, role,
+                 activation_expires_at, hasSetPassword
+          FROM corporate_emails WHERE activation_token = ${input.token} LIMIT 1`);
+        const rec = (r as any)[0]?.[0];
+        if (!rec) throw new TRPCError({ code: "NOT_FOUND", message: "Link inválido." });
+        if (rec.hasSetPassword) throw new TRPCError({ code: "BAD_REQUEST", message: "Conta já ativada." });
+        const exp = rec.activation_expires_at ? new Date(rec.activation_expires_at) : null;
+        if (exp && exp < new Date()) throw new TRPCError({ code: "BAD_REQUEST", message: "Link expirado. Solicite reenvio ao RH." });
+        const hash = await bcrypt.hash(input.password, 10);
+        const ur: any = await db.execute(drzSql`SELECT id FROM users WHERE email=${rec.email} LIMIT 1`);
+        let userId = (ur as any)[0]?.[0]?.id;
+        if (!userId) {
+          const ins: any = await db.execute(drzSql`
+            INSERT INTO users (openId, name, email, loginMethod, role, company_id, branch_id, sector_id)
+            VALUES (${"corp-" + rec.email}, ${rec.employeeName ?? rec.email}, ${rec.email}, ${"corporate"},
+                    ${rec.role}, ${rec.company_id}, ${rec.branch_id}, ${rec.sector_id})`);
+          userId = Number((ins as any)[0]?.insertId ?? 0);
+        }
+        await db.execute(drzSql`
+          UPDATE corporate_emails
+          SET passwordHash=${hash}, hasSetPassword=1, activation_token=NULL,
+              activation_expires_at=NULL, userId=${userId}, lastAccessAt=NOW()
+          WHERE id=${rec.id}`);
+        return { ok: true };
+      }),
+
+    sendActivationLink: adminOrRhProcedure
+      .input(z.object({ email: z.string().email() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const r: any = await db.execute(drzSql`
+          SELECT id, email, employeeName, hasSetPassword FROM corporate_emails
+          WHERE email=${input.email.toLowerCase()} LIMIT 1`);
+        const rec = (r as any)[0]?.[0];
+        if (!rec) throw new TRPCError({ code: "NOT_FOUND", message: "E-mail não cadastrado." });
+        if (rec.hasSetPassword) throw new TRPCError({ code: "BAD_REQUEST", message: "Conta já ativada — não precisa de novo link." });
+        const { randomBytes } = await import("crypto");
+        const token = randomBytes(32).toString("hex");
+        const exp = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 19).replace("T", " ");
+        await db.execute(drzSql`
+          UPDATE corporate_emails SET activation_token=${token}, activation_expires_at=${exp}
+          WHERE id=${rec.id}`);
+        const base = process.env.PUBLIC_BASE_URL || "https://dev.saudedotrabalho.com";
+        const link = `${base}/plataforma/activate?token=${token}`;
+        const r2 = await sendEmail({
+          to: rec.email,
+          toName: rec.employeeName ?? rec.email,
+          subject: "Ative seu acesso à plataforma Saúde do Trabalho",
+          html: plainToHtml(
+            `Olá ${rec.employeeName ?? ""},
+
+` +
+            `Para ativar seu acesso à plataforma Saúde do Trabalho, defina sua senha em:
+
+${link}
+
+` +
+            `Este link expira em 7 dias. Se você não solicitou este e-mail, ignore-o.`
+          ),
+        });
+        return { ok: r2.ok, preview: r2.preview, error: r2.error ?? null };
+      }),
+
   }),
 
 
@@ -3052,6 +3142,145 @@ export const appRouter = router({
 
 
 
+
+
+  // ─── Notificações (sino) — Sprint 1.6 ────────────────────────────────────
+  // Tabela `notifications`. NotificationBell consome: unreadCount, refresh,
+  // list, markRead, markAllRead. `refresh` regenera notificações agregadas a
+  // partir do estado atual (denúncias abertas para RH, cursos pendentes para
+  // colaborador) — usa dedup_key para não duplicar entre refreshes.
+  notifications: router({
+    unreadCount: protectedProcedure.query(async ({ ctx }) => {
+      const db = await getDb();
+      if (!db) return { count: 0 };
+      const uid = (ctx.user as any).id;
+      const r: any = await db.execute(drzSql`
+        SELECT COUNT(*) AS c FROM notifications WHERE user_id=${uid} AND read_at IS NULL`);
+      return { count: Number((r as any)[0]?.[0]?.c ?? 0) };
+    }),
+
+    list: protectedProcedure
+      .input(z.object({ limit: z.number().int().min(1).max(100).default(30) }).optional())
+      .query(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) return { items: [] };
+        const uid = (ctx.user as any).id;
+        const limit = input?.limit ?? 30;
+        const r: any = await db.execute(drzSql`
+          SELECT id, type, priority, title, body, link, icon, read_at, created_at
+          FROM notifications WHERE user_id=${uid}
+          ORDER BY (read_at IS NULL) DESC, created_at DESC LIMIT ${limit}`);
+        const rows: any[] = (r as any)[0] ?? [];
+        return {
+          items: rows.map((x: any) => ({
+            id: Number(x.id),
+            type: x.type, priority: x.priority,
+            title: x.title, body: x.body, link: x.link, icon: x.icon,
+            readAt: x.read_at, createdAt: x.created_at,
+          })),
+        };
+      }),
+
+    markRead: protectedProcedure
+      .input(z.object({ id: z.number().int() }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const uid = (ctx.user as any).id;
+        await db.execute(drzSql`UPDATE notifications SET read_at=NOW() WHERE id=${input.id} AND user_id=${uid} AND read_at IS NULL`);
+        return { ok: true };
+      }),
+
+    markAllRead: protectedProcedure.mutation(async ({ ctx }) => {
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const uid = (ctx.user as any).id;
+      await db.execute(drzSql`UPDATE notifications SET read_at=NOW() WHERE user_id=${uid} AND read_at IS NULL`);
+      return { ok: true };
+    }),
+
+    // Regenera notificações agregadas a partir do estado atual do banco.
+    // Usa dedup_key para evitar duplicação entre refreshes (UNIQUE-via-upsert).
+    refresh: protectedProcedure.mutation(async ({ ctx }) => {
+      const db = await getDb();
+      if (!db) return { generated: 0 };
+      const uid = (ctx.user as any).id;
+      const cid = (ctx.user as any).companyId;
+      const role = (ctx.user as any).role;
+      let generated = 0;
+
+      async function upsertNotif(n: { type: string; title: string; body?: string; link?: string; icon?: string; priority?: string; dedup: string }) {
+        // dedup_key inclui user_id pra ser por usuário
+        const key = `u${uid}:${n.dedup}`;
+        const ex: any = await db!.execute(drzSql`SELECT id, read_at FROM notifications WHERE user_id=${uid} AND dedup_key=${key} LIMIT 1`);
+        const exr = (ex as any)[0]?.[0];
+        if (exr) return; // já existe — não duplicar
+        await db!.execute(drzSql`
+          INSERT INTO notifications (user_id, company_id, type, priority, title, body, link, icon, dedup_key)
+          VALUES (${uid}, ${cid ?? null}, ${n.type}, ${n.priority ?? "media"},
+                  ${n.title}, ${n.body ?? null}, ${n.link ?? null}, ${n.icon ?? null}, ${key})`);
+        generated++;
+      }
+
+      try {
+        // ── RH / SESMT / admin: denúncias abertas
+        if (["rh", "sesmt", "admin", "admin_global", "company_admin", "super_admin"].includes(role)) {
+          const r: any = await db.execute(drzSql`
+            SELECT COUNT(*) AS c FROM denuncias WHERE company_id=${cid} AND (status='aberta' OR status IS NULL)`);
+          const n = Number((r as any)[0]?.[0]?.c ?? 0);
+          if (n > 0) await upsertNotif({
+            type: "rh_denuncia", priority: "alta",
+            title: `${n} denúncia(s) aguardando análise`,
+            body: "Há denúncias abertas no Canal de Denúncia que precisam de tratativa.",
+            link: "/admin/denuncias", icon: "alert-triangle",
+            dedup: `denuncias_abertas:${n}`,
+          });
+        }
+
+        // ── RH / chefia: cursos pendentes de aprovação
+        if (["rh", "sesmt", "admin", "chefia", "admin_global", "super_admin"].includes(role)) {
+          const r: any = await db.execute(drzSql`
+            SELECT COUNT(*) AS c FROM course_pending_approvals WHERE company_id=${cid} AND status='pendente'`).catch(() => [[{ c: 0 }]]);
+          const n = Number((r as any)[0]?.[0]?.c ?? 0);
+          if (n > 0) await upsertNotif({
+            type: "rh_cursos_pendentes", priority: "media",
+            title: `${n} curso(s) aguardando aprovação`,
+            link: "/admin/aprovacoes", icon: "book-open",
+            dedup: `cursos_pendentes:${n}`,
+          });
+        }
+
+        // ── Colaborador: cursos pendentes (atribuídos a ele e não concluídos)
+        const cp: any = await db.execute(drzSql`
+          SELECT COUNT(*) AS c FROM user_progress up
+          WHERE up.user_id=${uid} AND up.isCompleted=0`).catch(() => [[{ c: 0 }]]);
+        const ncursos = Number((cp as any)[0]?.[0]?.c ?? 0);
+        if (ncursos > 0) await upsertNotif({
+          type: "colab_cursos_pendentes", priority: "media",
+          title: `${ncursos} curso(s) em andamento`,
+          body: "Continue de onde parou.",
+          link: "/meus-cursos", icon: "play",
+          dedup: `meus_cursos_andamento:${ncursos}`,
+        });
+
+        // ── Colaborador: pesquisas disponíveis (campanhas ativas, não respondidas)
+        const ps: any = await db.execute(drzSql`
+          SELECT COUNT(*) AS c FROM survey_campaign_targets sct
+          INNER JOIN survey_campaigns sc ON sc.id = sct.campaign_id
+          WHERE sct.user_id=${uid} AND sct.responded_at IS NULL AND sc.status='active'`).catch(() => [[{ c: 0 }]]);
+        const npesq = Number((ps as any)[0]?.[0]?.c ?? 0);
+        if (npesq > 0) await upsertNotif({
+          type: "colab_pesquisas_pendentes", priority: "media",
+          title: `${npesq} pesquisa(s) aguardando sua resposta`,
+          link: "/pesquisas", icon: "clipboard",
+          dedup: `pesquisas_pendentes:${npesq}`,
+        });
+      } catch (e) {
+        // não falha o refresh se uma tabela específica não existir
+      }
+      return { generated };
+    }),
+  }),
 
   // ── Modules ───────────────────────────────────────────────────────────────
 
@@ -4529,6 +4758,33 @@ export const appRouter = router({
             // ON DUPLICATE KEY UPDATE prevents race between concurrent imports on same email
             await db.execute(drzSql`INSERT INTO corporate_emails (email, company, sector, employeeName, isActive, company_id, branch_id, sector_id, role) VALUES (${email}, ${companyName}, ${setor || null}, ${nome || null}, 1, ${companyId}, ${branchId}, ${sectorId}, ${role}) ON DUPLICATE KEY UPDATE company=${companyName}, sector=${setor || null}, employeeName=${nome || null}, isActive=1, company_id=${companyId}, branch_id=${branchId}, sector_id=${sectorId}, role=${role}`);
             inserted++; res.action = "inserted";
+            // Gera token de ativação + envia e-mail de primeiro acesso (Sprint 1.6).
+            // Só para colaboradores NOVOS, em modo NÃO dry-run. Falha de e-mail
+            // NÃO derruba o import — registra em res.emailWarning.
+            try {
+              const { randomBytes } = await import("crypto");
+              const actToken = randomBytes(32).toString("hex");
+              const actExp = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 19).replace("T", " ");
+              await db.execute(drzSql`UPDATE corporate_emails SET activation_token=${actToken}, activation_expires_at=${actExp} WHERE email=${email}`);
+              const base = process.env.PUBLIC_BASE_URL || "https://dev.saudedotrabalho.com";
+              const link = `${base}/plataforma/activate?token=${actToken}`;
+              const sendRes = await sendEmail({
+                to: email,
+                toName: nome || email,
+                subject: "Ative seu acesso à plataforma Saúde do Trabalho",
+                html: plainToHtml(
+                  `Olá ${nome || ""},\n\n` +
+                  `Você foi cadastrado(a) na plataforma ${companyName} — Saúde do Trabalho. ` +
+                  `Para ativar seu acesso e definir sua senha, clique no link abaixo:\n\n${link}\n\n` +
+                  `Este link expira em 7 dias. Se não solicitou este e-mail, ignore-o.`
+                ),
+              });
+              if (!sendRes.ok) res.emailWarning = `Conta criada mas e-mail não enviado: ${sendRes.error || "erro desconhecido"}`;
+              else if (sendRes.preview) res.emailWarning = "SMTP não configurado — e-mail em modo preview (log do servidor).";
+              else res.emailSent = true;
+            } catch (emailErr: any) {
+              res.emailWarning = `Conta criada mas falha no e-mail: ${emailErr?.message || "?"}`;
+            }
           }
           // align an already-existing user account with same email (e.g. logged in before)
           const ur: any = await db.execute(drzSql`SELECT id FROM users WHERE email = ${email} LIMIT 1`);
@@ -17487,13 +17743,17 @@ Return only the JSON content object (no wrapper). Format per type:
 
   // ─── Responsáveis Técnicos (assinaturas digitais para laudos) ──────────────
   responsibleTechnicians: router({
+    // Admin global (super_admin/admin_global) tem ctx.user.companyId = NULL — para
+    // ele, exigimos input.companyId no payload. Para os demais roles, sempre usamos
+    // a empresa do usuário (ignora input.companyId pra evitar cross-tenant).
     list: adminOrRhProcedure
-      .input(z.object({}).optional())
-      .query(async ({ ctx }) => {
-        const cid = (ctx.user as any).companyId;
-        if (!cid) return [];
+      .input(z.object({ companyId: z.number().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        const isGlobal = role === "admin_global" || role === "super_admin";
+        const cid = isGlobal ? (input?.companyId ?? null) : ((ctx.user as any).companyId ?? null);
         const db = await getDb();
-        if (!db) return [];
+        if (!db || !cid) return [];
         const r: any = await db.execute(drzSql`SELECT id, name, registration, profession, art, signature_url, is_default FROM responsible_technicians WHERE company_id=${cid} ORDER BY is_default DESC, id ASC`);
         const rows: any[] = (r as any)[0] ?? [];
         return rows.map((x: any) => ({
@@ -17509,6 +17769,7 @@ Return only the JSON content object (no wrapper). Format per type:
 
     create: adminOrRhProcedure
       .input(z.object({
+        companyId: z.number().optional(),
         name: z.string().min(1),
         registration: z.string().nullable().optional(),
         profession: z.string().nullable().optional(),
@@ -17517,8 +17778,10 @@ Return only the JSON content object (no wrapper). Format per type:
         isDefault: z.boolean().default(false),
       }))
       .mutation(async ({ ctx, input }) => {
-        const cid = (ctx.user as any).companyId;
-        if (!cid) throw new TRPCError({ code: "BAD_REQUEST", message: "Empresa não definida." });
+        const role = (ctx.user as any).role;
+        const isGlobal = role === "admin_global" || role === "super_admin";
+        const cid = isGlobal ? input.companyId : (ctx.user as any).companyId;
+        if (!cid) throw new TRPCError({ code: "BAD_REQUEST", message: isGlobal ? "Super Admin: selecione a empresa." : "Empresa não definida." });
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
         const signatureUrl = await saveSignatureFile(cid, input.signatureBase64);
@@ -17538,14 +17801,15 @@ Return only the JSON content object (no wrapper). Format per type:
         isDefault: z.boolean().default(false),
       }))
       .mutation(async ({ ctx, input }) => {
-        const cid = (ctx.user as any).companyId;
-        if (!cid) throw new TRPCError({ code: "BAD_REQUEST", message: "Empresa não definida." });
+        const role = (ctx.user as any).role;
+        const isGlobal = role === "admin_global" || role === "super_admin";
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
         const own: any = await db.execute(drzSql`SELECT company_id FROM responsible_technicians WHERE id=${input.id} LIMIT 1`);
         const rec = (own as any)[0]?.[0];
         if (!rec) throw new TRPCError({ code: "NOT_FOUND" });
-        if (Number(rec.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+        const cid = Number(rec.company_id);
+        if (!isGlobal && cid !== Number((ctx.user as any).companyId)) throw new TRPCError({ code: "FORBIDDEN" });
         if (input.isDefault) await db.execute(drzSql`UPDATE responsible_technicians SET is_default=0 WHERE company_id=${cid}`);
         const newSig = await saveSignatureFile(cid, input.signatureBase64);
         if (newSig) {
@@ -17559,13 +17823,14 @@ Return only the JSON content object (no wrapper). Format per type:
     remove: adminOrRhProcedure
       .input(z.object({ id: z.number().int() }))
       .mutation(async ({ ctx, input }) => {
-        const cid = (ctx.user as any).companyId;
+        const role = (ctx.user as any).role;
+        const isGlobal = role === "admin_global" || role === "super_admin";
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
         const own: any = await db.execute(drzSql`SELECT company_id FROM responsible_technicians WHERE id=${input.id} LIMIT 1`);
         const rec = (own as any)[0]?.[0];
         if (!rec) throw new TRPCError({ code: "NOT_FOUND" });
-        if (Number(rec.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+        if (!isGlobal && Number(rec.company_id) !== Number((ctx.user as any).companyId)) throw new TRPCError({ code: "FORBIDDEN" });
         await db.execute(drzSql`DELETE FROM responsible_technicians WHERE id=${input.id}`);
         return { ok: true };
       }),
