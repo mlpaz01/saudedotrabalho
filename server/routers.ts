@@ -16662,7 +16662,7 @@ Return only the JSON content object (no wrapper). Format per type:
           INSERT INTO risk_assessments
             (company_id, branch_id, sector_id, cycle_name, drps_survey_id, aep_survey_id, status, responsible_technician, start_date, end_date, created_by_user_id)
           VALUES (${cid}, ${input.branchId}, ${input.sectorId}, ${input.cycleName}, ${drpsId ?? null}, ${aepId}, 'collecting',
-                  ${input.responsibleTechnician ?? "Marise Paiva — CRP 55-33301"},
+                  ${input.responsibleTechnician ?? null},
                   ${startDate.toISOString().slice(0, 10)}, ${endDate.toISOString().slice(0, 10)}, ${uid})`);
         const idr: any = await db.execute(drzSql`SELECT LAST_INSERT_ID() AS id`);
         const assessmentId = Number((idr as any)[0]?.[0]?.id ?? 0);
@@ -17671,6 +17671,57 @@ Return only the JSON content object (no wrapper). Format per type:
             inventario: [],
           },
         };
+      }),
+
+    // Cria um PGR vazio no banco imediatamente após o usuário confirmar escopo no
+    // modal "Novo PGR". Retorna o id numérico pra UI abrir o editor já com tudo
+    // habilitado (bloco GSE Manager + Importações Inteligentes). Sem isso, blocos
+    // só apareciam após o primeiro SALVAR — bloqueio reportado pelo Bruno (Sprint 1.5).
+    createBlank: adminOrRhProcedure
+      .input(z.object({
+        companyId: z.number().optional(),
+        branchId: z.number().nullable().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        const isGlobal = role === "admin_global" || role === "super_admin";
+        const uid = (ctx.user as any).id;
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const cid = isGlobal ? (input.companyId ?? (ctx.user as any).companyId) : (ctx.user as any).companyId;
+        if (!cid) throw new TRPCError({ code: "BAD_REQUEST", message: "Selecione a empresa do PGR." });
+
+        // Valida filial (LGPD): só permite branch da mesma empresa.
+        if (input.branchId != null) {
+          const br: any = await db.execute(drzSql`SELECT company_id FROM branches WHERE id=${input.branchId} LIMIT 1`);
+          const brow = (br as any)[0]?.[0];
+          if (!brow) throw new TRPCError({ code: "NOT_FOUND", message: "Filial não encontrada." });
+          if (Number(brow.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+        }
+
+        // Pré-preenche razão social + CNPJ + logo da empresa (UX: usuário não redigita).
+        const cr: any = await db.execute(drzSql`SELECT name, cnpj, logo_url FROM companies WHERE id=${cid} LIMIT 1`);
+        const company = (cr as any)[0]?.[0];
+
+        const initRevs = JSON.stringify([{ revisao: "00", motivo: "Emissão inicial", data: null }]);
+        const empty = "[]";
+        const res: any = await db.execute(drzSql`
+          INSERT INTO pgr_documents (
+            company_id, branch_id, title, razao_social, nome_fantasia, cnpj, logo_url,
+            status, ghe_funcoes, revisoes, inventario, gse_grupos, epc_itens, epi_itens,
+            plano_psicossocial, caracterizacao_setores, cronograma_preventivo,
+            hierarquia_controle, nao_conformidades, treinamentos_nr, created_by_user_id
+          ) VALUES (
+            ${cid}, ${input.branchId ?? null},
+            ${"PGR - Programa de Gerenciamento de Riscos"},
+            ${company?.name ?? null}, ${company?.name ?? null}, ${company?.cnpj ?? null}, ${company?.logo_url ?? null},
+            ${'rascunho'},
+            ${empty}, ${initRevs}, ${empty}, ${empty}, ${empty}, ${empty},
+            ${empty}, ${empty}, ${empty}, ${empty}, ${empty}, ${empty}, ${uid}
+          )`);
+        const newId = Number((res as any)[0]?.insertId ?? 0);
+        if (!newId) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Falha ao criar PGR." });
+        return { ok: true, id: newId };
       }),
 
     upsert: adminOrRhProcedure

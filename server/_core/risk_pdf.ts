@@ -362,7 +362,7 @@ export async function generateRiskLaudoPDF(
     <tr><td>Período</td><td>${esc(fmtDate(sg.assessment.startDate || a.startDate))} a ${esc(fmtDate(sg.assessment.endDate || a.endDate))}</td></tr>
     <tr><td>Respostas DRPS</td><td>${sg.assessment.drpsResponses}</td></tr>
     <tr><td>Respostas AEP</td><td>${sg.assessment.aepResponses}</td></tr>
-    <tr><td>Responsável técnico</td><td>${esc(a.responsibleTechnician || "Marise Paiva — CRP 55-33301")}</td></tr>
+    <tr><td>Responsável técnico</td><td>${esc(a.responsibleTechnician || "[Responsável técnico não cadastrado]")}</td></tr>
   </table>`).join("")}
   ` : `
   <table>
@@ -375,7 +375,7 @@ export async function generateRiskLaudoPDF(
     <tr><td>Período</td><td>${esc(fmtDate(a.startDate))} a ${esc(fmtDate(a.endDate))}</td></tr>
     <tr><td>Respostas DRPS</td><td>${a.drpsResponses}</td></tr>
     <tr><td>Respostas AEP</td><td>${a.aepResponses}</td></tr>
-    <tr><td>Responsável técnico</td><td>${esc(a.responsibleTechnician || "Marise Paiva — CRP 55-33301")}</td></tr>
+    <tr><td>Responsável técnico</td><td>${esc(a.responsibleTechnician || "[Responsável técnico não cadastrado]")}</td></tr>
   </table>`}
 
   <h2>8. Principais Fatores Psicossociais Identificados</h2>
@@ -489,13 +489,18 @@ export async function generateRiskLaudoPDF(
   maturidade em saúde mental no trabalho e atender plenamente às exigências legais vigentes.</p>
 
   <h2>17. Responsabilidade Técnica</h2>
+  ${!a.responsibleTechnician ? `<div style="background:#fef2f2;border:2px solid #b91c1c;color:#7f1d1d;padding:10px 14px;border-radius:6px;margin:8px 0;font-size:10pt;">
+    <b>⚠ DOCUMENTO SEM RESPONSÁVEL TÉCNICO CADASTRADO.</b> Este laudo NÃO está formalmente assinado por
+    profissional habilitado. Cadastre o Responsável Técnico em <b>PGR &gt; Responsáveis Técnicos</b> e
+    regenere o documento antes de qualquer apresentação oficial (auditoria, fiscalização, cliente).
+  </div>` : ""}
   <p>Este laudo foi elaborado sob responsabilidade técnica de
-  <b>${esc(a.responsibleTechnician || "Marise Paiva — CRP 55-33301")}</b>,
+  <b>${esc(a.responsibleTechnician || "[Responsável técnico não cadastrado]")}</b>,
   profissional habilitada conforme legislação vigente, em conformidade com as disposições da NR-01 (Portaria MTP nº 1.419/2024) e da ISO 45003:2021.</p>
   <table>
     <tr><th style="width:35%">Item</th><th>Dados do Responsável Técnico</th></tr>
-    <tr><td>Nome</td><td><b>${esc(a.responsibleTechnician || "Marise Paiva")}</b></td></tr>
-    <tr><td>Profissão / Registro</td><td>${esc((a as any).responsibleRegistration || "Psicóloga Organizacional — CRP 55-33301")}</td></tr>
+    <tr><td>Nome</td><td><b>${esc(a.responsibleTechnician || "[Responsável técnico não cadastrado]")}</b></td></tr>
+    <tr><td>Profissão / Registro</td><td>${esc((a as any).responsibleRegistration || (a.responsibleTechnician ? "—" : "[não cadastrado]"))}</td></tr>
     ${(a as any).responsibleProfession ? `<tr><td>Especialidade</td><td>${esc((a as any).responsibleProfession)}</td></tr>` : ""}
     ${(a as any).responsibleArt ? `<tr><td>ART / RRT</td><td>${esc((a as any).responsibleArt)}</td></tr>` : ""}
     ${(a as any).responsibleCompany ? `<tr><td>Empresa elaboradora</td><td>${esc((a as any).responsibleCompany)}</td></tr>` : ""}
@@ -504,7 +509,7 @@ export async function generateRiskLaudoPDF(
   </table>
   <div class="signature">
     ${(a as any).responsibleSignatureUrl ? `<img src="${esc((a as any).responsibleSignatureUrl)}" alt="Assinatura" style="max-height:60px;display:block;margin:0 auto 8px;">` : '<div class="line"></div>'}
-    <div style="text-align:center">${esc(a.responsibleTechnician || "Marise Paiva — CRP 55-33301")}<br>
+    <div style="text-align:center">${esc(a.responsibleTechnician || "[Responsável técnico não cadastrado]")}<br>
     <small class="muted">Responsável Técnica</small></div>
   </div>
 
@@ -580,7 +585,7 @@ export async function generateInventoryPDF(
     ${rows}
   </table>
   <p><small class="muted">Escala DRPS: 0 (sem risco) a 4 (risco extremo) — média ponderada por fator.</small></p>
-  <div class="footer-note">${esc(a.responsibleTechnician || "Marise Paiva — CRP 55-33301")} • Plataforma Saúde do Trabalho</div>
+  <div class="footer-note">${esc(a.responsibleTechnician || "[Responsável técnico não cadastrado]")} • Plataforma Saúde do Trabalho</div>
   </body></html>`;
 
   await renderPDF(html, outPath);
@@ -630,7 +635,7 @@ export async function generateCronogramaPDF(
     ${rows}
   </table>`}
   <p><small class="muted">Marcadores verdes indicam meses programados para execução do programa preventivo.</small></p>
-  <div class="footer-note">${esc(a.responsibleTechnician || "Marise Paiva — CRP 55-33301")} • Plataforma Saúde do Trabalho</div>
+  <div class="footer-note">${esc(a.responsibleTechnician || "[Responsável técnico não cadastrado]")} • Plataforma Saúde do Trabalho</div>
   </body></html>`;
 
   await renderPDF(html, outPath);
@@ -826,11 +831,11 @@ export async function generateAEPLaudoPDF(
 
   <h2>9. Responsabilidade Técnica e Assinatura</h2>
   <p>Esta análise foi elaborada sob responsabilidade técnica de
-  <b>${esc(a.responsibleTechnician || "Marise Paiva — CRP 55-33301")}</b>, profissional habilitada conforme
+  <b>${esc(a.responsibleTechnician || "[Responsável técnico não cadastrado]")}</b>, profissional habilitada conforme
   legislação vigente.</p>
   <div class="signature">
     <div class="line"></div>
-    <div style="text-align:center">${esc(a.responsibleTechnician || "Marise Paiva — CRP 55-33301")}<br>
+    <div style="text-align:center">${esc(a.responsibleTechnician || "[Responsável técnico não cadastrado]")}<br>
     <small class="muted">Responsável Técnica</small></div>
   </div>
 

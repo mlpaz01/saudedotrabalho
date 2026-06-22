@@ -116,6 +116,18 @@ export default function AdminPGR() {
     onSuccess: (r: any) => { toast.success("PGR salvo!"); setEditId(r.id); listQ.refetch(); },
     onError: (e: any) => toast.error(e?.message ?? "Erro ao salvar"),
   });
+  // Cria PGR vazio no banco assim que o usuário confirma o escopo no modal "Novo PGR".
+  // Isso garante que os blocos GSE Manager + Importações Inteligentes apareçam
+  // já no primeiro carregamento do editor (bloqueio reportado pelo Bruno).
+  const createBlankMut = trpc.pgr.createBlank.useMutation({
+    onSuccess: (r: any) => {
+      toast.success("Rascunho de PGR criado — preencha os dados.");
+      setScopeOpen(false);
+      listQ.refetch();
+      openEditor(r.id); // editId vira number → blocos aparecem
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao criar rascunho"),
+  });
   const genMut = trpc.pgr.generatePDF.useMutation({
     onSuccess: (r: any) => { setPdfUrl(r.url); toast.success("PDF do PGR gerado!"); listQ.refetch(); },
     onError: (e: any) => toast.error(e?.message ?? "Erro ao gerar PDF"),
@@ -432,11 +444,16 @@ export default function AdminPGR() {
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setScopeOpen(false)}>Cancelar</Button>
-                <Button onClick={() => {
+                <Button disabled={createBlankMut.isPending} onClick={() => {
                   if (scopeMode === "branch" && !scopeBranchId) { toast.error("Selecione a filial."); return; }
-                  setScopeOpen(false);
-                  openEditor("new", scopeMode === "branch" ? scopeBranchId : null);
-                }}>Continuar</Button>
+                  createBlankMut.mutate({
+                    companyId: companyId ?? undefined,
+                    branchId: scopeMode === "branch" ? scopeBranchId : null,
+                  });
+                }}>
+                  {createBlankMut.isPending && <Loader2 size={14} className="animate-spin mr-1" />}
+                  Continuar
+                </Button>
               </DialogFooter>
             </DialogContent>
           </Dialog>
