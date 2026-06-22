@@ -21753,22 +21753,26 @@ Return only the JSON content object (no wrapper). Format per type:
   preventiveLibrary: router({
 
     listCampaigns: adminOrRhProcedure.query(async ({ ctx }) => {
+      const role = (ctx.user as any).role;
+      const isGlobal = role === "admin_global" || role === "super_admin";
       const cid = (ctx.user as any).companyId;
-      if (!cid) return [];
       const db = await getDb();
       // Ensure tables exist with correct schema
       await execP(db, `CREATE TABLE IF NOT EXISTS preventive_library_campaigns (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        company_id INT NOT NULL,
+        company_id INT NULL,
         name VARCHAR(255) NOT NULL,
         code VARCHAR(100),
         month_number TINYINT DEFAULT NULL,
         theme VARCHAR(255),
         color VARCHAR(50),
         description TEXT,
+        is_template TINYINT(1) NOT NULL DEFAULT 0,
+        cloned_from INT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        INDEX idx_plc_company (company_id)
+        INDEX idx_plc_company (company_id),
+        INDEX idx_plc_template (is_template)
       )`, []);
       await execP(db, `CREATE TABLE IF NOT EXISTS preventive_library_materials (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -21798,6 +21802,10 @@ Return only the JSON content object (no wrapper). Format per type:
       try { await execP(db, `ALTER TABLE preventive_library_campaigns ADD COLUMN month_number TINYINT DEFAULT NULL`, []); } catch(_) {}
       try { await execP(db, `ALTER TABLE preventive_library_campaigns ADD COLUMN code VARCHAR(100)`, []); } catch(_) {}
       try { await execP(db, `ALTER TABLE preventive_library_campaigns ADD COLUMN color VARCHAR(50)`, []); } catch(_) {}
+      try { await execP(db, `ALTER TABLE preventive_library_campaigns ADD COLUMN is_template TINYINT(1) NOT NULL DEFAULT 0`, []); } catch(_) {}
+      try { await execP(db, `ALTER TABLE preventive_library_campaigns ADD COLUMN cloned_from INT NULL`, []); } catch(_) {}
+      try { await execP(db, `ALTER TABLE preventive_library_campaigns MODIFY company_id INT NULL`, []); } catch(_) {}
+      try { await execP(db, `ALTER TABLE preventive_library_campaigns ADD INDEX idx_plc_template (is_template)`, []); } catch(_) {}
       try { await execP(db, `ALTER TABLE preventive_library_materials ADD COLUMN title VARCHAR(255)`, []); } catch(_) {}
       try { await execP(db, `ALTER TABLE preventive_library_materials ADD COLUMN material_type VARCHAR(50)`, []); } catch(_) {}
       try { await execP(db, `ALTER TABLE preventive_library_materials ADD COLUMN target_audience VARCHAR(50) DEFAULT 'todos'`, []); } catch(_) {}
@@ -21807,22 +21815,60 @@ Return only the JSON content object (no wrapper). Format per type:
       try { await execP(db, `ALTER TABLE preventive_library_links ADD COLUMN title VARCHAR(255)`, []); } catch(_) {}
       try { await execP(db, `ALTER TABLE preventive_library_links ADD COLUMN notes TEXT`, []); } catch(_) {}
       try { await execP(db, `ALTER TABLE preventive_library_links ADD COLUMN target_audience VARCHAR(50) DEFAULT 'todos'`, []); } catch(_) {}
-      const [rows] = await execP(db, `SELECT * FROM preventive_library_campaigns WHERE company_id=? ORDER BY month_number ASC, created_at ASC`, [cid]) as any;
+
+      // Listagem com Template Global (Sprint 1.6 Fase 1):
+      // - Super Admin (cid NULL): vê SOMENTE templates globais (is_template=1)
+      //   ou pode passar ?companyId no input pra ver acervo de uma empresa específica (não implementado aqui ainda; será no listCampaignsFor).
+      // - Demais perfis: veem templates globais + campanhas da própria empresa,
+      //   marcadas com is_template para a UI poder mostrar badge "Padrão da plataforma".
+      let sql: string; let params: any[];
+      if (isGlobal) {
+        sql = `SELECT * FROM preventive_library_campaigns WHERE is_template=1 ORDER BY month_number ASC, created_at ASC`;
+        params = [];
+      } else {
+        if (!cid) return [];
+        sql = `SELECT * FROM preventive_library_campaigns
+               WHERE is_template=1 OR company_id=?
+               ORDER BY is_template DESC, month_number ASC, created_at ASC`;
+        params = [cid];
+      }
+      const [rows] = await execP(db, sql, params) as any;
       return rows as any[];
     }),
 
     listCampaignSummary: adminOrRhProcedure.query(async ({ ctx }) => {
+      const role = (ctx.user as any).role;
+      const isGlobal = role === "admin_global" || role === "super_admin";
       const cid = (ctx.user as any).companyId;
-      if (!cid) return [];
       const db = await getDb();
-      // Return array of { campaign_id, material_type, cnt } for frontend summaryFor()
-      const [rows] = await execP(db, `SELECT m.campaign_id, m.material_type, COUNT(*) AS cnt
-         FROM preventive_library_materials m
-         JOIN preventive_library_campaigns c ON c.id = m.campaign_id
-         WHERE c.company_id = ?
-         GROUP BY m.campaign_id, m.material_type`, [cid]) as any;
+      // Summary inclui campanhas que o usuário pode ver (templates + da empresa)
+      let sql: string; let params: any[];
+      if (isGlobal) {
+        sql = `SELECT m.campaign_id, m.material_type, COUNT(*) AS cnt
+               FROM preventive_library_materials m
+               JOIN preventive_library_campaigns c ON c.id = m.campaign_id
+               WHERE c.is_template = 1
+               GROUP BY m.campaign_id, m.material_type`;
+        params = [];
+      } else {
+        if (!cid) return [];
+        sql = `SELECT m.campaign_id, m.material_type, COUNT(*) AS cnt
+               FROM preventive_library_materials m
+               JOIN preventive_library_campaigns c ON c.id = m.campaign_id
+               WHERE c.is_template = 1 OR c.company_id = ?
+               GROUP BY m.campaign_id, m.material_type`;
+        params = [cid];
+      }
+      const [rows] = await execP(db, sql, params) as any;
       return rows as any[];
     }),
+
+    // ─── Helpers de posse (Sprint 1.6 Fase 1) ───────────────────────────
+    // Centraliza: dado um campaign_id, o usuário pode editar?
+    //  - Super Admin: pode editar QUALQUER (template ou empresa qualquer)
+    //  - Demais: só pode editar campanhas da PRÓPRIA empresa (não templates globais)
+    //    Templates só viram editáveis após clonagem (Fase 2 / Sprint 2).
+    // Retorna a row do campaign ou throws.
 
     upsertCampaign: adminOrRhProcedure
       .input(z.object({
@@ -21833,41 +21879,71 @@ Return only the JSON content object (no wrapper). Format per type:
         theme: z.string().optional(),
         color: z.string().optional(),
         description: z.string().optional(),
+        // Super Admin pode marcar como template global. Outros perfis ignoram esta flag.
+        isTemplate: z.boolean().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        const isGlobal = role === "admin_global" || role === "super_admin";
         const cid = (ctx.user as any).companyId;
-        if (!cid) throw new TRPCError({ code: 'BAD_REQUEST' });
         const db = await getDb();
         if (input.id) {
-          await execP(db, `UPDATE preventive_library_campaigns SET name=?, code=?, month_number=?, theme=?, color=?, description=? WHERE id=? AND company_id=?`, [input.name, input.code ?? null, input.monthNumber ?? null, input.theme ?? null, input.color ?? null, input.description ?? null, input.id, cid]);
+          // Edit: confirma posse
+          const [[row]] = await execP(db, `SELECT company_id, is_template FROM preventive_library_campaigns WHERE id=?`, [input.id]) as any;
+          if (!(row as any)) throw new TRPCError({ code: 'NOT_FOUND' });
+          const isTpl = !!(row as any).is_template;
+          if (!isGlobal && (isTpl || Number((row as any).company_id) !== Number(cid))) {
+            throw new TRPCError({ code: 'FORBIDDEN', message: 'Apenas o Super Admin pode editar templates globais.' });
+          }
+          await execP(db, `UPDATE preventive_library_campaigns SET name=?, code=?, month_number=?, theme=?, color=?, description=? WHERE id=?`,
+            [input.name, input.code ?? null, input.monthNumber ?? null, input.theme ?? null, input.color ?? null, input.description ?? null, input.id]);
           return { id: input.id };
         }
-        const [res] = await execP(db, `INSERT INTO preventive_library_campaigns (company_id, name, code, month_number, theme, color, description) VALUES (?,?,?,?,?,?,?)`, [cid, input.name, input.code ?? null, input.monthNumber ?? null, input.theme ?? null, input.color ?? null, input.description ?? null]) as any;
-        return { id: (res as any).insertId };
+        // Insert: define se é template (só Super Admin pode) ou da empresa
+        let asTemplate = isGlobal && input.isTemplate === true;
+        if (isGlobal && input.isTemplate === undefined) asTemplate = true; // Super Admin sem flag → template por padrão
+        const insertCid = asTemplate ? null : (cid ?? null);
+        if (!asTemplate && !insertCid) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Empresa não definida.' });
+        const [res] = await execP(db,
+          `INSERT INTO preventive_library_campaigns (company_id, is_template, name, code, month_number, theme, color, description)
+           VALUES (?,?,?,?,?,?,?,?)`,
+          [insertCid, asTemplate ? 1 : 0, input.name, input.code ?? null, input.monthNumber ?? null, input.theme ?? null, input.color ?? null, input.description ?? null]) as any;
+        return { id: (res as any).insertId, isTemplate: asTemplate };
       }),
 
     deleteCampaign: adminOrRhProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        const isGlobal = role === "admin_global" || role === "super_admin";
         const cid = (ctx.user as any).companyId;
-        if (!cid) throw new TRPCError({ code: 'BAD_REQUEST' });
         const db = await getDb();
+        const [[row]] = await execP(db, `SELECT company_id, is_template FROM preventive_library_campaigns WHERE id=?`, [input.id]) as any;
+        if (!(row as any)) return { ok: true }; // já não existe
+        const isTpl = !!(row as any).is_template;
+        if (!isGlobal && (isTpl || Number((row as any).company_id) !== Number(cid))) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Apenas o Super Admin pode remover templates globais.' });
+        }
         await execP(db, `DELETE FROM preventive_library_links WHERE campaign_id=?`, [input.id]);
         await execP(db, `DELETE FROM preventive_library_materials WHERE campaign_id=?`, [input.id]);
-        await execP(db, `DELETE FROM preventive_library_campaigns WHERE id=? AND company_id=?`, [input.id, cid]);
+        await execP(db, `DELETE FROM preventive_library_campaigns WHERE id=?`, [input.id]);
         return { ok: true };
       }),
 
     listMaterials: adminOrRhProcedure
       .input(z.object({ campaignId: z.number() }))
       .query(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        const isGlobal = role === "admin_global" || role === "super_admin";
         const cid = (ctx.user as any).companyId;
-        if (!cid) return [];
         const db = await getDb();
-        const [rows] = await execP(db, `SELECT m.* FROM preventive_library_materials m
-           JOIN preventive_library_campaigns c ON c.id=m.campaign_id
-           WHERE m.campaign_id=? AND c.company_id=?
-           ORDER BY m.created_at ASC`, [input.campaignId, cid]) as any;
+        // Permite leitura se a campanha é template OU pertence à empresa do usuário
+        const [[row]] = await execP(db, `SELECT company_id, is_template FROM preventive_library_campaigns WHERE id=?`, [input.campaignId]) as any;
+        if (!(row as any)) return [];
+        const isTpl = !!(row as any).is_template;
+        const canRead = isGlobal || isTpl || Number((row as any).company_id) === Number(cid);
+        if (!canRead) return [];
+        const [rows] = await execP(db, `SELECT * FROM preventive_library_materials WHERE campaign_id=? ORDER BY created_at ASC`, [input.campaignId]) as any;
         return rows as any[];
       }),
 
@@ -21883,53 +21959,78 @@ Return only the JSON content object (no wrapper). Format per type:
         targetAudience: z.string().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        const isGlobal = role === "admin_global" || role === "super_admin";
         const cid = (ctx.user as any).companyId;
-        if (!cid) throw new TRPCError({ code: 'BAD_REQUEST' });
         const db = await getDb();
-        const [[cr]] = await execP(db, `SELECT id FROM preventive_library_campaigns WHERE id=? AND company_id=?`, [input.campaignId, cid]) as any;
-        if (!(cr as any)?.id) throw new TRPCError({ code: 'NOT_FOUND' });
-        // For base64 files, store the data URL directly (no S3/CDN)
+        const [[row]] = await execP(db, `SELECT company_id, is_template FROM preventive_library_campaigns WHERE id=?`, [input.campaignId]) as any;
+        if (!(row as any)) throw new TRPCError({ code: 'NOT_FOUND' });
+        const isTpl = !!(row as any).is_template;
+        if (!isGlobal && (isTpl || Number((row as any).company_id) !== Number(cid))) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Apenas o Super Admin pode anexar materiais em templates globais.' });
+        }
         const fileUrl = input.fileBase64 ?? null;
-        const [res] = await execP(db, `INSERT INTO preventive_library_materials (campaign_id, title, material_type, target_audience, file_name, mime_type, file_url, description) VALUES (?,?,?,?,?,?,?,?)`, [input.campaignId, input.title, input.materialType ?? null, input.targetAudience ?? 'todos', input.fileName ?? null, input.mimeType ?? null, fileUrl, input.description ?? null]) as any;
+        const [res] = await execP(db, `INSERT INTO preventive_library_materials (campaign_id, title, material_type, target_audience, file_name, mime_type, file_url, description) VALUES (?,?,?,?,?,?,?,?)`,
+          [input.campaignId, input.title, input.materialType ?? null, input.targetAudience ?? 'todos', input.fileName ?? null, input.mimeType ?? null, fileUrl, input.description ?? null]) as any;
         return { id: (res as any).insertId };
       }),
 
     deleteMaterial: adminOrRhProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        const isGlobal = role === "admin_global" || role === "super_admin";
         const cid = (ctx.user as any).companyId;
-        if (!cid) throw new TRPCError({ code: 'BAD_REQUEST' });
         const db = await getDb();
-        await execP(db, `DELETE m FROM preventive_library_materials m
-           JOIN preventive_library_campaigns c ON c.id=m.campaign_id
-           WHERE m.id=? AND c.company_id=?`, [input.id, cid]);
+        // Confere posse via JOIN com campaign
+        const [[row]] = await execP(db, `SELECT c.company_id, c.is_template FROM preventive_library_materials m JOIN preventive_library_campaigns c ON c.id=m.campaign_id WHERE m.id=?`, [input.id]) as any;
+        if (!(row as any)) return { ok: true };
+        const isTpl = !!(row as any).is_template;
+        if (!isGlobal && (isTpl || Number((row as any).company_id) !== Number(cid))) {
+          throw new TRPCError({ code: 'FORBIDDEN' });
+        }
+        await execP(db, `DELETE FROM preventive_library_materials WHERE id=?`, [input.id]);
         return { ok: true };
       }),
 
     listCampaignLinks: adminOrRhProcedure
       .input(z.object({ campaignId: z.number() }))
       .query(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        const isGlobal = role === "admin_global" || role === "super_admin";
         const cid = (ctx.user as any).companyId;
-        if (!cid) return [];
         const db = await getDb();
-        const [rows] = await execP(db, `SELECT l.* FROM preventive_library_links l
-           JOIN preventive_library_campaigns c ON c.id=l.campaign_id
-           WHERE l.campaign_id=? AND c.company_id=?
-           ORDER BY l.created_at ASC`, [input.campaignId, cid]) as any;
+        const [[row]] = await execP(db, `SELECT company_id, is_template FROM preventive_library_campaigns WHERE id=?`, [input.campaignId]) as any;
+        if (!(row as any)) return [];
+        const isTpl = !!(row as any).is_template;
+        const canRead = isGlobal || isTpl || Number((row as any).company_id) === Number(cid);
+        if (!canRead) return [];
+        const [rows] = await execP(db, `SELECT * FROM preventive_library_links WHERE campaign_id=? ORDER BY created_at ASC`, [input.campaignId]) as any;
         return rows as any[];
       }),
 
     listAvailableForLink: adminOrRhProcedure
       .input(z.object({ linkType: z.string() }))
       .query(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        const isGlobal = role === "admin_global" || role === "super_admin";
         const cid = (ctx.user as any).companyId;
-        if (!cid) return [];
         const db = await getDb();
         if (input.linkType === 'survey') {
+          if (isGlobal) {
+            const [rows] = await execP(db, `SELECT id, title FROM surveys WHERE is_template=1 OR company_id IS NULL ORDER BY created_at DESC LIMIT 50`, []) as any;
+            return rows as any[];
+          }
+          if (!cid) return [];
           const [rows] = await execP(db, `SELECT id, title FROM surveys WHERE company_id=? ORDER BY created_at DESC LIMIT 50`, [cid]) as any;
           return rows as any[];
         }
         if (input.linkType === 'course' || input.linkType === 'module') {
+          if (isGlobal) {
+            const [rows] = await execP(db, `SELECT id, title FROM modules WHERE created_by_company_id IS NULL AND isActive=1 ORDER BY title LIMIT 50`, []) as any;
+            return rows as any[];
+          }
+          if (!cid) return [];
           const [rows] = await execP(db, `SELECT id, title FROM modules WHERE (created_by_company_id=? OR created_by_company_id IS NULL) AND isActive=1 ORDER BY title LIMIT 50`, [cid]) as any;
           return rows as any[];
         }
@@ -21946,29 +22047,62 @@ Return only the JSON content object (no wrapper). Format per type:
         targetAudience: z.string().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        const isGlobal = role === "admin_global" || role === "super_admin";
         const cid = (ctx.user as any).companyId;
-        if (!cid) throw new TRPCError({ code: 'BAD_REQUEST' });
         const db = await getDb();
-        const [[cr]] = await execP(db, `SELECT id FROM preventive_library_campaigns WHERE id=? AND company_id=?`, [input.campaignId, cid]) as any;
-        if (!(cr as any)?.id) throw new TRPCError({ code: 'NOT_FOUND' });
-        // Check if already linked
+        const [[row]] = await execP(db, `SELECT company_id, is_template FROM preventive_library_campaigns WHERE id=?`, [input.campaignId]) as any;
+        if (!(row as any)) throw new TRPCError({ code: 'NOT_FOUND' });
+        const isTpl = !!(row as any).is_template;
+        if (!isGlobal && (isTpl || Number((row as any).company_id) !== Number(cid))) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Apenas o Super Admin pode vincular conteúdo a templates globais.' });
+        }
         const [[existing]] = await execP(db, `SELECT id FROM preventive_library_links WHERE campaign_id=? AND link_type=? AND ref_id=?`, [input.campaignId, input.linkType, input.refId]) as any;
         if ((existing as any)?.id) return { alreadyLinked: true, id: (existing as any).id };
-        const [res] = await execP(db, `INSERT INTO preventive_library_links (campaign_id, link_type, ref_id, title, notes, target_audience) VALUES (?,?,?,?,?,?)`, [input.campaignId, input.linkType, input.refId, input.title ?? null, input.notes ?? null, input.targetAudience ?? 'todos']) as any;
+        const [res] = await execP(db, `INSERT INTO preventive_library_links (campaign_id, link_type, ref_id, title, notes, target_audience) VALUES (?,?,?,?,?,?)`,
+          [input.campaignId, input.linkType, input.refId, input.title ?? null, input.notes ?? null, input.targetAudience ?? 'todos']) as any;
         return { id: (res as any).insertId, alreadyLinked: false };
       }),
 
     removeCampaignLink: adminOrRhProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        const isGlobal = role === "admin_global" || role === "super_admin";
         const cid = (ctx.user as any).companyId;
-        if (!cid) throw new TRPCError({ code: 'BAD_REQUEST' });
         const db = await getDb();
-        await execP(db, `DELETE l FROM preventive_library_links l
-           JOIN preventive_library_campaigns c ON c.id=l.campaign_id
-           WHERE l.id=? AND c.company_id=?`, [input.id, cid]);
+        const [[row]] = await execP(db, `SELECT c.company_id, c.is_template FROM preventive_library_links l JOIN preventive_library_campaigns c ON c.id=l.campaign_id WHERE l.id=?`, [input.id]) as any;
+        if (!(row as any)) return { ok: true };
+        const isTpl = !!(row as any).is_template;
+        if (!isGlobal && (isTpl || Number((row as any).company_id) !== Number(cid))) {
+          throw new TRPCError({ code: 'FORBIDDEN' });
+        }
+        await execP(db, `DELETE FROM preventive_library_links WHERE id=?`, [input.id]);
         return { ok: true };
       }),
+
+    // Endpoint diagnóstico para o Super Admin auditar quantas campanhas existem
+    // por empresa + quantas são templates globais. Útil pra responder a perguntas
+    // como a do Bruno 22/06: "Está sendo gravado onde?"
+    auditOwnership: adminOrRhProcedure.query(async ({ ctx }) => {
+      const role = (ctx.user as any).role;
+      const isGlobal = role === "admin_global" || role === "super_admin";
+      if (!isGlobal) throw new TRPCError({ code: 'FORBIDDEN' });
+      const db = await getDb();
+      const [rows] = await execP(db, `
+        SELECT
+          CASE WHEN is_template=1 THEN '__TEMPLATE_GLOBAL__'
+               ELSE COALESCE(CONCAT('empresa #', company_id), '__SEM_VINCULO__') END AS owner,
+          COUNT(*) AS campaigns,
+          (SELECT COUNT(*) FROM preventive_library_materials m WHERE m.campaign_id IN (
+            SELECT id FROM preventive_library_campaigns c2 WHERE c2.is_template=c.is_template AND
+            (c2.company_id <=> c.company_id)
+          )) AS materials_total
+        FROM preventive_library_campaigns c
+        GROUP BY is_template, company_id
+        ORDER BY is_template DESC, company_id`, []) as any;
+      return rows as any[];
+    }),
 
   }),
 
