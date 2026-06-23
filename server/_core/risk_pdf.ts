@@ -99,6 +99,12 @@ export type AssessmentData = {
   startDate?: string | null;
   endDate?: string | null;
   responsibleTechnician?: string | null;
+  // Campos novos populados pelo fallback de responsible_technicians (Sprint 1.6).
+  // Quando assessment não tem RT no campo livre, busca o RT default da empresa.
+  responsibleRegistration?: string | null;
+  responsibleProfession?: string | null;
+  responsibleArt?: string | null;
+  responsibleSignatureUrl?: string | null;
   notes?: string | null;
   companyName: string;
   companyCnpj?: string | null;
@@ -500,15 +506,13 @@ export async function generateRiskLaudoPDF(
   <table>
     <tr><th style="width:35%">Item</th><th>Dados do Responsável Técnico</th></tr>
     <tr><td>Nome</td><td><b>${esc(a.responsibleTechnician || "[Responsável técnico não cadastrado]")}</b></td></tr>
-    <tr><td>Profissão / Registro</td><td>${esc((a as any).responsibleRegistration || (a.responsibleTechnician ? "—" : "[não cadastrado]"))}</td></tr>
-    ${(a as any).responsibleProfession ? `<tr><td>Especialidade</td><td>${esc((a as any).responsibleProfession)}</td></tr>` : ""}
-    ${(a as any).responsibleArt ? `<tr><td>ART / RRT</td><td>${esc((a as any).responsibleArt)}</td></tr>` : ""}
-    ${(a as any).responsibleCompany ? `<tr><td>Empresa elaboradora</td><td>${esc((a as any).responsibleCompany)}</td></tr>` : ""}
-    ${(a as any).responsibleValidUntil ? `<tr><td>Validade</td><td>${esc(fmtDate((a as any).responsibleValidUntil))}</td></tr>` : ""}
+    <tr><td>Profissão / Registro</td><td>${esc(a.responsibleRegistration || (a.responsibleTechnician ? "—" : "[não cadastrado]"))}</td></tr>
+    ${a.responsibleProfession ? `<tr><td>Especialidade</td><td>${esc(a.responsibleProfession)}</td></tr>` : ""}
+    ${a.responsibleArt ? `<tr><td>ART / RRT</td><td>${esc(a.responsibleArt)}</td></tr>` : ""}
     <tr><td>Data de emissão</td><td>${esc(mesAno)}</td></tr>
   </table>
   <div class="signature">
-    ${(a as any).responsibleSignatureUrl ? `<img src="${esc((a as any).responsibleSignatureUrl)}" alt="Assinatura" style="max-height:60px;display:block;margin:0 auto 8px;">` : '<div class="line"></div>'}
+    ${a.responsibleSignatureUrl ? `<img src="${esc(a.responsibleSignatureUrl)}" alt="Assinatura" style="max-height:60px;display:block;margin:0 auto 8px;">` : '<div class="line"></div>'}
     <div style="text-align:center">${esc(a.responsibleTechnician || "[Responsável técnico não cadastrado]")}<br>
     <small class="muted">Responsável Técnica</small></div>
   </div>

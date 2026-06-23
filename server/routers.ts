@@ -1863,6 +1863,28 @@ async function loadAssessmentForPDF(db: any, assessmentId: number, companyId: nu
   const drpsCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${ra.drps_survey_id}`);
   const aepCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${ra.aep_survey_id}`);
 
+  // Fallback de Responsável Técnico: quando o campo livre ra.responsible_technician
+  // está vazio, busca o RT marcado como default na tabela responsible_technicians
+  // da empresa. Resolve o caso reportado pelo Bruno: laudo dizia "RT não cadastrado"
+  // mesmo com a Marise registrada via UI de Responsáveis Técnicos.
+  let rtFallback: any = null;
+  if (!ra.responsible_technician) {
+    const rtR: any = await db.execute(drzSql`
+      SELECT name, registration, profession, art, signature_url
+      FROM responsible_technicians
+      WHERE company_id=${ra.company_id} AND is_default=1
+      ORDER BY id DESC LIMIT 1`);
+    rtFallback = (rtR as any)[0]?.[0] ?? null;
+  }
+  // String "Nome — Registro" usada no campo livre responsibleTechnician existente
+  // (pra não quebrar todos os lugares do PDF que renderizam só esse campo).
+  const rtName = ra.responsible_technician
+    ?? (rtFallback ? (rtFallback.registration ? `${rtFallback.name} — ${rtFallback.registration}` : rtFallback.name) : null);
+  const rtRegistration = rtFallback?.registration ?? null;
+  const rtProfession   = rtFallback?.profession ?? null;
+  const rtArt          = rtFallback?.art ?? null;
+  const rtSignatureUrl = rtFallback?.signature_url ?? null;
+
   // Quando a avaliação é da empresa/filial (sem setor fixo), fragmenta o item 7 por setor
   // agrupando o próprio inventário/plano pelo sector_id de cada item (modelo NR-01).
   function mapInvRow(it: any) {
@@ -1912,7 +1934,11 @@ async function loadAssessmentForPDF(db: any, assessmentId: number, companyId: nu
           status: ra.status,
           startDate: ra.start_date ? new Date(ra.start_date).toISOString() : null,
           endDate: ra.end_date ? new Date(ra.end_date).toISOString() : null,
-          responsibleTechnician: ra.responsible_technician,
+          responsibleTechnician: rtName,
+          responsibleRegistration: rtRegistration,
+          responsibleProfession: rtProfession,
+          responsibleArt: rtArt,
+          responsibleSignatureUrl: rtSignatureUrl,
           notes: ra.notes,
           companyName: ra.company_name,
           companyCnpj: ra.company_cnpj,
@@ -1934,7 +1960,11 @@ async function loadAssessmentForPDF(db: any, assessmentId: number, companyId: nu
       status: ra.status,
       startDate: ra.start_date ? new Date(ra.start_date).toISOString() : null,
       endDate: ra.end_date ? new Date(ra.end_date).toISOString() : null,
-      responsibleTechnician: ra.responsible_technician,
+      responsibleTechnician: rtName,
+      responsibleRegistration: rtRegistration,
+      responsibleProfession: rtProfession,
+      responsibleArt: rtArt,
+      responsibleSignatureUrl: rtSignatureUrl,
       notes: ra.notes,
       companyName: ra.company_name,
       companyCnpj: ra.company_cnpj,
@@ -2057,6 +2087,19 @@ async function loadAEPForPDF(db: any, assessmentId: number, companyId: number) {
   const items = buildItems(answers);
   const respCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${aepSurveyId}`);
 
+  // Mesmo fallback de RT do laudo psicossocial (ver loadAssessmentForPDF).
+  let rtFallback: any = null;
+  if (!ra.responsible_technician) {
+    const rtR: any = await db.execute(drzSql`
+      SELECT name, registration, profession, art, signature_url
+      FROM responsible_technicians
+      WHERE company_id=${ra.company_id} AND is_default=1
+      ORDER BY id DESC LIMIT 1`);
+    rtFallback = (rtR as any)[0]?.[0] ?? null;
+  }
+  const rtName = ra.responsible_technician
+    ?? (rtFallback ? (rtFallback.registration ? `${rtFallback.name} — ${rtFallback.registration}` : rtFallback.name) : null);
+
   // Agrupa respostas por setor para o "Detalhamento por Setor".
   const ansBySector = new Map<number, any[]>();
   const respBySector = new Map<number, Set<number>>();
@@ -2089,7 +2132,11 @@ async function loadAEPForPDF(db: any, assessmentId: number, companyId: number) {
       status: ra.status,
       startDate: ra.start_date ? new Date(ra.start_date).toISOString() : null,
       endDate: ra.end_date ? new Date(ra.end_date).toISOString() : null,
-      responsibleTechnician: ra.responsible_technician,
+      responsibleTechnician: rtName,
+      responsibleRegistration: rtFallback?.registration ?? null,
+      responsibleProfession:   rtFallback?.profession ?? null,
+      responsibleArt:          rtFallback?.art ?? null,
+      responsibleSignatureUrl: rtFallback?.signature_url ?? null,
       notes: ra.notes,
       companyName: ra.company_name,
       companyCnpj: ra.company_cnpj,
