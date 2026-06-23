@@ -78,6 +78,7 @@ import AdminAcoesVinculadas from "@/pages/admin/AdminAcoesVinculadas";
 import AdminRiskAssessments from "@/pages/admin/AdminRiskAssessments";
 import AdminRiskAssessmentDetail from "@/pages/admin/AdminRiskAssessmentDetail";
 import AdminPGR from "@/pages/admin/AdminPGR";
+import AdminSesmtDefaults from "@/pages/admin/AdminSesmtDefaults";
 import AdminFiles from "@/pages/admin/AdminFiles";
 import AdminNRTraining from "@/pages/admin/AdminNRTraining";
 import AdminPCMSO from "@/pages/admin/AdminPCMSO";
@@ -206,6 +207,7 @@ function Router() {
       <Route path="/admin/analise-risco" component={() => <ProtectedRoute component={AdminRiskAssessments} adminOnly />} />
       <Route path="/admin/analise-risco/:id" component={(p: any) => <ProtectedRoute component={() => <AdminRiskAssessmentDetail id={Number(p.params?.id)} />} adminOnly />} />
       <Route path="/admin/pgr" component={() => <ProtectedRoute component={AdminPGR} adminOnly />} />
+      <Route path="/admin/sesmt-defaults" component={() => <ProtectedRoute component={AdminSesmtDefaults} adminOnly />} />
       <Route path="/admin/pgr/executivo" component={() => <ProtectedRoute component={AdminPGRExecutive} adminOnly />} />
       <Route path="/admin/pgr/auditoria" component={() => <ProtectedRoute component={AdminPGRAudit} adminOnly />} />
       <Route path="/admin/arquivos" component={() => <ProtectedRoute component={AdminFiles} adminOnly />} />

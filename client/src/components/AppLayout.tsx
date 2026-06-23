@@ -8,7 +8,7 @@ import {
   ShieldCheck, FileSearch, Home, Clock, IdCard, FileCheck, CalendarClock,
   Shield, Library, Settings2, Store, Wrench, ShieldQuestion, ClipboardList,
   Mail, ShieldAlert, CreditCard, FolderOpen, GraduationCap, Stethoscope,
-  Link2, Layers, RotateCcw, Activity, Search, LineChart, Signature,
+  Link2, Layers, RotateCcw, Activity, Search, LineChart, Signature, FileText,
   LifeBuoy, Headphones, HeartHandshake, BarChart3, ListChecks, BookMarked,
 } from "lucide-react";
 import { useState } from "react";
@@ -101,6 +101,7 @@ const adminSections: NavSection[] = [
       { label: "Revisoes PGR", href: "/admin/pgr-revisoes", roles: ["sesmt", "admin_global", "super_admin"], icon: <RotateCcw size={16} />, feature: "risk_assessment" },
       { label: "Arquivos SST", href: "/admin/arquivos", roles: ["sesmt", "admin_global", "super_admin"], icon: <FolderOpen size={16} /> },
       { label: "Responsaveis Tecnicos", href: "/admin/responsaveis-tecnicos", roles: ["sesmt", "admin_global", "super_admin"], icon: <Signature size={16} /> },
+      { label: "Texto Padrao do PGR", href: "/admin/sesmt-defaults", roles: ["sesmt", "admin_global", "super_admin"], icon: <FileText size={16} /> },
     ],
   },
   {

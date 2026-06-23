@@ -2153,6 +2153,40 @@ async function loadAEPForPDF(db: any, assessmentId: number, companyId: number) {
 // Catálogo de funcionalidades que um plano de assinatura pode liberar.
 // Usado pelo painel "Planos" do Admin Global para montar os toggles por plano,
 // e (futuramente) pelo feature-gating do app. Os códigos batem com módulos reais.
+// Textos sugestivos pré-preenchidos para o "Texto Padrão do PGR" (Sprint 1.7-A).
+// Aparecem quando a empresa ainda não cadastrou seus próprios textos no Perfil
+// SESMT. A consultoria pode aceitar como ponto de partida e editar.
+const SESMT_DEFAULT_INTRO = `1. PARTE I — DISPOSIÇÕES GERAIS
+
+Este Programa de Gerenciamento de Riscos (PGR) foi elaborado em conformidade com a Norma Regulamentadora nº 1 (NR-01), atualizada pela Portaria MTP nº 1.419/2024, e estabelece as diretrizes para identificação, avaliação e controle dos riscos ocupacionais no ambiente de trabalho.
+
+O PGR contempla os riscos físicos, químicos, biológicos, ergonômicos, de acidentes e psicossociais, atendendo às exigências legais e técnicas vigentes.
+
+OBJETIVOS
+
+- Identificar perigos e avaliar riscos ocupacionais;
+- Implementar medidas de prevenção e controle;
+- Promover a saúde e segurança dos trabalhadores;
+- Atender às exigências legais aplicáveis.
+
+RESPONSABILIDADES
+
+- Empresa: prover recursos e meios para a implementação do programa;
+- Profissional responsável técnico: elaborar, revisar e validar o programa;
+- Trabalhadores: cumprir as medidas de prevenção e participar dos treinamentos.
+
+METODOLOGIA
+
+A avaliação de riscos é realizada por Grupos Similares de Exposição (GSE), considerando os agentes presentes, a probabilidade de ocorrência e a severidade do dano. Os resultados são organizados em Inventário de Riscos e Plano de Ação (5W2H).`;
+
+const SESMT_DEFAULT_CONCLUSAO = `CONCLUSÃO TÉCNICA
+
+O presente PGR identifica os riscos ocupacionais existentes nos Grupos Similares de Exposição (GSE) avaliados e estabelece o plano de ação para gerenciamento desses riscos, em conformidade com a NR-01.
+
+Recomenda-se a implementação integral das medidas previstas, com monitoramento periódico da eficácia e revisão anual do documento (ou antecipada, em caso de mudanças significativas no processo, ambiente ou organização do trabalho).
+
+A gestão contínua dos riscos ocupacionais é responsabilidade compartilhada entre empresa, profissionais habilitados de SST e trabalhadores, e este documento integra o Gerenciamento de Riscos Ocupacionais (GRO) da organização.`;
+
 const PLAN_FEATURE_CATALOG = [
   { code: "courses",          label: "Cursos & Trilhas",                group: "Aprendizagem" },
   { code: "certificates",     label: "Certificados",                    group: "Aprendizagem" },
@@ -17889,6 +17923,82 @@ Return only the JSON content object (no wrapper). Format per type:
       }),
   }),
 
+  // ─── Perfil SESMT: Texto Padrão do PGR (Sprint 1.7-A) ───────────────────
+  // Permite que cada empresa (ou consultoria) cadastre 2 textos padrão
+  // (Introdução e Conclusão) reutilizados em todo novo PGR. Cada PGR mantém
+  // sua própria cópia editável — alterar o padrão NÃO modifica PGRs existentes.
+  sesmt: router({
+    // Defaults sugeridos pré-preenchidos quando a empresa ainda não cadastrou nada
+    DEFAULT_INTRO: undefined as any, // marker — usado só pra documentação
+
+    getDefaultTexts: adminOrRhProcedure
+      .input(z.object({ companyId: z.number().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        const isGlobal = role === "admin_global" || role === "super_admin";
+        const cid = isGlobal ? (input?.companyId ?? null) : ((ctx.user as any).companyId ?? null);
+        const db = await getDb();
+        if (!db) return { texto_introducao: "", texto_conclusao: "", isDefault: true };
+        // Ensure table exists (idempotente — chamado no primeiro get)
+        await execP(db, `CREATE TABLE IF NOT EXISTS sesmt_default_texts (
+          company_id INT NOT NULL PRIMARY KEY,
+          texto_introducao MEDIUMTEXT,
+          texto_conclusao MEDIUMTEXT,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          updated_by_user_id INT NULL
+        )`, []);
+        if (!cid) return { texto_introducao: "", texto_conclusao: "", isDefault: true };
+        const [rows] = await execP(db,
+          `SELECT texto_introducao, texto_conclusao, updated_at FROM sesmt_default_texts WHERE company_id=?`,
+          [cid]) as any;
+        const row = (rows as any[])[0];
+        if (!row) {
+          // Devolve sugestões iniciais (consultoria pode aceitar como ponto de partida).
+          return {
+            texto_introducao: SESMT_DEFAULT_INTRO,
+            texto_conclusao: SESMT_DEFAULT_CONCLUSAO,
+            isDefault: true,
+            updatedAt: null,
+          };
+        }
+        return {
+          texto_introducao: String(row.texto_introducao ?? ""),
+          texto_conclusao: String(row.texto_conclusao ?? ""),
+          isDefault: false,
+          updatedAt: row.updated_at ? String(row.updated_at) : null,
+        };
+      }),
+
+    saveDefaultTexts: adminOrRhProcedure
+      .input(z.object({
+        companyId: z.number().optional(),
+        textoIntroducao: z.string().max(60000),
+        textoConclusao: z.string().max(60000),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        const isGlobal = role === "admin_global" || role === "super_admin";
+        const cid = isGlobal ? input.companyId : (ctx.user as any).companyId;
+        if (!cid) throw new TRPCError({ code: "BAD_REQUEST", message: isGlobal ? "Super Admin: selecione a empresa." : "Empresa não definida." });
+        const uid = (ctx.user as any).id ?? null;
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await execP(db, `CREATE TABLE IF NOT EXISTS sesmt_default_texts (
+          company_id INT NOT NULL PRIMARY KEY,
+          texto_introducao MEDIUMTEXT,
+          texto_conclusao MEDIUMTEXT,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          updated_by_user_id INT NULL
+        )`, []);
+        await execP(db, `INSERT INTO sesmt_default_texts (company_id, texto_introducao, texto_conclusao, updated_by_user_id)
+          VALUES (?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE texto_introducao=VALUES(texto_introducao),
+            texto_conclusao=VALUES(texto_conclusao), updated_by_user_id=VALUES(updated_by_user_id)`,
+          [cid, input.textoIntroducao, input.textoConclusao, uid]);
+        return { ok: true };
+      }),
+  }),
+
   pgr: router({
     // Helpers de posse compartilhados pelas procedures do sub-router gse (final do bloco pgr).
     // Verificam que PGR/GSE pertencem à empresa do usuário antes de qualquer leitura ou
@@ -18023,19 +18133,37 @@ Return only the JSON content object (no wrapper). Format per type:
 
         const initRevs = JSON.stringify([{ revisao: "00", motivo: "Emissão inicial", data: null }]);
         const empty = "[]";
+        // Puxa textos padrão do SESMT da empresa, se cadastrados; caso contrário usa
+        // os defaults sugestivos (constantes SESMT_DEFAULT_INTRO/CONCLUSAO).
+        let textoIntro = SESMT_DEFAULT_INTRO;
+        let textoConcl = SESMT_DEFAULT_CONCLUSAO;
+        try {
+          const [defRows] = await execP(db,
+            `SELECT texto_introducao, texto_conclusao FROM sesmt_default_texts WHERE company_id=?`,
+            [cid]) as any;
+          const defRow = (defRows as any[])[0];
+          if (defRow) {
+            if (defRow.texto_introducao) textoIntro = String(defRow.texto_introducao);
+            if (defRow.texto_conclusao) textoConcl = String(defRow.texto_conclusao);
+          }
+        } catch (_) { /* tabela ainda não existe — usa defaults */ }
         const res: any = await db.execute(drzSql`
           INSERT INTO pgr_documents (
             company_id, branch_id, title, razao_social, nome_fantasia, cnpj, logo_url,
             status, ghe_funcoes, revisoes, inventario, gse_grupos, epc_itens, epi_itens,
             plano_psicossocial, caracterizacao_setores, cronograma_preventivo,
-            hierarquia_controle, nao_conformidades, treinamentos_nr, created_by_user_id
+            hierarquia_controle, nao_conformidades, treinamentos_nr,
+            texto_introducao, texto_conclusao,
+            created_by_user_id
           ) VALUES (
             ${cid}, ${input.branchId ?? null},
             ${"PGR - Programa de Gerenciamento de Riscos"},
             ${company?.name ?? null}, ${company?.name ?? null}, ${company?.cnpj ?? null}, ${company?.logo_url ?? null},
             ${'rascunho'},
             ${empty}, ${initRevs}, ${empty}, ${empty}, ${empty}, ${empty},
-            ${empty}, ${empty}, ${empty}, ${empty}, ${empty}, ${empty}, ${uid}
+            ${empty}, ${empty}, ${empty}, ${empty}, ${empty}, ${empty},
+            ${textoIntro}, ${textoConcl},
+            ${uid}
           )`);
         const newId = Number((res as any)[0]?.insertId ?? 0);
         if (!newId) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Falha ao criar PGR." });
@@ -18115,6 +18243,10 @@ Return only the JSON content object (no wrapper). Format per type:
         })).optional(),
         planoPsicossocial: z.array(z.any()).optional(),
         notasTecnicas: z.string().optional(),
+        // Sprint 1.7-A: textos personalizáveis do PGR (carregados do SESMT no
+        // createBlank; o usuário pode editar por PGR sem afetar o padrão).
+        textoIntroducao: z.string().max(60000).optional(),
+        textoConclusao: z.string().max(60000).optional(),
         caracterizacaoSetores: z.array(z.any()).optional(),
         cronogramaPreventivo: z.array(z.any()).optional(),
         hierarquiaControle: z.array(z.any()).optional(),
@@ -18168,6 +18300,8 @@ Return only the JSON content object (no wrapper). Format per type:
               logo_url=${input.logoUrl ?? null}, ghe_funcoes=${ghe}, revisoes=${revs}, inventario=${inv},
               gse_grupos=${gse}, epc_itens=${epc}, epi_itens=${epi},
               plano_psicossocial=${psy}, notas_tecnicas=${input.notasTecnicas ?? null},
+              texto_introducao=COALESCE(${input.textoIntroducao ?? null}, texto_introducao),
+              texto_conclusao=COALESCE(${input.textoConclusao ?? null}, texto_conclusao),
               caracterizacao_setores=${carac}, cronograma_preventivo=${cron},
               hierarquia_controle=${hier}, nao_conformidades=${nc}, treinamentos_nr=${trein}
             WHERE id=${input.id}`);
@@ -19128,6 +19262,8 @@ Return only the JSON content object (no wrapper). Format per type:
           epiItens: parseJson(row.epi_itens),
           planoPsicossocial: parseJson(row.plano_psicossocial),
           notasTecnicas: row.notas_tecnicas ? String(row.notas_tecnicas) : "",
+          textoIntroducao: row.texto_introducao ? String(row.texto_introducao) : "",
+          textoConclusao:  row.texto_conclusao  ? String(row.texto_conclusao)  : "",
           caracterizacaoSetores: parseJson(row.caracterizacao_setores),
           cronogramaPreventivo: parseJson(row.cronograma_preventivo),
           hierarquiaControle: parseJson(row.hierarquia_controle),

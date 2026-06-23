@@ -26,6 +26,39 @@ function multiline(s: unknown): string {
   return esc(s).replace(/\n/g, "<br>");
 }
 
+/**
+ * Converte texto plano (Markdown-light) editado pelo SESMT em HTML para o PDF.
+ * Suporta:
+ *  - Parágrafos separados por linha em branco
+ *  - Listas com "- " ou "* " no início da linha
+ *  - Cabeçalhos: linhas em MAIÚSCULAS com 6+ chars viram <h3>
+ *  - **negrito** vira <b>
+ * Sempre escapa HTML antes de aplicar substituições.
+ */
+function renderUserText(s: unknown): string {
+  if (s == null || String(s).trim() === "") return "";
+  const txt = esc(s);
+  const blocks = txt.split(/\n\s*\n/);
+  const html: string[] = [];
+  for (const raw of blocks) {
+    const lines = raw.split("\n").map((l) => l.replace(/\s+$/, ""));
+    const isListBlock = lines.every((l) => /^[-*]\s+/.test(l));
+    if (isListBlock) {
+      html.push("<ul>" + lines.map((l) => `<li>${l.replace(/^[-*]\s+/, "")}</li>`).join("") + "</ul>");
+      continue;
+    }
+    // bloco que é uma linha só em MAIÚSCULAS — vira cabeçalho h3
+    if (lines.length === 1 && /^[A-ZÁÉÍÓÚÂÊÔÃÕÇ0-9\s\-–—.()/]{6,}$/.test(lines[0]) && /[A-ZÁ-Ú]/.test(lines[0])) {
+      html.push(`<h3 style="font-size:11.5pt;margin-top:6mm">${lines[0]}</h3>`);
+      continue;
+    }
+    // parágrafo com <br> internos. Aplica **negrito** depois de escapar.
+    const para = lines.join("<br>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+    html.push(`<p>${para}</p>`);
+  }
+  return html.join("\n");
+}
+
 function fmtDate(d?: string | null): string {
   if (!d) return "—";
   try { return new Date(d).toLocaleDateString("pt-BR"); } catch { return String(d); }
@@ -145,6 +178,10 @@ export type PgrData = {
   // Sprint 1 PGR Inteligente: quando preenchido, o PDF usa a estrutura GSE-first
   // (tabelas relacionais) em vez do JSON legado. Os dois NUNCA aparecem juntos.
   gseGroups?: PgrGseGroup[] | null;
+  // Sprint 1.7-A: textos personalizáveis vindos do SESMT (com fallback ao texto
+  // fixo padrão da consultoria quando vazios).
+  textoIntroducao?: string | null;
+  textoConclusao?: string | null;
 };
 
 export type PgrGseGroup = {
@@ -859,22 +896,35 @@ export async function generatePGRPDF(d: PgrData): Promise<string> {
 
   ${(d.gseGroups && d.gseGroups.length > 0) ? `<div class="section">${gseGroupsSection(d)}</div><div class="page-break"></div>` : ""}
 
-  <div class="section">${parteI(d)}</div>
-  <div class="page-break"></div>
+  ${d.textoIntroducao && d.textoIntroducao.trim()
+    ? `<div class="section">
+         <h2>1. Introdução</h2>
+         <p class="muted" style="font-size:8pt;margin-top:-4px">Texto padrão configurado em Perfil SESMT &gt; Texto Padrão do PGR.</p>
+         ${renderUserText(d.textoIntroducao)}
+       </div>
+       <div class="page-break"></div>
 
-  <div class="section">${parteII(d)}</div>
-  <div class="page-break"></div>
+       <h2>2. Inventário de Riscos do PGR</h2>
+       <p><small class="muted">Antecipação, Reconhecimento e Avaliação dos Riscos — NR-01, item 1.5.7.3.</small></p>
+       ${inventarioTable(d)}
+       ${gseEpcEpiSection(d)}
+       <div class="page-break"></div>`
+    : `<div class="section">${parteI(d)}</div>
+       <div class="page-break"></div>
 
-  <div class="section">${parteIII()}</div>
-  <div class="page-break"></div>
+       <div class="section">${parteII(d)}</div>
+       <div class="page-break"></div>
 
-  <h2>4. PARTE IV — INVENTÁRIO DE RISCOS DO PGR</h2>
-  <p><small class="muted">Antecipação, Reconhecimento e Avaliação dos Riscos — NR-01, item 1.5.7.3.</small></p>
-  ${inventarioTable(d)}
-  ${gseEpcEpiSection(d)}
+       <div class="section">${parteIII()}</div>
+       <div class="page-break"></div>
 
-  <div class="section">${textoFixoGRO()}</div>
-  <div class="page-break"></div>
+       <h2>4. PARTE IV — INVENTÁRIO DE RISCOS DO PGR</h2>
+       <p><small class="muted">Antecipação, Reconhecimento e Avaliação dos Riscos — NR-01, item 1.5.7.3.</small></p>
+       ${inventarioTable(d)}
+       ${gseEpcEpiSection(d)}
+
+       <div class="section">${textoFixoGRO()}</div>
+       <div class="page-break"></div>`}
 
   ${caracterizacaoSetoresSection(d) ? `<div class="section">${caracterizacaoSetoresSection(d)}</div><div class="page-break"></div>` : ""}
 
@@ -885,6 +935,15 @@ export async function generatePGRPDF(d: PgrData): Promise<string> {
   ${naoConformidadesSection(d) ? `<div class="section">${naoConformidadesSection(d)}</div><div class="page-break"></div>` : ""}
 
   ${treinamentosNrSection(d) ? `<div class="section">${treinamentosNrSection(d)}</div><div class="page-break"></div>` : ""}
+
+  ${d.textoConclusao && d.textoConclusao.trim()
+    ? `<div class="section">
+         <h2>Conclusão Técnica</h2>
+         <p class="muted" style="font-size:8pt;margin-top:-4px">Texto padrão configurado em Perfil SESMT &gt; Texto Padrão do PGR.</p>
+         ${renderUserText(d.textoConclusao)}
+       </div>
+       <div class="page-break"></div>`
+    : ""}
 
   <h2>5. Responsabilidade Técnica</h2>
   <p>Este Programa de Gerenciamento de Riscos foi elaborado sob responsabilidade técnica de
