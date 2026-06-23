@@ -712,7 +712,7 @@ export default function AdminPGR() {
               </div>
             </div>
           ))}
-        </section>
+        </section>}
 
         {/* Notas Tecnicas */}
         <section className="bg-white border rounded-xl p-5 space-y-3">
@@ -742,7 +742,7 @@ export default function AdminPGR() {
               Clique em "Visualizar" para exibir a matriz Probabilidade x Severidade com os {doc.inventario.length} fatores cadastrados.
             </p>
           )}
-        </section>}
+        </section>
 
         {/* Inventário de Riscos — MODELO LEGADO (será removido na Sprint 2) */}
         {showLegacy && <section className="bg-amber-50/40 border border-amber-200 rounded-xl p-5 space-y-3">
@@ -901,7 +901,7 @@ export default function AdminPGR() {
               <Button size="icon" variant="ghost" onClick={() => delRow("epc_itens", i)}><X size={14} className="text-rose-600" /></Button>
             </div>
           ))}
-        </section>
+        </section>}
 
         {/* Plano de Acao Psicossocial */}
         <section className="bg-white border rounded-xl p-5 space-y-3">
@@ -976,7 +976,7 @@ export default function AdminPGR() {
               </div>
             </div>
           ))}
-        </section>}
+        </section>
 
         {/* EPI — MODELO LEGADO (será removido na Sprint 2) */}
         {showLegacy && <section className="bg-amber-50/40 border border-amber-200 rounded-xl p-5 space-y-3">
