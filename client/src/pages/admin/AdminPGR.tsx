@@ -156,6 +156,10 @@ export default function AdminPGR() {
   });
   // Modal de escopo do novo PGR: filial específica ou consolidado (todas as filiais).
   const [scopeOpen, setScopeOpen] = useState(false);
+  // Sprint 1.7-A: secoes "Modelo legado" (GSE JSON, Inventario, EPC, EPI) ficam
+  // escondidas por padrao. Toggle no topo do editor permite reexibir caso o
+  // usuario precise visualizar/editar dados gravados antes da migracao.
+  const [showLegacy, setShowLegacy] = useState(false);
   const [scopeMode, setScopeMode] = useState<"branch" | "consolidated">("consolidated");
   const [scopeBranchId, setScopeBranchId] = useState<number | null>(null);
   const branchesQ = trpc.pgr.listBranches.useQuery(
@@ -580,6 +584,23 @@ export default function AdminPGR() {
           <AdminPGRGseManager pgrId={editId as number} companyId={companyId} />
         )}
 
+        {/* Toggle "Mostrar seções antigas" (Sprint 1.7-A). As 4 seções legadas
+            (GSE JSON, Inventário, EPC, EPI) ficam escondidas por padrão pra reduzir
+            ruído visual; quem precisar acessar dados gravados antes da migração
+            ativa este toggle. */}
+        <div className="flex items-center justify-end">
+          <label className="inline-flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={showLegacy}
+              onChange={(e) => setShowLegacy(e.target.checked)}
+              className="accent-amber-600"
+            />
+            Mostrar seções antigas (modelo legado)
+            {!showLegacy && <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded">4 ocultas</span>}
+          </label>
+        </div>
+
         {/* Identificação Contratada */}
         <section className="bg-white border rounded-xl p-5 space-y-3">
           <h2 className="font-semibold text-foreground">Identificação da Empresa (Contratada)</h2>
@@ -655,7 +676,7 @@ export default function AdminPGR() {
         </section>
 
         {/* GSE / Grupos Similares de Exposição — MODELO LEGADO (será removido na Sprint 2) */}
-        <section className="bg-amber-50/40 border border-amber-200 rounded-xl p-5 space-y-3">
+        {showLegacy && <section className="bg-amber-50/40 border border-amber-200 rounded-xl p-5 space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="font-semibold text-foreground flex items-center gap-2">
               Grupos Similares de Exposição (GSE)
@@ -721,10 +742,10 @@ export default function AdminPGR() {
               Clique em "Visualizar" para exibir a matriz Probabilidade x Severidade com os {doc.inventario.length} fatores cadastrados.
             </p>
           )}
-        </section>
+        </section>}
 
         {/* Inventário de Riscos — MODELO LEGADO (será removido na Sprint 2) */}
-        <section className="bg-amber-50/40 border border-amber-200 rounded-xl p-5 space-y-3">
+        {showLegacy && <section className="bg-amber-50/40 border border-amber-200 rounded-xl p-5 space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="font-semibold text-foreground flex items-center gap-2">
               Inventário de Riscos
@@ -858,10 +879,10 @@ export default function AdminPGR() {
               </div>
             </div>
           ))}
-        </section>
+        </section>}
 
         {/* EPC — MODELO LEGADO (será removido na Sprint 2) */}
-        <section className="bg-amber-50/40 border border-amber-200 rounded-xl p-5 space-y-3">
+        {showLegacy && <section className="bg-amber-50/40 border border-amber-200 rounded-xl p-5 space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="font-semibold text-foreground flex items-center gap-2">
               EPC — Equipamentos de Proteção Coletiva
@@ -955,10 +976,10 @@ export default function AdminPGR() {
               </div>
             </div>
           ))}
-        </section>
+        </section>}
 
         {/* EPI — MODELO LEGADO (será removido na Sprint 2) */}
-        <section className="bg-amber-50/40 border border-amber-200 rounded-xl p-5 space-y-3">
+        {showLegacy && <section className="bg-amber-50/40 border border-amber-200 rounded-xl p-5 space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="font-semibold text-foreground flex items-center gap-2">
               EPI — Equipamentos de Proteção Individual
@@ -986,7 +1007,7 @@ export default function AdminPGR() {
               </div>
             </div>
           ))}
-        </section>
+        </section>}
 
         {/* 8.3 Caracterizacao Operacional dos Setores */}
         <section className="bg-white border rounded-xl p-5 space-y-3">
