@@ -862,6 +862,59 @@ function gseGroupsSection(d: PgrData): string {
   ${groupHtml}`;
 }
 
+// ─── Sumário (TOC) ───────────────────────────────────────────────────────────
+// Lista as seções que de fato serão renderizadas, na MESMA ordem do corpo,
+// numerando dinamicamente. Sem números de página (PDF gerado a partir de HTML
+// sem paginação determinística), mas com ancoragem semântica clara.
+function renderSumarioPgr(d: PgrData): string {
+  const usaCustom = !!(d.textoIntroducao && d.textoIntroducao.trim());
+  const items: string[] = [];
+  items.push("Identificação da Empresa");
+  items.push("Regime de Trabalho");
+  items.push("Histórico de Revisões");
+  if (d.gseGroups && d.gseGroups.length > 0) {
+    items.push(`Grupos Similares de Exposição (GSE) — ${d.gseGroups.length} grupo(s)`);
+  }
+  if (usaCustom) {
+    items.push("Introdução");
+    items.push("Inventário de Riscos do PGR");
+  } else {
+    items.push("PARTE I — Disposição Geral");
+    items.push("PARTE II — Antecipação, Reconhecimento e Avaliação dos Riscos");
+    items.push("PARTE III — Avaliação Quantitativa dos Riscos");
+    items.push("PARTE IV — Inventário de Riscos do PGR");
+    items.push("Gestão Operacional do GRO");
+  }
+  if (caracterizacaoSetoresSection(d)) items.push("Caracterização Operacional dos Setores");
+  if (cronogramaSection(d)) items.push("Cronograma Preventivo");
+  if (hierarquiaControleSection(d)) items.push("Hierarquia de Controle");
+  if (naoConformidadesSection(d)) items.push("Não Conformidades");
+  if (treinamentosNrSection(d)) items.push("Treinamentos Obrigatórios por NR");
+  if (d.textoConclusao && d.textoConclusao.trim()) items.push("Conclusão Técnica");
+  items.push("Responsabilidade Técnica");
+
+  const rows = items.map((label, i) => `
+    <tr>
+      <td style="width:8mm;text-align:right;color:${ACCENT};font-weight:700">${i + 1}.</td>
+      <td style="padding-left:4mm">${esc(label)}</td>
+    </tr>`).join("");
+
+  return `
+  <div class="section" style="page-break-inside:avoid">
+    <h2>Sumário</h2>
+    <p class="muted" style="font-size:9pt;margin-top:-4px">
+      Conteúdo do relatório na ordem em que aparece a seguir.
+    </p>
+    <table style="border:none;margin-top:8mm">
+      <colgroup><col style="width:8mm"><col></colgroup>
+      <tbody>${rows}</tbody>
+    </table>
+    <style>
+      .section table tr td { border:none !important; padding:2.5mm 2mm; }
+    </style>
+  </div>`;
+}
+
 export async function generatePGRPDF(d: PgrData): Promise<string> {
   await fs.mkdir(UPLOAD_DIR, { recursive: true });
   const outPath = path.join(UPLOAD_DIR, `pgr_${d.id}.pdf`);
@@ -887,6 +940,9 @@ export async function generatePGRPDF(d: PgrData): Promise<string> {
   </div>
   <div class="page-break"></div>
 
+  ${renderSumarioPgr(d)}
+  <div class="page-break"></div>
+
   <div class="section">${identificacao(d)}</div>
   <div class="page-break"></div>
 
@@ -899,8 +955,7 @@ export async function generatePGRPDF(d: PgrData): Promise<string> {
   ${d.textoIntroducao && d.textoIntroducao.trim()
     ? `<div class="section">
          <h2>1. Introdução</h2>
-         <p class="muted" style="font-size:8pt;margin-top:-4px">Texto padrão configurado em Perfil SESMT &gt; Texto Padrão do PGR.</p>
-         ${renderUserText(d.textoIntroducao)}
+${renderUserText(d.textoIntroducao)}
        </div>
        <div class="page-break"></div>
 
@@ -939,8 +994,7 @@ export async function generatePGRPDF(d: PgrData): Promise<string> {
   ${d.textoConclusao && d.textoConclusao.trim()
     ? `<div class="section">
          <h2>Conclusão Técnica</h2>
-         <p class="muted" style="font-size:8pt;margin-top:-4px">Texto padrão configurado em Perfil SESMT &gt; Texto Padrão do PGR.</p>
-         ${renderUserText(d.textoConclusao)}
+${renderUserText(d.textoConclusao)}
        </div>
        <div class="page-break"></div>`
     : ""}
@@ -963,9 +1017,118 @@ export async function generatePGRPDF(d: PgrData): Promise<string> {
     <div style="text-align:center">${respTec}<br><small class="muted">Responsável Técnico</small></div>
   </div>
 
-  <div class="footer-note">Documento gerado pela plataforma Saúde do Trabalho — ${esc(now.toLocaleDateString("pt-BR"))}</div>
+  <div class="footer-note">Emitido em ${esc(now.toLocaleDateString("pt-BR"))}</div>
   </body></html>`;
 
   await renderPDF(html, outPath);
   return `/uploads/pgr_pdfs/pgr_${d.id}.pdf`;
+}
+
+/**
+ * Sprint 1.7-B item 2 — Concatena os anexos (PDFs e imagens) ao final do PGR.
+ *
+ * Lê o PDF base do disco, adiciona uma página-capa "ANEXOS", e concatena cada
+ * arquivo anexado: PDFs são copiados página-por-página, imagens são embed em
+ * uma nova página A4. Falhas de leitura/parse de um anexo individual NÃO derrubam
+ * o PGR — só pula o arquivo problemático.
+ *
+ * @param pdfDiskPath caminho absoluto do PGR base em disco
+ * @param attachments lista vinda da BD (pgr_attachments) com fileUrl + mimeType + titulo
+ */
+export async function appendPdfAttachments(
+  pdfDiskPath: string,
+  attachments: Array<{ fileUrl: string | null; mimeType: string | null; titulo: string; tipo?: string }>
+): Promise<{ appended: number; skipped: number }> {
+  const valid = attachments.filter(a => !!a.fileUrl);
+  if (valid.length === 0) return { appended: 0, skipped: 0 };
+
+  let PDFLib: any;
+  try {
+    PDFLib = await import("pdf-lib");
+  } catch {
+    console.warn("[pgr_pdf] pdf-lib não instalado; anexos não serão concatenados.");
+    return { appended: 0, skipped: valid.length };
+  }
+  const { PDFDocument, StandardFonts, rgb, PageSizes } = PDFLib;
+
+  const baseBytes = await fs.readFile(pdfDiskPath);
+  const base = await PDFDocument.load(baseBytes);
+  const font = await base.embedFont(StandardFonts.Helvetica);
+  const fontBold = await base.embedFont(StandardFonts.HelveticaBold);
+
+  // Capa "ANEXOS"
+  const cover = base.addPage(PageSizes.A4);
+  const cw = cover.getWidth(), ch = cover.getHeight();
+  cover.drawRectangle({ x: 0, y: ch - 30, width: cw, height: 30, color: rgb(0.118, 0.227, 0.373) }); // PRIMARY
+  cover.drawText("ANEXOS", { x: cw / 2 - 80, y: ch / 2 + 60, size: 48, font: fontBold, color: rgb(0.118, 0.227, 0.373) });
+  cover.drawText(`${valid.length} documento(s) anexado(s) a este PGR`, {
+    x: 70, y: ch / 2 + 20, size: 12, font, color: rgb(0.3, 0.3, 0.3),
+  });
+  let yList = ch / 2 - 30;
+  for (let i = 0; i < valid.length && yList > 60; i++) {
+    const a = valid[i];
+    cover.drawText(`${i + 1}.`, { x: 60, y: yList, size: 11, font: fontBold, color: rgb(0.04, 0.65, 0.91) });
+    cover.drawText(safeAscii(a.titulo).slice(0, 80), { x: 80, y: yList, size: 11, font, color: rgb(0.1, 0.1, 0.1) });
+    if (a.tipo) cover.drawText(`(${safeAscii(a.tipo)})`, { x: 80 + Math.min(a.titulo.length, 80) * 5.5 + 6, y: yList, size: 9, font, color: rgb(0.45, 0.45, 0.45) });
+    yList -= 18;
+  }
+
+  let appended = 0, skipped = 0;
+  for (const a of valid) {
+    try {
+      const localPath = resolveLocalPath(a.fileUrl!);
+      const buf = await fs.readFile(localPath);
+      const mime = (a.mimeType ?? "").toLowerCase();
+      if (mime.includes("pdf") || localPath.toLowerCase().endsWith(".pdf")) {
+        const src = await PDFDocument.load(buf, { ignoreEncryption: true });
+        const pages = await base.copyPages(src, src.getPageIndices());
+        for (const p of pages) base.addPage(p);
+        appended++;
+      } else if (mime.includes("png") || mime.includes("jpg") || mime.includes("jpeg") || /\.(png|jpe?g)$/i.test(localPath)) {
+        const img = (mime.includes("png") || /\.png$/i.test(localPath))
+          ? await base.embedPng(buf)
+          : await base.embedJpg(buf);
+        const page = base.addPage(PageSizes.A4);
+        const W = page.getWidth(), H = page.getHeight();
+        const margin = 36;
+        const maxW = W - 2 * margin, maxH = H - 2 * margin - 40;
+        const scale = Math.min(maxW / img.width, maxH / img.height, 1);
+        const w = img.width * scale, h = img.height * scale;
+        page.drawText(safeAscii(a.titulo).slice(0, 90), {
+          x: margin, y: H - margin, size: 10, font: fontBold, color: rgb(0.118, 0.227, 0.373),
+        });
+        page.drawImage(img, { x: (W - w) / 2, y: (H - h) / 2 - 10, width: w, height: h });
+        appended++;
+      } else {
+        skipped++;
+      }
+    } catch (err: any) {
+      console.warn(`[pgr_pdf] anexo "${a.titulo}" falhou:`, err?.message ?? err);
+      skipped++;
+    }
+  }
+
+  const out = await base.save();
+  await fs.writeFile(pdfDiskPath, out);
+  return { appended, skipped };
+}
+
+// pdf-lib WinAnsi não suporta vários caracteres unicode (acentos exóticos, emojis).
+// Reduz para ASCII tolerável; aspectos visuais bonitos ficam no HTML do PGR principal.
+function safeAscii(s: string): string {
+  return (s || "")
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .replace(/[^\x20-\x7E]/g, "?");
+}
+
+function resolveLocalPath(fileUrl: string): string {
+  if (fileUrl.startsWith("/")) return path.join("/var/www/saudedotrabalho", fileUrl);
+  if (/^https?:\/\//.test(fileUrl)) {
+    // URLs externas não suportadas — tenta extrair pathname assumindo mesma origem
+    try {
+      const u = new URL(fileUrl);
+      return path.join("/var/www/saudedotrabalho", u.pathname);
+    } catch { return fileUrl; }
+  }
+  return path.join("/var/www/saudedotrabalho", fileUrl);
 }

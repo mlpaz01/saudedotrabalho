@@ -328,7 +328,60 @@ function GseEditorDialog({
     setRiscosMut.isPending || setEpcMut.isPending || setEpiMut.isPending ||
     setAcoesMut.isPending || setEvidMut.isPending || setTreinMut.isPending;
 
+  // Sprint 1.7-B item 3 — Sugestão por IA: chama pgr.gse.aiSuggest e pré-popula
+  // (apenas APPEND nos arrays existentes — nada é apagado). Usuário revisa e Salva tudo.
+  const aiMut = trpc.pgr.gse.aiSuggest.useMutation({
+    onSuccess: (data: any) => {
+      setRiscos(prev => [...prev, ...(data.riscos ?? [])]);
+      setEpc(prev => [...prev, ...(data.epc ?? [])]);
+      setEpi(prev => [...prev, ...(data.epi ?? [])]);
+      setAcoes(prev => [...prev, ...(data.acoes ?? [])]);
+      setTreinamentos(prev => [...prev, ...(data.treinamentos ?? [])]);
+      const total = (data.riscos?.length ?? 0) + (data.epc?.length ?? 0) + (data.epi?.length ?? 0) + (data.acoes?.length ?? 0) + (data.treinamentos?.length ?? 0);
+      toast.success(`IA sugeriu ${total} itens. Revise e clique em "Salvar tudo".`);
+    },
+    onError: (e: any) => toast.error(e.message ?? "Falha na IA"),
+  });
+
+  // Sprint 2 item 37 — Validações soft do GSE.
+  // Critérios duros (bloqueiam): nome obrigatório, soma H+M não pode ultrapassar
+  // total, ações 5W2H devem ter data de início.
+  // Critérios soft (warning, mas salva): sem cargo, sem risco, sem EPI,
+  // soma H+M ≠ total (diferença não fatal).
+  function validateGse(): { hardErrors: string[]; softWarnings: string[] } {
+    const hardErrors: string[] = [];
+    const softWarnings: string[] = [];
+    if (!meta.nome.trim()) hardErrors.push("Nome do GSE é obrigatório.");
+    if (meta.numHomens + meta.numMulheres > meta.numTrabalhadores) {
+      hardErrors.push(`Soma de homens (${meta.numHomens}) + mulheres (${meta.numMulheres}) supera o total de trabalhadores (${meta.numTrabalhadores}).`);
+    }
+    const acoesInvalidas = acoes.filter((a: any) => !a.whenStart);
+    if (acoesInvalidas.length) hardErrors.push(`${acoesInvalidas.length} ação(ões) 5W2H sem data de início.`);
+    const acoesDatasInv = acoes.filter((a: any) => a.whenStart && a.whenEnd && a.whenEnd < a.whenStart);
+    if (acoesDatasInv.length) hardErrors.push(`${acoesDatasInv.length} ação(ões) com data final anterior à inicial.`);
+
+    if (cargos.length === 0) softWarnings.push("Nenhum cargo informado.");
+    if (riscos.length === 0) softWarnings.push("Nenhum risco cadastrado.");
+    if (epi.length === 0 && riscos.length > 0) softWarnings.push("Riscos cadastrados sem EPIs correspondentes.");
+    if (acoes.length === 0 && riscos.length > 0) softWarnings.push("Nenhum plano de ação (5W2H) para os riscos identificados.");
+    if (meta.numTrabalhadores > 0 && meta.numHomens + meta.numMulheres !== meta.numTrabalhadores) {
+      softWarnings.push(`Soma H+M (${meta.numHomens + meta.numMulheres}) ≠ total (${meta.numTrabalhadores}).`);
+    }
+    return { hardErrors, softWarnings };
+  }
+
   async function saveAll() {
+    const { hardErrors, softWarnings } = validateGse();
+    if (hardErrors.length) {
+      toast.error(`Não foi possível salvar:\n• ${hardErrors.join("\n• ")}`, { duration: 7000 });
+      return;
+    }
+    if (softWarnings.length) {
+      const ok = confirm(
+        `Avisos antes de salvar:\n\n• ${softWarnings.join("\n• ")}\n\nDeseja salvar mesmo assim?`
+      );
+      if (!ok) return;
+    }
     try {
       await updateMut.mutateAsync({ id: gseId, ...meta });
       await setCargosMut.mutateAsync({ gseId, cargos });
@@ -359,21 +412,49 @@ function GseEditorDialog({
 
   return (
     <Dialog open={true} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2"><Layers size={16} /> Editar GSE</DialogTitle>
-          <DialogDescription className="text-xs">
-            Estado local; clique "Salvar tudo" para gravar todas as abas de uma vez.
-          </DialogDescription>
+      <DialogContent
+        className="!w-screen !h-screen !max-w-none !max-h-none !rounded-none !border-0 !p-0 flex flex-col gap-0 inset-0 translate-x-0 translate-y-0 top-0 left-0 right-0 bottom-0 overflow-hidden"
+        style={{ width: "100vw", height: "100vh", maxWidth: "100vw", maxHeight: "100vh" }}
+      >
+        <DialogHeader className="border-b bg-slate-50/80 px-6 py-3 shrink-0">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex-1 min-w-0">
+              <DialogTitle className="flex items-center gap-2 text-base">
+                <Layers size={18} className="text-blue-600" />
+                Editar Grupo Similar de Exposição (GSE)
+                {meta.nome ? <span className="text-slate-500 font-normal truncate"> — {meta.nome}</span> : null}
+              </DialogTitle>
+              <DialogDescription className="text-xs">
+                Tela cheia para edição completa do GSE. Use as abas abaixo. Tudo é salvo de uma vez ao clicar em "Salvar tudo".
+              </DialogDescription>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                if (!meta.nome.trim() && cargos.length === 0) {
+                  toast.error("Informe ao menos o nome ou os cargos do GSE antes de pedir sugestão à IA.");
+                  return;
+                }
+                aiMut.mutate({ gseId });
+              }}
+              disabled={aiMut.isPending}
+              className="gap-1 border-purple-300 text-purple-700 hover:bg-purple-50 shrink-0"
+              title="Usa GROQ/Llama 3.3 para sugerir riscos, EPC, EPI, ações 5W2H e treinamentos NR com base no nome/cargos/setores do GSE. Os itens são adicionados (não apagam o que já existe). Revise antes de salvar."
+            >
+              {aiMut.isPending ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+              {aiMut.isPending ? "Pensando…" : "Sugerir com IA"}
+            </Button>
+          </div>
         </DialogHeader>
 
         {detailQ.isLoading ? (
-          <div className="p-8 text-center"><Loader2 className="animate-spin inline" /></div>
+          <div className="p-8 text-center flex-1 flex items-center justify-center"><Loader2 className="animate-spin inline" /></div>
         ) : (
           <>
             {/* Cabeçalho (meta do GSE) */}
-            <div className="border-b pb-3 space-y-2">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <div className="border-b bg-white px-6 py-3 space-y-2 shrink-0">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
                   <Label className="text-xs">Nome *</Label>
                   <Input value={meta.nome} onChange={e => setMeta(m => ({ ...m, nome: e.target.value }))} />
@@ -383,7 +464,7 @@ function GseEditorDialog({
                   <Input value={meta.descricao} onChange={e => setMeta(m => ({ ...m, descricao: e.target.value }))} />
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-3 gap-3 max-w-2xl">
                 <div>
                   <Label className="text-xs">Trabalhadores</Label>
                   <Input type="number" min={0} value={meta.numTrabalhadores}
@@ -403,7 +484,7 @@ function GseEditorDialog({
             </div>
 
             {/* Abas */}
-            <div className="flex gap-1 border-b -mx-6 px-6 overflow-x-auto">
+            <div className="flex gap-1 border-b bg-white px-6 overflow-x-auto shrink-0">
               {TABS.map(t => {
                 const Ic = t.icon;
                 return (
@@ -416,18 +497,20 @@ function GseEditorDialog({
               })}
             </div>
 
-            <div className="flex-1 overflow-y-auto pt-3 pb-2">
-              {tab === "cargos" && <CargosTab cargos={cargos} setCargos={setCargos} />}
-              {tab === "setores" && <SetoresTab setores={setores} setSetores={setSetores} allSectors={allSectors} />}
-              {tab === "riscos" && <RiscosTab riscos={riscos} setRiscos={setRiscos} />}
-              {tab === "epc" && <EpcEpiTab items={epc} setItems={setEpc} isEpi={false} />}
-              {tab === "epi" && <EpcEpiTab items={epi} setItems={setEpi} isEpi={true} />}
-              {tab === "acoes" && <AcoesTab acoes={acoes} setAcoes={setAcoes} />}
-              {tab === "evidencias" && <EvidenciasTab items={evidencias} setItems={setEvidencias} />}
-              {tab === "treinamentos" && <TreinamentosTab items={treinamentos} setItems={setTreinamentos} />}
+            <div className="flex-1 overflow-y-auto px-6 py-4 bg-slate-50/30">
+              <div className="max-w-6xl mx-auto">
+                {tab === "cargos" && <CargosTab cargos={cargos} setCargos={setCargos} />}
+                {tab === "setores" && <SetoresTab setores={setores} setSetores={setSetores} allSectors={allSectors} />}
+                {tab === "riscos" && <RiscosTab riscos={riscos} setRiscos={setRiscos} />}
+                {tab === "epc" && <EpcEpiTab items={epc} setItems={setEpc} isEpi={false} />}
+                {tab === "epi" && <EpcEpiTab items={epi} setItems={setEpi} isEpi={true} />}
+                {tab === "acoes" && <AcoesTab acoes={acoes} setAcoes={setAcoes} />}
+                {tab === "evidencias" && <EvidenciasTab items={evidencias} setItems={setEvidencias} />}
+                {tab === "treinamentos" && <TreinamentosTab items={treinamentos} setItems={setTreinamentos} />}
+              </div>
             </div>
 
-            <DialogFooter className="border-t pt-2 -mx-6 px-6">
+            <DialogFooter className="border-t bg-white px-6 py-3 shrink-0">
               <Button variant="outline" onClick={onClose}>Fechar sem salvar</Button>
               <Button onClick={saveAll} disabled={allPending} className="gap-1">
                 {allPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}

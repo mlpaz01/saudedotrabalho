@@ -368,7 +368,7 @@ export async function generateRiskLaudoPDF(
     <tr><td>Período</td><td>${esc(fmtDate(sg.assessment.startDate || a.startDate))} a ${esc(fmtDate(sg.assessment.endDate || a.endDate))}</td></tr>
     <tr><td>Respostas DRPS</td><td>${sg.assessment.drpsResponses}</td></tr>
     <tr><td>Respostas AEP</td><td>${sg.assessment.aepResponses}</td></tr>
-    <tr><td>Responsável técnico</td><td>${esc(a.responsibleTechnician || "[Responsável técnico não cadastrado]")}</td></tr>
+    <tr><td>Responsável técnico</td><td>${esc(a.responsibleTechnician || "—")}</td></tr>
   </table>`).join("")}
   ` : `
   <table>
@@ -381,7 +381,7 @@ export async function generateRiskLaudoPDF(
     <tr><td>Período</td><td>${esc(fmtDate(a.startDate))} a ${esc(fmtDate(a.endDate))}</td></tr>
     <tr><td>Respostas DRPS</td><td>${a.drpsResponses}</td></tr>
     <tr><td>Respostas AEP</td><td>${a.aepResponses}</td></tr>
-    <tr><td>Responsável técnico</td><td>${esc(a.responsibleTechnician || "[Responsável técnico não cadastrado]")}</td></tr>
+    <tr><td>Responsável técnico</td><td>${esc(a.responsibleTechnician || "—")}</td></tr>
   </table>`}
 
   <h2>8. Principais Fatores Psicossociais Identificados</h2>
@@ -495,25 +495,20 @@ export async function generateRiskLaudoPDF(
   maturidade em saúde mental no trabalho e atender plenamente às exigências legais vigentes.</p>
 
   <h2>17. Responsabilidade Técnica</h2>
-  ${!a.responsibleTechnician ? `<div style="background:#fef2f2;border:2px solid #b91c1c;color:#7f1d1d;padding:10px 14px;border-radius:6px;margin:8px 0;font-size:10pt;">
-    <b>⚠ DOCUMENTO SEM RESPONSÁVEL TÉCNICO CADASTRADO.</b> Este laudo NÃO está formalmente assinado por
-    profissional habilitado. Cadastre o Responsável Técnico em <b>PGR &gt; Responsáveis Técnicos</b> e
-    regenere o documento antes de qualquer apresentação oficial (auditoria, fiscalização, cliente).
-  </div>` : ""}
   <p>Este laudo foi elaborado sob responsabilidade técnica de
-  <b>${esc(a.responsibleTechnician || "[Responsável técnico não cadastrado]")}</b>,
+  <b>${esc(a.responsibleTechnician || "—")}</b>,
   profissional habilitada conforme legislação vigente, em conformidade com as disposições da NR-01 (Portaria MTP nº 1.419/2024) e da ISO 45003:2021.</p>
   <table>
     <tr><th style="width:35%">Item</th><th>Dados do Responsável Técnico</th></tr>
-    <tr><td>Nome</td><td><b>${esc(a.responsibleTechnician || "[Responsável técnico não cadastrado]")}</b></td></tr>
-    <tr><td>Profissão / Registro</td><td>${esc(a.responsibleRegistration || (a.responsibleTechnician ? "—" : "[não cadastrado]"))}</td></tr>
+    <tr><td>Nome</td><td><b>${esc(a.responsibleTechnician || "—")}</b></td></tr>
+    <tr><td>Profissão / Registro</td><td>${esc(a.responsibleRegistration || "—")}</td></tr>
     ${a.responsibleProfession ? `<tr><td>Especialidade</td><td>${esc(a.responsibleProfession)}</td></tr>` : ""}
     ${a.responsibleArt ? `<tr><td>ART / RRT</td><td>${esc(a.responsibleArt)}</td></tr>` : ""}
     <tr><td>Data de emissão</td><td>${esc(mesAno)}</td></tr>
   </table>
   <div class="signature">
     ${a.responsibleSignatureUrl ? `<img src="${esc(a.responsibleSignatureUrl)}" alt="Assinatura" style="max-height:60px;display:block;margin:0 auto 8px;">` : '<div class="line"></div>'}
-    <div style="text-align:center">${esc(a.responsibleTechnician || "[Responsável técnico não cadastrado]")}<br>
+    <div style="text-align:center">${esc(a.responsibleTechnician || "—")}<br>
     <small class="muted">Responsável Técnica</small></div>
   </div>
 
@@ -531,7 +526,7 @@ export async function generateRiskLaudoPDF(
   COX, T.; GRIFFITHS, A. (1995). The assessment of psychosocial hazards at work.<br>
   CFP. Resolução nº 010/2000. Brasília: Conselho Federal de Psicologia.</p>
 
-  <div class="footer-note">Documento gerado pela plataforma Saúde do Trabalho — ${esc(now.toLocaleDateString("pt-BR"))} | Ciclo: ${esc(a.cycleName)}</div>
+  <div class="footer-note">Emitido em ${esc(now.toLocaleDateString("pt-BR"))} — Ciclo: ${esc(a.cycleName)}</div>
   </body></html>`;
 
   await renderPDF(html, outPath);
@@ -589,7 +584,7 @@ export async function generateInventoryPDF(
     ${rows}
   </table>
   <p><small class="muted">Escala DRPS: 0 (sem risco) a 4 (risco extremo) — média ponderada por fator.</small></p>
-  <div class="footer-note">${esc(a.responsibleTechnician || "[Responsável técnico não cadastrado]")} • Plataforma Saúde do Trabalho</div>
+  <div class="footer-note">${esc(a.responsibleTechnician || "—")}</div>
   </body></html>`;
 
   await renderPDF(html, outPath);
@@ -639,7 +634,7 @@ export async function generateCronogramaPDF(
     ${rows}
   </table>`}
   <p><small class="muted">Marcadores verdes indicam meses programados para execução do programa preventivo.</small></p>
-  <div class="footer-note">${esc(a.responsibleTechnician || "[Responsável técnico não cadastrado]")} • Plataforma Saúde do Trabalho</div>
+  <div class="footer-note">${esc(a.responsibleTechnician || "—")}</div>
   </body></html>`;
 
   await renderPDF(html, outPath);
@@ -835,11 +830,11 @@ export async function generateAEPLaudoPDF(
 
   <h2>9. Responsabilidade Técnica e Assinatura</h2>
   <p>Esta análise foi elaborada sob responsabilidade técnica de
-  <b>${esc(a.responsibleTechnician || "[Responsável técnico não cadastrado]")}</b>, profissional habilitada conforme
+  <b>${esc(a.responsibleTechnician || "—")}</b>, profissional habilitada conforme
   legislação vigente.</p>
   <div class="signature">
     <div class="line"></div>
-    <div style="text-align:center">${esc(a.responsibleTechnician || "[Responsável técnico não cadastrado]")}<br>
+    <div style="text-align:center">${esc(a.responsibleTechnician || "—")}<br>
     <small class="muted">Responsável Técnica</small></div>
   </div>
 
@@ -848,7 +843,7 @@ export async function generateAEPLaudoPDF(
   BRASIL. Portaria MTP nº 1.419/2024. NR-01.<br>
   ISO 45003:2021 — Occupational health and safety management — Psychological health and safety at work.</p>
 
-  <div class="footer-note">Documento gerado pela plataforma Saúde do Trabalho — ${esc(now.toLocaleDateString("pt-BR"))}</div>
+  <div class="footer-note">Emitido em ${esc(now.toLocaleDateString("pt-BR"))}</div>
   </body></html>`;
 
   await renderPDF(html, outPath);

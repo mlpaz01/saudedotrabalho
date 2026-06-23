@@ -8,7 +8,7 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import {
   FileText, Image as ImageIcon, Video, Megaphone, BookOpen, BarChart3, FileQuestion,
   Trash2, Upload, CalendarDays, Plus, ChevronDown, ChevronRight, Pencil, Sparkles, ClipboardList, Brain,
-  Globe, Lock,
+  Globe, Lock, Copy, Send, Loader2,
 } from "lucide-react";
 
 const MONTH_NAMES = [
@@ -62,6 +62,7 @@ export default function AdminBibliotecaPreventiva() {
   const [openCampaignId, setOpenCampaignId] = useState<number | null>(null);
   const [showNewCampaign, setShowNewCampaign] = useState<number | null>(null);
   const [editingCampaign, setEditingCampaign] = useState<any>(null);
+  const [blastCampaign, setBlastCampaign] = useState<any>(null);
 
   const campaignsQ = trpc.preventiveLibrary.listCampaigns.useQuery();
   const summaryQ = trpc.preventiveLibrary.listCampaignSummary.useQuery();
@@ -78,6 +79,23 @@ export default function AdminBibliotecaPreventiva() {
   const deleteMut = trpc.preventiveLibrary.deleteCampaign.useMutation({
     onSuccess: () => { toast.success("Campanha arquivada."); campaignsQ.refetch(); },
     onError: (e: any) => toast.error(e?.message ?? "Erro"),
+  });
+  // Sprint 2 item 31 — Clonagem de Template
+  const cloneMut = trpc.preventiveLibrary.cloneFromTemplate.useMutation({
+    onSuccess: (r: any) => {
+      if (r.alreadyExists) toast.info("Você já clonou este template antes — abra a versão da sua empresa.");
+      else toast.success(`Clonado: ${r.materialsCloned} materiais + ${r.linksCloned} links copiados.`);
+      campaignsQ.refetch(); summaryQ.refetch();
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao clonar"),
+  });
+  // Sprint 2 item 23 — Disparar Campanha
+  const blastMut = trpc.preventiveLibrary.sendCampaignBlast.useMutation({
+    onSuccess: (r: any) => {
+      if (r.warning) toast.info(r.warning);
+      else toast.success(`Disparada: ${r.notified} notificação(ões) + ${r.emailsSent} e-mail(s) enviado(s)${r.emailsFailed ? ` (${r.emailsFailed} falharam)` : ""}.`);
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao disparar"),
   });
 
   const campaigns = (campaignsQ.data ?? []) as any[];
@@ -166,6 +184,35 @@ export default function AdminBibliotecaPreventiva() {
                               {c.theme && <div className="text-xs text-muted-foreground">{c.theme}</div>}
                             </div>
                             <span className="text-xs text-muted-foreground shrink-0">{sf.total} material(is)</span>
+                            {/* Sprint 2 item 31 — Clone (apenas para templates, e apenas se não-superadmin) */}
+                            {isTemplate && !isGlobal && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (confirm(`Clonar "${c.name}" para a sua empresa? Você poderá editar a cópia sem afetar o template.`)) {
+                                    cloneMut.mutate({ templateId: c.id });
+                                  }
+                                }}
+                                disabled={cloneMut.isPending}
+                                className="p-1 text-indigo-500 hover:text-indigo-700"
+                                title="Clonar template para sua empresa"
+                              >
+                                {cloneMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <Copy size={13} />}
+                              </button>
+                            )}
+                            {/* Sprint 2 item 23 — Disparar Campanha (somente em campanhas próprias, não templates) */}
+                            {!isTemplate && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setBlastCampaign(c);
+                                }}
+                                className="p-1 text-emerald-600 hover:text-emerald-800"
+                                title="Disparar campanha (notificação ou e-mail aos colaboradores)"
+                              >
+                                <Send size={13} />
+                              </button>
+                            )}
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -222,7 +269,81 @@ export default function AdminBibliotecaPreventiva() {
           })}
         </div>
       </div>
+
+      {/* Sprint 2 item 23 — Modal de disparo */}
+      {blastCampaign && (
+        <BlastDialog
+          campaign={blastCampaign}
+          loading={blastMut.isPending}
+          onClose={() => setBlastCampaign(null)}
+          onConfirm={(payload) => {
+            blastMut.mutate({ campaignId: blastCampaign.id, ...payload }, {
+              onSettled: () => setBlastCampaign(null),
+            });
+          }}
+        />
+      )}
     </AppLayout>
+  );
+}
+
+function BlastDialog({ campaign, loading, onClose, onConfirm }: any) {
+  const [audience, setAudience] = useState<"todos" | "sesmt_rh" | "managers">("todos");
+  const [method, setMethod] = useState<"notification" | "email" | "both">("notification");
+  const [customMessage, setCustomMessage] = useState("");
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-lg shadow-xl max-w-lg w-full p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
+        <div>
+          <h3 className="text-lg font-semibold flex items-center gap-2">
+            <Send size={18} className="text-emerald-600" /> Disparar campanha
+          </h3>
+          <p className="text-xs text-muted-foreground mt-1">
+            "{campaign.name}" será comunicada aos colaboradores da sua empresa.
+          </p>
+        </div>
+
+        <div>
+          <label className="text-xs font-semibold text-slate-700">Audiência</label>
+          <select className="w-full mt-1 border rounded-md px-2 py-1.5 text-sm" value={audience} onChange={(e) => setAudience(e.target.value as any)}>
+            <option value="todos">Todos os colaboradores ativos</option>
+            <option value="sesmt_rh">Apenas SESMT + RH + Admin</option>
+            <option value="managers">Apenas líderes/gestores</option>
+          </select>
+        </div>
+
+        <div>
+          <label className="text-xs font-semibold text-slate-700">Canal</label>
+          <select className="w-full mt-1 border rounded-md px-2 py-1.5 text-sm" value={method} onChange={(e) => setMethod(e.target.value as any)}>
+            <option value="notification">Notificação no sino (na plataforma)</option>
+            <option value="email">E-mail</option>
+            <option value="both">Notificação + E-mail</option>
+          </select>
+        </div>
+
+        <div>
+          <label className="text-xs font-semibold text-slate-700">Mensagem personalizada (opcional)</label>
+          <textarea
+            className="w-full mt-1 border rounded-md px-2 py-1.5 text-sm min-h-[70px]"
+            placeholder={campaign.description || "Use a descrição da campanha"}
+            value={customMessage}
+            onChange={(e) => setCustomMessage(e.target.value)}
+          />
+        </div>
+
+        <div className="flex justify-end gap-2 pt-2 border-t">
+          <button onClick={onClose} disabled={loading} className="px-3 py-1.5 text-sm border rounded-md hover:bg-slate-50">Cancelar</button>
+          <button
+            onClick={() => onConfirm({ audience, method, customMessage: customMessage.trim() || undefined })}
+            disabled={loading}
+            className="px-4 py-1.5 text-sm bg-emerald-600 text-white rounded-md hover:bg-emerald-700 flex items-center gap-1 disabled:opacity-60"
+          >
+            {loading ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+            {loading ? "Disparando..." : "Disparar"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

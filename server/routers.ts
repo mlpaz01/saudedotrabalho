@@ -1869,11 +1869,15 @@ async function loadAssessmentForPDF(db: any, assessmentId: number, companyId: nu
   // mesmo com a Marise registrada via UI de Responsáveis Técnicos.
   let rtFallback: any = null;
   if (!ra.responsible_technician) {
+    // Prefere o RT marcado como default do PSICOSSOCIAL (este loader é para
+    // generateRiskLaudoPDF — laudo psicossocial). Cai pra is_default genérico
+    // se nenhum marcado por tipo. Sprint 1.7-B item 5: 3 flags independentes.
     const rtR: any = await db.execute(drzSql`
       SELECT name, registration, profession, art, signature_url
       FROM responsible_technicians
-      WHERE company_id=${ra.company_id} AND is_default=1
-      ORDER BY id DESC LIMIT 1`);
+      WHERE company_id=${ra.company_id}
+        AND (is_default_psicossocial=1 OR is_default=1)
+      ORDER BY is_default_psicossocial DESC, is_default DESC, id DESC LIMIT 1`);
     rtFallback = (rtR as any)[0]?.[0] ?? null;
   }
   // String "Nome — Registro" usada no campo livre responsibleTechnician existente
@@ -2090,11 +2094,13 @@ async function loadAEPForPDF(db: any, assessmentId: number, companyId: number) {
   // Mesmo fallback de RT do laudo psicossocial (ver loadAssessmentForPDF).
   let rtFallback: any = null;
   if (!ra.responsible_technician) {
+    // loadAEPForPDF — prefere o RT marcado como default da AEP.
     const rtR: any = await db.execute(drzSql`
       SELECT name, registration, profession, art, signature_url
       FROM responsible_technicians
-      WHERE company_id=${ra.company_id} AND is_default=1
-      ORDER BY id DESC LIMIT 1`);
+      WHERE company_id=${ra.company_id}
+        AND (is_default_aep=1 OR is_default=1)
+      ORDER BY is_default_aep DESC, is_default DESC, id DESC LIMIT 1`);
     rtFallback = (rtR as any)[0]?.[0] ?? null;
   }
   const rtName = ra.responsible_technician
@@ -2961,6 +2967,17 @@ export const appRouter = router({
 
 
         if (!user) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Usuário não encontrado." });
+
+        // Sprint 2 item 24 — Janela de acesso por empresa.
+        // Super admin / admin_global passam sempre. Para os demais, valida regras
+        // configuradas em company_access_hours. Sem regras = sem restrição.
+        if (user.role !== "super_admin" && user.role !== "admin_global") {
+          const { isCompanyAccessAllowed } = await import("./_core/business_hours");
+          const chk = await isCompanyAccessAllowed((user as any).companyId);
+          if (!chk.allowed) {
+            throw new TRPCError({ code: "FORBIDDEN", message: chk.message ?? "Acesso fora do expediente autorizado." });
+          }
+        }
 
 
 
@@ -12234,27 +12251,72 @@ ${link}
 
 
 
-
-
-
-
         return { ok: true };
-
-
-
-
 
 
 
 
       }),
 
+    // ─── Sprint 2 item 24 — Janela de acesso por empresa ──────────────────
+    listCompanyAccessHours: superAdminProcedure
+      .input(z.object({ companyId: z.number().int() }))
+      .query(async ({ input }) => {
+        const { ensureBusinessHoursTable } = await import("./_core/business_hours");
+        await ensureBusinessHoursTable();
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const r: any = await db.execute(drzSql`
+          SELECT weekday, hour_start, hour_end, enabled
+          FROM company_access_hours WHERE company_id=${input.companyId}
+          ORDER BY weekday`);
+        const rows: any[] = (r as any)[0] ?? [];
+        const map = new Map<number, any>();
+        for (const x of rows) map.set(Number(x.weekday), x);
+        const out: Array<{ weekday: number; hourStart: number; hourEnd: number; enabled: boolean }> = [];
+        for (let i = 0; i < 7; i++) {
+          const r = map.get(i);
+          if (r) out.push({ weekday: i, hourStart: Number(r.hour_start), hourEnd: Number(r.hour_end), enabled: !!Number(r.enabled) });
+          else out.push({ weekday: i, hourStart: 8, hourEnd: 18, enabled: false });
+        }
+        return { rows: out, hasRules: rows.length > 0 };
+      }),
 
+    saveCompanyAccessHours: superAdminProcedure
+      .input(z.object({
+        companyId: z.number().int(),
+        days: z.array(z.object({
+          weekday: z.number().int().min(0).max(6),
+          hourStart: z.number().int().min(0).max(23),
+          hourEnd: z.number().int().min(1).max(24),
+          enabled: z.boolean(),
+        })).length(7),
+      }))
+      .mutation(async ({ input }) => {
+        const { ensureBusinessHoursTable } = await import("./_core/business_hours");
+        await ensureBusinessHoursTable();
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        for (const d of input.days) {
+          if (d.hourEnd <= d.hourStart) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: `Dia ${d.weekday}: hora final deve ser maior que a inicial.` });
+          }
+          await db.execute(drzSql`
+            INSERT INTO company_access_hours (company_id, weekday, hour_start, hour_end, enabled)
+            VALUES (${input.companyId}, ${d.weekday}, ${d.hourStart}, ${d.hourEnd}, ${d.enabled ? 1 : 0})
+            ON DUPLICATE KEY UPDATE hour_start=VALUES(hour_start), hour_end=VALUES(hour_end), enabled=VALUES(enabled)`);
+        }
+        return { ok: true };
+      }),
 
-
-
-
-
+    clearCompanyAccessHours: superAdminProcedure
+      .input(z.object({ companyId: z.number().int() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await db.execute(drzSql`DELETE FROM company_access_hours WHERE company_id=${input.companyId}`);
+        return { ok: true };
+      }),
 
   }),
 
@@ -17841,7 +17903,7 @@ Return only the JSON content object (no wrapper). Format per type:
         const cid = isGlobal ? (input?.companyId ?? null) : ((ctx.user as any).companyId ?? null);
         const db = await getDb();
         if (!db || !cid) return [];
-        const r: any = await db.execute(drzSql`SELECT id, name, registration, profession, art, signature_url, is_default FROM responsible_technicians WHERE company_id=${cid} ORDER BY is_default DESC, id ASC`);
+        const r: any = await db.execute(drzSql`SELECT id, name, registration, profession, art, signature_url, is_default, is_default_pgr, is_default_psicossocial, is_default_aep FROM responsible_technicians WHERE company_id=${cid} ORDER BY is_default DESC, id ASC`);
         const rows: any[] = (r as any)[0] ?? [];
         return rows.map((x: any) => ({
           id: Number(x.id),
@@ -17851,6 +17913,9 @@ Return only the JSON content object (no wrapper). Format per type:
           art: x.art ?? null,
           signatureUrl: x.signature_url ?? null,
           isDefault: !!x.is_default,
+          isDefaultPgr: !!x.is_default_pgr,
+          isDefaultPsicossocial: !!x.is_default_psicossocial,
+          isDefaultAep: !!x.is_default_aep,
         }));
       }),
 
@@ -17863,6 +17928,9 @@ Return only the JSON content object (no wrapper). Format per type:
         art: z.string().nullable().optional(),
         signatureBase64: z.string().optional(),
         isDefault: z.boolean().default(false),
+        isDefaultPgr: z.boolean().default(false),
+        isDefaultPsicossocial: z.boolean().default(false),
+        isDefaultAep: z.boolean().default(false),
       }))
       .mutation(async ({ ctx, input }) => {
         const role = (ctx.user as any).role;
@@ -17872,8 +17940,15 @@ Return only the JSON content object (no wrapper). Format per type:
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
         const signatureUrl = await saveSignatureFile(cid, input.signatureBase64);
-        if (input.isDefault) await db.execute(drzSql`UPDATE responsible_technicians SET is_default=0 WHERE company_id=${cid}`);
-        const res: any = await db.execute(drzSql`INSERT INTO responsible_technicians (company_id, name, registration, profession, art, signature_url, is_default) VALUES (${cid}, ${input.name}, ${input.registration ?? null}, ${input.profession ?? null}, ${input.art ?? null}, ${signatureUrl}, ${input.isDefault ? 1 : 0})`);
+        // Cada flag default é única por empresa por tipo de documento.
+        if (input.isDefault)             await db.execute(drzSql`UPDATE responsible_technicians SET is_default=0 WHERE company_id=${cid}`);
+        if (input.isDefaultPgr)          await db.execute(drzSql`UPDATE responsible_technicians SET is_default_pgr=0 WHERE company_id=${cid}`);
+        if (input.isDefaultPsicossocial) await db.execute(drzSql`UPDATE responsible_technicians SET is_default_psicossocial=0 WHERE company_id=${cid}`);
+        if (input.isDefaultAep)          await db.execute(drzSql`UPDATE responsible_technicians SET is_default_aep=0 WHERE company_id=${cid}`);
+        const res: any = await db.execute(drzSql`INSERT INTO responsible_technicians
+          (company_id, name, registration, profession, art, signature_url, is_default, is_default_pgr, is_default_psicossocial, is_default_aep)
+          VALUES (${cid}, ${input.name}, ${input.registration ?? null}, ${input.profession ?? null}, ${input.art ?? null}, ${signatureUrl},
+            ${input.isDefault ? 1 : 0}, ${input.isDefaultPgr ? 1 : 0}, ${input.isDefaultPsicossocial ? 1 : 0}, ${input.isDefaultAep ? 1 : 0})`);
         return { ok: true, id: Number((res as any)[0]?.insertId ?? 0), signatureUrl };
       }),
 
@@ -17886,6 +17961,9 @@ Return only the JSON content object (no wrapper). Format per type:
         art: z.string().nullable().optional(),
         signatureBase64: z.string().optional(),
         isDefault: z.boolean().default(false),
+        isDefaultPgr: z.boolean().default(false),
+        isDefaultPsicossocial: z.boolean().default(false),
+        isDefaultAep: z.boolean().default(false),
       }))
       .mutation(async ({ ctx, input }) => {
         const role = (ctx.user as any).role;
@@ -17897,12 +17975,29 @@ Return only the JSON content object (no wrapper). Format per type:
         if (!rec) throw new TRPCError({ code: "NOT_FOUND" });
         const cid = Number(rec.company_id);
         if (!isGlobal && cid !== Number((ctx.user as any).companyId)) throw new TRPCError({ code: "FORBIDDEN" });
-        if (input.isDefault) await db.execute(drzSql`UPDATE responsible_technicians SET is_default=0 WHERE company_id=${cid}`);
+        if (input.isDefault)             await db.execute(drzSql`UPDATE responsible_technicians SET is_default=0 WHERE company_id=${cid}`);
+        if (input.isDefaultPgr)          await db.execute(drzSql`UPDATE responsible_technicians SET is_default_pgr=0 WHERE company_id=${cid}`);
+        if (input.isDefaultPsicossocial) await db.execute(drzSql`UPDATE responsible_technicians SET is_default_psicossocial=0 WHERE company_id=${cid}`);
+        if (input.isDefaultAep)          await db.execute(drzSql`UPDATE responsible_technicians SET is_default_aep=0 WHERE company_id=${cid}`);
         const newSig = await saveSignatureFile(cid, input.signatureBase64);
         if (newSig) {
-          await db.execute(drzSql`UPDATE responsible_technicians SET name=${input.name}, registration=${input.registration ?? null}, profession=${input.profession ?? null}, art=${input.art ?? null}, signature_url=${newSig}, is_default=${input.isDefault ? 1 : 0} WHERE id=${input.id}`);
+          await db.execute(drzSql`UPDATE responsible_technicians SET
+            name=${input.name}, registration=${input.registration ?? null}, profession=${input.profession ?? null},
+            art=${input.art ?? null}, signature_url=${newSig},
+            is_default=${input.isDefault ? 1 : 0},
+            is_default_pgr=${input.isDefaultPgr ? 1 : 0},
+            is_default_psicossocial=${input.isDefaultPsicossocial ? 1 : 0},
+            is_default_aep=${input.isDefaultAep ? 1 : 0}
+            WHERE id=${input.id}`);
         } else {
-          await db.execute(drzSql`UPDATE responsible_technicians SET name=${input.name}, registration=${input.registration ?? null}, profession=${input.profession ?? null}, art=${input.art ?? null}, is_default=${input.isDefault ? 1 : 0} WHERE id=${input.id}`);
+          await db.execute(drzSql`UPDATE responsible_technicians SET
+            name=${input.name}, registration=${input.registration ?? null}, profession=${input.profession ?? null},
+            art=${input.art ?? null},
+            is_default=${input.isDefault ? 1 : 0},
+            is_default_pgr=${input.isDefaultPgr ? 1 : 0},
+            is_default_psicossocial=${input.isDefaultPsicossocial ? 1 : 0},
+            is_default_aep=${input.isDefaultAep ? 1 : 0}
+            WHERE id=${input.id}`);
         }
         return { ok: true, signatureUrl: newSig };
       }),
@@ -19165,6 +19260,26 @@ Return only the JSON content object (no wrapper). Format per type:
           try { return JSON.parse(typeof v === "string" ? v : String(v)); } catch { return []; }
         };
 
+        // Sprint 1.7-B item 5: fallback do RT do PGR. Se o documento não tem
+        // resp_tecnico_nome preenchido, busca o RT marcado como is_default_pgr=1
+        // (ou is_default genérico) em responsible_technicians da empresa.
+        if (!row.resp_tecnico_nome) {
+          const rtPgr: any = await db.execute(drzSql`
+            SELECT name, registration, profession, art, signature_url
+            FROM responsible_technicians
+            WHERE company_id=${row.company_id}
+              AND (is_default_pgr=1 OR is_default=1)
+            ORDER BY is_default_pgr DESC, is_default DESC, id DESC LIMIT 1`);
+          const rtRow = (rtPgr as any)[0]?.[0];
+          if (rtRow) {
+            row.resp_tecnico_nome = rtRow.name;
+            row.resp_tecnico_registro = row.resp_tecnico_registro ?? rtRow.registration;
+            row.resp_tecnico_profissao = row.resp_tecnico_profissao ?? rtRow.profession;
+            row.resp_tecnico_art = row.resp_tecnico_art ?? rtRow.art;
+            row.resp_tecnico_assinatura_url = row.resp_tecnico_assinatura_url ?? rtRow.signature_url;
+          }
+        }
+
         // Sprint 1 PGR Inteligente: se este PGR tem GSEs nas tabelas novas,
         // carrega tudo (cargos/setores/riscos/EPC/EPI/ações/treinamentos/evidências)
         // e passa pro PDF; senão `gseGroups` fica vazio e o PDF segue só com JSON legado.
@@ -19271,8 +19386,37 @@ Return only the JSON content object (no wrapper). Format per type:
           treinamentosNr: parseJson(row.treinamentos_nr),
           gseGroups,
         });
+
+        // Sprint 1.7-B item 2 — Concatena anexos do PGR (pdf-lib) no final
+        let attachmentInfo: { appended: number; skipped: number } = { appended: 0, skipped: 0 };
+        try {
+          const attRows: any = await db.execute(drzSql`
+            SELECT titulo, tipo, file_url, mime_type
+            FROM pgr_attachments
+            WHERE pgr_id=${row.id} AND company_id=${row.company_id}
+              AND file_url IS NOT NULL AND file_url <> ''
+            ORDER BY tipo ASC, created_at ASC`);
+          const attList: any[] = (attRows as any)[0] ?? [];
+          if (attList.length > 0) {
+            const { appendPdfAttachments } = await import("./_core/pgr_pdf");
+            const pathmod = await import("path");
+            const diskPath = pathmod.join("/var/www/saudedotrabalho", url);
+            attachmentInfo = await appendPdfAttachments(
+              diskPath,
+              attList.map(r => ({
+                titulo: String(r.titulo ?? ""),
+                tipo: r.tipo ? String(r.tipo) : undefined,
+                fileUrl: r.file_url ? String(r.file_url) : null,
+                mimeType: r.mime_type ? String(r.mime_type) : null,
+              }))
+            );
+          }
+        } catch (err: any) {
+          console.warn("[pgr.generatePDF] anexos falharam:", err?.message ?? err);
+        }
+
         await db.execute(drzSql`UPDATE pgr_documents SET pdf_url=${url}, status='gerado' WHERE id=${row.id}`);
-        return { ok: true, url, gseGroupsCount: gseGroups.length };
+        return { ok: true, url, gseGroupsCount: gseGroups.length, attachments: attachmentInfo };
       }),
     listGheGse: adminOrRhProcedure
       .input(z.object({ pgrId: z.number().int() }))
@@ -19936,6 +20080,112 @@ Return only the JSON content object (no wrapper). Format per type:
             legacyCount: { ghes: Number(row.ghes ?? 0), inv: Number(row.inv ?? 0), plano: Number(row.plano ?? 0), epc: Number(row.epc ?? 0), epi: Number(row.epi ?? 0) },
             hasLegacy: total > 0,
             migratedGseId: migratedGseId ? Number(migratedGseId) : null,
+          };
+        }),
+
+      // Sprint 1.7-B item 3 — Sugestão por IA (GROQ) de um pacote técnico
+      // para um GSE: riscos, EPC, EPI, ações 5W2H e treinamentos NR.
+      // Recebe contexto (nome do GSE, cargos, setores, atividade da empresa) e
+      // devolve um objeto estruturado JSON que o frontend pré-popula no editor.
+      // O usuário sempre revisa e clica "Salvar tudo" — IA é assistiva, não final.
+      aiSuggest: adminOrRhProcedure
+        .input(z.object({
+          gseId: z.number().int(),
+          contextoExtra: z.string().optional(),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb();
+          if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+          // Carrega GSE + cargos + setores + dados do PGR pai pra contexto
+          const gR: any = await db.execute(drzSql`
+            SELECT g.id, g.nome, g.descricao, g.num_trabalhadores, g.num_homens, g.num_mulheres,
+                   p.id AS pgr_id, p.company_id, p.razao_social, p.atividade_principal, p.grau_risco
+            FROM pgr_gse g
+            JOIN pgr_documents p ON p.id = g.pgr_id
+            WHERE g.id=${input.gseId} LIMIT 1`);
+          const g = (gR as any)[0]?.[0];
+          if (!g) throw new TRPCError({ code: "NOT_FOUND" });
+          if (Number(g.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+
+          const cR: any = await db.execute(drzSql`SELECT cargo FROM pgr_gse_cargos WHERE gse_id=${input.gseId}`);
+          const sR: any = await db.execute(drzSql`
+            SELECT s.name FROM pgr_gse_setores c LEFT JOIN sectors s ON s.id=c.sector_id WHERE c.gse_id=${input.gseId}`);
+          const cargos = ((cR as any)[0] ?? []).map((x: any) => x.cargo).filter(Boolean);
+          const setores = ((sR as any)[0] ?? []).map((x: any) => x.name).filter(Boolean);
+
+          const GROQ_API_KEY = process.env.GROQ_API_KEY;
+          if (!GROQ_API_KEY) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "GROQ_API_KEY not set" });
+
+          const systemPrompt = `Você é um especialista sênior em Segurança e Saúde no Trabalho (SST), redator técnico de PGR conforme NR-01 / Portaria MTP 1.419/2024. Você responde SEMPRE em JSON válido (sem markdown, sem texto fora do JSON) seguindo EXATAMENTE este schema:
+
+{
+  "riscos": [{"tipo": "Físico|Químico|Biológico|Ergonômico|Acidente|Psicossocial", "agente": "string", "fonteGeradora": "string", "possivelDano": "string", "tipoExposicao": "Habitual|Eventual|Permanente", "severidade": "Leve|Moderada|Grave|Gravíssima", "probabilidade": "Improvável|Possível|Provável|Frequente", "riscoFinal": "Trivial|Tolerável|Moderado|Substancial|Intolerável", "notes": "string opcional"}],
+  "epc": [{"descricao": "string", "aplicacao": "string"}],
+  "epi": [{"descricao": "string", "ca": "string ou vazio", "aplicacao": "string", "validade": ""}],
+  "acoes": [{"what": "string", "why": "string", "where": "string", "whenStart": "AAAA-MM-DD", "whenEnd": "AAAA-MM-DD", "who": "string", "how": "string", "howMuch": "string", "priority": "Alta|Média|Baixa", "status": "Planejada"}],
+  "treinamentos": [{"nrCode": "NR-XX", "titulo": "string", "cargaHoraria": "8h", "periodicidade": "Anual|Bienal|Inicial"}]
+}
+
+Regras:
+- 3 a 8 riscos relevantes ao GSE (não invente riscos sem fonte plausível)
+- 2 a 4 EPCs, 3 a 6 EPIs
+- 3 a 5 ações 5W2H (datas dentro dos próximos 12 meses)
+- 2 a 5 treinamentos NR aplicáveis
+- Não inclua riscos psicossociais se o GSE for puramente administrativo, e vice-versa
+- Linguagem técnica formal em português brasileiro`;
+
+          const userPrompt = `GSE: "${g.nome}"${g.descricao ? ` — ${g.descricao}` : ""}
+Cargos do grupo: ${cargos.length ? cargos.join(", ") : "(não informado)"}
+Setores: ${setores.length ? setores.join(", ") : "(não informado)"}
+Empresa: ${g.razao_social ?? "(não informado)"}${g.atividade_principal ? ` — atividade ${g.atividade_principal}` : ""}${g.grau_risco ? ` (grau de risco ${g.grau_risco})` : ""}
+Trabalhadores: ${g.num_trabalhadores ?? 0} (${g.num_homens ?? 0}H / ${g.num_mulheres ?? 0}M)
+${input.contextoExtra ? `Contexto adicional: ${input.contextoExtra}` : ""}
+
+Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamentos NR) em JSON conforme o schema.`;
+
+          const today = new Date();
+          const isoToday = today.toISOString().slice(0, 10);
+
+          let parsed: any = null;
+          let aiError: string | null = null;
+          try {
+            const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: `Bearer ${GROQ_API_KEY}` },
+              body: JSON.stringify({
+                model: "llama-3.3-70b-versatile",
+                messages: [
+                  { role: "system", content: systemPrompt },
+                  { role: "user", content: userPrompt + `\n\n(Hoje é ${isoToday}; use datas posteriores.)` },
+                ],
+                temperature: 0.4,
+                max_tokens: 2400,
+                response_format: { type: "json_object" },
+              }),
+            });
+            if (!resp.ok) throw new Error(`Groq ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+            const data = await resp.json();
+            const raw = String(data?.choices?.[0]?.message?.content ?? "{}");
+            parsed = JSON.parse(raw);
+          } catch (err: any) {
+            aiError = err?.message || String(err);
+          }
+
+          if (!parsed) {
+            throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `IA falhou: ${aiError ?? "?"}` });
+          }
+
+          const arr = (v: any) => (Array.isArray(v) ? v : []);
+          return {
+            riscos: arr(parsed.riscos).slice(0, 12),
+            epc: arr(parsed.epc).slice(0, 8),
+            epi: arr(parsed.epi).slice(0, 10),
+            acoes: arr(parsed.acoes).slice(0, 8),
+            treinamentos: arr(parsed.treinamentos).slice(0, 8),
+            cargos,
+            setoresUsados: setores,
           };
         }),
     }),
@@ -22292,6 +22542,144 @@ Return only the JSON content object (no wrapper). Format per type:
         ORDER BY is_template DESC, company_id`, []) as any;
       return rows as any[];
     }),
+
+    // Sprint 2 / item 31 — Clonagem de Template
+    // Dado um templateId (is_template=1), cria uma campanha NOVA vinculada à empresa
+    // do usuário, copiando materiais e links. A clone fica editável; o template original
+    // continua intocado e disponível pra outras empresas.
+    cloneFromTemplate: adminOrRhProcedure
+      .input(z.object({
+        templateId: z.number().int(),
+        newName: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        if (!cid) throw new TRPCError({ code: "BAD_REQUEST", message: "Usuário sem empresa vinculada não pode clonar templates." });
+        const db = await getDb();
+
+        const [[tpl]] = await execP(db, `SELECT * FROM preventive_library_campaigns WHERE id=? AND is_template=1`, [input.templateId]) as any;
+        if (!tpl) throw new TRPCError({ code: "NOT_FOUND", message: "Template não encontrado." });
+
+        // Evita clonar duas vezes o mesmo template na mesma empresa
+        const [[dup]] = await execP(db,
+          `SELECT id FROM preventive_library_campaigns WHERE company_id=? AND cloned_from=? LIMIT 1`,
+          [cid, input.templateId]) as any;
+        if (dup) {
+          return { alreadyExists: true, id: Number((dup as any).id) };
+        }
+
+        const name = (input.newName ?? `${(tpl as any).name} (cópia)`).slice(0, 250);
+        const [ins] = await execP(db, `
+          INSERT INTO preventive_library_campaigns
+            (company_id, name, code, month_number, theme, color, description, is_template, cloned_from)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+          [cid, name, (tpl as any).code, (tpl as any).month_number, (tpl as any).theme,
+           (tpl as any).color, (tpl as any).description, input.templateId]) as any;
+        const newId = Number((ins as any).insertId);
+
+        // Copia materiais
+        const [mats] = await execP(db, `SELECT * FROM preventive_library_materials WHERE campaign_id=?`, [input.templateId]) as any;
+        for (const m of (mats as any[])) {
+          await execP(db, `INSERT INTO preventive_library_materials
+            (campaign_id, title, material_type, target_audience, file_name, mime_type, file_url, description)
+            VALUES (?,?,?,?,?,?,?,?)`,
+            [newId, m.title, m.material_type, m.target_audience ?? 'todos',
+             m.file_name, m.mime_type, m.file_url, m.description]);
+        }
+        // Copia links
+        const [lks] = await execP(db, `SELECT * FROM preventive_library_links WHERE campaign_id=?`, [input.templateId]) as any;
+        for (const l of (lks as any[])) {
+          await execP(db, `INSERT INTO preventive_library_links
+            (campaign_id, link_type, ref_id, title, notes, target_audience)
+            VALUES (?,?,?,?,?,?)`,
+            [newId, l.link_type, l.ref_id, l.title, l.notes, l.target_audience ?? 'todos']);
+        }
+        return { alreadyExists: false, id: newId, materialsCloned: (mats as any[]).length, linksCloned: (lks as any[]).length };
+      }),
+
+    // Sprint 2 / item 23 — Disparar Campanha
+    // Dispara notificações (sino) e/ou e-mails para colaboradores da empresa.
+    // audience: "todos" | "sesmt_rh" (perfis SST) | "managers" (líderes de setor).
+    // method: "notification" (sino) | "email" | "both"
+    // Idempotência: dedup_key inclui campaignId, então re-disparar não duplica notif.
+    sendCampaignBlast: adminOrRhProcedure
+      .input(z.object({
+        campaignId: z.number().int(),
+        audience: z.enum(["todos", "sesmt_rh", "managers"]).default("todos"),
+        method: z.enum(["notification", "email", "both"]).default("notification"),
+        customMessage: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        if (!cid) throw new TRPCError({ code: "BAD_REQUEST", message: "Apenas usuários vinculados a uma empresa podem disparar." });
+        const db = await getDb();
+
+        const [[camp]] = await execP(db, `SELECT * FROM preventive_library_campaigns WHERE id=? LIMIT 1`, [input.campaignId]) as any;
+        if (!camp) throw new TRPCError({ code: "NOT_FOUND" });
+        const isTpl = !!(camp as any).is_template;
+        if (isTpl) throw new TRPCError({ code: "BAD_REQUEST", message: "Esta campanha é um Template Global. Clone-a para sua empresa antes de disparar." });
+        if (Number((camp as any).company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+
+        // Resolve audiência
+        let usersSql = `SELECT id, name, email FROM users WHERE company_id=? AND is_active=1 AND email IS NOT NULL AND email <> ''`;
+        const params: any[] = [cid];
+        if (input.audience === "sesmt_rh") {
+          usersSql += ` AND role IN ('sesmt','rh','admin','company_admin')`;
+        } else if (input.audience === "managers") {
+          usersSql += ` AND role IN ('manager','sector_lead','admin','company_admin')`;
+        }
+        const [users] = await execP(db, usersSql, params) as any;
+        const userList: any[] = users as any[];
+        if (userList.length === 0) {
+          return { notified: 0, emailsSent: 0, emailsFailed: 0, warning: "Nenhum destinatário corresponde à audiência selecionada." };
+        }
+
+        const subject = `Campanha de Saúde: ${(camp as any).name}`;
+        const link = `/admin/biblioteca-preventiva#campanha-${input.campaignId}`;
+        const introBody = input.customMessage?.trim() || (camp as any).description ||
+          `Nova campanha de saúde preventiva disponível para acompanhamento — "${(camp as any).name}".`;
+        const html = `
+          <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;color:#1f2937">
+            <h2 style="color:#1e3a5f;margin-bottom:4px">${(camp as any).name}</h2>
+            ${(camp as any).theme ? `<p style="color:#64748b;margin-top:0">${(camp as any).theme}</p>` : ""}
+            <p>${introBody}</p>
+            <p><a href="https://dev.saudedotrabalho.com${link}" style="background:#0ea5e9;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none;display:inline-block">Acessar campanha</a></p>
+            <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0">
+            <p style="font-size:11px;color:#94a3b8">Você recebeu este aviso porque está cadastrado(a) na plataforma Saúde do Trabalho.</p>
+          </div>`;
+
+        let notified = 0;
+        if (input.method === "notification" || input.method === "both") {
+          const dedupKey = `campaign_blast:${input.campaignId}`;
+          for (const u of userList) {
+            try {
+              const ex: any = await db!.execute(drzSql`
+                SELECT id FROM notifications WHERE user_id=${u.id} AND dedup_key=${dedupKey} LIMIT 1`);
+              if ((ex as any)[0]?.[0]) continue;
+              await db!.execute(drzSql`
+                INSERT INTO notifications (user_id, company_id, type, priority, title, body, link, icon, dedup_key)
+                VALUES (${u.id}, ${cid}, 'campaign_blast', 'media',
+                        ${subject}, ${introBody.slice(0, 500)}, ${link}, 'megaphone', ${dedupKey})`);
+              notified++;
+            } catch (err: any) {
+              console.warn(`[sendCampaignBlast] notif falhou user=${u.id}:`, err?.message);
+            }
+          }
+        }
+
+        let emailsSent = 0, emailsFailed = 0;
+        if (input.method === "email" || input.method === "both") {
+          const { sendEmail } = await import("./_core/email");
+          for (const u of userList) {
+            try {
+              const res = await sendEmail({ to: u.email, toName: u.name ?? undefined, subject, html });
+              if (res.ok) emailsSent++; else emailsFailed++;
+            } catch { emailsFailed++; }
+          }
+        }
+
+        return { notified, emailsSent, emailsFailed, totalRecipients: userList.length };
+      }),
 
   }),
 

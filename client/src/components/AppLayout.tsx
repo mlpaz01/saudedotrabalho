@@ -137,6 +137,7 @@ const superAdminNav: NavItem[] = [
   { label: "Painel Super Admin", href: "/super-admin", notRoles: ["sesmt", "psicologo"], icon: <Shield size={16} /> },
   { label: "Clientes", href: "/super-admin/clientes", notRoles: ["sesmt", "psicologo"], icon: <Building2 size={16} /> },
   { label: "Catalogo Master", href: "/super-admin/catalogo", notRoles: ["sesmt", "psicologo"], icon: <Library size={16} /> },
+  { label: "Horários de acesso", href: "/super-admin/horarios", notRoles: ["sesmt", "psicologo"], icon: <Clock size={16} /> },
 ];
 
 const ITEM_LABELS: Record<string, string> = {

@@ -57,6 +57,7 @@ import AdminQualifications from "@/pages/admin/AdminQualifications";
 import SuperAdminDashboard from "@/pages/superadmin/SuperAdminDashboard";
 import SuperAdminClients from "@/pages/superadmin/SuperAdminClients";
 import SuperAdminCatalog from "@/pages/superadmin/SuperAdminCatalog";
+import SuperAdminAccessHours from "@/pages/superadmin/SuperAdminAccessHours";
 import Configurador from "@/pages/admin/Configurador";
 import AdminBranches from "@/pages/admin/AdminBranches";
 import AdminScheduling from "@/pages/admin/AdminScheduling";
@@ -230,6 +231,7 @@ function Router() {
       <Route path="/super-admin" component={() => <SuperAdminRoute component={SuperAdminDashboard} />} />
       <Route path="/super-admin/clientes" component={() => <SuperAdminRoute component={SuperAdminClients} />} />
       <Route path="/super-admin/catalogo" component={() => <SuperAdminRoute component={SuperAdminCatalog} />} />
+      <Route path="/super-admin/horarios" component={() => <SuperAdminRoute component={SuperAdminAccessHours} />} />
       <Route path="/missao" component={() => <Redirect to="/modulos" />} />
       <Route path="/missao/curso/:moduleId" component={() => <ProtectedRoute component={MissaoCourseMap} />} />
       <Route path="/missao/aula/:lessonId" component={() => <ProtectedRoute component={MissaoLessonPlayer} />} />
