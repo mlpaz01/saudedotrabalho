@@ -1,5 +1,6 @@
 ﻿import { useAuth } from "@/_core/hooks/useAuth";
 import { useEntitlements } from "@/_core/hooks/useEntitlements";
+import { APP_VERSION } from "@/version";
 import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard, BookOpen, Award, Leaf, LogOut,
@@ -7,7 +8,7 @@ import {
   ShieldCheck, FileSearch, Home, Clock, IdCard, FileCheck, CalendarClock,
   Shield, Library, Settings2, Store, Wrench, ShieldQuestion, ClipboardList,
   Mail, ShieldAlert, CreditCard, FolderOpen, GraduationCap, Stethoscope,
-  Link2, Layers, RotateCcw, Activity, Search, LineChart, Signature,
+  Link2, Layers, RotateCcw, Activity, Search, LineChart, Signature, FileText,
   LifeBuoy, Headphones, HeartHandshake, BarChart3, ListChecks, BookMarked,
 } from "lucide-react";
 import { useState } from "react";
@@ -100,6 +101,7 @@ const adminSections: NavSection[] = [
       { label: "Revisoes PGR", href: "/admin/pgr-revisoes", roles: ["sesmt", "admin_global", "super_admin"], icon: <RotateCcw size={16} />, feature: "risk_assessment" },
       { label: "Arquivos SST", href: "/admin/arquivos", roles: ["sesmt", "admin_global", "super_admin"], icon: <FolderOpen size={16} /> },
       { label: "Responsaveis Tecnicos", href: "/admin/responsaveis-tecnicos", roles: ["sesmt", "admin_global", "super_admin"], icon: <Signature size={16} /> },
+      { label: "Texto Padrao do PGR", href: "/admin/sesmt-defaults", roles: ["sesmt", "admin_global", "super_admin"], icon: <FileText size={16} /> },
     ],
   },
   {
@@ -135,6 +137,7 @@ const superAdminNav: NavItem[] = [
   { label: "Painel Super Admin", href: "/super-admin", notRoles: ["sesmt", "psicologo"], icon: <Shield size={16} /> },
   { label: "Clientes", href: "/super-admin/clientes", notRoles: ["sesmt", "psicologo"], icon: <Building2 size={16} /> },
   { label: "Catalogo Master", href: "/super-admin/catalogo", notRoles: ["sesmt", "psicologo"], icon: <Library size={16} /> },
+  { label: "Horários de acesso", href: "/super-admin/horarios", notRoles: ["sesmt", "psicologo"], icon: <Clock size={16} /> },
 ];
 
 const ITEM_LABELS: Record<string, string> = {
@@ -728,6 +731,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <ImpersonationBanner />
 
           <main className="sdt-content">{children}</main>
+          <footer style={{ textAlign: "center", padding: "12px 0 16px", fontSize: 11, color: "#9aa0a6" }}>
+            Saúde do Trabalho · v{APP_VERSION}
+          </footer>
         </div>
       </div>
     </>

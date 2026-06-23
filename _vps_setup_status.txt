@@ -1,0 +1,6 @@
+OK: acesso por chave configurado
+srv1770065
+Ubuntu 24.04.4 LTS
+2
+7.8Gi RAM
+94G livre

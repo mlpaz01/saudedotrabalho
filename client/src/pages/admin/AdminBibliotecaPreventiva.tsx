@@ -4,9 +4,11 @@ import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
+import { useAuth } from "@/_core/hooks/useAuth";
 import {
   FileText, Image as ImageIcon, Video, Megaphone, BookOpen, BarChart3, FileQuestion,
   Trash2, Upload, CalendarDays, Plus, ChevronDown, ChevronRight, Pencil, Sparkles, ClipboardList, Brain,
+  Globe, Lock, Copy, Send, Loader2,
 } from "lucide-react";
 
 const MONTH_NAMES = [
@@ -50,10 +52,17 @@ const AUDIENCES = [
 ];
 
 export default function AdminBibliotecaPreventiva() {
+  const { user } = useAuth();
+  // Super Admin/admin global pode criar e editar TEMPLATES GLOBAIS (acervo padrão
+  // da plataforma, visível para todas as empresas). Demais perfis só criam para
+  // a própria empresa e leem (sem editar) os templates globais.
+  const isGlobal = user?.role === "admin_global" || user?.role === "super_admin";
+
   const [openMonth, setOpenMonth] = useState<number | null>(1);
   const [openCampaignId, setOpenCampaignId] = useState<number | null>(null);
   const [showNewCampaign, setShowNewCampaign] = useState<number | null>(null);
   const [editingCampaign, setEditingCampaign] = useState<any>(null);
+  const [blastCampaign, setBlastCampaign] = useState<any>(null);
 
   const campaignsQ = trpc.preventiveLibrary.listCampaigns.useQuery();
   const summaryQ = trpc.preventiveLibrary.listCampaignSummary.useQuery();
@@ -70,6 +79,23 @@ export default function AdminBibliotecaPreventiva() {
   const deleteMut = trpc.preventiveLibrary.deleteCampaign.useMutation({
     onSuccess: () => { toast.success("Campanha arquivada."); campaignsQ.refetch(); },
     onError: (e: any) => toast.error(e?.message ?? "Erro"),
+  });
+  // Sprint 2 item 31 — Clonagem de Template
+  const cloneMut = trpc.preventiveLibrary.cloneFromTemplate.useMutation({
+    onSuccess: (r: any) => {
+      if (r.alreadyExists) toast.info("Você já clonou este template antes — abra a versão da sua empresa.");
+      else toast.success(`Clonado: ${r.materialsCloned} materiais + ${r.linksCloned} links copiados.`);
+      campaignsQ.refetch(); summaryQ.refetch();
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao clonar"),
+  });
+  // Sprint 2 item 23 — Disparar Campanha
+  const blastMut = trpc.preventiveLibrary.sendCampaignBlast.useMutation({
+    onSuccess: (r: any) => {
+      if (r.warning) toast.info(r.warning);
+      else toast.success(`Disparada: ${r.notified} notificação(ões) + ${r.emailsSent} e-mail(s) enviado(s)${r.emailsFailed ? ` (${r.emailsFailed} falharam)` : ""}.`);
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao disparar"),
   });
 
   const campaigns = (campaignsQ.data ?? []) as any[];
@@ -92,6 +118,23 @@ export default function AdminBibliotecaPreventiva() {
             Cada mês é um agrupador. Dentro do mês podem existir múltiplas campanhas (Janeiro Branco, Janeiro Roxo, Janeiro Verde...).
             Cada campanha aceita <b>materiais estáticos</b> (cartazes, PDFs, e-books, vídeos) e <b>conteúdo interativo da plataforma</b> (cursos, pesquisas, quizzes, trilhas) — para gerar indicadores reais de engajamento.
           </p>
+
+          {/* Banner explicativo do conceito de template (varia por role) */}
+          {isGlobal ? (
+            <div className="mt-3 bg-indigo-50 border border-indigo-200 rounded-lg p-3 text-xs flex items-start gap-2">
+              <Globe size={16} className="text-indigo-700 shrink-0 mt-0.5" />
+              <div className="text-indigo-900">
+                <b>Modo Super Admin — Biblioteca-mestre.</b> As campanhas que você criar aqui ficam disponíveis automaticamente como <b>acervo padrão</b> para TODAS as empresas da plataforma (badge "Padrão da plataforma"). Cada empresa pode usar como está; a personalização individual virá na Fase 2 (clonagem).
+              </div>
+            </div>
+          ) : (
+            <div className="mt-3 bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs flex items-start gap-2">
+              <Sparkles size={14} className="text-indigo-600 shrink-0 mt-0.5" />
+              <div className="text-slate-700">
+                Campanhas marcadas com <b className="text-indigo-700">Padrão da plataforma</b> vêm da biblioteca-mestre (Super Admin) e estão disponíveis para sua empresa. Você não pode editá-las, mas pode criar suas próprias campanhas para complementar.
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="space-y-3">
@@ -119,28 +162,78 @@ export default function AdminBibliotecaPreventiva() {
                     {monthCampaigns.map((c: any) => {
                       const isCampOpen = openCampaignId === c.id;
                       const sf = summaryFor(c.id);
+                      const isTemplate = !!c.is_template;
+                      // Não-Super-Admin não pode editar/excluir templates (backend rejeita 403,
+                      // UI bloqueia antes pra feedback claro).
+                      const canEdit = isGlobal || !isTemplate;
                       return (
-                        <div key={c.id} className="bg-white border rounded-lg overflow-hidden" style={{ borderColor: c.color || "#cbd5e1" }}>
+                        <div key={c.id}
+                             className={`border rounded-lg overflow-hidden ${isTemplate ? "bg-indigo-50/40" : "bg-white"}`}
+                             style={{ borderColor: c.color || (isTemplate ? "#a5b4fc" : "#cbd5e1") }}>
                           <div className="px-4 py-2 flex items-center gap-3 cursor-pointer hover:bg-slate-50" onClick={() => setOpenCampaignId(isCampOpen ? null : c.id)}>
                             <div className="w-3 h-3 rounded-full shrink-0" style={{ background: c.color || "#cbd5e1" }} />
                             <div className="flex-1 min-w-0">
-                              <div className="font-medium text-sm">{c.name}</div>
+                              <div className="font-medium text-sm flex items-center gap-2 flex-wrap">
+                                {c.name}
+                                {isTemplate && (
+                                  <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 border border-indigo-200">
+                                    <Globe size={10} /> Padrão da plataforma
+                                  </span>
+                                )}
+                              </div>
                               {c.theme && <div className="text-xs text-muted-foreground">{c.theme}</div>}
                             </div>
                             <span className="text-xs text-muted-foreground shrink-0">{sf.total} material(is)</span>
+                            {/* Sprint 2 item 31 — Clone (apenas para templates, e apenas se não-superadmin) */}
+                            {isTemplate && !isGlobal && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (confirm(`Clonar "${c.name}" para a sua empresa? Você poderá editar a cópia sem afetar o template.`)) {
+                                    cloneMut.mutate({ templateId: c.id });
+                                  }
+                                }}
+                                disabled={cloneMut.isPending}
+                                className="p-1 text-indigo-500 hover:text-indigo-700"
+                                title="Clonar template para sua empresa"
+                              >
+                                {cloneMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <Copy size={13} />}
+                              </button>
+                            )}
+                            {/* Sprint 2 item 23 — Disparar Campanha (somente em campanhas próprias, não templates) */}
+                            {!isTemplate && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setBlastCampaign(c);
+                                }}
+                                className="p-1 text-emerald-600 hover:text-emerald-800"
+                                title="Disparar campanha (notificação ou e-mail aos colaboradores)"
+                              >
+                                <Send size={13} />
+                              </button>
+                            )}
                             <button
-                              onClick={(e) => { e.stopPropagation(); setEditingCampaign(c); setShowNewCampaign(month); }}
-                              className="text-slate-400 hover:text-primary p-1"
-                              title="Editar"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (!canEdit) { toast.info("Templates da plataforma só podem ser editados pelo Super Admin."); return; }
+                                setEditingCampaign(c); setShowNewCampaign(month);
+                              }}
+                              className={`p-1 ${canEdit ? "text-slate-400 hover:text-primary" : "text-slate-300 cursor-not-allowed"}`}
+                              title={canEdit ? "Editar" : "Somente Super Admin pode editar templates"}
                             >
-                              <Pencil size={13} />
+                              {canEdit ? <Pencil size={13} /> : <Lock size={13} />}
                             </button>
                             <button
-                              onClick={(e) => { e.stopPropagation(); if (confirm(`Arquivar a campanha "${c.name}"?`)) deleteMut.mutate({ id: c.id }); }}
-                              className="text-slate-400 hover:text-rose-600 p-1"
-                              title="Arquivar"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (!canEdit) { toast.info("Templates da plataforma só podem ser removidos pelo Super Admin."); return; }
+                                if (confirm(`Arquivar a campanha "${c.name}"?`)) deleteMut.mutate({ id: c.id });
+                              }}
+                              className={`p-1 ${canEdit ? "text-slate-400 hover:text-rose-600" : "text-slate-300 cursor-not-allowed"}`}
+                              title={canEdit ? "Arquivar" : "Somente Super Admin pode arquivar templates"}
                             >
-                              <Trash2 size={13} />
+                              {canEdit ? <Trash2 size={13} /> : <Lock size={13} />}
                             </button>
                           </div>
                           {isCampOpen && (
@@ -156,6 +249,7 @@ export default function AdminBibliotecaPreventiva() {
                       <CampaignForm
                         month={month}
                         initial={editingCampaign}
+                        isGlobal={isGlobal}
                         onSubmit={(data) => upsertMut.mutate(data)}
                         onCancel={() => { setShowNewCampaign(null); setEditingCampaign(null); }}
                         loading={upsertMut.isPending}
@@ -175,11 +269,85 @@ export default function AdminBibliotecaPreventiva() {
           })}
         </div>
       </div>
+
+      {/* Sprint 2 item 23 — Modal de disparo */}
+      {blastCampaign && (
+        <BlastDialog
+          campaign={blastCampaign}
+          loading={blastMut.isPending}
+          onClose={() => setBlastCampaign(null)}
+          onConfirm={(payload) => {
+            blastMut.mutate({ campaignId: blastCampaign.id, ...payload }, {
+              onSettled: () => setBlastCampaign(null),
+            });
+          }}
+        />
+      )}
     </AppLayout>
   );
 }
 
-function CampaignForm({ month, initial, onSubmit, onCancel, loading }: any) {
+function BlastDialog({ campaign, loading, onClose, onConfirm }: any) {
+  const [audience, setAudience] = useState<"todos" | "sesmt_rh" | "managers">("todos");
+  const [method, setMethod] = useState<"notification" | "email" | "both">("notification");
+  const [customMessage, setCustomMessage] = useState("");
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-lg shadow-xl max-w-lg w-full p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
+        <div>
+          <h3 className="text-lg font-semibold flex items-center gap-2">
+            <Send size={18} className="text-emerald-600" /> Disparar campanha
+          </h3>
+          <p className="text-xs text-muted-foreground mt-1">
+            "{campaign.name}" será comunicada aos colaboradores da sua empresa.
+          </p>
+        </div>
+
+        <div>
+          <label className="text-xs font-semibold text-slate-700">Audiência</label>
+          <select className="w-full mt-1 border rounded-md px-2 py-1.5 text-sm" value={audience} onChange={(e) => setAudience(e.target.value as any)}>
+            <option value="todos">Todos os colaboradores ativos</option>
+            <option value="sesmt_rh">Apenas SESMT + RH + Admin</option>
+            <option value="managers">Apenas líderes/gestores</option>
+          </select>
+        </div>
+
+        <div>
+          <label className="text-xs font-semibold text-slate-700">Canal</label>
+          <select className="w-full mt-1 border rounded-md px-2 py-1.5 text-sm" value={method} onChange={(e) => setMethod(e.target.value as any)}>
+            <option value="notification">Notificação no sino (na plataforma)</option>
+            <option value="email">E-mail</option>
+            <option value="both">Notificação + E-mail</option>
+          </select>
+        </div>
+
+        <div>
+          <label className="text-xs font-semibold text-slate-700">Mensagem personalizada (opcional)</label>
+          <textarea
+            className="w-full mt-1 border rounded-md px-2 py-1.5 text-sm min-h-[70px]"
+            placeholder={campaign.description || "Use a descrição da campanha"}
+            value={customMessage}
+            onChange={(e) => setCustomMessage(e.target.value)}
+          />
+        </div>
+
+        <div className="flex justify-end gap-2 pt-2 border-t">
+          <button onClick={onClose} disabled={loading} className="px-3 py-1.5 text-sm border rounded-md hover:bg-slate-50">Cancelar</button>
+          <button
+            onClick={() => onConfirm({ audience, method, customMessage: customMessage.trim() || undefined })}
+            disabled={loading}
+            className="px-4 py-1.5 text-sm bg-emerald-600 text-white rounded-md hover:bg-emerald-700 flex items-center gap-1 disabled:opacity-60"
+          >
+            {loading ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+            {loading ? "Disparando..." : "Disparar"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CampaignForm({ month, initial, isGlobal, onSubmit, onCancel, loading }: any) {
   const [form, setForm] = useState({
     id: initial?.id,
     monthNumber: month,
@@ -188,10 +356,20 @@ function CampaignForm({ month, initial, onSubmit, onCancel, loading }: any) {
     theme: initial?.theme ?? "",
     color: initial?.color ?? "#3b82f6",
     description: initial?.description ?? "",
+    // Super Admin: default true (cria como template global por padrão).
+    // Demais: ignorado pelo backend.
+    isTemplate: initial ? !!initial.is_template : !!isGlobal,
   });
   return (
-    <div className="bg-white border border-border rounded-lg p-4 space-y-3">
-      <h3 className="font-semibold text-sm">{initial ? "Editar campanha" : "Nova campanha"}</h3>
+    <div className={`border border-border rounded-lg p-4 space-y-3 ${form.isTemplate && isGlobal ? "bg-indigo-50/60" : "bg-white"}`}>
+      <h3 className="font-semibold text-sm flex items-center gap-2">
+        {initial ? "Editar campanha" : "Nova campanha"}
+        {form.isTemplate && isGlobal && (
+          <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 border border-indigo-200">
+            <Globe size={10} /> Template Global
+          </span>
+        )}
+      </h3>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div>
           <label className="text-xs text-muted-foreground">Nome *</label>
@@ -214,10 +392,32 @@ function CampaignForm({ month, initial, onSubmit, onCancel, loading }: any) {
           <Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Breve contexto da campanha" className="text-sm" />
         </div>
       </div>
+
+      {/* Toggle Template Global — só Super Admin vê. Quando ativo, cria como acervo
+          padrão da plataforma (visível pra todas as empresas). */}
+      {isGlobal && (
+        <label className="flex items-start gap-2 bg-indigo-50/40 border border-indigo-200 rounded-md p-2 cursor-pointer text-xs">
+          <input
+            type="checkbox"
+            checked={form.isTemplate}
+            onChange={(e) => setForm({ ...form, isTemplate: e.target.checked })}
+            className="mt-0.5"
+          />
+          <span className="flex-1">
+            <b className="text-indigo-900">Salvar como Template Global (Padrão da plataforma)</b>
+            <br />
+            <span className="text-indigo-700">
+              Quando marcado, esta campanha fica disponível para TODAS as empresas. Desmarque para
+              criar uma campanha vinculada a uma empresa específica.
+            </span>
+          </span>
+        </label>
+      )}
+
       <div className="flex gap-2 justify-end pt-2">
         <Button variant="outline" size="sm" onClick={onCancel}>Cancelar</Button>
         <Button size="sm" onClick={() => onSubmit(form)} disabled={loading || !form.name.trim() || !form.code.trim()}>
-          {loading ? "Salvando..." : initial ? "Atualizar" : "Criar campanha"}
+          {loading ? "Salvando..." : initial ? "Atualizar" : (form.isTemplate && isGlobal ? "Criar template" : "Criar campanha")}
         </Button>
       </div>
     </div>

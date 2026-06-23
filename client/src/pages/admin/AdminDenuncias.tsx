@@ -98,7 +98,7 @@ export default function AdminDenuncias() {
   const [status, setStatus] = useState<string>("");
   const [category, setCategory] = useState<string>("");
 
-  const tree = trpc.admin.hierarchyTree.useQuery();
+  const tree = trpc.lessons.hierarchyTree.useQuery();
   const companies = useMemo(
     () => (tree.data ?? []).map((c: any) => ({ id: c.company.id, name: c.company.name })),
     [tree.data]

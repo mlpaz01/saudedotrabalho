@@ -4422,6 +4422,64 @@ function _buildAlert(index: any, signals: any[]): any | null {
 }
 
 /**
+ * Memória de cálculo do Índice de Bem-Estar: expõe, de forma auditável, como o
+ * score foi formado (base 100 - penalidades por sinal), os critérios de
+ * classificação e os gatilhos que geram a recomendação. Espelha exatamente a
+ * lógica de computeWellbeingIndex e _buildAlert.
+ */
+function _buildCalcMemory(index: any, signals: any[]): any {
+  const severityPenalty: Record<string, number> = { baixo: 0, moderado: 12, alto: 22, critico: 35 };
+  const latestByType = new Map<string, any>();
+  for (const s of signals) if (!latestByType.has(s.signal_type)) latestByType.set(s.signal_type, s);
+  const applied = [...latestByType.values()].map((s) => {
+    const weight = Number(s.weight) || 1;
+    const penaltyUnit = severityPenalty[String(s.severity)] ?? 0;
+    return {
+      type: s.signal_type,
+      label: s.label ?? s.signal_type,
+      severity: s.severity,
+      weight,
+      value: s.value != null ? Number(s.value) : null,
+      penalty: penaltyUnit * weight,
+    };
+  });
+  const penaltyTotal = applied.reduce((a, x) => a + x.penalty, 0);
+  const score = Math.max(0, Math.min(100, Math.round(100 - penaltyTotal)));
+  const st = _statusFromScore(score);
+  const burnoutRisk = score < 40 ? "critico" : score < 60 ? "alto" : score < 80 ? "moderado" : "baixo";
+  const trend = index?.trend ?? null;
+  const hasHighNr01 = applied.some((s) => s.type === "nr01_result" && ["alto", "critico"].includes(s.severity));
+  const moodFalling = applied.some((s) => s.type === "mood_trend" && ["alto", "critico"].includes(s.severity));
+  const highWorkload = applied.some((s) => s.type === "workload" && ["alto", "critico"].includes(s.severity));
+  const triggers = [
+    { cond: "Burnout crítico OU score < 40", active: burnoutRisk === "critico" || score < 40, leadsTo: "Risco crítico de burnout → contato imediato da saúde (Roteiro de conversa, Protocolo NR-01, Agendar conversa)" },
+    { cond: "Burnout alto OU (tendência caindo E (NR-01 alto/crítico, humor em queda ou sobrecarga))", active: burnoutRisk === "alto" || (trend === "caindo" && (hasHighNr01 || moodFalling || highWorkload)), leadsTo: "Sinal precoce de burnout → intervenção preventiva (Roteiro de conversa, Protocolo NR-01)" },
+    { cond: "Tendência de queda no bem-estar", active: trend === "caindo", leadsTo: "Conversa de acompanhamento e reforço das técnicas" },
+    { cond: "Burnout moderado (tendência estável/melhora)", active: burnoutRisk === "moderado", leadsTo: "Acompanhamento em curso · consolidar evolução positiva" },
+  ];
+  return {
+    base: 100,
+    severityPenaltyTable: severityPenalty,
+    signalsApplied: applied,
+    penaltyTotal,
+    score,
+    classification: { label: st.label, severity: st.severity },
+    criteria: [
+      { min: 80, label: "Saudável · em equilíbrio" },
+      { min: 60, label: "Atenção · risco moderado" },
+      { min: 40, label: "Alerta · risco elevado" },
+      { min: 0, label: "Crítico · intervenção urgente" },
+    ],
+    derived: {
+      burnoutRisk: { value: burnoutRisk, rule: "score < 40: crítico · < 60: alto · < 80: moderado · senão: baixo" },
+      workloadLevel: { value: index?.workloadLevel ?? null, rule: "derivado do sinal 'workload' (baixo→baixa … crítico→crítica)" },
+      engagementPct: { value: index?.engagementPct ?? null, rule: "valor percentual do sinal 'engagement'" },
+    },
+    triggers,
+  };
+}
+
+/**
  * Full 360º view of a collaborator: identity, computed wellbeing index, 6-month
  * history, intelligent alert, care journey, interventions and leave history.
  * LGPD: this returns individual-level sensitive data; callers MUST enforce that
@@ -4561,6 +4619,11 @@ export async function getCollaborator360(userId: number) {
       value: s.value != null ? Number(s.value) : null,
       recordedAt: s.recorded_at,
     })),
+    calcMemory: _buildCalcMemory(
+      { trend: current?.trend ?? null, workloadLevel: current?.workload_level ?? null,
+        engagementPct: current?.engagement_pct != null ? Number(current.engagement_pct) : null },
+      signals
+    ),
     journey,
     interventions,
     nextSteps,

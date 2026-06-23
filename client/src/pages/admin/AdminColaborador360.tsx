@@ -13,6 +13,7 @@ import {
   Sparkles, FileText, MessageSquareHeart, CheckCircle2, CalendarClock,
   Stethoscope, Brain, Coffee, Users, ClipboardList, RotateCcw,
   BookOpen, Award, ClipboardCheck, Mail, GraduationCap,
+  Calculator, ChevronDown,
 } from "lucide-react";
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip,
@@ -109,6 +110,90 @@ function trendIcon(trend?: string | null) {
   if (trend === "subindo") return <TrendingUp size={14} className="text-emerald-600" />;
   if (trend === "caindo") return <TrendingDown size={14} className="text-rose-600" />;
   return <Minus size={14} className="text-slate-400" />;
+}
+
+const SEV_PT: Record<string, string> = { baixo: "Baixo", moderado: "Moderado", alto: "Alto", critico: "Crítico" };
+function CalcMemorySection({ cm }: { cm: any }) {
+  const [open, setOpen] = useState(false);
+  if (!cm) return null;
+  return (
+    <div className="rounded-2xl border border-border bg-white">
+      <button onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center gap-2 px-5 py-4 text-left">
+        <Calculator size={18} className="text-primary" />
+        <span className="font-semibold text-foreground flex-1">Memória de Cálculo e Critérios de Recomendação</span>
+        <ChevronDown size={18} className={`text-slate-400 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className="px-5 pb-5 space-y-5 border-t border-border pt-4">
+          {/* Como o score foi calculado */}
+          <div>
+            <div className="text-sm font-semibold text-slate-800 mb-2">Como o Índice de Bem-Estar foi calculado</div>
+            <div className="text-sm text-slate-600 mb-2">Parte de <strong>{cm.base}</strong> pontos e desconta penalidades por sinal (penalidade da severidade × peso):</div>
+            <table className="w-full text-sm">
+              <thead><tr className="text-xs text-slate-500 border-b border-border">
+                <th className="text-left py-1.5">Fator avaliado</th><th className="text-left">Severidade</th>
+                <th className="text-center">Peso</th><th className="text-right">Penalidade</th></tr></thead>
+              <tbody>
+                <tr className="border-b border-border/50"><td className="py-1.5 text-slate-700">Base inicial</td><td>—</td><td className="text-center">—</td><td className="text-right text-emerald-600 font-medium">+{cm.base}</td></tr>
+                {(cm.signalsApplied ?? []).map((s: any, i: number) => (
+                  <tr key={i} className="border-b border-border/50">
+                    <td className="py-1.5 text-slate-700">{s.label}{s.value != null ? <span className="text-slate-400"> ({s.value})</span> : null}</td>
+                    <td>{SEV_PT[s.severity] ?? s.severity}</td>
+                    <td className="text-center">{s.weight}</td>
+                    <td className={`text-right font-medium ${s.penalty > 0 ? "text-rose-600" : "text-slate-400"}`}>{s.penalty > 0 ? `−${s.penalty}` : "0"}</td>
+                  </tr>
+                ))}
+                {(cm.signalsApplied ?? []).length === 0 && (
+                  <tr><td colSpan={4} className="py-2 text-slate-400 italic text-xs">Sem sinais registrados — índice permanece em {cm.base}.</td></tr>
+                )}
+                <tr className="font-semibold"><td className="py-1.5 text-slate-900">Índice final</td><td></td><td></td><td className="text-right text-primary text-base">{cm.score}</td></tr>
+              </tbody>
+            </table>
+          </div>
+          {/* Criterios de classificacao */}
+          <div>
+            <div className="text-sm font-semibold text-slate-800 mb-2">Critérios de classificação</div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {(cm.criteria ?? []).map((c: any, i: number) => {
+                const isCurrent = cm.classification?.label === c.label;
+                return (
+                  <div key={i} className={`text-sm rounded-lg px-3 py-2 border ${isCurrent ? "border-primary bg-primary/5 font-semibold" : "border-border"}`}>
+                    <span className="text-slate-500">≥ {c.min}:</span> {c.label}{isCurrent ? " ← atual" : ""}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          {/* Dimensoes derivadas */}
+          <div>
+            <div className="text-sm font-semibold text-slate-800 mb-2">Dimensões derivadas</div>
+            <ul className="text-sm text-slate-600 space-y-1">
+              <li><strong>Risco de burnout:</strong> {cap(cm.derived?.burnoutRisk?.value)} <span className="text-slate-400">— {cm.derived?.burnoutRisk?.rule}</span></li>
+              <li><strong>Carga de trabalho:</strong> {cap(cm.derived?.workloadLevel?.value) || "—"} <span className="text-slate-400">— {cm.derived?.workloadLevel?.rule}</span></li>
+              <li><strong>Engajamento:</strong> {cm.derived?.engagementPct?.value != null ? `${cm.derived.engagementPct.value}%` : "—"} <span className="text-slate-400">— {cm.derived?.engagementPct?.rule}</span></li>
+            </ul>
+          </div>
+          {/* Gatilhos da recomendacao */}
+          <div>
+            <div className="text-sm font-semibold text-slate-800 mb-2">Gatilhos da recomendação automática</div>
+            <div className="space-y-2">
+              {(cm.triggers ?? []).map((t: any, i: number) => (
+                <div key={i} className={`text-sm rounded-lg px-3 py-2 border ${t.active ? "border-amber-300 bg-amber-50" : "border-border opacity-70"}`}>
+                  <div className="flex items-center gap-2">
+                    <span className={`text-xs font-semibold px-2 py-0.5 rounded ${t.active ? "bg-amber-200 text-amber-900" : "bg-slate-100 text-slate-500"}`}>{t.active ? "ATIVO" : "inativo"}</span>
+                    <span className="text-slate-700">{t.cond}</span>
+                  </div>
+                  <div className="text-xs text-slate-500 mt-1">→ {t.leadsTo}</div>
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-slate-400 mt-2">Os critérios acima são aplicados automaticamente pela plataforma. As recomendações não substituem avaliação clínica.</p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function AdminColaborador360({ id }: { id: number }) {
@@ -245,6 +330,9 @@ export default function AdminColaborador360({ id }: { id: number }) {
             </div>
           </div>
         )}
+
+        {/* MEMÓRIA DE CÁLCULO E CRITÉRIOS DE RECOMENDAÇÃO */}
+        <CalcMemorySection cm={d.calcMemory} />
 
         {/* KPI ROW */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

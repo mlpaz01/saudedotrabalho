@@ -14,10 +14,11 @@ import {
 import { toast } from "sonner";
 import {
   FileText, Plus, Loader2, Building2, Download, Trash2, ArrowLeft, Save, ShieldCheck,
-  ListPlus, X, Info, CheckCircle2, Clock, Send, History, Paperclip, ExternalLink, FolderOpen,
+  ListPlus, X, Info, CheckCircle2, Clock, Send, History, Paperclip, ExternalLink, FolderOpen, Sparkles,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import AdminPGRGseManager from "./AdminPGRGseManager";
 
 const SEV_OPTS = [
   { v: "insignificante", label: "Insignificante (1)" },
@@ -115,6 +116,18 @@ export default function AdminPGR() {
     onSuccess: (r: any) => { toast.success("PGR salvo!"); setEditId(r.id); listQ.refetch(); },
     onError: (e: any) => toast.error(e?.message ?? "Erro ao salvar"),
   });
+  // Cria PGR vazio no banco assim que o usuário confirma o escopo no modal "Novo PGR".
+  // Isso garante que os blocos GSE Manager + Importações Inteligentes apareçam
+  // já no primeiro carregamento do editor (bloqueio reportado pelo Bruno).
+  const createBlankMut = trpc.pgr.createBlank.useMutation({
+    onSuccess: (r: any) => {
+      toast.success("Rascunho de PGR criado — preencha os dados.");
+      setScopeOpen(false);
+      listQ.refetch();
+      openEditor(r.id); // editId vira number → blocos aparecem
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao criar rascunho"),
+  });
   const genMut = trpc.pgr.generatePDF.useMutation({
     onSuccess: (r: any) => { setPdfUrl(r.url); toast.success("PDF do PGR gerado!"); listQ.refetch(); },
     onError: (e: any) => toast.error(e?.message ?? "Erro ao gerar PDF"),
@@ -141,6 +154,41 @@ export default function AdminPGR() {
     },
     onError: (e: any) => toast.error(e?.message ?? "Erro ao gerar"),
   });
+  // Modal de escopo do novo PGR: filial específica ou consolidado (todas as filiais).
+  const [scopeOpen, setScopeOpen] = useState(false);
+  // Sprint 1.7-A: secoes "Modelo legado" (GSE JSON, Inventario, EPC, EPI) ficam
+  // escondidas por padrao. Toggle no topo do editor permite reexibir caso o
+  // usuario precise visualizar/editar dados gravados antes da migracao.
+  const [showLegacy, setShowLegacy] = useState(false);
+  const [scopeMode, setScopeMode] = useState<"branch" | "consolidated">("consolidated");
+  const [scopeBranchId, setScopeBranchId] = useState<number | null>(null);
+  const branchesQ = trpc.pgr.listBranches.useQuery(
+    companyId ? { companyId } : undefined,
+    { enabled: companyId != null && scopeOpen }
+  );
+  const branches = (branchesQ.data ?? []) as any[];
+
+  // Importações inteligentes — RH e Ciclo Psicossocial.
+  const cyclesQ = trpc.pgr.listPsicossocialCycles.useQuery(
+    typeof editId === "number" && companyId ? { companyId, branchId: doc.branch_id ?? null } : undefined,
+    { enabled: typeof editId === "number" && companyId != null }
+  );
+  const importRhM = trpc.pgr.importFromRH.useMutation({
+    onSuccess: (r: any) => {
+      toast.success(`Importado do RH: ${r.setores} setor(es), ${r.cargos} cargo(s), ${r.totalColaboradores} colaborador(es).`);
+      if (typeof editId === "number") openEditor(editId);
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao importar do RH"),
+  });
+  const importCycleM = trpc.pgr.importFromCycle.useMutation({
+    onSuccess: (r: any) => {
+      toast.success(`Ciclo importado: ${r.inventario} item(ns) de inventário e ${r.plano} ação(ões).`);
+      if (typeof editId === "number") openEditor(editId);
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao importar ciclo"),
+  });
+  const [cycleSelect, setCycleSelect] = useState<string>("");
+
   const importAepM = trpc.pgr.importFromAEP.useMutation({
     onSuccess: (r: any) => {
       toast.success(r?.message ?? "Importado!");
@@ -182,11 +230,11 @@ export default function AdminPGR() {
     return <Badge className={`${d.cls} gap-1`}>{d.label}</Badge>;
   }
 
-  async function openEditor(id: number | "new") {
+  async function openEditor(id: number | "new", branchId: number | null = null) {
     setPdfUrl(null);
     try {
       const res: any = await utils.pgr.get.fetch(
-        id === "new" ? { companyId: companyId ?? undefined } : { id }
+        id === "new" ? { companyId: companyId ?? undefined, branchId } : { id }
       );
       const d = res.doc;
       setDoc({
@@ -220,6 +268,7 @@ export default function AdminPGR() {
     upsert.mutate({
       id: editId === "new" ? undefined : (editId as number),
       companyId: companyId ?? undefined,
+      branchId: doc.branch_id ?? null,
       title: doc.title,
       razaoSocial: doc.razao_social, nomeFantasia: doc.nome_fantasia, cnpj: doc.cnpj,
       endereco: doc.endereco, atividadePrincipal: doc.atividade_principal, grauRisco: doc.grau_risco,
@@ -309,7 +358,7 @@ export default function AdminPGR() {
             </button>
             <div className="flex-1"/>
             {dashTab === "lista" && (
-              <Button onClick={() => openEditor("new")} disabled={companyId == null} className="gap-2 mb-1" size="sm">
+              <Button onClick={() => { setScopeMode("consolidated"); setScopeBranchId(null); setScopeOpen(true); }} disabled={companyId == null} className="gap-2 mb-1" size="sm">
                 <Plus size={14} /> Novo PGR
               </Button>
             )}
@@ -353,6 +402,65 @@ export default function AdminPGR() {
               ))}
             </div>
           )}
+
+          {/* Modal: escopo do novo PGR — Filial específica vs Consolidado */}
+          <Dialog open={scopeOpen} onOpenChange={setScopeOpen}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Como deseja gerar o PGR?</DialogTitle>
+                <DialogDescription>
+                  O escopo do PGR define quais colaboradores, setores e ciclos serão importados.
+                  Você pode mudar isso depois editando o PGR.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-3 pt-2">
+                <label className="flex items-start gap-3 p-3 border rounded-lg cursor-pointer hover:bg-slate-50">
+                  <input type="radio" name="pgr-scope" checked={scopeMode === "consolidated"}
+                    onChange={() => setScopeMode("consolidated")} className="mt-1" />
+                  <div>
+                    <div className="font-semibold text-slate-900">Consolidado (todas as filiais)</div>
+                    <div className="text-xs text-slate-500">PGR abrangente da empresa, consolidando todas as filiais e setores.</div>
+                  </div>
+                </label>
+                <label className="flex items-start gap-3 p-3 border rounded-lg cursor-pointer hover:bg-slate-50">
+                  <input type="radio" name="pgr-scope" checked={scopeMode === "branch"}
+                    onChange={() => setScopeMode("branch")} className="mt-1" />
+                  <div className="flex-1">
+                    <div className="font-semibold text-slate-900">Apenas uma filial</div>
+                    <div className="text-xs text-slate-500 mb-2">PGR restrito aos colaboradores, setores e ciclos da filial escolhida.</div>
+                    {scopeMode === "branch" && (
+                      <Select value={scopeBranchId ? String(scopeBranchId) : ""} onValueChange={(v) => setScopeBranchId(Number(v))}>
+                        <SelectTrigger className="text-sm"><SelectValue placeholder="Selecione a filial" /></SelectTrigger>
+                        <SelectContent>
+                          {branches.length === 0 && (
+                            <div className="px-3 py-2 text-xs text-slate-500">Nenhuma filial cadastrada para esta empresa.</div>
+                          )}
+                          {branches.map((b: any) => (
+                            <SelectItem key={b.id} value={String(b.id)}>
+                              {b.name}{b.location ? ` — ${b.location}` : ""}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </div>
+                </label>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setScopeOpen(false)}>Cancelar</Button>
+                <Button disabled={createBlankMut.isPending} onClick={() => {
+                  if (scopeMode === "branch" && !scopeBranchId) { toast.error("Selecione a filial."); return; }
+                  createBlankMut.mutate({
+                    companyId: companyId ?? undefined,
+                    branchId: scopeMode === "branch" ? scopeBranchId : null,
+                  });
+                }}>
+                  {createBlankMut.isPending && <Loader2 size={14} className="animate-spin mr-1" />}
+                  Continuar
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
       </AppLayout>
     );
@@ -382,6 +490,11 @@ export default function AdminPGR() {
               <ShieldCheck className="text-primary" /> {editId === "new" ? "Novo PGR" : "Editar PGR"}
             </h1>
             <p className="text-sm text-muted-foreground mt-1">Preencha os dados do cliente. O texto normativo é inserido automaticamente.</p>
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
+              <Badge className={doc.branch_id ? "bg-blue-100 text-blue-700 border-blue-200" : "bg-emerald-100 text-emerald-700 border-emerald-200"}>
+                Escopo: {doc.branch_id ? `Filial — ${doc.branch_name ?? doc.branch_id}` : "Consolidado (todas as filiais)"}
+              </Badge>
+            </div>
           </div>
           <div className="flex gap-2">
             <Button variant="outline" onClick={save} disabled={upsert.isPending} className="gap-2">
@@ -422,6 +535,71 @@ export default function AdminPGR() {
             </a>
           </div>
         )}
+
+        {/* Importações inteligentes — reaproveita dados já existentes na plataforma. */}
+        {editId !== "new" && (
+          <section className="bg-indigo-50/50 border border-indigo-200 rounded-xl p-4 space-y-3">
+            <div>
+              <h2 className="font-semibold text-indigo-900 flex items-center gap-2"><Sparkles size={16} /> Importações Inteligentes</h2>
+              <p className="text-xs text-indigo-700 mt-0.5">Reaproveite informações já existentes (RH, ciclos psicossociais) — sem redigitar.</p>
+            </div>
+            <div className="grid md:grid-cols-2 gap-3">
+              <div className="bg-white border rounded-lg p-3 flex flex-col gap-2">
+                <div className="font-medium text-sm text-slate-900">Importar do RH</div>
+                <div className="text-xs text-slate-600">Puxa filiais, setores, cargos e contagem de colaboradores cadastrados na plataforma.</div>
+                <Button size="sm" onClick={() => importRhM.mutate({ pgrId: editId as number })} disabled={importRhM.isPending} className="gap-1 w-fit">
+                  {importRhM.isPending ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} Importar
+                </Button>
+              </div>
+              <div className="bg-white border rounded-lg p-3 flex flex-col gap-2">
+                <div className="font-medium text-sm text-slate-900">Importar Ciclo Psicossocial</div>
+                <div className="text-xs text-slate-600">Traz inventário e plano de ação do ciclo selecionado para dentro do PGR.</div>
+                <div className="flex gap-2">
+                  <Select value={cycleSelect} onValueChange={setCycleSelect}>
+                    <SelectTrigger className="text-sm h-9"><SelectValue placeholder="Selecione o ciclo" /></SelectTrigger>
+                    <SelectContent>
+                      {(cyclesQ.data ?? []).length === 0 && (
+                        <div className="px-3 py-2 text-xs text-slate-500">Nenhum ciclo cadastrado.</div>
+                      )}
+                      {((cyclesQ.data ?? []) as any[]).map((c: any) => (
+                        <SelectItem key={c.id} value={String(c.id)}>
+                          {c.cycleName} {c.branchName ? `· ${c.branchName}` : "· Consolidado"} ({c.invCount} riscos · {c.planCount} ações)
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button size="sm" disabled={!cycleSelect || importCycleM.isPending}
+                    onClick={() => importCycleM.mutate({ pgrId: editId as number, assessmentId: Number(cycleSelect) })}
+                    className="gap-1">
+                    {importCycleM.isPending ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} Importar
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* Gestão de GSE (Sprint 1 PGR Inteligente) — só faz sentido após salvar o PGR. */}
+        {typeof editId === "number" && (
+          <AdminPGRGseManager pgrId={editId as number} companyId={companyId} />
+        )}
+
+        {/* Toggle "Mostrar seções antigas" (Sprint 1.7-A). As 4 seções legadas
+            (GSE JSON, Inventário, EPC, EPI) ficam escondidas por padrão pra reduzir
+            ruído visual; quem precisar acessar dados gravados antes da migração
+            ativa este toggle. */}
+        <div className="flex items-center justify-end">
+          <label className="inline-flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={showLegacy}
+              onChange={(e) => setShowLegacy(e.target.checked)}
+              className="accent-amber-600"
+            />
+            Mostrar seções antigas (modelo legado)
+            {!showLegacy && <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded">4 ocultas</span>}
+          </label>
+        </div>
 
         {/* Identificação Contratada */}
         <section className="bg-white border rounded-xl p-5 space-y-3">
@@ -497,14 +675,22 @@ export default function AdminPGR() {
           <p className="text-xs text-muted-foreground">A logomarca e a assinatura aparecem na capa e na seção de responsabilidade técnica do PDF. Cole URLs de imagens (PNG/JPG).</p>
         </section>
 
-        {/* GSE / Grupos Similares de Exposição */}
-        <section className="bg-white border rounded-xl p-5 space-y-3">
+        {/* GSE / Grupos Similares de Exposição — MODELO LEGADO (será removido na Sprint 2) */}
+        {showLegacy && <section className="bg-amber-50/40 border border-amber-200 rounded-xl p-5 space-y-3">
           <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-foreground">Grupos Similares de Exposição (GSE)</h2>
+            <h2 className="font-semibold text-foreground flex items-center gap-2">
+              Grupos Similares de Exposição (GSE)
+              <Badge className="bg-amber-100 text-amber-700 border-amber-200 text-[10px]">Modelo legado</Badge>
+            </h2>
             <Button size="sm" variant="outline" onClick={() => addRow("gse_grupos", { grupo: "", funcoes: "", atividades: "", num: "", sexoM: "", sexoF: "", horario: "", local: "" })} className="gap-1">
               <ListPlus size={14} /> Adicionar grupo
             </Button>
           </div>
+          <p className="text-xs text-amber-700">
+            ⚠ Esta seção será removida na Sprint 2. Use o novo bloco "Grupos Similares de Exposição (GSE)" no topo
+            do editor — ele suporta riscos, EPC, EPI, plano 5W2H, treinamentos e evidências por GSE,
+            e alimenta direto o PDF. PGRs com dados aqui podem ser migrados com 1 clique no banner ambar do bloco novo.
+          </p>
           <p className="text-xs text-muted-foreground">GSE agrupa trabalhadores com perfil de exposição similar para avaliação quantitativa.</p>
           {doc.gse_grupos.length === 0 ? (
             <p className="text-sm text-muted-foreground">Nenhum GSE cadastrado.</p>
@@ -526,7 +712,7 @@ export default function AdminPGR() {
               </div>
             </div>
           ))}
-        </section>
+        </section>}
 
         {/* Notas Tecnicas */}
         <section className="bg-white border rounded-xl p-5 space-y-3">
@@ -558,10 +744,13 @@ export default function AdminPGR() {
           )}
         </section>
 
-        {/* Inventário de Riscos */}
-        <section className="bg-white border rounded-xl p-5 space-y-3">
+        {/* Inventário de Riscos — MODELO LEGADO (será removido na Sprint 2) */}
+        {showLegacy && <section className="bg-amber-50/40 border border-amber-200 rounded-xl p-5 space-y-3">
           <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-foreground">Inventário de Riscos</h2>
+            <h2 className="font-semibold text-foreground flex items-center gap-2">
+              Inventário de Riscos
+              <Badge className="bg-amber-100 text-amber-700 border-amber-200 text-[10px]">Modelo legado</Badge>
+            </h2>
             <div className="flex gap-2">
               <Button size="sm" variant="outline" onClick={async () => {
                 setImportingPsy(true);
@@ -690,12 +879,15 @@ export default function AdminPGR() {
               </div>
             </div>
           ))}
-        </section>
+        </section>}
 
-        {/* EPC - Equipamentos de Proteção Coletiva */}
-        <section className="bg-white border rounded-xl p-5 space-y-3">
+        {/* EPC — MODELO LEGADO (será removido na Sprint 2) */}
+        {showLegacy && <section className="bg-amber-50/40 border border-amber-200 rounded-xl p-5 space-y-3">
           <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-foreground">EPC — Equipamentos de Proteção Coletiva</h2>
+            <h2 className="font-semibold text-foreground flex items-center gap-2">
+              EPC — Equipamentos de Proteção Coletiva
+              <Badge className="bg-amber-100 text-amber-700 border-amber-200 text-[10px]">Modelo legado</Badge>
+            </h2>
             <Button size="sm" variant="outline" onClick={() => addRow("epc_itens", { descricao: "", aplicacao: "" })} className="gap-1">
               <ListPlus size={14} /> Adicionar EPC
             </Button>
@@ -709,7 +901,7 @@ export default function AdminPGR() {
               <Button size="icon" variant="ghost" onClick={() => delRow("epc_itens", i)}><X size={14} className="text-rose-600" /></Button>
             </div>
           ))}
-        </section>
+        </section>}
 
         {/* Plano de Acao Psicossocial */}
         <section className="bg-white border rounded-xl p-5 space-y-3">
@@ -786,10 +978,13 @@ export default function AdminPGR() {
           ))}
         </section>
 
-        {/* EPI - Equipamentos de Proteção Individual */}
-        <section className="bg-white border rounded-xl p-5 space-y-3">
+        {/* EPI — MODELO LEGADO (será removido na Sprint 2) */}
+        {showLegacy && <section className="bg-amber-50/40 border border-amber-200 rounded-xl p-5 space-y-3">
           <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-foreground">EPI — Equipamentos de Proteção Individual</h2>
+            <h2 className="font-semibold text-foreground flex items-center gap-2">
+              EPI — Equipamentos de Proteção Individual
+              <Badge className="bg-amber-100 text-amber-700 border-amber-200 text-[10px]">Modelo legado</Badge>
+            </h2>
             <Button size="sm" variant="outline" onClick={() => addRow("epi_itens", { descricao: "", ca: "", aplicacao: "", validade: "", periodicidade: "", fichaEntrega: "" })} className="gap-1">
               <ListPlus size={14} /> Adicionar EPI
             </Button>
@@ -812,7 +1007,7 @@ export default function AdminPGR() {
               </div>
             </div>
           ))}
-        </section>
+        </section>}
 
         {/* 8.3 Caracterizacao Operacional dos Setores */}
         <section className="bg-white border rounded-xl p-5 space-y-3">

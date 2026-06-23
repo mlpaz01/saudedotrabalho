@@ -2,6 +2,7 @@ import { useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import AppLayout from "@/components/AppLayout";
+import { useAuth } from "@/_core/hooks/useAuth";
 
 // Signature files are written by the server to /var/www/saudedotrabalho/uploads/signatures
 // and served by nginx at the ORIGIN-absolute path "/uploads/...". The SPA itself is mounted
@@ -16,7 +17,19 @@ function signatureSrc(url?: string | null): string | undefined {
 }
 
 export default function AdminResponsaveisTecnicos() {
-  const list = trpc.responsibleTechnicians.list.useQuery({});
+  const { user } = useAuth();
+  const isGlobal = (user?.role ?? "") === "admin_global" || (user?.role ?? "") === "super_admin";
+  // Super Admin (companyId NULL) precisa escolher a empresa antes de cadastrar/listar.
+  // Demais perfis usam a empresa do usuário automaticamente (campo nem aparece).
+  const [pickedCompanyId, setPickedCompanyId] = useState<number | null>(null);
+  const companiesQ = trpc.pgr.listCompanies.useQuery(undefined, { enabled: isGlobal });
+  const companies = (companiesQ.data ?? []) as Array<{ id: number; name: string }>;
+  const effectiveCompanyId = isGlobal ? pickedCompanyId : (user?.companyId ?? null);
+
+  const list = trpc.responsibleTechnicians.list.useQuery(
+    isGlobal && pickedCompanyId ? { companyId: pickedCompanyId } : {},
+    { enabled: !isGlobal || !!pickedCompanyId }
+  );
   const utils = trpc.useUtils();
   const create = trpc.responsibleTechnicians.create.useMutation({
     onSuccess: (res: any) => {
@@ -55,13 +68,18 @@ export default function AdminResponsaveisTecnicos() {
   const [profession, setProfession] = useState("");
   const [art, setArt] = useState("");
   const [isDefault, setIsDefault] = useState(false);
+  // Sprint 1.7-B item 5: 3 flags independentes para PGR, Psicossocial e AEP.
+  const [isDefaultPgr, setIsDefaultPgr] = useState(false);
+  const [isDefaultPsico, setIsDefaultPsico] = useState(false);
+  const [isDefaultAep, setIsDefaultAep] = useState(false);
   const [signatureBase64, setSignatureBase64] = useState<string | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
 
   function reset() {
     setEditingId(null);
     setName(""); setRegistration(""); setProfession(""); setArt("");
-    setIsDefault(false); setSignatureBase64(null); setPreview(null);
+    setIsDefault(false); setIsDefaultPgr(false); setIsDefaultPsico(false); setIsDefaultAep(false);
+    setSignatureBase64(null); setPreview(null);
   }
 
   function onFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -90,6 +108,9 @@ export default function AdminResponsaveisTecnicos() {
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) { toast.error("Informe o nome."); return; }
+    if (isGlobal && !pickedCompanyId) {
+      toast.error("Super Admin: selecione a empresa antes de cadastrar."); return;
+    }
     const payload = {
       name: name.trim(),
       registration: registration || null,
@@ -97,10 +118,13 @@ export default function AdminResponsaveisTecnicos() {
       art: art || null,
       signatureBase64: signatureBase64 || undefined,
       isDefault,
+      isDefaultPgr,
+      isDefaultPsicossocial: isDefaultPsico,
+      isDefaultAep,
     };
     try {
       if (editingId) update.mutate({ id: editingId, ...payload });
-      else create.mutate(payload);
+      else create.mutate({ ...(isGlobal ? { companyId: pickedCompanyId! } : {}), ...payload });
     } catch (err: any) {
       toast.error(`Erro ao enviar: ${err?.message ?? "desconhecido"}`);
     }
@@ -113,6 +137,9 @@ export default function AdminResponsaveisTecnicos() {
     setProfession(r.profession || "");
     setArt(r.art || "");
     setIsDefault(!!r.isDefault);
+    setIsDefaultPgr(!!r.isDefaultPgr);
+    setIsDefaultPsico(!!r.isDefaultPsicossocial);
+    setIsDefaultAep(!!r.isDefaultAep);
     setPreview(r.signatureUrl || null);
     setSignatureBase64(null);
   }
@@ -123,16 +150,61 @@ export default function AdminResponsaveisTecnicos() {
       <h1 className="text-2xl font-bold mb-1">Responsáveis Técnicos</h1>
       <p className="text-gray-600 mb-6">Cadastre os técnicos responsáveis e suas assinaturas digitais (PNG) para uso nos laudos.</p>
 
-      <form onSubmit={onSubmit} className="border rounded p-4 mb-6 bg-white space-y-3">
+      {isGlobal && (
+        <div className="border border-blue-200 bg-blue-50 rounded p-3 mb-4">
+          <label className="block text-xs font-semibold text-blue-900 mb-1">
+            Empresa (obrigatório para Super Admin)
+          </label>
+          <select
+            value={pickedCompanyId ?? ""}
+            onChange={(e) => setPickedCompanyId(e.target.value ? Number(e.target.value) : null)}
+            className="w-full border rounded px-3 py-2 bg-white"
+          >
+            <option value="">— selecione a empresa —</option>
+            {companies.map((c) => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+          {!pickedCompanyId && (
+            <p className="text-xs text-blue-700 mt-1">
+              Escolha a empresa para a qual está cadastrando o Responsável Técnico.
+              O cadastro fica vinculado a ela e aparece nos laudos dessa empresa.
+            </p>
+          )}
+        </div>
+      )}
+
+      <form onSubmit={onSubmit} className={`border rounded p-4 mb-6 bg-white space-y-3 ${isGlobal && !pickedCompanyId ? 'opacity-50 pointer-events-none' : ''}`}>
         <h2 className="font-semibold">{editingId ? "Editar responsável" : "Novo responsável"}</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <input className="border rounded px-3 py-2" placeholder="Nome completo *" value={name} onChange={e=>setName(e.target.value)} />
-          <input className="border rounded px-3 py-2" placeholder="Registro profissional (ex: CRP 55-33301)" value={registration} onChange={e=>setRegistration(e.target.value)} />
+          <input className="border rounded px-3 py-2" placeholder="Registro profissional (ex.: CRP 06/12345, CREA 123456-D)" value={registration} onChange={e=>setRegistration(e.target.value)} />
           <input className="border rounded px-3 py-2" placeholder="Profissão (ex: Psicóloga, Engenheiro de Segurança)" value={profession} onChange={e=>setProfession(e.target.value)} />
           <input className="border rounded px-3 py-2" placeholder="ART / Nº documento (opcional)" value={art} onChange={e=>setArt(e.target.value)} />
         </div>
-        <div className="flex items-center gap-3">
-          <label className="flex items-center gap-2"><input type="checkbox" checked={isDefault} onChange={e=>setIsDefault(e.target.checked)} /> Definir como padrão</label>
+        <div className="border border-slate-200 rounded-md p-3 bg-slate-50/40">
+          <p className="text-xs font-semibold text-slate-700 mb-2">Marcar como Responsável Técnico padrão para:</p>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={isDefaultPgr} onChange={e=>setIsDefaultPgr(e.target.checked)} />
+              <span><b>PGR</b> <small className="text-slate-500">(Programa de Gerenciamento)</small></span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={isDefaultPsico} onChange={e=>setIsDefaultPsico(e.target.checked)} />
+              <span><b>Psicossocial</b> <small className="text-slate-500">(DRPS / Laudo)</small></span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={isDefaultAep} onChange={e=>setIsDefaultAep(e.target.checked)} />
+              <span><b>AEP</b> <small className="text-slate-500">(Análise Ergonômica)</small></span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={isDefault} onChange={e=>setIsDefault(e.target.checked)} />
+              <span><b>Genérico</b> <small className="text-slate-500">(fallback)</small></span>
+            </label>
+          </div>
+          <p className="text-xs text-slate-500 mt-1.5">
+            Cada documento pode ter um Responsável Técnico diferente. O genérico é usado como fallback se nenhum específico estiver marcado.
+          </p>
         </div>
         <div>
           <label className="block text-sm font-medium mb-1">Assinatura (PNG/JPG) — fundo transparente recomendado</label>

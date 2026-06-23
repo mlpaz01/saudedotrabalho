@@ -301,7 +301,7 @@ export default function AdminUsers() {
 }
 
 // ----- CSV import -----------------------------------------------------------
-type ParsedRow = { email: string; nome: string; filial: string; setor: string; perfil: string };
+type ParsedRow = { email: string; nome: string; filial: string; setor: string; cargo: string; perfil: string };
 
 function stripAccents(s: string) {
   return s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
@@ -338,12 +338,16 @@ function parseCSV(text: string): ParsedRow[] {
   let iNome = find("nome");
   let iFilial = find("filial", "unidade");
   let iSetor = find("setor", "departamento", "depto");
-  let iPerfil = find("perfil", "acesso", "funcao", "cargo", "papel");
+  // Cargo é coluna SEPARADA do perfil (papel/role) — antes "cargo" caía em iPerfil
+  // por engano. Agora cargo casa só com cargo/função/position; perfil só com perfil/acesso/papel.
+  let iCargo = find("cargo", "funcao", "função", "position");
+  let iPerfil = find("perfil", "acesso", "papel");
 
   const firstHasEmail = grid[0].some((c) => c.includes("@"));
   const hasHeader = iEmail !== -1 && !firstHasEmail;
   const dataRows = hasHeader ? grid.slice(1) : grid;
-  if (!hasHeader) { iEmail = 0; iNome = 1; iFilial = 2; iSetor = 3; iPerfil = 4; }
+  // Ordem padrão sem cabeçalho: email; nome; filial; setor; cargo; perfil
+  if (!hasHeader) { iEmail = 0; iNome = 1; iFilial = 2; iSetor = 3; iCargo = 4; iPerfil = 5; }
 
   const at = (row: string[], idx: number) => (idx >= 0 && idx < row.length ? row[idx] : "");
   return dataRows
@@ -352,17 +356,18 @@ function parseCSV(text: string): ParsedRow[] {
       nome: at(r, iNome),
       filial: at(r, iFilial),
       setor: at(r, iSetor),
+      cargo: at(r, iCargo),
       perfil: at(r, iPerfil),
     }))
     .filter((r) => r.email || r.nome);
 }
 
 const CSV_TEMPLATE =
-  "e-mail corporativo;nome;filial;setor;perfil\n" +
-  "joao.silva@empresa.com;João Silva;Matriz;Produção;colaborador\n" +
-  "ana.gestora@empresa.com;Ana Gestora;Matriz;Produção;chefia\n" +
-  "maria.souza@empresa.com;Maria Souza;Filial São Paulo;Recursos Humanos;rh\n" +
-  "carlos.lima@empresa.com;Carlos Lima;Matriz;Diretoria;admin\n";
+  "e-mail corporativo;nome;filial;setor;cargo;perfil\n" +
+  "joao.silva@empresa.com;João Silva;Matriz;Produção;Operador de Máquinas;colaborador\n" +
+  "ana.gestora@empresa.com;Ana Gestora;Matriz;Produção;Coordenadora de Produção;chefia\n" +
+  "maria.souza@empresa.com;Maria Souza;Filial São Paulo;Recursos Humanos;Analista de RH;rh\n" +
+  "carlos.lima@empresa.com;Carlos Lima;Matriz;Diretoria;Diretor Executivo;admin\n";
 
 function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported: () => void }) {
   const companiesQ = trpc.pgr.listCompanies.useQuery();
@@ -501,12 +506,17 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
                 </button>
               </div>
               <p className="text-xs text-muted-foreground">
-                Colunas: <code>e-mail corporativo; nome; filial; setor; perfil</code>. Perfil aceito: <b>colaborador</b>, <b>chefia</b>, <b>rh</b> ou <b>admin</b>.
+                <b>Colunas (nesta ordem):</b> <code>e-mail corporativo; nome; filial; setor; cargo; perfil</code>.
+                <br />
+                <b>Cargo é obrigatório</b> — é usado pelo PGR/AEP/EPI/treinamentos. Aceita variações de cabeçalho: <code>cargo</code>, <code>função</code>, <code>position</code>.
+                <br />
+                <b>Perfil</b> aceito: <code>colaborador</code>, <code>chefia</code>, <code>rh</code> ou <code>admin</code>.
+                <br />
                 Filiais e setores inexistentes serão criados automaticamente.
               </p>
               <textarea
                 className="w-full border rounded-md px-3 py-2 text-sm font-mono h-28 bg-white"
-                placeholder="email;nome;filial;setor;perfil"
+                placeholder="email;nome;filial;setor;cargo;perfil"
                 value={raw}
                 onChange={(e) => setRaw(e.target.value)}
               />
@@ -544,6 +554,7 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
                             <th className="text-left px-2 py-1.5">Nome</th>
                             <th className="text-left px-2 py-1.5">Filial</th>
                             <th className="text-left px-2 py-1.5">Setor</th>
+                            <th className="text-left px-2 py-1.5">Cargo</th>
                             <th className="text-left px-2 py-1.5">Perfil</th>
                             <th className="text-left px-2 py-1.5">Ação</th>
                           </tr>
@@ -555,6 +566,7 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
                               <td className="px-2 py-1">{r.nome || "—"}</td>
                               <td className="px-2 py-1">{r.filial || "—"}{r.branchAction === "create" && <span className="text-sky-600"> (nova)</span>}</td>
                               <td className="px-2 py-1">{r.setor || "—"}{r.sectorAction === "create" && <span className="text-sky-600"> (novo)</span>}</td>
+                              <td className={`px-2 py-1 ${!r.cargo ? "text-rose-600" : ""}`}>{r.cargo || "—"}</td>
                               <td className="px-2 py-1">{r.roleLabel}</td>
                               <td className="px-2 py-1">
                                 {r.status === "ok"

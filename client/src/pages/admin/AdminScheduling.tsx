@@ -15,10 +15,12 @@ import AppLayout from "@/components/AppLayout";
 
 const DAYS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 const STATUS_BADGE: Record<string, { label: string; cls: string; icon: any }> = {
-  pending:   { label: "Pendente",   cls: "bg-amber-100 text-amber-700",   icon: AlertCircle },
-  confirmed: { label: "Confirmado", cls: "bg-blue-100 text-blue-700",     icon: CheckCircle },
-  completed: { label: "Concluído",  cls: "bg-emerald-100 text-emerald-700", icon: CheckCircle },
-  cancelled: { label: "Cancelado",  cls: "bg-red-100 text-red-700",       icon: XCircle },
+  pending:     { label: "Agendado",      cls: "bg-amber-100 text-amber-700",   icon: AlertCircle },
+  confirmed:   { label: "Confirmado",    cls: "bg-blue-100 text-blue-700",     icon: CheckCircle },
+  completed:   { label: "Realizado",     cls: "bg-emerald-100 text-emerald-700", icon: CheckCircle },
+  cancelled:   { label: "Cancelado",     cls: "bg-red-100 text-red-700",       icon: XCircle },
+  no_show:     { label: "Não compareceu",cls: "bg-orange-100 text-orange-700", icon: AlertCircle },
+  rescheduled: { label: "Reagendado",    cls: "bg-purple-100 text-purple-700", icon: Clock },
 };
 
 function StatusBadge({ status }: { status: string }) {
@@ -35,8 +37,13 @@ export default function AdminScheduling() {
   const { user } = useAuth();
   const isPsicologo = user?.role === "psicologo";
   const isAdminRole = ["admin", "rh", "admin_global", "super_admin", "sesmt"].includes(user?.role ?? "");
+  // Gestão de profissionais/disponibilidade pertence ao Psicólogo/Profissional de Saúde
+  // (e admins gerais). O RH fica apenas com a visão de agendamentos/relatórios.
+  const canManageProfessionals = ["psicologo", "admin", "admin_global", "company_admin", "super_admin"].includes(user?.role ?? "");
 
-  const [tab, setTab] = useState<"appointments" | "professionals">("appointments");
+  // Apenas psicólogo + admins veem (e escrevem) as observações profissionais (LGPD).
+  const canSeeOutcome = ["psicologo", "admin", "admin_global", "company_admin", "super_admin"].includes(user?.role ?? "");
+  const [tab, setTab] = useState<"appointments" | "professionals" | "indicators">("appointments");
   const [showProfDialog, setShowProfDialog] = useState(false);
   const [editingProf, setEditingProf] = useState<any>(null);
   const [showAvailDialog, setShowAvailDialog] = useState(false);
@@ -93,12 +100,32 @@ export default function AdminScheduling() {
   }
 
   // Status dialog
-  const [statusForm, setStatusForm] = useState({ status: "confirmed" as any, meetingUrl: "", cancelReason: "" });
-  function openStatus(a: any) { setEditingAppt(a); setStatusForm({ status: a.status, meetingUrl: a.meetingUrl ?? "", cancelReason: "" }); setShowStatusDialog(true); }
+  const [statusForm, setStatusForm] = useState({ status: "confirmed" as any, meetingUrl: "", cancelReason: "", outcomeNotes: "" });
+  function openStatus(a: any) {
+    setEditingAppt(a);
+    setStatusForm({
+      status: a.status,
+      meetingUrl: a.meetingUrl ?? "",
+      cancelReason: a.cancelReason ?? "",
+      outcomeNotes: canSeeOutcome ? (a.outcomeNotes ?? "") : "",
+    });
+    setShowStatusDialog(true);
+  }
   function saveStatus() {
     if (!editingAppt) return;
-    updateStatusMut.mutate({ id: editingAppt.id, status: statusForm.status, meetingUrl: statusForm.meetingUrl || undefined, cancelReason: statusForm.cancelReason || undefined });
+    updateStatusMut.mutate({
+      id: editingAppt.id,
+      status: statusForm.status,
+      meetingUrl: statusForm.meetingUrl || undefined,
+      cancelReason: statusForm.cancelReason || undefined,
+      // Só envia outcomeNotes se este perfil pode escrever (psicólogo/admin).
+      outcomeNotes: canSeeOutcome ? (statusForm.outcomeNotes || undefined) : undefined,
+    });
   }
+
+  // Indicadores básicos do programa (acessível a RH/psicólogo/admins; SEM outcome_notes).
+  const indicatorsQ = trpc.scheduling.indicators.useQuery(undefined, { enabled: tab === "indicators" });
+  const ind = indicatorsQ.data as any;
 
   // Book for employee form
   const [bookForm, setBookForm] = useState({
@@ -156,7 +183,8 @@ export default function AdminScheduling() {
         <div className="flex gap-2 border-b border-slate-200 pb-0">
           {[
             { id: "appointments", label: isPsicologo ? "Minha Agenda" : "Agendamentos" },
-            ...(!isPsicologo ? [{ id: "professionals", label: "Profissionais" }] : []),
+            ...(canManageProfessionals ? [{ id: "professionals", label: "Profissionais" }] : []),
+            { id: "indicators", label: "Indicadores" },
           ].map(t => (
             <button
               key={t.id}
@@ -244,6 +272,66 @@ export default function AdminScheduling() {
                 </div>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* ── Indicators Tab ── */}
+        {tab === "indicators" && (
+          <div className="space-y-4">
+            <p className="text-xs text-slate-500">
+              Indicadores do programa de acolhimento. RH e gestão veem agregados (não há acesso a observações profissionais — LGPD).
+            </p>
+            {indicatorsQ.isLoading && <p className="text-slate-400 text-sm">Carregando indicadores...</p>}
+            {ind && (
+              <>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="bg-white border border-slate-200 rounded-xl p-4">
+                    <div className="text-xs uppercase tracking-wide text-slate-500">Total de atendimentos</div>
+                    <div className="text-2xl font-bold text-slate-800 mt-1">{ind.total ?? 0}</div>
+                  </div>
+                  <div className="bg-white border border-slate-200 rounded-xl p-4">
+                    <div className="text-xs uppercase tracking-wide text-slate-500">Comparecimento</div>
+                    <div className="text-2xl font-bold text-emerald-700 mt-1">{ind.attendanceRate ?? 0}%</div>
+                  </div>
+                  <div className="bg-white border border-slate-200 rounded-xl p-4">
+                    <div className="text-xs uppercase tracking-wide text-slate-500">Não compareceu</div>
+                    <div className="text-2xl font-bold text-orange-700 mt-1">{ind.noShowRate ?? 0}%</div>
+                  </div>
+                  <div className="bg-white border border-slate-200 rounded-xl p-4">
+                    <div className="text-xs uppercase tracking-wide text-slate-500">Cancelamentos</div>
+                    <div className="text-2xl font-bold text-rose-700 mt-1">{ind.cancelRate ?? 0}%</div>
+                  </div>
+                </div>
+                <div className="bg-white border border-slate-200 rounded-xl p-4">
+                  <h3 className="font-semibold text-slate-800 text-sm mb-2">Distribuição por status</h3>
+                  <div className="space-y-1">
+                    {Object.entries(ind.byStatus ?? {}).map(([k, v]: any) => {
+                      const meta = STATUS_BADGE[k] ?? { label: k, cls: "bg-slate-100 text-slate-700" } as any;
+                      return (
+                        <div key={k} className="flex items-center gap-2 text-sm">
+                          <span className={`inline-block w-32 text-xs px-2 py-0.5 rounded ${meta.cls}`}>{meta.label}</span>
+                          <span className="text-slate-700">{v}</span>
+                        </div>
+                      );
+                    })}
+                    {Object.keys(ind.byStatus ?? {}).length === 0 && <p className="text-xs text-slate-400">Sem dados ainda.</p>}
+                  </div>
+                </div>
+                <div className="bg-white border border-slate-200 rounded-xl p-4">
+                  <h3 className="font-semibold text-slate-800 text-sm mb-2">Evolução mensal (12 meses)</h3>
+                  <div className="space-y-1">
+                    {((ind.byMonth as any[]) ?? []).map((m: any) => (
+                      <div key={m.month} className="flex items-center gap-2 text-sm">
+                        <span className="w-20 text-xs text-slate-500">{m.month}</span>
+                        <span className="text-slate-700">{m.total} agendado(s)</span>
+                        <span className="text-emerald-700 text-xs">· {m.completed} realizado(s)</span>
+                      </div>
+                    ))}
+                    {((ind.byMonth as any[]) ?? []).length === 0 && <p className="text-xs text-slate-400">Sem dados nos últimos 12 meses.</p>}
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -413,13 +501,15 @@ export default function AdminScheduling() {
                 onChange={e => setStatusForm(f => ({ ...f, status: e.target.value as any }))}
                 className="w-full border border-slate-200 rounded px-3 py-1.5 text-sm mt-1"
               >
-                <option value="pending">Pendente</option>
+                <option value="pending">Agendado</option>
                 <option value="confirmed">Confirmado</option>
-                <option value="completed">Concluído</option>
+                <option value="completed">Realizado</option>
                 <option value="cancelled">Cancelado</option>
+                <option value="no_show">Não compareceu</option>
+                <option value="rescheduled">Reagendado</option>
               </select>
             </div>
-            {statusForm.status === "confirmed" && (
+            {(statusForm.status === "confirmed" || statusForm.status === "rescheduled") && (
               <div>
                 <label className="text-sm font-medium text-slate-700">Link da reunião (Google Meet / Teams)</label>
                 <Input value={statusForm.meetingUrl} onChange={e => setStatusForm(f => ({ ...f, meetingUrl: e.target.value }))} placeholder="https://meet.google.com/..." />
@@ -429,6 +519,21 @@ export default function AdminScheduling() {
               <div>
                 <label className="text-sm font-medium text-slate-700">Motivo do cancelamento</label>
                 <Textarea value={statusForm.cancelReason} onChange={e => setStatusForm(f => ({ ...f, cancelReason: e.target.value }))} rows={2} />
+              </div>
+            )}
+            {canSeeOutcome && (
+              <div className="border-t border-slate-200 pt-3">
+                <label className="text-sm font-medium text-slate-700 flex items-center gap-1">
+                  Observações Profissionais
+                  <span className="text-[10px] font-semibold uppercase bg-rose-100 text-rose-700 px-1.5 py-0.5 rounded">sigiloso</span>
+                </label>
+                <p className="text-xs text-slate-500 mt-0.5 mb-1">Visível apenas para o profissional de saúde e admins gerais — NÃO é exibido ao RH, à chefia ou ao colaborador.</p>
+                <Textarea
+                  value={statusForm.outcomeNotes}
+                  onChange={e => setStatusForm(f => ({ ...f, outcomeNotes: e.target.value }))}
+                  rows={4}
+                  placeholder="Anotações clínicas/administrativas restritas ao profissional."
+                />
               </div>
             )}
             <div className="flex gap-2 justify-end pt-1">

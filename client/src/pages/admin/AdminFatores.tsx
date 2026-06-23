@@ -25,20 +25,20 @@ const CRITICALITY_LABEL: Record<string, { label: string; cls: string }> = {
 };
 
 export default function AdminFatores() {
-  const factorsQ = trpc.riskAssessment.listFactorsWithLinks.useQuery();
-  const coursesQ = trpc.riskAssessment.listAvailableCourses.useQuery();
+  const factorsQ = trpc.riskCorrelation.listFactorsWithLinks.useQuery();
+  const coursesQ = trpc.riskCorrelation.listAvailableCourses.useQuery();
   const [search, setSearch] = useState("");
   const [openFactorId, setOpenFactorId] = useState<number | null>(null);
 
-  const linkMut = trpc.riskAssessment.linkCourseToFactor.useMutation({
+  const linkMut = trpc.riskCorrelation.linkCourseToFactor.useMutation({
     onSuccess: () => { toast.success("Curso vinculado ao fator."); factorsQ.refetch(); },
     onError: (e: any) => toast.error(e?.message ?? "Erro ao vincular"),
   });
-  const unlinkMut = trpc.riskAssessment.unlinkCourseFromFactor.useMutation({
+  const unlinkMut = trpc.riskCorrelation.unlinkCourseFromFactor.useMutation({
     onSuccess: () => { toast.success("Vínculo removido."); factorsQ.refetch(); },
     onError: (e: any) => toast.error(e?.message ?? "Erro ao desvincular"),
   });
-  const updateCatMut = trpc.riskAssessment.updateCourseCategory.useMutation({
+  const updateCatMut = trpc.riskCorrelation.updateCourseCategory.useMutation({
     onSuccess: () => { toast.success("Categoria atualizada."); coursesQ.refetch(); factorsQ.refetch(); },
     onError: (e: any) => toast.error(e?.message ?? "Erro ao atualizar"),
   });

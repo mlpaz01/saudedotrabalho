@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, Fragment } from "react";
 import { useLocation } from "wouter";
 import AppLayout from "@/components/AppLayout";
 import { trpc } from "@/lib/trpc";
@@ -127,6 +127,23 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
   const stats = statsRaw ?? { drpsResponses: 0, aepResponses: 0 };
   const inv = (inventory ?? []) as any[];
   const plan = ((actionPlan ?? []) as any[]).slice().sort((x, y) => (PRIORITY_RANK[y.priority] ?? 0) - (PRIORITY_RANK[x.priority] ?? 0));
+  // Segmentação por setor (NR-01): agrupa inventário e plano pelo setor de cada item.
+  // Quando nenhum item tem setor (avaliação consolidada antiga), cai num único grupo sem cabeçalho.
+  function groupBySector(items: any[]) {
+    const groups = new Map<string, { sectorName: string; sectorId: number | null; items: any[] }>();
+    for (const it of items) {
+      const sid = it.sector_id != null ? Number(it.sector_id) : null;
+      const key = sid != null ? String(sid) : "_none";
+      const name = it.sector_name || (sid != null ? `Setor ${sid}` : "");
+      if (!groups.has(key)) groups.set(key, { sectorName: name, sectorId: sid, items: [] });
+      groups.get(key)!.items.push(it);
+    }
+    return Array.from(groups.values()).sort((x, y) => (x.sectorName || "").localeCompare(y.sectorName || ""));
+  }
+  const invGroups = groupBySector(inv);
+  const planGroups = groupBySector(plan);
+  const invHasSectors = invGroups.some((g) => g.sectorId != null);
+  const planHasSectors = planGroups.some((g) => g.sectorId != null);
   const startDate = a?.start_date ? new Date(a.start_date) : new Date();
   const monthCols = monthsBetween(startDate, 12);
 
@@ -283,26 +300,37 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {[...inv].sort((a: any, b: any) => (PRIORITY_RANK[b.risco_final] ?? 0) - (PRIORITY_RANK[a.risco_final] ?? 0)).map((it: any) => {
-                    const cls = RISK_COLORS[it.risco_final] ?? RISK_COLORS.baixo;
-                    return (
-                      <tr key={it.id} className="border-t hover:bg-slate-50/60">
-                        <td className="px-3 py-2 text-slate-500">{it.axis_order}</td>
-                        <td className="px-3 py-2 font-medium text-slate-900">{it.factor_name}</td>
-                        <td className="px-3 py-2 capitalize">{it.gravidade}</td>
-                        <td className="px-3 py-2 capitalize">{it.probabilidade}</td>
-                        <td className="px-3 py-2">
-                          <span className={`text-xs font-semibold uppercase px-2 py-0.5 rounded border ${cls}`}>{RISK_LABEL[it.risco_final] ?? it.risco_final}</span>
-                        </td>
-                        <td className="px-3 py-2 text-xs text-slate-500">
-                          {it.drps_responses_count > 0 ? `${it.drps_responses_count} resp · média ${Number(it.drps_score_avg ?? 0).toFixed(2)}` : "—"}
-                        </td>
-                        <td className="px-3 py-2 text-right">
-                          <Button variant="ghost" size="sm" onClick={() => setEditing(it)}><Pencil size={14} /></Button>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                  {invGroups.map((g) => (
+                    <Fragment key={g.sectorId ?? "_none"}>
+                      {invHasSectors && (
+                        <tr className="bg-slate-100/80 border-t">
+                          <td colSpan={7} className="px-3 py-1.5 font-semibold text-slate-700 text-xs uppercase tracking-wide">
+                            Setor: {g.sectorName || "Não atribuído"}
+                          </td>
+                        </tr>
+                      )}
+                      {[...g.items].sort((a: any, b: any) => (PRIORITY_RANK[b.risco_final] ?? 0) - (PRIORITY_RANK[a.risco_final] ?? 0)).map((it: any) => {
+                        const cls = RISK_COLORS[it.risco_final] ?? RISK_COLORS.baixo;
+                        return (
+                          <tr key={it.id} className="border-t hover:bg-slate-50/60">
+                            <td className="px-3 py-2 text-slate-500">{it.axis_order}</td>
+                            <td className="px-3 py-2 font-medium text-slate-900">{it.factor_name}</td>
+                            <td className="px-3 py-2 capitalize">{it.gravidade}</td>
+                            <td className="px-3 py-2 capitalize">{it.probabilidade}</td>
+                            <td className="px-3 py-2">
+                              <span className={`text-xs font-semibold uppercase px-2 py-0.5 rounded border ${cls}`}>{RISK_LABEL[it.risco_final] ?? it.risco_final}</span>
+                            </td>
+                            <td className="px-3 py-2 text-xs text-slate-500">
+                              {it.drps_responses_count > 0 ? `${it.drps_responses_count} resp · média ${Number(it.drps_score_avg ?? 0).toFixed(2)}` : "—"}
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              <Button variant="ghost" size="sm" onClick={() => setEditing(it)}><Pencil size={14} /></Button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </Fragment>
+                  ))}
                 </tbody>
               </table>
             </div>
@@ -387,7 +415,14 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
               </div>
             ) : (
               <div className="space-y-2">
-                {plan.map((p: any) => (
+                {planGroups.map((g) => (
+                  <Fragment key={g.sectorId ?? "_none"}>
+                    {planHasSectors && (
+                      <div className="text-xs font-semibold uppercase tracking-wide text-slate-600 bg-slate-100/80 rounded px-3 py-1.5 mt-1">
+                        Setor: {g.sectorName || "Não atribuído"}
+                      </div>
+                    )}
+                    {g.items.map((p: any) => (
                   <div key={p.id} className={`border rounded-xl p-4 flex gap-3 items-start ${p.end_date && new Date(p.end_date) < new Date() && !["concluido","cancelado"].includes(p.status) ? "bg-rose-50 border-rose-300" : "bg-white"}`}>
                     <div className={`w-1.5 self-stretch rounded ${
                       p.priority === "critico" ? "bg-rose-500" :
@@ -424,6 +459,8 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
                       <Button variant="ghost" size="sm" onClick={() => setDeletePlan(p)}><Trash2 size={14} className="text-rose-600" /></Button>
                     </div>
                   </div>
+                    ))}
+                  </Fragment>
                 ))}
               </div>
             )}
