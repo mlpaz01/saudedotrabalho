@@ -227,6 +227,21 @@ export default function ComplianceHub() {
                   <FileText size={15} /> Gerar Relatório de Legitimidade Metodológica
                 </Button>
               </div>
+              {/* SP6 #6 — 3 relatórios novos */}
+              <div className="mt-3 pt-3 border-t flex flex-wrap gap-2">
+                <Button variant="outline" size="sm" className="gap-2"
+                  onClick={() => window.open("/plataforma/admin/compliance/canal-denuncias", "_blank")}>
+                  <FileText size={13} /> Canal de Denúncias
+                </Button>
+                <Button variant="outline" size="sm" className="gap-2"
+                  onClick={() => window.open("/plataforma/admin/compliance/lei-14457", "_blank")}>
+                  <FileText size={13} /> Lei 14.457/2022
+                </Button>
+                <Button variant="outline" size="sm" className="gap-2"
+                  onClick={() => window.open("/plataforma/admin/compliance/lgpd", "_blank")}>
+                  <FileText size={13} /> LGPD + Segurança da Informação
+                </Button>
+              </div>
             </div>
 
             {simRunning && (

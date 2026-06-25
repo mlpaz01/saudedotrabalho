@@ -4,6 +4,7 @@ import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { RichTextEditor } from "@/components/RichTextEditor";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { FileText, Save, Loader2, Building2, Sparkles } from "lucide-react";
 
@@ -114,16 +115,13 @@ export default function AdminSesmtDefaults() {
                 <span className="text-xs text-muted-foreground">{intro.length} caracteres</span>
               </div>
               <p className="text-xs text-muted-foreground">
-                Cobre as Partes I, II, III e IV do PGR no documento gerado: disposições gerais, objetivos,
-                fundamentação, metodologia. Use linhas em MAIÚSCULAS para títulos, listas com <code>-</code>,
-                e <code>**negrito**</code> para destaque.
+                Texto de introdução técnica do PGR. Use a barra de formatação acima para negrito, listas, alinhamento, imagens e tabelas.
               </p>
-              <Textarea
-                rows={18}
+              <RichTextEditor
                 value={intro}
-                onChange={(e) => { setIntro(e.target.value); setDirty(true); }}
-                className="font-mono text-xs leading-relaxed"
-                disabled={dataQ.isLoading}
+                onChange={(html) => { setIntro(html); setDirty(true); }}
+                minHeight={320}
+                placeholder="Comece a digitar a introdução do PGR..."
               />
             </section>
 
@@ -135,12 +133,11 @@ export default function AdminSesmtDefaults() {
               <p className="text-xs text-muted-foreground">
                 Fechamento técnico do PGR. Aparece logo antes da Responsabilidade Técnica e Assinatura.
               </p>
-              <Textarea
-                rows={12}
+              <RichTextEditor
                 value={concl}
-                onChange={(e) => { setConcl(e.target.value); setDirty(true); }}
-                className="font-mono text-xs leading-relaxed"
-                disabled={dataQ.isLoading}
+                onChange={(html) => { setConcl(html); setDirty(true); }}
+                minHeight={220}
+                placeholder="Comece a digitar a conclusão técnica..."
               />
             </section>
 

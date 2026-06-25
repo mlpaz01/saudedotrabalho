@@ -156,10 +156,6 @@ export default function AdminPGR() {
   });
   // Modal de escopo do novo PGR: filial específica ou consolidado (todas as filiais).
   const [scopeOpen, setScopeOpen] = useState(false);
-  // Sprint 1.7-A: secoes "Modelo legado" (GSE JSON, Inventario, EPC, EPI) ficam
-  // escondidas por padrao. Toggle no topo do editor permite reexibir caso o
-  // usuario precise visualizar/editar dados gravados antes da migracao.
-  const [showLegacy, setShowLegacy] = useState(false);
   const [scopeMode, setScopeMode] = useState<"branch" | "consolidated">("consolidated");
   const [scopeBranchId, setScopeBranchId] = useState<number | null>(null);
   const branchesQ = trpc.pgr.listBranches.useQuery(
@@ -206,7 +202,20 @@ export default function AdminPGR() {
   const removeAttachM = trpc.pgr.removeAttachment.useMutation({
     onSuccess: () => { attachQ.refetch(); toast.success("Anexo removido"); },
   });
-  const ATTACH_TIPOS = ["LTCAT","PCA","PPR","APR","Laudo Técnico","Medição","Foto/Imagem","Declaração","Certificado","Outro"];
+  // SP4 #9 + Bruno round 3 — tipos categorizados: complementares + 7 oficiais
+  // (Anexos 1..7 no fim do PDF, item #14 atualizado).
+  const ATTACH_TIPOS = [
+    // Complementares (vão no quadro "Anexos do PGR")
+    "LTCAT","PCA","PPR","APR","Laudo Técnico","Medição","Foto/Imagem","Declaração","Certificado","Outro",
+    // Anexos oficiais — viram Anexo 1..7 do PDF
+    "Relatório Psicossocial",
+    "AEP",
+    "Conformidade NR-01",
+    "Conformidade Metodológica",
+    "Legitimidade do Canal de Denúncias",
+    "LGPD",
+    "Lei 14.457/2022",
+  ];
   const [statusNotes, setStatusNotes] = useState("");
   const historyQ = trpc.pgr.getHistory.useQuery(
     { id: typeof editId === "number" ? editId : 0 },
@@ -305,6 +314,38 @@ export default function AdminPGR() {
     setDoc((d: any) => ({ ...d, [key]: d[key].map((r: any, idx: number) => idx === i ? { ...r, ...patch } : r) }));
   const addRow = (key: string, blank: any) => setDoc((d: any) => ({ ...d, [key]: [...d[key], blank] }));
   const delRow = (key: string, i: number) => setDoc((d: any) => ({ ...d, [key]: d[key].filter((_: any, idx: number) => idx !== i) }));
+
+  // SP4 #12 — Auto-preenche setores a partir da estrutura RH (hierarchyTree).
+  // Traz nome do setor + número de colaboradores ativos. Resto fica em branco
+  // pro usuário completar (turno, máquinas, fluxo, EPIs). Idempotente: se o setor
+  // já está na lista (por nome), pula.
+  const treeQuery = trpc.lessons.hierarchyTree.useQuery();
+  function autoFillSetoresFromRh() {
+    const tree = (treeQuery.data ?? []) as any[];
+    if (!tree.length) { toast.error("Estrutura de RH ainda não carregou. Tente em alguns segundos."); return; }
+    const co = companyId ? tree.find((c: any) => c.company?.id === companyId) : tree[0];
+    if (!co) { toast.error("Sem dados da empresa no RH."); return; }
+    const setoresMap = new Map<string, number>(); // nome → headcount
+    for (const b of (co.branches ?? [])) {
+      for (const s of (b.sectors ?? [])) {
+        const nome = String(s.sector?.name || "").trim();
+        if (!nome) continue;
+        const headcount = Number(s.userCount || (s.users?.length ?? 0));
+        setoresMap.set(nome, (setoresMap.get(nome) ?? 0) + headcount);
+      }
+    }
+    if (setoresMap.size === 0) { toast.info("Nenhum setor encontrado no RH dessa empresa."); return; }
+    const existentes = new Set((doc.caracterizacao_setores ?? []).map((cs: any) => String(cs.setor ?? "").trim()).filter(Boolean));
+    const novos: any[] = [];
+    setoresMap.forEach((headcount, nome) => {
+      if (!existentes.has(nome)) {
+        novos.push({ setor: nome, numColaboradores: String(headcount), turno: "", maquinas: "", produtos: "", fluxoAtividades: "", epis: "", observacoes: "Pré-preenchido a partir da estrutura RH — complete os demais campos." });
+      }
+    });
+    if (novos.length === 0) { toast.info("Todos os setores do RH já estão na lista."); return; }
+    setDoc((d: any) => ({ ...d, caracterizacao_setores: [...(d.caracterizacao_setores ?? []), ...novos] }));
+    toast.success(`Adicionados ${novos.length} setor(es) do RH. Complete turno, máquinas, EPIs etc.`);
+  }
 
   // ── LIST VIEW ──────────────────────────────────────────────────────────────
   if (editId == null) {
@@ -584,23 +625,6 @@ export default function AdminPGR() {
           <AdminPGRGseManager pgrId={editId as number} companyId={companyId} />
         )}
 
-        {/* Toggle "Mostrar seções antigas" (Sprint 1.7-A). As 4 seções legadas
-            (GSE JSON, Inventário, EPC, EPI) ficam escondidas por padrão pra reduzir
-            ruído visual; quem precisar acessar dados gravados antes da migração
-            ativa este toggle. */}
-        <div className="flex items-center justify-end">
-          <label className="inline-flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={showLegacy}
-              onChange={(e) => setShowLegacy(e.target.checked)}
-              className="accent-amber-600"
-            />
-            Mostrar seções antigas (modelo legado)
-            {!showLegacy && <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded">4 ocultas</span>}
-          </label>
-        </div>
-
         {/* Identificação Contratada */}
         <section className="bg-white border rounded-xl p-5 space-y-3">
           <h2 className="font-semibold text-foreground">Identificação da Empresa (Contratada)</h2>
@@ -676,348 +700,30 @@ export default function AdminPGR() {
         </section>
 
         {/* GSE / Grupos Similares de Exposição — MODELO LEGADO (será removido na Sprint 2) */}
-        {showLegacy && <section className="bg-amber-50/40 border border-amber-200 rounded-xl p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-foreground flex items-center gap-2">
-              Grupos Similares de Exposição (GSE)
-              <Badge className="bg-amber-100 text-amber-700 border-amber-200 text-[10px]">Modelo legado</Badge>
-            </h2>
-            <Button size="sm" variant="outline" onClick={() => addRow("gse_grupos", { grupo: "", funcoes: "", atividades: "", num: "", sexoM: "", sexoF: "", horario: "", local: "" })} className="gap-1">
-              <ListPlus size={14} /> Adicionar grupo
-            </Button>
-          </div>
-          <p className="text-xs text-amber-700">
-            ⚠ Esta seção será removida na Sprint 2. Use o novo bloco "Grupos Similares de Exposição (GSE)" no topo
-            do editor — ele suporta riscos, EPC, EPI, plano 5W2H, treinamentos e evidências por GSE,
-            e alimenta direto o PDF. PGRs com dados aqui podem ser migrados com 1 clique no banner ambar do bloco novo.
-          </p>
-          <p className="text-xs text-muted-foreground">GSE agrupa trabalhadores com perfil de exposição similar para avaliação quantitativa.</p>
-          {doc.gse_grupos.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Nenhum GSE cadastrado.</p>
-          ) : doc.gse_grupos.map((g: GseRow, i: number) => (
-            <div key={i} className="border rounded-lg p-3 space-y-2 bg-slate-50/50">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-slate-500">GSE #{i + 1}</span>
-                <Button size="icon" variant="ghost" onClick={() => delRow("gse_grupos", i)}><X size={14} className="text-rose-600" /></Button>
-              </div>
-              <div className="grid md:grid-cols-2 gap-2">
-                <Input placeholder="Nome do Grupo (ex.: GSE-01)" value={g.grupo} onChange={(e) => setRow("gse_grupos", i, { grupo: e.target.value })} />
-                <Input placeholder="Nº trabalhadores expostos" value={g.num ?? ""} onChange={(e) => setRow("gse_grupos", i, { num: e.target.value })} />
-                <Input placeholder="Funções incluídas" value={g.funcoes ?? ""} onChange={(e) => setRow("gse_grupos", i, { funcoes: e.target.value })} />
-                <Input placeholder="Atividades / exposições" value={g.atividades ?? ""} onChange={(e) => setRow("gse_grupos", i, { atividades: e.target.value })} />
-                <Input placeholder="Nº Masc." value={g.sexoM ?? ""} onChange={(e) => setRow("gse_grupos", i, { sexoM: e.target.value })} />
-                <Input placeholder="Nº Fem." value={g.sexoF ?? ""} onChange={(e) => setRow("gse_grupos", i, { sexoF: e.target.value })} />
-                <Input placeholder="Horário de trabalho (ex.: 08h–17h)" value={g.horario ?? ""} onChange={(e) => setRow("gse_grupos", i, { horario: e.target.value })} />
-                <Input placeholder="Local / posto de trabalho" value={g.local ?? ""} onChange={(e) => setRow("gse_grupos", i, { local: e.target.value })} />
-              </div>
-            </div>
-          ))}
-        </section>}
+        
 
-        {/* Notas Tecnicas */}
-        <section className="bg-white border rounded-xl p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-foreground">Notas Tecnicas / Conclusao</h2>
-            <button type="button" className="text-sm text-primary flex items-center gap-1.5 hover:underline"
-              disabled={genNarrM.isPending || editId === "new"}
-              onClick={() => { if (typeof editId === "number") genNarrM.mutate({ pgrId: editId, section: "conclusao" }); }}>
-              {genNarrM.isPending && genNarrM.variables?.section === "conclusao" ? <Loader2 size={13} className="animate-spin"/> : <Sparkles size={13}/>}
-              Gerar conclusao com IA
-            </button>
-          </div>
-          <Textarea rows={4} value={doc.notas_tecnicas ?? ""} onChange={e => set("notas_tecnicas", e.target.value)} placeholder="Observacoes tecnicas, conclusao e recomendacoes gerais..." />
-        </section>
-
-        {/* Matriz de Riscos Integrada */}
-        <section className="bg-white border rounded-xl p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-foreground">Matriz de Riscos</h2>
-            <button className="text-xs text-primary underline underline-offset-2" onClick={() => setMatrixOpen(o => !o)}>
-              {matrixOpen ? "Ocultar" : "Visualizar"}
-            </button>
-          </div>
-          {matrixOpen && <RiskMatrix inventory={doc.inventario as any[]} />}
-          {!matrixOpen && (
-            <p className="text-xs text-muted-foreground">
-              Clique em "Visualizar" para exibir a matriz Probabilidade x Severidade com os {doc.inventario.length} fatores cadastrados.
-            </p>
-          )}
-        </section>
 
         {/* Inventário de Riscos — MODELO LEGADO (será removido na Sprint 2) */}
-        {showLegacy && <section className="bg-amber-50/40 border border-amber-200 rounded-xl p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-foreground flex items-center gap-2">
-              Inventário de Riscos
-              <Badge className="bg-amber-100 text-amber-700 border-amber-200 text-[10px]">Modelo legado</Badge>
-            </h2>
-            <div className="flex gap-2">
-              <Button size="sm" variant="outline" onClick={async () => {
-                setImportingPsy(true);
-                try {
-                  const data = await utils.pgr.getPsychosocialForPGR.fetch(companyId ? { companyId } : {});
-                  if (data && data.length > 0) {
-                    const existing = new Set(doc.inventario.map((it: InvRow) => it.fator));
-                    const newItems = (data as any[]).filter(d => !existing.has(d.fator)).map(d => ({
-                      fator: d.fator, causas: d.causas || "", controles: d.controles || "",
-                      agravos: "", populacao: "", tipoAvaliacao: "Qualitativa",
-                      probabilidade: d.riscoFinal === "critico" ? "certo" : "provavel",
-                      severidade: d.riscoFinal === "critico" ? "maior" : "moderada", acoes: "",
-                    }));
-                    if (newItems.length > 0) {
-                      setDoc((d: any) => ({ ...d, inventario: [...d.inventario, ...newItems] }));
-                      toast.success(`${newItems.length} fator(es) importado(s) do diagnóstico psicossocial`);
-                    } else toast.info("Todos os fatores críticos/altos já estão no inventário");
-                  } else toast.info("Nenhum fator crítico ou alto encontrado no diagnóstico");
-                } catch (e: any) { toast.error(e?.message ?? "Erro ao importar"); }
-                finally { setImportingPsy(false); }
-              }} disabled={importingPsy} className="gap-1 text-blue-700 border-blue-300 hover:bg-blue-50">
-                {importingPsy ? <Loader2 size={14} className="animate-spin" /> : <Info size={14} />}
-                Importar do Diagnóstico
-              </Button>
-              <Button size="sm" variant="outline"
-                disabled={importAepM.isPending || editId === "new"}
-                onClick={() => { if (typeof editId === "number") importAepM.mutate({ pgrId: editId }); }}
-                className="gap-1 text-purple-700 border-purple-300 hover:bg-purple-50">
-                {importAepM.isPending ? <Loader2 size={14} className="animate-spin"/> : null}
-                Importar AEP
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => addRow("inventario", { fator: "", tipoRisco: "Psicossocial", postoTrabalho: "", funcoes: "", dataReconhecimento: "", agravos: "", causas: "", controles: "", eficaciaControles: "", populacao: "", freqExposicao: "", tipoAvaliacao: "Qualitativa", probabilidade: "possivel", severidade: "moderada", acoes: "", responsavel: "", prazo: "", areaImpacto: "", freqMonitoramento: "Anual", legRef: "", observacoes: "" })} className="gap-1">
-                <ListPlus size={14} /> Adicionar risco
-              </Button>
-            </div>
-          </div>
-          {doc.inventario.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Nenhum fator de risco cadastrado.</p>
-          ) : doc.inventario.map((it: InvRow, i: number) => (
-            <div key={i} className="border rounded-lg p-3 space-y-2 bg-slate-50/50">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-slate-500">Risco #{i + 1}</span>
-                <Button size="icon" variant="ghost" onClick={() => delRow("inventario", i)}><X size={14} className="text-rose-600" /></Button>
-              </div>
-              <div className="grid md:grid-cols-2 gap-2">
-                <Input placeholder="Fator de risco (ex.: Ruído, Psicossocial, Ergonômico)" value={it.fator} onChange={(e) => setRow("inventario", i, { fator: e.target.value })} />
-                <div>
-                  <Label className="text-[11px] text-muted-foreground">Tipo de Risco</Label>
-                  <Select value={it.tipoRisco ?? "Psicossocial"} onValueChange={(v) => setRow("inventario", i, { tipoRisco: v })}>
-                    <SelectTrigger className="mt-0.5"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="Psicossocial">Psicossocial</SelectItem>
-                      <SelectItem value="Físico">Físico</SelectItem>
-                      <SelectItem value="Químico">Químico</SelectItem>
-                      <SelectItem value="Biológico">Biológico</SelectItem>
-                      <SelectItem value="Ergonômico">Ergonômico</SelectItem>
-                      <SelectItem value="Acidente">Acidente / Mecânico</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <Input placeholder="Posto de trabalho (ex.: Operador de máquina)" value={it.postoTrabalho ?? ""} onChange={(e) => setRow("inventario", i, { postoTrabalho: e.target.value })} />
-                <Input placeholder="Funções/cargos expostos" value={it.funcoes ?? ""} onChange={(e) => setRow("inventario", i, { funcoes: e.target.value })} />
-                <div>
-                  <Label className="text-[11px] text-muted-foreground">Data do reconhecimento</Label>
-                  <Input type="date" value={it.dataReconhecimento ?? ""} onChange={(e) => setRow("inventario", i, { dataReconhecimento: e.target.value })} />
-                </div>
-                <Input placeholder="Agravos à saúde (ex.: Estresse, Perda auditiva)" value={it.agravos ?? ""} onChange={(e) => setRow("inventario", i, { agravos: e.target.value })} />
-                <Input placeholder="Causas / Fontes geradoras" value={it.causas ?? ""} onChange={(e) => setRow("inventario", i, { causas: e.target.value })} />
-                <Input placeholder="Medidas de controle existentes" value={it.controles ?? ""} onChange={(e) => setRow("inventario", i, { controles: e.target.value })} />
-                <div>
-                  <Label className="text-[11px] text-muted-foreground">Eficácia dos controles</Label>
-                  <Select value={it.eficaciaControles ?? ""} onValueChange={(v) => setRow("inventario", i, { eficaciaControles: v })}>
-                    <SelectTrigger className="mt-0.5"><SelectValue placeholder="Selecionar" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="Adequada">Adequada</SelectItem>
-                      <SelectItem value="Parcial">Parcial</SelectItem>
-                      <SelectItem value="Inadequada">Inadequada</SelectItem>
-                      <SelectItem value="Inexistente">Inexistente</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <Input placeholder="População exposta (nº ou função)" value={it.populacao ?? ""} onChange={(e) => setRow("inventario", i, { populacao: e.target.value })} />
-                <Input placeholder="Frequência/duração de exposição" value={it.freqExposicao ?? ""} onChange={(e) => setRow("inventario", i, { freqExposicao: e.target.value })} />
-                <Input placeholder="Área / local de exposição" value={it.areaImpacto ?? ""} onChange={(e) => setRow("inventario", i, { areaImpacto: e.target.value })} />
-                <Input placeholder="Referência legislativa (ex.: NR-09)" value={it.legRef ?? ""} onChange={(e) => setRow("inventario", i, { legRef: e.target.value })} />
-                <div>
-                  <Label className="text-[11px] text-muted-foreground">Tipo de Avaliação</Label>
-                  <Select value={it.tipoAvaliacao ?? "Qualitativa"} onValueChange={(v) => setRow("inventario", i, { tipoAvaliacao: v })}>
-                    <SelectTrigger className="mt-0.5"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="Qualitativa">Qualitativa</SelectItem>
-                      <SelectItem value="Quantitativa">Quantitativa</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <Label className="text-[11px] text-muted-foreground">Frequência de monitoramento</Label>
-                  <Select value={it.freqMonitoramento ?? "Anual"} onValueChange={(v) => setRow("inventario", i, { freqMonitoramento: v })}>
-                    <SelectTrigger className="mt-0.5"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="Mensal">Mensal</SelectItem>
-                      <SelectItem value="Trimestral">Trimestral</SelectItem>
-                      <SelectItem value="Semestral">Semestral</SelectItem>
-                      <SelectItem value="Anual">Anual</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <Label className="text-[11px] text-muted-foreground">Probabilidade</Label>
-                  <Select value={it.probabilidade ?? "possivel"} onValueChange={(v) => setRow("inventario", i, { probabilidade: v })}>
-                    <SelectTrigger className="mt-0.5"><SelectValue /></SelectTrigger>
-                    <SelectContent>{PROB_OPTS.map((o) => <SelectItem key={o.v} value={o.v}>{o.label}</SelectItem>)}</SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <Label className="text-[11px] text-muted-foreground">Severidade</Label>
-                  <Select value={it.severidade ?? "moderada"} onValueChange={(v) => setRow("inventario", i, { severidade: v })}>
-                    <SelectTrigger className="mt-0.5"><SelectValue /></SelectTrigger>
-                    <SelectContent>{SEV_OPTS.map((o) => <SelectItem key={o.v} value={o.v}>{o.label}</SelectItem>)}</SelectContent>
-                  </Select>
-                </div>
-                <Input placeholder="Responsável pela ação" value={it.responsavel ?? ""} onChange={(e) => setRow("inventario", i, { responsavel: e.target.value })} />
-                <Input type="date" placeholder="Prazo" value={it.prazo ?? ""} onChange={(e) => setRow("inventario", i, { prazo: e.target.value })} />
-                <Textarea className="md:col-span-2" placeholder="Ações necessárias / medidas preventivas e corretivas" rows={2} value={it.acoes ?? ""} onChange={(e) => setRow("inventario", i, { acoes: e.target.value })} />
-                <Textarea className="md:col-span-2" placeholder="Observações adicionais" rows={1} value={it.observacoes ?? ""} onChange={(e) => setRow("inventario", i, { observacoes: e.target.value })} />
-              </div>
-            </div>
-          ))}
-        </section>}
-
+        
         {/* EPC — MODELO LEGADO (será removido na Sprint 2) */}
-        {showLegacy && <section className="bg-amber-50/40 border border-amber-200 rounded-xl p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-foreground flex items-center gap-2">
-              EPC — Equipamentos de Proteção Coletiva
-              <Badge className="bg-amber-100 text-amber-700 border-amber-200 text-[10px]">Modelo legado</Badge>
-            </h2>
-            <Button size="sm" variant="outline" onClick={() => addRow("epc_itens", { descricao: "", aplicacao: "" })} className="gap-1">
-              <ListPlus size={14} /> Adicionar EPC
-            </Button>
-          </div>
-          {doc.epc_itens.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Nenhum EPC cadastrado.</p>
-          ) : doc.epc_itens.map((e: EpcRow, i: number) => (
-            <div key={i} className="grid md:grid-cols-[2fr_2fr_36px] gap-2 items-start border-t pt-2">
-              <Input placeholder="Equipamento (ex.: Ventilação mecânica)" value={e.descricao} onChange={(ev) => setRow("epc_itens", i, { descricao: ev.target.value })} />
-              <Input placeholder="Aplicação / local" value={e.aplicacao ?? ""} onChange={(ev) => setRow("epc_itens", i, { aplicacao: ev.target.value })} />
-              <Button size="icon" variant="ghost" onClick={() => delRow("epc_itens", i)}><X size={14} className="text-rose-600" /></Button>
-            </div>
-          ))}
-        </section>}
-
-        {/* Plano de Acao Psicossocial */}
-        <section className="bg-white border rounded-xl p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="font-semibold text-foreground">Plano de Acao Psicossocial</h2>
-              <p className="text-xs text-muted-foreground mt-0.5">Acoes preventivas, promocionais e de reabilitacao para riscos psicossociais identificados no inventario.</p>
-            </div>
-            <Button size="sm" variant="outline" onClick={() => addRow("plano_psicossocial", { acao: "", categoria: "Prevencao", responsavel: "", prazo: "", cronograma: "", status: "Pendente", evidencia: "", observacoes: "" })} className="gap-1">
-              <ListPlus size={14} /> Adicionar acao
-            </Button>
-          </div>
-          {doc.plano_psicossocial.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Nenhuma acao cadastrada.</p>
-          ) : doc.plano_psicossocial.map((ps: PsyRow, i: number) => (
-            <div key={i} className="border rounded-lg p-3 space-y-2 bg-slate-50/50">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-slate-500">Acao #{i + 1}</span>
-                <Button size="icon" variant="ghost" onClick={() => delRow("plano_psicossocial", i)}><X size={14} className="text-rose-600" /></Button>
-              </div>
-              <div className="grid md:grid-cols-2 gap-2">
-                <div className="md:col-span-2">
-                  <Label className="text-xs">Descricao da acao</Label>
-                  <Textarea rows={2} className="mt-1" value={ps.acao ?? ""} onChange={ev => setRow("plano_psicossocial", i, { acao: ev.target.value })} placeholder="Descreva a acao preventiva ou corretiva..." />
-                </div>
-                <div>
-                  <Label className="text-xs">Categoria</Label>
-                  <Select value={ps.categoria ?? "Prevencao"} onValueChange={v => setRow("plano_psicossocial", i, { categoria: v })}>
-                    <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="Prevencao">Prevencao</SelectItem>
-                      <SelectItem value="Promocao">Promocao da Saude</SelectItem>
-                      <SelectItem value="Reabilitacao">Reabilitacao</SelectItem>
-                      <SelectItem value="Controle">Controle de Exposicao</SelectItem>
-                      <SelectItem value="Treinamento">Treinamento / Capacitacao</SelectItem>
-                      <SelectItem value="Outro">Outro</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <Label className="text-xs">Status</Label>
-                  <Select value={ps.status ?? "Pendente"} onValueChange={v => setRow("plano_psicossocial", i, { status: v })}>
-                    <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="Pendente">Pendente</SelectItem>
-                      <SelectItem value="Em andamento">Em andamento</SelectItem>
-                      <SelectItem value="Concluida">Concluida</SelectItem>
-                      <SelectItem value="Cancelada">Cancelada</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <Label className="text-xs">Responsavel</Label>
-                  <Input className="mt-1" value={ps.responsavel ?? ""} onChange={ev => setRow("plano_psicossocial", i, { responsavel: ev.target.value })} placeholder="Nome / equipe" />
-                </div>
-                <div>
-                  <Label className="text-xs">Prazo</Label>
-                  <Input type="date" className="mt-1" value={ps.prazo ?? ""} onChange={ev => setRow("plano_psicossocial", i, { prazo: ev.target.value })} />
-                </div>
-                <div>
-                  <Label className="text-xs">Cronograma / periodicidade</Label>
-                  <Input className="mt-1" value={ps.cronograma ?? ""} onChange={ev => setRow("plano_psicossocial", i, { cronograma: ev.target.value })} placeholder="ex.: Mensal, Trimestral, Unica vez" />
-                </div>
-                <div>
-                  <Label className="text-xs">Evidencia / URL</Label>
-                  <Input className="mt-1" value={ps.evidencia ?? ""} onChange={ev => setRow("plano_psicossocial", i, { evidencia: ev.target.value })} placeholder="Link para documento ou descricao da evidencia" />
-                </div>
-                <div className="md:col-span-2">
-                  <Label className="text-xs">Observacoes</Label>
-                  <Textarea rows={1} className="mt-1" value={ps.observacoes ?? ""} onChange={ev => setRow("plano_psicossocial", i, { observacoes: ev.target.value })} />
-                </div>
-              </div>
-            </div>
-          ))}
-        </section>
+        
 
         {/* EPI — MODELO LEGADO (será removido na Sprint 2) */}
-        {showLegacy && <section className="bg-amber-50/40 border border-amber-200 rounded-xl p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-foreground flex items-center gap-2">
-              EPI — Equipamentos de Proteção Individual
-              <Badge className="bg-amber-100 text-amber-700 border-amber-200 text-[10px]">Modelo legado</Badge>
-            </h2>
-            <Button size="sm" variant="outline" onClick={() => addRow("epi_itens", { descricao: "", ca: "", aplicacao: "", validade: "", periodicidade: "", fichaEntrega: "" })} className="gap-1">
-              <ListPlus size={14} /> Adicionar EPI
-            </Button>
-          </div>
-          {doc.epi_itens.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Nenhum EPI cadastrado.</p>
-          ) : doc.epi_itens.map((e: EpiRow, i: number) => (
-            <div key={i} className="border rounded-lg p-3 space-y-2 bg-slate-50/50">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-slate-500">EPI #{i + 1}</span>
-                <Button size="icon" variant="ghost" onClick={() => delRow("epi_itens", i)}><X size={14} className="text-rose-600" /></Button>
-              </div>
-              <div className="grid md:grid-cols-3 gap-2">
-                <Input placeholder="EPI (ex.: Protetor auricular)" value={e.descricao} onChange={(ev) => setRow("epi_itens", i, { descricao: ev.target.value })} />
-                <Input placeholder="Nº CA (SINMETRO)" value={e.ca ?? ""} onChange={(ev) => setRow("epi_itens", i, { ca: ev.target.value })} />
-                <Input placeholder="Validade do CA" value={e.validade ?? ""} onChange={(ev) => setRow("epi_itens", i, { validade: ev.target.value })} />
-                <Input placeholder="Aplicação / função" value={e.aplicacao ?? ""} onChange={(ev) => setRow("epi_itens", i, { aplicacao: ev.target.value })} />
-                <Input placeholder="Periodicidade de troca (ex.: 12 meses)" value={e.periodicidade ?? ""} onChange={(ev) => setRow("epi_itens", i, { periodicidade: ev.target.value })} />
-                <Input placeholder="Ficha de entrega / registro" value={e.fichaEntrega ?? ""} onChange={(ev) => setRow("epi_itens", i, { fichaEntrega: ev.target.value })} />
-              </div>
-            </div>
-          ))}
-        </section>}
-
+        
         {/* 8.3 Caracterizacao Operacional dos Setores */}
         <section className="bg-white border rounded-xl p-5 space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between flex-wrap gap-2">
             <h2 className="font-semibold text-foreground">Caracterizacao Operacional dos Setores</h2>
-            <Button size="sm" variant="outline" onClick={() => addRow("caracterizacao_setores", { setor: "", numColaboradores: "", turno: "", maquinas: "", produtos: "", fluxoAtividades: "", epis: "", observacoes: "" })} className="gap-1">
-              <ListPlus size={14} /> Adicionar setor
-            </Button>
+            <div className="flex gap-2">
+              <Button size="sm" variant="outline" onClick={autoFillSetoresFromRh} className="gap-1 border-blue-300 text-blue-700 hover:bg-blue-50" title="Pré-preenche os setores com base na estrutura cadastrada em RH (filiais > setores > usuários por setor)">
+                <Sparkles size={14} /> Auto-preencher do RH
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => addRow("caracterizacao_setores", { setor: "", numColaboradores: "", turno: "", maquinas: "", produtos: "", fluxoAtividades: "", epis: "", observacoes: "" })} className="gap-1">
+                <ListPlus size={14} /> Adicionar setor
+              </Button>
+            </div>
           </div>
-          <p className="text-xs text-muted-foreground">Descreva as atividades, maquinas, produtos e EPIs de cada setor para caracterizacao operacional detalhada.</p>
+          <p className="text-xs text-muted-foreground">Descreva as atividades, maquinas, produtos e EPIs de cada setor. <b>Auto-preencher do RH</b> traz nome do setor + quantidade de colaboradores diretamente da estrutura cadastrada — você completa o resto.</p>
           {doc.caracterizacao_setores.length === 0 ? (
             <p className="text-sm text-muted-foreground">Nenhum setor cadastrado.</p>
           ) : doc.caracterizacao_setores.map((cs: CaracSetorRow, i: number) => (
@@ -1040,236 +746,9 @@ export default function AdminPGR() {
           ))}
         </section>
 
-        {/* 8.10 Cronograma Preventivo */}
-        <section className="bg-white border rounded-xl p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-foreground">Cronograma Preventivo</h2>
-            <Button size="sm" variant="outline" onClick={() => addRow("cronograma_preventivo", { atividade: "", tipo: "Inspecao", responsavel: "", periodicidade: "", dataExecucao: "", status: "Pendente", observacoes: "" })} className="gap-1">
-              <ListPlus size={14} /> Adicionar atividade
-            </Button>
-          </div>
-          <p className="text-xs text-muted-foreground">Inspecoes, treinamentos, campanhas de saude e auditorias com datas e responsaveis.</p>
-          {doc.cronograma_preventivo.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Nenhuma atividade cadastrada.</p>
-          ) : doc.cronograma_preventivo.map((cr: CronogramaRow, i: number) => (
-            <div key={i} className="border rounded-lg p-3 space-y-2 bg-slate-50/50">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-slate-500">Atividade #{i + 1}</span>
-                <Button size="icon" variant="ghost" onClick={() => delRow("cronograma_preventivo", i)}><X size={14} className="text-rose-600" /></Button>
-              </div>
-              <div className="grid md:grid-cols-2 gap-2">
-                <div className="md:col-span-2"><Label className="text-xs">Descricao da atividade</Label><Input className="mt-1" value={cr.atividade ?? ""} onChange={ev => setRow("cronograma_preventivo", i, { atividade: ev.target.value })} placeholder="ex.: Inspecao de extintores" /></div>
-                <div>
-                  <Label className="text-xs">Tipo</Label>
-                  <Select value={cr.tipo ?? "Inspecao"} onValueChange={v => setRow("cronograma_preventivo", i, { tipo: v })}>
-                    <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="Inspecao">Inspecao</SelectItem>
-                      <SelectItem value="Treinamento">Treinamento</SelectItem>
-                      <SelectItem value="Campanha">Campanha de Saude</SelectItem>
-                      <SelectItem value="Auditoria">Auditoria</SelectItem>
-                      <SelectItem value="Manutencao">Manutencao Preventiva</SelectItem>
-                      <SelectItem value="Monitoramento">Monitoramento Ambiental</SelectItem>
-                      <SelectItem value="Outro">Outro</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <Label className="text-xs">Status</Label>
-                  <Select value={cr.status ?? "Pendente"} onValueChange={v => setRow("cronograma_preventivo", i, { status: v })}>
-                    <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="Pendente">Pendente</SelectItem>
-                      <SelectItem value="Programado">Programado</SelectItem>
-                      <SelectItem value="Concluido">Concluido</SelectItem>
-                      <SelectItem value="Atrasado">Atrasado</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div><Label className="text-xs">Responsavel</Label><Input className="mt-1" value={cr.responsavel ?? ""} onChange={ev => setRow("cronograma_preventivo", i, { responsavel: ev.target.value })} placeholder="Nome ou cargo" /></div>
-                <div><Label className="text-xs">Periodicidade</Label><Input className="mt-1" value={cr.periodicidade ?? ""} onChange={ev => setRow("cronograma_preventivo", i, { periodicidade: ev.target.value })} placeholder="ex.: Anual, Semestral, Mensal" /></div>
-                <div><Label className="text-xs">Data de execucao</Label><Input type="date" className="mt-1" value={cr.dataExecucao ?? ""} onChange={ev => setRow("cronograma_preventivo", i, { dataExecucao: ev.target.value })} /></div>
-                <div className="md:col-span-2"><Label className="text-xs">Observacoes</Label><Textarea rows={1} className="mt-1" value={cr.observacoes ?? ""} onChange={ev => setRow("cronograma_preventivo", i, { observacoes: ev.target.value })} /></div>
-              </div>
-            </div>
-          ))}
-        </section>
 
-        {/* 8.12 Hierarquia de Controle */}
-        <section className="bg-white border rounded-xl p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-foreground">Hierarquia de Controle</h2>
-            <Button size="sm" variant="outline" onClick={() => addRow("hierarquia_controle", { risco: "", eliminacao: "", substituicao: "", engenharia: "", administrativo: "", epc: "", epi: "", responsavel: "", prazo: "", status: "Pendente" })} className="gap-1">
-              <ListPlus size={14} /> Adicionar risco
-            </Button>
-          </div>
-          <p className="text-xs text-muted-foreground">Para cada risco, defina as medidas na ordem: eliminacao - substituicao - controle de engenharia - controle administrativo - EPC - EPI.</p>
-          {doc.hierarquia_controle.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Nenhum risco cadastrado.</p>
-          ) : doc.hierarquia_controle.map((hr: HierarquiaRow, i: number) => (
-            <div key={i} className="border rounded-lg p-3 space-y-2 bg-slate-50/50">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-slate-500">Risco #{i + 1}</span>
-                <Button size="icon" variant="ghost" onClick={() => delRow("hierarquia_controle", i)}><X size={14} className="text-rose-600" /></Button>
-              </div>
-              <div className="grid md:grid-cols-2 gap-2">
-                <div className="md:col-span-2"><Label className="text-xs">Risco / fator de risco</Label><Input className="mt-1" value={hr.risco ?? ""} onChange={ev => setRow("hierarquia_controle", i, { risco: ev.target.value })} placeholder="ex.: Ruido elevado, Agente quimico X" /></div>
-                <div><Label className="text-xs">1. Eliminacao</Label><Input className="mt-1" value={hr.eliminacao ?? ""} onChange={ev => setRow("hierarquia_controle", i, { eliminacao: ev.target.value })} placeholder="ex.: Remocao da fonte" /></div>
-                <div><Label className="text-xs">2. Substituicao</Label><Input className="mt-1" value={hr.substituicao ?? ""} onChange={ev => setRow("hierarquia_controle", i, { substituicao: ev.target.value })} placeholder="ex.: Substitucao por produto menos toxico" /></div>
-                <div><Label className="text-xs">3. Controle de Engenharia</Label><Input className="mt-1" value={hr.engenharia ?? ""} onChange={ev => setRow("hierarquia_controle", i, { engenharia: ev.target.value })} placeholder="ex.: Enclausuramento, ventilacao" /></div>
-                <div><Label className="text-xs">4. Controle Administrativo</Label><Input className="mt-1" value={hr.administrativo ?? ""} onChange={ev => setRow("hierarquia_controle", i, { administrativo: ev.target.value })} placeholder="ex.: Rodizio de funcoes, treinamento" /></div>
-                <div><Label className="text-xs">5. EPC</Label><Input className="mt-1" value={hr.epc ?? ""} onChange={ev => setRow("hierarquia_controle", i, { epc: ev.target.value })} placeholder="ex.: Barreira acustica" /></div>
-                <div><Label className="text-xs">6. EPI</Label><Input className="mt-1" value={hr.epi ?? ""} onChange={ev => setRow("hierarquia_controle", i, { epi: ev.target.value })} placeholder="ex.: Protetor auricular CA 12345" /></div>
-                <div><Label className="text-xs">Responsavel</Label><Input className="mt-1" value={hr.responsavel ?? ""} onChange={ev => setRow("hierarquia_controle", i, { responsavel: ev.target.value })} placeholder="Nome / setor" /></div>
-                <div><Label className="text-xs">Prazo de implantacao</Label><Input type="date" className="mt-1" value={hr.prazo ?? ""} onChange={ev => setRow("hierarquia_controle", i, { prazo: ev.target.value })} /></div>
-                <div>
-                  <Label className="text-xs">Status</Label>
-                  <Select value={hr.status ?? "Pendente"} onValueChange={v => setRow("hierarquia_controle", i, { status: v })}>
-                    <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="Pendente">Pendente</SelectItem>
-                      <SelectItem value="Em implantacao">Em implantacao</SelectItem>
-                      <SelectItem value="Implantado">Implantado</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-            </div>
-          ))}
-        </section>
 
-        {/* 8.15 Nao Conformidades */}
-        <section className="bg-white border rounded-xl p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-foreground">Nao Conformidades</h2>
-            <Button size="sm" variant="outline" onClick={() => addRow("nao_conformidades", { descricao: "", setor: "", dataIdentificacao: "", tipo: "Operacional", gravidade: "media", acaoCorretiva: "", responsavel: "", prazo: "", status: "Aberta" })} className="gap-1">
-              <ListPlus size={14} /> Adicionar NC
-            </Button>
-          </div>
-          <p className="text-xs text-muted-foreground">Desvios identificados, acoes corretivas, responsaveis e prazos de encerramento.</p>
-          {doc.nao_conformidades.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Nenhuma nao conformidade cadastrada.</p>
-          ) : doc.nao_conformidades.map((nc: NcRow, i: number) => (
-            <div key={i} className="border rounded-lg p-3 space-y-2 bg-slate-50/50">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-slate-500">NC #{i + 1}</span>
-                <Button size="icon" variant="ghost" onClick={() => delRow("nao_conformidades", i)}><X size={14} className="text-rose-600" /></Button>
-              </div>
-              <div className="grid md:grid-cols-2 gap-2">
-                <div className="md:col-span-2"><Label className="text-xs">Descricao do desvio</Label><Textarea rows={2} className="mt-1" value={nc.descricao ?? ""} onChange={ev => setRow("nao_conformidades", i, { descricao: ev.target.value })} placeholder="Descreva o desvio encontrado..." /></div>
-                <div><Label className="text-xs">Setor</Label><Input className="mt-1" value={nc.setor ?? ""} onChange={ev => setRow("nao_conformidades", i, { setor: ev.target.value })} /></div>
-                <div><Label className="text-xs">Data de identificacao</Label><Input type="date" className="mt-1" value={nc.dataIdentificacao ?? ""} onChange={ev => setRow("nao_conformidades", i, { dataIdentificacao: ev.target.value })} /></div>
-                <div>
-                  <Label className="text-xs">Tipo</Label>
-                  <Select value={nc.tipo ?? "Operacional"} onValueChange={v => setRow("nao_conformidades", i, { tipo: v })}>
-                    <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="Operacional">Operacional</SelectItem>
-                      <SelectItem value="Documental">Documental</SelectItem>
-                      <SelectItem value="Legal">Legal / Normativa</SelectItem>
-                      <SelectItem value="EPI">EPI / EPC</SelectItem>
-                      <SelectItem value="Treinamento">Treinamento</SelectItem>
-                      <SelectItem value="Outro">Outro</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <Label className="text-xs">Gravidade</Label>
-                  <Select value={nc.gravidade ?? "media"} onValueChange={v => setRow("nao_conformidades", i, { gravidade: v })}>
-                    <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="baixa">Baixa</SelectItem>
-                      <SelectItem value="media">Media</SelectItem>
-                      <SelectItem value="alta">Alta</SelectItem>
-                      <SelectItem value="critica">Critica</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="md:col-span-2"><Label className="text-xs">Acao corretiva</Label><Textarea rows={2} className="mt-1" value={nc.acaoCorretiva ?? ""} onChange={ev => setRow("nao_conformidades", i, { acaoCorretiva: ev.target.value })} placeholder="Descreva a acao corretiva proposta..." /></div>
-                <div><Label className="text-xs">Responsavel</Label><Input className="mt-1" value={nc.responsavel ?? ""} onChange={ev => setRow("nao_conformidades", i, { responsavel: ev.target.value })} /></div>
-                <div><Label className="text-xs">Prazo</Label><Input type="date" className="mt-1" value={nc.prazo ?? ""} onChange={ev => setRow("nao_conformidades", i, { prazo: ev.target.value })} /></div>
-                <div>
-                  <Label className="text-xs">Status</Label>
-                  <Select value={nc.status ?? "Aberta"} onValueChange={v => setRow("nao_conformidades", i, { status: v })}>
-                    <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="Aberta">Aberta</SelectItem>
-                      <SelectItem value="Em tratamento">Em tratamento</SelectItem>
-                      <SelectItem value="Encerrada">Encerrada</SelectItem>
-                      <SelectItem value="Reaberta">Reaberta</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-            </div>
-          ))}
-        </section>
 
-        {/* 8.16 Treinamentos Obrigatorios por NR */}
-        <section className="bg-white border rounded-xl p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-foreground">Treinamentos Obrigatorios por NR</h2>
-            <Button size="sm" variant="outline" onClick={() => addRow("treinamentos_nr", { nr: "NR-01", treinamento: "", cargaHoraria: "", periodicidade: "Anual", publicoAlvo: "", dataRealizada: "", dataVencimento: "", responsavel: "", status: "Pendente" })} className="gap-1">
-              <ListPlus size={14} /> Adicionar treinamento
-            </Button>
-          </div>
-          <p className="text-xs text-muted-foreground">Controle de treinamentos obrigatorios por NR com vencimentos por colaborador / grupo.</p>
-          {doc.treinamentos_nr.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Nenhum treinamento cadastrado.</p>
-          ) : doc.treinamentos_nr.map((tr: TreinNrRow, i: number) => (
-            <div key={i} className="border rounded-lg p-3 space-y-2 bg-slate-50/50">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-slate-500">Treinamento #{i + 1}</span>
-                <Button size="icon" variant="ghost" onClick={() => delRow("treinamentos_nr", i)}><X size={14} className="text-rose-600" /></Button>
-              </div>
-              <div className="grid md:grid-cols-2 gap-2">
-                <div>
-                  <Label className="text-xs">NR aplicavel</Label>
-                  <Select value={tr.nr ?? "NR-01"} onValueChange={v => setRow("treinamentos_nr", i, { nr: v })}>
-                    <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {["NR-01","NR-05","NR-06","NR-07","NR-09","NR-10","NR-11","NR-12","NR-13","NR-15","NR-16","NR-17","NR-18","NR-20","NR-23","NR-32","NR-33","NR-35","CIPA","Brigada de Incendio","Primeiros Socorros","Outro"].map(nr => (
-                        <SelectItem key={nr} value={nr}>{nr}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div><Label className="text-xs">Nome do treinamento</Label><Input className="mt-1" value={tr.treinamento ?? ""} onChange={ev => setRow("treinamentos_nr", i, { treinamento: ev.target.value })} placeholder="ex.: Uso correto de EPI" /></div>
-                <div><Label className="text-xs">Carga horaria (h)</Label><Input className="mt-1" value={tr.cargaHoraria ?? ""} onChange={ev => setRow("treinamentos_nr", i, { cargaHoraria: ev.target.value })} placeholder="ex.: 8" /></div>
-                <div>
-                  <Label className="text-xs">Periodicidade</Label>
-                  <Select value={tr.periodicidade ?? "Anual"} onValueChange={v => setRow("treinamentos_nr", i, { periodicidade: v })}>
-                    <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="Admissional">Admissional</SelectItem>
-                      <SelectItem value="Anual">Anual</SelectItem>
-                      <SelectItem value="Bienal">Bienal (2 anos)</SelectItem>
-                      <SelectItem value="Trienal">Trienal (3 anos)</SelectItem>
-                      <SelectItem value="Unica vez">Unica vez</SelectItem>
-                      <SelectItem value="Conforme necessidade">Conforme necessidade</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div><Label className="text-xs">Publico-alvo</Label><Input className="mt-1" value={tr.publicoAlvo ?? ""} onChange={ev => setRow("treinamentos_nr", i, { publicoAlvo: ev.target.value })} placeholder="ex.: Todos os colaboradores, Operadores" /></div>
-                <div><Label className="text-xs">Responsavel</Label><Input className="mt-1" value={tr.responsavel ?? ""} onChange={ev => setRow("treinamentos_nr", i, { responsavel: ev.target.value })} /></div>
-                <div><Label className="text-xs">Data realizada</Label><Input type="date" className="mt-1" value={tr.dataRealizada ?? ""} onChange={ev => setRow("treinamentos_nr", i, { dataRealizada: ev.target.value })} /></div>
-                <div><Label className="text-xs">Data de vencimento</Label><Input type="date" className="mt-1" value={tr.dataVencimento ?? ""} onChange={ev => setRow("treinamentos_nr", i, { dataVencimento: ev.target.value })} /></div>
-                <div>
-                  <Label className="text-xs">Status</Label>
-                  <Select value={tr.status ?? "Pendente"} onValueChange={v => setRow("treinamentos_nr", i, { status: v })}>
-                    <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="Pendente">Pendente</SelectItem>
-                      <SelectItem value="Agendado">Agendado</SelectItem>
-                      <SelectItem value="Concluido">Concluido</SelectItem>
-                      <SelectItem value="Vencido">Vencido</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-            </div>
-          ))}
-        </section>
 
         {/* Anexos e Evidencias */}
         {editId !== "new" && (
@@ -1280,7 +759,10 @@ export default function AdminPGR() {
                 <Plus size={14}/>Adicionar anexo
               </Button>
             </div>
-            <p className="text-xs text-muted-foreground">Vincule laudos, medicoes, fotos, LTCAT, PCA, PPR, APR e outros documentos tecnicos ao PGR.</p>
+            <div className="bg-blue-50/60 border border-blue-200 rounded-md p-3 text-xs text-blue-900">
+              <b>Orientação:</b> Utilize este campo para anexação de <b>LTCAT, PCA, PPR, APR, medições ambientais, laudos técnicos</b> e demais documentos complementares.
+              <br />Todos os arquivos anexados aqui serão incluídos integralmente ao final do PDF do PGR.
+            </div>
             {(attachQ.data ?? []).length === 0 ? (
               <div className="text-center py-6 text-muted-foreground">
                 <FolderOpen size={32} className="mx-auto mb-2 opacity-30"/>

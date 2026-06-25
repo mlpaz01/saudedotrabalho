@@ -4722,6 +4722,7 @@ ${link}
           setor: z.string().optional().nullable(),
           cargo: z.string().optional().nullable(),
           perfil: z.string().optional().nullable(),
+          whatsapp: z.string().optional().nullable(),
         })),
       }))
       .mutation(async ({ ctx, input }) => {
@@ -4781,6 +4782,9 @@ ${link}
           const filial = norm(raw.filial);
           const setor = norm(raw.setor);
           const cargo = norm(raw.cargo);
+          // SP7 #1 — WhatsApp normalizado E.164
+          const { normalizeE164BR } = await import("./_core/whatsapp");
+          const whatsappNorm = normalizeE164BR(raw.whatsapp);
           let role = mapRole(raw.perfil);
           if (role === "admin" && !canAssignAdmin) role = "rh"; // clamp for RH importers
           const res: any = {
@@ -4856,7 +4860,7 @@ ${link}
             await db.execute(drzSql`UPDATE corporate_emails SET company = ${companyName}, sector = ${setor || null}, employeeName = ${nome || null}, isActive = 1, company_id = ${companyId}, branch_id = ${branchId}, sector_id = ${sectorId}, role = ${role} WHERE id = ${exrow.id}`);
             updated++; res.action = "updated";
             if (exrow.userId) {
-              await db.execute(drzSql`UPDATE users SET company_id = ${companyId}, branch_id = ${branchId}, sector_id = ${sectorId}, role = ${role}, position = ${cargo} WHERE id = ${exrow.userId}`);
+              await db.execute(drzSql`UPDATE users SET company_id = ${companyId}, branch_id = ${branchId}, sector_id = ${sectorId}, role = ${role}, position = ${cargo}, whatsapp_e164 = COALESCE(${whatsappNorm}, whatsapp_e164) WHERE id = ${exrow.userId}`);
             }
           } else {
             // ON DUPLICATE KEY UPDATE prevents race between concurrent imports on same email
@@ -4895,8 +4899,26 @@ ${link}
           const urRows = Array.isArray(ur) ? ((ur as any)[0] ?? []) : [];
           const urow = Array.isArray(urRows) ? (urRows[0] ?? null) : urRows ?? null;
           if (urow) {
-            await db.execute(drzSql`UPDATE users SET company_id = ${companyId}, branch_id = ${branchId}, sector_id = ${sectorId}, role = ${role}, position = ${cargo} WHERE id = ${urow.id}`);
+            await db.execute(drzSql`UPDATE users SET company_id = ${companyId}, branch_id = ${branchId}, sector_id = ${sectorId}, role = ${role}, position = ${cargo}, whatsapp_e164 = COALESCE(${whatsappNorm}, whatsapp_e164) WHERE id = ${urow.id}`);
             await db.execute(drzSql`UPDATE corporate_emails SET userId = ${urow.id} WHERE email = ${email} AND (userId IS NULL OR userId = 0)`);
+          }
+          // SP12 #81 — Auto WhatsApp de boas-vindas. Só se: tem whatsapp + não está em opt-out
+          // + é colaborador NOVO (ainda não enviamos antes). Falha não derruba o import.
+          if (whatsappNorm && res.action === "inserted") {
+            try {
+              const { sendWhatsappTemplate, isOptedOut } = await import("./_core/whatsapp");
+              const optOut = await isOptedOut(whatsappNorm);
+              if (!optOut) {
+                const r2 = await sendWhatsappTemplate(whatsappNorm, "boasvindas_plataforma", "pt_BR", [companyName], { companyId });
+                if (r2.preview) res.whatsappWarning = "WhatsApp em modo preview (sem credenciais Meta no .env).";
+                else if (r2.ok) res.whatsappSent = true;
+                else res.whatsappWarning = `WhatsApp não enviado: ${r2.error ?? "?"}`;
+              } else {
+                res.whatsappWarning = "Número em opt-out — não enviado.";
+              }
+            } catch (waErr: any) {
+              res.whatsappWarning = `WhatsApp falhou: ${waErr?.message || "?"}`;
+            }
           }
           results.push(res);
         }
@@ -4916,6 +4938,8 @@ ${link}
         branchId: z.number().nullable().optional(),
         sectorId: z.number().nullable().optional(),
         position: z.string().nullable().optional(),
+        // SP7 #1 — WhatsApp E.164 (normalizado no servidor)
+        whatsapp: z.string().nullable().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
         const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
@@ -4975,6 +4999,12 @@ ${link}
         }
         if (input.position !== undefined) {
           await db.execute(drzSql`UPDATE users SET position = ${input.position} WHERE id = ${input.userId}`);
+        }
+        if (input.whatsapp !== undefined) {
+          const { ensureWhatsappTables, normalizeE164BR } = await import("./_core/whatsapp");
+          await ensureWhatsappTables();
+          const norm = normalizeE164BR(input.whatsapp);
+          await db.execute(drzSql`UPDATE users SET whatsapp_e164 = ${norm} WHERE id = ${input.userId}`);
         }
         return { ok: true };
       }),
@@ -12318,6 +12348,282 @@ ${link}
         return { ok: true };
       }),
 
+    // ─── SP13 — CRM Comercial + Financeiro + Contratos (Bruno round 3) ────
+    crmListProposals: superAdminProcedure
+      .input(z.object({ status: z.string().optional() }).optional())
+      .query(async ({ input }) => {
+        const { ensureCrmTables } = await import("./_core/crm");
+        await ensureCrmTables();
+        const db = await getDb();
+        const where = (input as any)?.status ? drzSql`WHERE status=${(input as any).status}` : drzSql``;
+        const r: any = await db!.execute(drzSql`
+          SELECT p.*, cp.nome AS partner_name
+          FROM commercial_proposals p
+          LEFT JOIN commercial_partners cp ON cp.id=p.partner_id
+          ${where}
+          ORDER BY p.created_at DESC LIMIT 200`);
+        return (r as any)[0] ?? [];
+      }),
+
+    crmGetProposal: superAdminProcedure
+      .input(z.object({ id: z.number().int() }))
+      .query(async ({ input }) => {
+        const db = await getDb();
+        const r: any = await db!.execute(drzSql`SELECT * FROM commercial_proposals WHERE id=${input.id}`);
+        return (r as any)[0]?.[0] ?? null;
+      }),
+
+    crmUpsertProposal: superAdminProcedure
+      .input(z.object({
+        id: z.number().int().optional(),
+        razaoSocial: z.string().min(1),
+        nomeFantasia: z.string().optional(),
+        cnpj: z.string().optional(),
+        responsavel: z.string().optional(),
+        cargo: z.string().optional(),
+        email: z.string().optional(),
+        telefone: z.string().optional(),
+        segmento: z.string().optional(),
+        qtdColaboradores: z.number().int().default(0),
+        plano: z.enum(["starter","business","enterprise"]).default("starter"),
+        descontoExtraPct: z.number().default(0),
+        validadeDias: z.number().int().default(15),
+        partnerId: z.number().int().optional().nullable(),
+        observacoes: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const { ensureCrmTables, calcularValores } = await import("./_core/crm");
+        await ensureCrmTables();
+        const db = await getDb();
+        const v = calcularValores(input.plano, input.qtdColaboradores, input.descontoExtraPct);
+        const uid = (ctx.user as any).id;
+        if (input.id) {
+          await db!.execute(drzSql`UPDATE commercial_proposals SET
+            razao_social=${input.razaoSocial}, nome_fantasia=${input.nomeFantasia ?? null},
+            cnpj=${input.cnpj ?? null}, responsavel=${input.responsavel ?? null}, cargo=${input.cargo ?? null},
+            email=${input.email ?? null}, telefone=${input.telefone ?? null}, segmento=${input.segmento ?? null},
+            qtd_colaboradores=${input.qtdColaboradores}, plano=${input.plano},
+            valor_mensal=${v.valor_mensal}, valor_anual=${v.valor_anual},
+            desconto_pct=${input.descontoExtraPct}, valor_total=${v.valor_total},
+            validade_dias=${input.validadeDias}, partner_id=${input.partnerId ?? null},
+            observacoes=${input.observacoes ?? null}
+            WHERE id=${input.id}`);
+          return { ok: true, id: input.id, ...v };
+        }
+        const res: any = await db!.execute(drzSql`
+          INSERT INTO commercial_proposals
+          (razao_social, nome_fantasia, cnpj, responsavel, cargo, email, telefone, segmento,
+           qtd_colaboradores, plano, valor_mensal, valor_anual, desconto_pct, valor_total,
+           validade_dias, partner_id, observacoes, created_by_user_id)
+          VALUES (${input.razaoSocial}, ${input.nomeFantasia ?? null}, ${input.cnpj ?? null},
+                  ${input.responsavel ?? null}, ${input.cargo ?? null}, ${input.email ?? null},
+                  ${input.telefone ?? null}, ${input.segmento ?? null}, ${input.qtdColaboradores},
+                  ${input.plano}, ${v.valor_mensal}, ${v.valor_anual}, ${input.descontoExtraPct},
+                  ${v.valor_total}, ${input.validadeDias}, ${input.partnerId ?? null},
+                  ${input.observacoes ?? null}, ${uid})`);
+        return { ok: true, id: Number((res as any)[0]?.insertId ?? 0), ...v };
+      }),
+
+    crmChangeStatus: superAdminProcedure
+      .input(z.object({ id: z.number().int(), newStatus: z.enum(["lead","negociacao","proposta_enviada","aguardando_retorno","aprovada","reprovada","convertida"]), note: z.string().optional() }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        const [[old]]: any = await db!.execute(drzSql`SELECT status FROM commercial_proposals WHERE id=${input.id}`);
+        await db!.execute(drzSql`UPDATE commercial_proposals SET status=${input.newStatus} WHERE id=${input.id}`);
+        await db!.execute(drzSql`INSERT INTO crm_pipeline_logs (proposal_id, old_status, new_status, note, user_id)
+          VALUES (${input.id}, ${old?.status ?? null}, ${input.newStatus}, ${input.note ?? null}, ${(ctx.user as any).id})`);
+        return { ok: true };
+      }),
+
+    crmGeneratePdf: superAdminProcedure
+      .input(z.object({ id: z.number().int() }))
+      .mutation(async ({ input }) => {
+        const { generateProposalPDF } = await import("./_core/crm");
+        const url = await generateProposalPDF(input.id);
+        return { ok: true, url };
+      }),
+
+    crmConvertToClient: superAdminProcedure
+      .input(z.object({ id: z.number().int() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        const [[p]]: any = await db!.execute(drzSql`SELECT * FROM commercial_proposals WHERE id=${input.id}`);
+        if (!p) throw new TRPCError({ code: "NOT_FOUND" });
+        if (p.converted_company_id) return { ok: true, alreadyConverted: true, companyId: Number(p.converted_company_id) };
+        // Cria company
+        const ins: any = await db!.execute(drzSql`
+          INSERT INTO companies (name, cnpj, created_at) VALUES (${p.razao_social}, ${p.cnpj ?? null}, NOW())`);
+        const companyId = Number((ins as any)[0]?.insertId ?? 0);
+        await db!.execute(drzSql`UPDATE commercial_proposals SET status='convertida', converted_company_id=${companyId} WHERE id=${input.id}`);
+        // Vincula parceiro se houver
+        if (p.partner_id) {
+          await db!.execute(drzSql`INSERT IGNORE INTO client_partner_links (company_id, partner_id, comissao_pct, data_inicio)
+            VALUES (${companyId}, ${p.partner_id}, (SELECT comissao_pct FROM commercial_partners WHERE id=${p.partner_id}), CURDATE())`);
+        }
+        // Cria 12 receivables mensais
+        for (let m = 0; m < 12; m++) {
+          const venc = new Date(); venc.setMonth(venc.getMonth() + m + 1); venc.setDate(5);
+          const vencStr = venc.toISOString().slice(0, 10);
+          await db!.execute(drzSql`INSERT INTO financial_receivables (company_id, plano, valor, vencimento, status)
+            VALUES (${companyId}, ${p.plano}, ${Number(p.valor_mensal)}, ${vencStr}, 'pendente')`);
+        }
+        return { ok: true, companyId, monthly: 12 };
+      }),
+
+    // Parceiros
+    crmListPartners: superAdminProcedure.query(async () => {
+      const { ensureCrmTables } = await import("./_core/crm"); await ensureCrmTables();
+      const db = await getDb();
+      const r: any = await db!.execute(drzSql`SELECT * FROM commercial_partners ORDER BY is_active DESC, nome`);
+      return (r as any)[0] ?? [];
+    }),
+    crmUpsertPartner: superAdminProcedure
+      .input(z.object({
+        id: z.number().int().optional(),
+        nome: z.string().min(1), cpfCnpj: z.string().optional(),
+        email: z.string().optional(), telefone: z.string().optional(),
+        tipoParceria: z.string().optional(), comissaoPct: z.number().default(10),
+        comissaoFixa: z.number().default(0), dataInicio: z.string().optional(),
+        isActive: z.boolean().default(true), observacoes: z.string().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const { ensureCrmTables } = await import("./_core/crm"); await ensureCrmTables();
+        const db = await getDb();
+        if (input.id) {
+          await db!.execute(drzSql`UPDATE commercial_partners SET
+            nome=${input.nome}, cpf_cnpj=${input.cpfCnpj ?? null}, email=${input.email ?? null},
+            telefone=${input.telefone ?? null}, tipo_parceria=${input.tipoParceria ?? null},
+            comissao_pct=${input.comissaoPct}, comissao_fixa=${input.comissaoFixa},
+            data_inicio=${input.dataInicio ?? null}, is_active=${input.isActive ? 1 : 0},
+            observacoes=${input.observacoes ?? null}
+            WHERE id=${input.id}`);
+          return { ok: true, id: input.id };
+        }
+        const r: any = await db!.execute(drzSql`INSERT INTO commercial_partners
+          (nome, cpf_cnpj, email, telefone, tipo_parceria, comissao_pct, comissao_fixa, data_inicio, is_active, observacoes)
+          VALUES (${input.nome}, ${input.cpfCnpj ?? null}, ${input.email ?? null}, ${input.telefone ?? null},
+                  ${input.tipoParceria ?? null}, ${input.comissaoPct}, ${input.comissaoFixa},
+                  ${input.dataInicio ?? null}, ${input.isActive ? 1 : 0}, ${input.observacoes ?? null})`);
+        return { ok: true, id: Number((r as any)[0]?.insertId ?? 0) };
+      }),
+
+    // Financeiro
+    crmListReceivables: superAdminProcedure
+      .input(z.object({ status: z.string().optional(), companyId: z.number().int().optional() }).optional())
+      .query(async ({ input }) => {
+        const { ensureCrmTables } = await import("./_core/crm"); await ensureCrmTables();
+        const db = await getDb();
+        const inp = (input as any) ?? {};
+        let sql = drzSql`SELECT r.*, c.name AS company_name FROM financial_receivables r LEFT JOIN companies c ON c.id=r.company_id WHERE 1=1`;
+        if (inp.status) sql = drzSql`${sql} AND r.status=${inp.status}`;
+        if (inp.companyId) sql = drzSql`${sql} AND r.company_id=${inp.companyId}`;
+        const r: any = await db!.execute(drzSql`${sql} ORDER BY r.vencimento DESC LIMIT 200`);
+        return (r as any)[0] ?? [];
+      }),
+    crmMarkReceived: superAdminProcedure
+      .input(z.object({ id: z.number().int(), pagamento: z.string().optional(), formaPagamento: z.string().optional(), notaFiscal: z.string().optional() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        const dt = input.pagamento ?? new Date().toISOString().slice(0, 10);
+        await db!.execute(drzSql`UPDATE financial_receivables SET status='recebido', pagamento=${dt},
+          forma_pagamento=${input.formaPagamento ?? null}, nota_fiscal=${input.notaFiscal ?? null}
+          WHERE id=${input.id}`);
+        // Calcula comissão automaticamente se há parceiro vinculado
+        const [[rec]]: any = await db!.execute(drzSql`SELECT r.id, r.valor, r.company_id FROM financial_receivables r WHERE r.id=${input.id}`);
+        if (rec) {
+          const [[link]]: any = await db!.execute(drzSql`
+            SELECT cpl.partner_id, COALESCE(cpl.comissao_pct, cp.comissao_pct) AS pct
+            FROM client_partner_links cpl JOIN commercial_partners cp ON cp.id=cpl.partner_id
+            WHERE cpl.company_id=${rec.company_id} LIMIT 1`);
+          if (link) {
+            const valorCom = Math.round(Number(rec.valor) * Number(link.pct) / 100 * 100) / 100;
+            await db!.execute(drzSql`INSERT INTO financial_commissions (receivable_id, partner_id, valor_bruto, comissao_pct, valor_comissao)
+              VALUES (${rec.id}, ${link.partner_id}, ${rec.valor}, ${link.pct}, ${valorCom})
+              ON DUPLICATE KEY UPDATE valor_bruto=${rec.valor}, comissao_pct=${link.pct}, valor_comissao=${valorCom}`);
+          }
+        }
+        return { ok: true };
+      }),
+
+    crmDashboard: superAdminProcedure.query(async () => {
+      const { ensureCrmTables } = await import("./_core/crm"); await ensureCrmTables();
+      const db = await getDb();
+      const [[receitaMes]]: any = await db!.execute(drzSql`SELECT COALESCE(SUM(valor),0) AS v FROM financial_receivables WHERE status='recebido' AND YEAR(pagamento)=YEAR(NOW()) AND MONTH(pagamento)=MONTH(NOW())`);
+      const [[receitaAno]]: any = await db!.execute(drzSql`SELECT COALESCE(SUM(valor),0) AS v FROM financial_receivables WHERE status='recebido' AND YEAR(pagamento)=YEAR(NOW())`);
+      const [[mrr]]: any = await db!.execute(drzSql`SELECT COALESCE(AVG(valor_mensal),0) AS v FROM commercial_proposals WHERE status='convertida'`);
+      const [[clientesAtivos]]: any = await db!.execute(drzSql`SELECT COUNT(DISTINCT company_id) AS v FROM financial_receivables WHERE status IN ('pendente','recebido')`);
+      const [[inadimplentes]]: any = await db!.execute(drzSql`SELECT COUNT(DISTINCT company_id) AS v FROM financial_receivables WHERE status='em_atraso' OR (status='pendente' AND vencimento < NOW())`);
+      const [[pipeline]]: any = await db!.execute(drzSql`SELECT COUNT(*) AS v FROM commercial_proposals WHERE status NOT IN ('reprovada','convertida')`);
+      return {
+        receitaMes: Number(receitaMes?.v ?? 0),
+        receitaAno: Number(receitaAno?.v ?? 0),
+        mrr: Number(mrr?.v ?? 0),
+        clientesAtivos: Number(clientesAtivos?.v ?? 0),
+        inadimplentes: Number(inadimplentes?.v ?? 0),
+        pipeline: Number(pipeline?.v ?? 0),
+      };
+    }),
+
+    // Contratos
+    crmListContracts: superAdminProcedure.query(async () => {
+      const { ensureCrmTables } = await import("./_core/crm"); await ensureCrmTables();
+      const db = await getDb();
+      const r: any = await db!.execute(drzSql`
+        SELECT c.*, cp.nome AS partner_name, co.name AS company_name
+        FROM contracts c
+        LEFT JOIN commercial_partners cp ON cp.id=c.partner_id
+        LEFT JOIN companies co ON co.id=c.company_id
+        ORDER BY c.created_at DESC LIMIT 200`);
+      return (r as any)[0] ?? [];
+    }),
+    crmUpsertContract: superAdminProcedure
+      .input(z.object({
+        id: z.number().int().optional(),
+        nome: z.string().min(1), tipo: z.string().optional(),
+        partnerId: z.number().int().optional().nullable(),
+        companyId: z.number().int().optional().nullable(),
+        assinatura: z.string().optional(), vigenciaInicio: z.string().optional(), vigenciaFim: z.string().optional(),
+        status: z.string().default("ativo"),
+        arquivoBase64: z.string().optional(), arquivoNome: z.string().optional(),
+        observacoes: z.string().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const { ensureCrmTables } = await import("./_core/crm"); await ensureCrmTables();
+        const db = await getDb();
+        // Salva arquivo se enviou base64
+        let arquivoUrl: string | null = null;
+        if (input.arquivoBase64) {
+          const fs = await import("fs/promises");
+          const path = await import("path");
+          const dir = "/var/www/saudedotrabalho/uploads/contracts";
+          await fs.mkdir(dir, { recursive: true });
+          const b64 = input.arquivoBase64.includes(",") ? input.arquivoBase64.split(",", 2)[1] : input.arquivoBase64;
+          const buf = Buffer.from(b64, "base64");
+          const safeName = (input.arquivoNome || "contrato.pdf").replace(/[^\w.\-]/g, "_");
+          const fname = `${Date.now()}_${safeName}`;
+          await fs.writeFile(path.join(dir, fname), buf);
+          arquivoUrl = `/uploads/contracts/${fname}`;
+        }
+        if (input.id) {
+          if (arquivoUrl) {
+            await db!.execute(drzSql`UPDATE contracts SET arquivo_url=${arquivoUrl} WHERE id=${input.id}`);
+          }
+          await db!.execute(drzSql`UPDATE contracts SET
+            nome=${input.nome}, tipo=${input.tipo ?? null}, partner_id=${input.partnerId ?? null},
+            company_id=${input.companyId ?? null}, assinatura=${input.assinatura ?? null},
+            vigencia_inicio=${input.vigenciaInicio ?? null}, vigencia_fim=${input.vigenciaFim ?? null},
+            status=${input.status}, observacoes=${input.observacoes ?? null}
+            WHERE id=${input.id}`);
+          return { ok: true, id: input.id, arquivoUrl };
+        }
+        const r: any = await db!.execute(drzSql`INSERT INTO contracts
+          (nome, tipo, partner_id, company_id, assinatura, vigencia_inicio, vigencia_fim, status, arquivo_url, observacoes)
+          VALUES (${input.nome}, ${input.tipo ?? null}, ${input.partnerId ?? null}, ${input.companyId ?? null},
+                  ${input.assinatura ?? null}, ${input.vigenciaInicio ?? null}, ${input.vigenciaFim ?? null},
+                  ${input.status}, ${arquivoUrl}, ${input.observacoes ?? null})`);
+        return { ok: true, id: Number((r as any)[0]?.insertId ?? 0), arquivoUrl };
+      }),
+
   }),
 
 
@@ -13974,6 +14280,91 @@ ${link}
     }),
 
     // ── Relatório de Legitimidade Metodológica ────────────────────────────────
+    // SP6 #6 — Dados base pros 3 relatórios novos (Canal de Denúncias, Lei 14.457, LGPD/SI)
+    // SP6 EXTRA — Pesquisa anônima imprimível + lançamento em lote
+    // Retorna estrutura completa da pesquisa pra renderizar na página de impressão.
+    surveyPrintable: adminOrRhProcedure
+      .input(z.object({ surveyId: z.number().int(), sectorId: z.number().int().optional() }))
+      .query(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb();
+        const [[sv]] = await execP(db, `SELECT id, title, description, company_id, category FROM surveys WHERE id=?`, [input.surveyId]) as any;
+        if (!sv) throw new TRPCError({ code: "NOT_FOUND" });
+        if (sv.company_id != null && Number(sv.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+        const [qs] = await execP(db, `SELECT id, question_text, question_type, options, order_index FROM survey_questions WHERE survey_id=? ORDER BY order_index`, [input.surveyId]) as any;
+        let sector: any = null;
+        if (input.sectorId) {
+          const [[s]] = await execP(db, `SELECT id, name FROM sectors WHERE id=? AND company_id=?`, [input.sectorId, cid]) as any;
+          sector = s ?? null;
+        }
+        const [[co]] = await execP(db, `SELECT name FROM companies WHERE id=?`, [cid]) as any;
+        return { survey: sv, company: co, sector, questions: qs };
+      }),
+
+    // Lança N respostas anônimas em lote pra uma pesquisa+setor (usado depois
+    // da transcrição das folhas físicas). Cada item de `responses` é um mapa
+    // questionId → answer_value (string).
+    bulkInsertAnonymousResponses: adminOrRhProcedure
+      .input(z.object({
+        surveyId: z.number().int(),
+        sectorId: z.number().int().optional(),
+        responses: z.array(z.record(z.string())).min(1).max(500),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb();
+        // Garante coluna source (idempotente)
+        try { await db!.execute(drzSql`ALTER TABLE survey_responses ADD COLUMN source VARCHAR(40) DEFAULT 'online'`); } catch(_) {}
+        const [[sv]] = await execP(db, `SELECT id, company_id FROM surveys WHERE id=?`, [input.surveyId]) as any;
+        if (!sv) throw new TRPCError({ code: "NOT_FOUND" });
+        if (sv.company_id != null && Number(sv.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+        let inserted = 0;
+        for (const r of input.responses) {
+          // Cria resposta sem user_id (anônima). sector_id opcional.
+          const res: any = await db!.execute(drzSql`
+            INSERT INTO survey_responses (survey_id, user_id, sector_id, source, created_at)
+            VALUES (${input.surveyId}, NULL, ${input.sectorId ?? null}, 'offline_paper', NOW())`);
+          const responseId = Number((res as any)[0]?.insertId ?? 0);
+          for (const [qid, ans] of Object.entries(r)) {
+            await db!.execute(drzSql`
+              INSERT INTO survey_answers (response_id, question_id, answer_value, created_at)
+              VALUES (${responseId}, ${Number(qid)}, ${String(ans)}, NOW())`);
+          }
+          inserted++;
+        }
+        return { ok: true, inserted };
+      }),
+
+    reportContext: adminOrRhProcedure.query(async ({ ctx }) => {
+      const cid = (ctx.user as any).companyId;
+      if (!cid) return null;
+      const db = await getDb();
+      const [[co]] = await execP(db, `SELECT id, name, cnpj, address FROM companies WHERE id=?`, [cid]) as any;
+      const [[u]] = await execP(db, `SELECT COUNT(*) AS cnt FROM users WHERE company_id=? AND is_active=1`, [cid]) as any;
+      // Canal de Denúncias
+      let denuncias = { total: 0, ativas: 0, anonimas: 0 };
+      try {
+        const [[d1]] = await execP(db, `SELECT COUNT(*) AS cnt FROM denuncias WHERE company_id=?`, [cid]) as any;
+        const [[d2]] = await execP(db, `SELECT COUNT(*) AS cnt FROM denuncias WHERE company_id=? AND status='aberta'`, [cid]) as any;
+        const [[d3]] = await execP(db, `SELECT COUNT(*) AS cnt FROM denuncias WHERE company_id=? AND (anonima=1 OR autor_id IS NULL)`, [cid]) as any;
+        denuncias = { total: Number(d1?.cnt ?? 0), ativas: Number(d2?.cnt ?? 0), anonimas: Number(d3?.cnt ?? 0) };
+      } catch (_) {}
+      // Cursos NR-01 (proxy de "Programa de Prevenção" da Lei 14.457)
+      let cursos = { total: 0, concluidos: 0 };
+      try {
+        const [[c1]] = await execP(db, `SELECT COUNT(DISTINCT moduleId) AS cnt FROM user_progress p JOIN users u ON u.id=p.userId WHERE u.company_id=?`, [cid]) as any;
+        const [[c2]] = await execP(db, `SELECT COUNT(*) AS cnt FROM user_progress p JOIN users u ON u.id=p.userId WHERE u.company_id=? AND p.isCompleted=1`, [cid]) as any;
+        cursos = { total: Number(c1?.cnt ?? 0), concluidos: Number(c2?.cnt ?? 0) };
+      } catch (_) {}
+      return {
+        company: co,
+        totalUsers: Number(u?.cnt ?? 0),
+        denuncias,
+        cursos,
+        generatedAt: new Date().toISOString(),
+      };
+    }),
+
     relatorioMetodologiaData: adminOrRhProcedure.query(async ({ ctx }) => {
       const cid = (ctx.user as any).companyId;
       if (!cid) return null;
@@ -14420,7 +14811,23 @@ ${link}
 
 
 
-      .mutation(async ({ input }) => { await deleteSurvey(input.id); return { ok: true }; }),
+      .mutation(async ({ ctx, input }) => {
+        // SP12 — Bruno round 3: bloquear delete de TEMPLATES (is_template=1) por
+        // usuários não-super-admin. Evita exclusão acidental que quebra ciclos psicossociais.
+        const role = (ctx.user as any).role;
+        const isSuper = role === "super_admin" || role === "admin_global";
+        if (!isSuper) {
+          const db = await getDb();
+          if (db) {
+            const r: any = await db.execute(drzSql`SELECT is_template FROM surveys WHERE id=${input.id} LIMIT 1`);
+            const row = (r as any)[0]?.[0];
+            if (row && Number(row.is_template) === 1) {
+              throw new TRPCError({ code: "FORBIDDEN", message: "Templates DRPS/AEP só podem ser excluídos pelo Super Administrador (proteção contra remoção acidental)." });
+            }
+          }
+        }
+        await deleteSurvey(input.id); return { ok: true };
+      }),
 
 
 
@@ -16416,11 +16823,13 @@ Return only the JSON content object (no wrapper). Format per type:
         branchId: z.number().nullable().optional(),
         sectorId: z.number().nullable().optional(),
         maxCompletionPercent: z.number().optional(),
+        // Bruno round 3: filtro por perfil (importante pra AEP só pra chefias)
+        targetRole: z.enum(["todos","colaborador","chefia","rh","sesmt","admin"]).optional(),
       }))
       .query(async ({ ctx, input }) => {
         const cid = (ctx.user as any).companyId ?? input.companyId ?? null;
         if (!cid) return [];
-        return await previewCampaignRecipients({
+        const all = await previewCampaignRecipients({
           companyId: cid,
           campaignType: input.campaignType,
           targetModuleId: input.targetModuleId,
@@ -16429,6 +16838,27 @@ Return only the JSON content object (no wrapper). Format per type:
           sectorId: input.sectorId,
           maxCompletionPercent: input.maxCompletionPercent,
         });
+        // Filtro pós-query por role
+        if (input.targetRole && input.targetRole !== "todos") {
+          const wanted = input.targetRole === "chefia"
+            ? ["chefia","sector_lead","manager"]
+            : input.targetRole === "admin"
+            ? ["admin","company_admin","admin_global","super_admin"]
+            : input.targetRole === "colaborador"
+            ? ["user"]
+            : [input.targetRole];
+          const db = await getDb();
+          if (db) {
+            const ids = (all as any[]).map(r => r.userId).filter(Boolean);
+            if (ids.length === 0) return [];
+            const idsCsv = ids.join(",");
+            const rolesIn = wanted.map(r => `'${r}'`).join(",");
+            const rr: any = await db.execute(drzSql.raw(`SELECT id FROM users WHERE id IN (${idsCsv}) AND role IN (${rolesIn})`));
+            const okIds = new Set(((rr as any)[0] ?? []).map((x: any) => Number(x.id)));
+            return (all as any[]).filter(r => okIds.has(Number(r.userId)));
+          }
+        }
+        return all;
       }),
 
     create: adminOrRhProcedure
@@ -16441,6 +16871,8 @@ Return only the JSON content object (no wrapper). Format per type:
         branchId: z.number().nullable().optional(),
         sectorId: z.number().nullable().optional(),
         maxCompletionPercent: z.number().optional(),
+        // Bruno round 3: filtro por perfil no wizard de Campanhas de E-mail
+        targetRole: z.enum(["todos","colaborador","chefia","rh","sesmt","admin"]).optional(),
         emailSubject: z.string().min(1),
         emailBody: z.string().min(1),
         scheduleType: z.enum(["now", "scheduled", "recurring"]).default("now"),
@@ -16453,7 +16885,7 @@ Return only the JSON content object (no wrapper). Format per type:
         const uid = (ctx.user as any).id;
         let recipients: { userId: number; email: string; name?: string | null }[] = [];
         if (input.campaignType === "course_pending" || input.campaignType === "survey_pending") {
-          const list = await previewCampaignRecipients({
+          let list = await previewCampaignRecipients({
             companyId: cid,
             campaignType: input.campaignType,
             targetModuleId: input.targetModuleId ?? undefined,
@@ -16462,6 +16894,29 @@ Return only the JSON content object (no wrapper). Format per type:
             sectorId: input.sectorId,
             maxCompletionPercent: input.maxCompletionPercent,
           });
+          // Bruno round 3: aplica filtro por perfil
+          if (input.targetRole && input.targetRole !== "todos") {
+            const wanted = input.targetRole === "chefia"
+              ? ["chefia","sector_lead","manager"]
+              : input.targetRole === "admin"
+              ? ["admin","company_admin","admin_global","super_admin"]
+              : input.targetRole === "colaborador"
+              ? ["user"]
+              : [input.targetRole];
+            const db = await getDb();
+            if (db) {
+              const ids = (list as any[]).map(r => r.userId).filter(Boolean);
+              if (ids.length > 0) {
+                const idsCsv = ids.join(",");
+                const rolesIn = wanted.map(r => `'${r}'`).join(",");
+                const rr: any = await db.execute(drzSql.raw(`SELECT id FROM users WHERE id IN (${idsCsv}) AND role IN (${rolesIn})`));
+                const okIds = new Set(((rr as any)[0] ?? []).map((x: any) => Number(x.id)));
+                list = (list as any[]).filter((r: any) => okIds.has(Number(r.userId)));
+              } else {
+                list = [];
+              }
+            }
+          }
           recipients = list.map((r: any) => ({ userId: r.userId, email: r.email, name: r.name }));
         }
         const id = await createEmailCampaign({
@@ -20128,13 +20583,31 @@ Return only the JSON content object (no wrapper). Format per type:
   "treinamentos": [{"nrCode": "NR-XX", "titulo": "string", "cargaHoraria": "8h", "periodicidade": "Anual|Bienal|Inicial"}]
 }
 
-Regras:
+REGRAS DURAS (a quebra dessas regras gera laudo TÉCNICAMENTE INCONSISTENTE):
 - 3 a 8 riscos relevantes ao GSE (não invente riscos sem fonte plausível)
-- 2 a 4 EPCs, 3 a 6 EPIs
+- 2 a 4 EPCs, 0 a 6 EPIs (zero é PERMITIDO e ESPERADO em funções administrativas)
 - 3 a 5 ações 5W2H (datas dentro dos próximos 12 meses)
 - 2 a 5 treinamentos NR aplicáveis
 - Não inclua riscos psicossociais se o GSE for puramente administrativo, e vice-versa
-- Linguagem técnica formal em português brasileiro`;
+- Linguagem técnica formal em português brasileiro
+
+REGRA CRÍTICA DE COERÊNCIA RISCO→EPI (não invente EPIs):
+- EPI deve ser CONSEQUÊNCIA DIRETA de um risco listado em "riscos". NUNCA proponha EPI sem o risco correspondente.
+- Cargos administrativos puros (ex.: Analista Administrativo, Recepcionista, Auxiliar de Escritório, Secretária, Assistente de RH) em ambientes de escritório com computador NÃO precisam de:
+  * Óculos de proteção química (não há agente químico)
+  * Luvas químicas / luvas de raspa (não há manuseio químico ou de objetos cortantes)
+  * Máscara respiratória (não há agente químico ou poeira)
+  * Protetor auricular (não há ruído > 80 dB)
+  * Capacete (não há queda de objetos)
+  * Calçado de segurança (não há área operacional)
+  * Creme protetor solar (trabalho indoor)
+- Para esses cargos, retorne EPI = [] (lista vazia) e adicione no campo "notes" do primeiro risco: "Função administrativa sem necessidade de EPI obrigatório — controle por medidas administrativas e ergonômicas."
+- Aceita-se EPI ergonômico (ex.: apoio de pés, suporte lombar) só se o risco ergonômico estiver listado.
+- Para cargos operacionais (Soldador, Pedreiro, Eletricista, Auxiliar de Produção, etc.) os EPIs devem cobrir EXATAMENTE os riscos identificados — verifique 1-pra-1.
+
+EXEMPLO RUIM (NÃO FAÇA): cargo "Analista Administrativo" → EPI: ["Óculos de proteção química"] → ERRADO, não há risco químico.
+EXEMPLO BOM: cargo "Analista Administrativo" → EPI: [], riscos[0].notes = "Função administrativa..."
+EXEMPLO BOM: cargo "Soldador MIG" → riscos inclui "Radiação UV/IR" → EPI inclui "Máscara de soldagem auto-escurecente CA-XXXX".`;
 
           const userPrompt = `GSE: "${g.nome}"${g.descricao ? ` — ${g.descricao}` : ""}
 Cargos do grupo: ${cargos.length ? cargos.join(", ") : "(não informado)"}
@@ -21172,26 +21645,86 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
         specialty: z.string().optional(),
         bio: z.string().optional(),
         companyId: z.number().int().optional(),
+        // SP5 #7 — template do link de reunião (Meet/Teams permanente do profissional).
+        // Pode ser o link fixo da sala dele (mais simples sem OAuth).
+        meetingUrlTemplate: z.string().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
         const db2 = await getDb();
         if (!db2) throw new Error("DB unavailable");
+        // Garante DDL
+        try { await db2.execute(drzSql`ALTER TABLE appointment_professionals ADD COLUMN meeting_url_template VARCHAR(500)`); } catch(_) {}
         const cid = input.companyId ?? (ctx.user as any).companyId ?? null;
         if (input.id) {
           await db2.execute(drzSql`
             UPDATE appointment_professionals
             SET name=${input.name}, email=${input.email || null}, specialty=${input.specialty || null},
-                bio=${input.bio || null}, company_id=${cid}
+                bio=${input.bio || null}, company_id=${cid},
+                meeting_url_template=${input.meetingUrlTemplate || null}
             WHERE id=${input.id}
           `);
           return { id: input.id };
         } else {
           const res = await db2.execute(drzSql`
-            INSERT INTO appointment_professionals (company_id, name, email, specialty, bio)
-            VALUES (${cid}, ${input.name}, ${input.email || null}, ${input.specialty || null}, ${input.bio || null})
+            INSERT INTO appointment_professionals (company_id, name, email, specialty, bio, meeting_url_template)
+            VALUES (${cid}, ${input.name}, ${input.email || null}, ${input.specialty || null}, ${input.bio || null}, ${input.meetingUrlTemplate || null})
           `);
           return { id: Number((res as any)[0]?.insertId ?? 0) };
         }
+      }),
+
+    // SP5 #7 — Bloqueios (férias, ausências, reuniões) por profissional.
+    // Quando o slot do colaborador cair dentro de um blackout, getAvailableSlots oculta.
+    listBlackouts: protectedProcedure
+      .input(z.object({ professionalId: z.number().int() }))
+      .query(async ({ input }) => {
+        const db = await getDb();
+        try { await db!.execute(drzSql`CREATE TABLE IF NOT EXISTS appointment_blackouts (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          professional_id INT NOT NULL,
+          starts_at DATETIME NOT NULL,
+          ends_at DATETIME NOT NULL,
+          motivo VARCHAR(255),
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_bo_prof (professional_id, starts_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`); } catch(_) {}
+        const r: any = await db!.execute(drzSql`
+          SELECT id, starts_at, ends_at, motivo
+          FROM appointment_blackouts
+          WHERE professional_id=${input.professionalId} AND ends_at >= NOW()
+          ORDER BY starts_at`);
+        return ((r as any)[0] ?? []) as any[];
+      }),
+
+    addBlackout: careManagerProcedure
+      .input(z.object({
+        professionalId: z.number().int(),
+        startsAt: z.string(), // ISO datetime
+        endsAt: z.string(),
+        motivo: z.string().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        try { await db!.execute(drzSql`CREATE TABLE IF NOT EXISTS appointment_blackouts (
+          id INT AUTO_INCREMENT PRIMARY KEY, professional_id INT NOT NULL,
+          starts_at DATETIME NOT NULL, ends_at DATETIME NOT NULL, motivo VARCHAR(255),
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_bo_prof (professional_id, starts_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`); } catch(_) {}
+        if (new Date(input.endsAt) <= new Date(input.startsAt))
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Data final deve ser maior que a inicial." });
+        const res: any = await db!.execute(drzSql`
+          INSERT INTO appointment_blackouts (professional_id, starts_at, ends_at, motivo)
+          VALUES (${input.professionalId}, ${input.startsAt}, ${input.endsAt}, ${input.motivo ?? null})`);
+        return { id: Number((res as any)[0]?.insertId ?? 0) };
+      }),
+
+    removeBlackout: careManagerProcedure
+      .input(z.object({ id: z.number().int() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        await db!.execute(drzSql`DELETE FROM appointment_blackouts WHERE id=${input.id}`);
+        return { ok: true };
       }),
 
     deleteProfessional: careManagerProcedure
@@ -21318,14 +21851,53 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
         const adminRoles = ['admin','rh','admin_global','super_admin','sesmt','super_admin'];
         const isAdminRole = adminRoles.includes((ctx.user as any).role ?? '');
         const collaboratorId = (input.collaboratorId && isAdminRole) ? input.collaboratorId : ctx.user.id;
-        const res = await db2.execute(drzSql`
-          INSERT INTO appointments (company_id, collaborator_id, professional_id, scheduled_at, duration_minutes, status, notes)
-          VALUES (${companyId}, ${collaboratorId}, ${input.professionalId}, ${scheduledAt}, ${input.durationMinutes}, 'pending', ${input.notes || null})
-        `);
-        const appointmentId = Number((res as any)[0]?.insertId ?? 0);
-        // Fetch professional email to notify
+
+        // SP5 #7 — Bloqueia se profissional está em blackout no horário
+        try {
+          const bo: any = await db2.execute(drzSql`
+            SELECT id FROM appointment_blackouts
+            WHERE professional_id=${input.professionalId}
+              AND starts_at <= ${scheduledAt} AND ends_at > ${scheduledAt}
+            LIMIT 1`);
+          if ((bo as any)[0]?.[0]) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Horário indisponível — profissional ausente/bloqueado nesse período." });
+          }
+        } catch (err: any) { if (err?.code === "BAD_REQUEST") throw err; /* tabela ausente → segue */ }
+
+        // SP5 #7 — Auto-popular meeting_url do template do profissional
         const profRows = await db2.execute(drzSql`SELECT * FROM appointment_professionals WHERE id=${input.professionalId}`);
         const prof: any = Array.isArray((profRows as any)[0]) ? ((profRows as any)[0])[0] : null;
+        const autoMeetingUrl = prof?.meeting_url_template ?? null;
+
+        const res = await db2.execute(drzSql`
+          INSERT INTO appointments (company_id, collaborator_id, professional_id, scheduled_at, duration_minutes, status, notes, meeting_url)
+          VALUES (${companyId}, ${collaboratorId}, ${input.professionalId}, ${scheduledAt}, ${input.durationMinutes}, 'pending', ${input.notes || null}, ${autoMeetingUrl})
+        `);
+        const appointmentId = Number((res as any)[0]?.insertId ?? 0);
+
+        // SP5 #7 — Notificação no sino pro colaborador e pro psicólogo (se tiver user)
+        try {
+          const collabKey = `appt_booked:${appointmentId}:collab`;
+          await db2.execute(drzSql`
+            INSERT INTO notifications (user_id, company_id, type, priority, title, body, link, icon, dedup_key)
+            VALUES (${collaboratorId}, ${companyId}, 'appt_booked', 'media',
+                    ${`Conversa agendada com ${prof?.name ?? "profissional"}`},
+                    ${`${input.date} às ${input.time} · ${input.durationMinutes} min${autoMeetingUrl ? " · link da reunião gerado" : ""}`},
+                    '/admin/agenda', 'calendar', ${collabKey})`);
+          if (prof?.email) {
+            const profUser: any = await db2.execute(drzSql`SELECT id FROM users WHERE email=${prof.email} LIMIT 1`);
+            const profUid = (profUser as any)[0]?.[0]?.id;
+            if (profUid) {
+              const profKey = `appt_booked:${appointmentId}:prof`;
+              await db2.execute(drzSql`
+                INSERT INTO notifications (user_id, company_id, type, priority, title, body, link, icon, dedup_key)
+                VALUES (${profUid}, ${companyId}, 'appt_booked', 'media',
+                        ${`Novo agendamento`},
+                        ${`Colaborador ${ctx.user.name ?? ctx.user.email} marcou conversa em ${input.date} às ${input.time}`},
+                        '/admin/agenda', 'calendar', ${profKey})`);
+            }
+          }
+        } catch (e) { console.warn("[scheduling] notif sino falhou:", (e as any)?.message); }
         // Send confirmation email to collaborator
         try {
           if (ctx.user.email) {
@@ -21404,10 +21976,11 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
         const db2 = await getDb();
         if (!db2) throw new Error("DB unavailable");
         const role = (ctx.user as any).role;
-        const isAdminLike = ["admin", "rh", "admin_global", "company_admin", "super_admin", "psicologo"].includes(role);
-        if (!isAdminLike) throw new TRPCError({ code: "FORBIDDEN", message: "Sem permissão para atualizar status." });
-        // Observações profissionais só podem ser gravadas pelo psicólogo ou admin (não RH).
-        const canWriteOutcome = ["psicologo", "admin", "admin_global", "company_admin", "super_admin"].includes(role);
+        // SP3 #5 — RH NÃO pode alterar status / reagendar / cancelar / finalizar.
+        // Só psicólogo + admin (e admin_global/super_admin/company_admin).
+        const canEditAppt = ["psicologo", "admin", "admin_global", "company_admin", "super_admin"].includes(role);
+        if (!canEditAppt) throw new TRPCError({ code: "FORBIDDEN", message: "Apenas o psicólogo e administradores podem atualizar consultas. RH tem acesso somente leitura aos agendamentos." });
+        const canWriteOutcome = canEditAppt;
         if (input.outcomeNotes !== undefined && !canWriteOutcome) {
           throw new TRPCError({ code: "FORBIDDEN", message: "Observações profissionais são sigilosas; apenas o psicólogo registra." });
         }
@@ -22245,6 +22818,8 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
       try { await execP(db, `ALTER TABLE preventive_library_campaigns ADD COLUMN cloned_from INT NULL`, []); } catch(_) {}
       try { await execP(db, `ALTER TABLE preventive_library_campaigns MODIFY company_id INT NULL`, []); } catch(_) {}
       try { await execP(db, `ALTER TABLE preventive_library_campaigns ADD INDEX idx_plc_template (is_template)`, []); } catch(_) {}
+      // SP5 #3 — Campanhas ativadas para colaboradores
+      try { await execP(db, `ALTER TABLE preventive_library_campaigns ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 0`, []); } catch(_) {}
       try { await execP(db, `ALTER TABLE preventive_library_materials ADD COLUMN title VARCHAR(255)`, []); } catch(_) {}
       try { await execP(db, `ALTER TABLE preventive_library_materials ADD COLUMN material_type VARCHAR(50)`, []); } catch(_) {}
       try { await execP(db, `ALTER TABLE preventive_library_materials ADD COLUMN target_audience VARCHAR(50) DEFAULT 'todos'`, []); } catch(_) {}
@@ -22408,10 +22983,32 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
         if (!isGlobal && (isTpl || Number((row as any).company_id) !== Number(cid))) {
           throw new TRPCError({ code: 'FORBIDDEN', message: 'Apenas o Super Admin pode anexar materiais em templates globais.' });
         }
-        const fileUrl = input.fileBase64 ?? null;
+        // SP3 #2 — em vez de gravar base64 inteiro na coluna MEDIUMTEXT (frágil
+        // pra exibição posterior), decodifica e escreve no disco em /uploads/preventive/
+        // e grava só o path no DB.
+        let fileUrl: string | null = null;
+        if (input.fileBase64) {
+          try {
+            const fsmod = await import("fs/promises");
+            const pathmod = await import("path");
+            const base = "/var/www/saudedotrabalho/uploads/preventive";
+            const dir = pathmod.join(base, String(input.campaignId));
+            await fsmod.mkdir(dir, { recursive: true });
+            // Remove "data:image/png;base64," prefix se houver
+            const b64 = input.fileBase64.includes(",") ? input.fileBase64.split(",", 2)[1] : input.fileBase64;
+            const buf = Buffer.from(b64, "base64");
+            const safeName = (input.fileName || "arquivo").replace(/[^\w.\-]/g, "_");
+            const fname = `${Date.now()}_${safeName}`;
+            await fsmod.writeFile(pathmod.join(dir, fname), buf);
+            fileUrl = `/uploads/preventive/${input.campaignId}/${fname}`;
+          } catch (err: any) {
+            console.error("[preventiveLibrary.uploadMaterial] falha ao gravar arquivo:", err?.message);
+            throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Falha ao salvar arquivo: ${err?.message ?? "?"}` });
+          }
+        }
         const [res] = await execP(db, `INSERT INTO preventive_library_materials (campaign_id, title, material_type, target_audience, file_name, mime_type, file_url, description) VALUES (?,?,?,?,?,?,?,?)`,
           [input.campaignId, input.title, input.materialType ?? null, input.targetAudience ?? 'todos', input.fileName ?? null, input.mimeType ?? null, fileUrl, input.description ?? null]) as any;
-        return { id: (res as any).insertId };
+        return { id: (res as any).insertId, fileUrl };
       }),
 
     deleteMaterial: adminOrRhProcedure
@@ -22597,6 +23194,67 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
         return { alreadyExists: false, id: newId, materialsCloned: (mats as any[]).length, linksCloned: (lks as any[]).length };
       }),
 
+    // SP5 #3 — Toggle ativar/desativar campanha (RH/SESMT/admin da empresa, ou Super Admin pra qualquer)
+    setCampaignActive: adminOrRhProcedure
+      .input(z.object({ campaignId: z.number().int(), isActive: z.boolean() }))
+      .mutation(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        const isGlobal = role === "admin_global" || role === "super_admin";
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb();
+        const [[row]] = await execP(db, `SELECT company_id, is_template FROM preventive_library_campaigns WHERE id=?`, [input.campaignId]) as any;
+        if (!row) throw new TRPCError({ code: "NOT_FOUND" });
+        const isTpl = !!(row as any).is_template;
+        if (isTpl) throw new TRPCError({ code: "BAD_REQUEST", message: "Template global não pode ser ativado diretamente — clone primeiro." });
+        if (!isGlobal && Number((row as any).company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+        await execP(db, `UPDATE preventive_library_campaigns SET is_active=? WHERE id=?`, [input.isActive ? 1 : 0, input.campaignId]);
+        return { ok: true };
+      }),
+
+    // SP5 #3 — Lista campanhas ATIVAS da empresa do user (qualquer perfil logado),
+    // com materiais + links inline. Usada na área /campanhas exposta a colaboradores.
+    listActiveForEmployee: protectedProcedure.query(async ({ ctx }) => {
+      const cid = (ctx.user as any).companyId;
+      if (!cid) return [];
+      const db = await getDb();
+      // Garante DDL (caso tabela tenha sido criada antes do ALTER)
+      try { await execP(db, `ALTER TABLE preventive_library_campaigns ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 0`, []); } catch(_) {}
+      const [camps] = await execP(db, `
+        SELECT id, name, code, month_number, theme, color, description
+        FROM preventive_library_campaigns
+        WHERE company_id=? AND is_active=1 AND is_template=0
+        ORDER BY month_number ASC, created_at ASC`, [cid]) as any;
+      const out: any[] = [];
+      for (const c of (camps as any[])) {
+        const [mats] = await execP(db, `SELECT id, title, material_type, file_url, file_name, mime_type, description, target_audience FROM preventive_library_materials WHERE campaign_id=? ORDER BY created_at ASC`, [c.id]) as any;
+        const [lks] = await execP(db, `SELECT id, link_type, ref_id, title, notes, target_audience FROM preventive_library_links WHERE campaign_id=? ORDER BY created_at ASC`, [c.id]) as any;
+        out.push({
+          id: Number(c.id), name: c.name, code: c.code, month: Number(c.month_number ?? 0),
+          theme: c.theme, color: c.color, description: c.description,
+          materials: mats, links: lks,
+        });
+      }
+      return out;
+    }),
+
+    // SP5 #3 — Detalhes de uma campanha (auth obrigatório; valida que está ativa
+    // OU que o usuário tem permissão admin da empresa)
+    getCampaignForEmployee: protectedProcedure
+      .input(z.object({ id: z.number().int() }))
+      .query(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const role = (ctx.user as any).role;
+        const isGlobal = role === "admin_global" || role === "super_admin";
+        const db = await getDb();
+        const [[c]] = await execP(db, `SELECT * FROM preventive_library_campaigns WHERE id=?`, [input.id]) as any;
+        if (!c) throw new TRPCError({ code: "NOT_FOUND" });
+        if (!isGlobal && Number((c as any).company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+        if (!isGlobal && !Number((c as any).is_active)) throw new TRPCError({ code: "FORBIDDEN", message: "Esta campanha não está ativa no momento." });
+        const [mats] = await execP(db, `SELECT * FROM preventive_library_materials WHERE campaign_id=? ORDER BY created_at ASC`, [input.id]) as any;
+        const [lks] = await execP(db, `SELECT * FROM preventive_library_links WHERE campaign_id=? ORDER BY created_at ASC`, [input.id]) as any;
+        return { campaign: c, materials: mats, links: lks };
+      }),
+
     // Sprint 2 / item 23 — Disparar Campanha
     // Dispara notificações (sino) e/ou e-mails para colaboradores da empresa.
     // audience: "todos" | "sesmt_rh" (perfis SST) | "managers" (líderes de setor).
@@ -22605,9 +23263,22 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
     sendCampaignBlast: adminOrRhProcedure
       .input(z.object({
         campaignId: z.number().int(),
-        audience: z.enum(["todos", "sesmt_rh", "managers"]).default("todos"),
-        method: z.enum(["notification", "email", "both"]).default("notification"),
+        // SP3 #4 — audiências granulares
+        audience: z.enum([
+          "todos",          // todos os ativos
+          "colaboradores",  // user (chefia inclusa? não, separada)
+          "rh",             // RH
+          "sesmt",          // SESMT
+          "admin",          // admin/company_admin
+          "chefia",         // chefia/sector_lead
+          "sesmt_rh",       // legado (SESMT + RH + admin)
+          "managers",       // legado (chefia + admin)
+        ]).default("todos"),
+        // SP8 — canais expandidos: whatsapp (template HSM) + all (sino+email+whatsapp)
+        method: z.enum(["notification", "email", "whatsapp", "both", "all"]).default("notification"),
         customMessage: z.string().optional(),
+        // Nome do template HSM aprovado na Meta (ex: "campanha_saude_v1"). Se ausente, usa fallback.
+        whatsappTemplate: z.string().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
         const cid = (ctx.user as any).companyId;
@@ -22620,14 +23291,22 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
         if (isTpl) throw new TRPCError({ code: "BAD_REQUEST", message: "Esta campanha é um Template Global. Clone-a para sua empresa antes de disparar." });
         if (Number((camp as any).company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
 
-        // Resolve audiência
-        let usersSql = `SELECT id, name, email FROM users WHERE company_id=? AND is_active=1 AND email IS NOT NULL AND email <> ''`;
+        // Resolve audiência — SP3 #4: granular por role
+        // SP8 — traz whatsapp_e164 também (necessário pra canal whatsapp)
+        let usersSql = `SELECT id, name, email, whatsapp_e164 FROM users WHERE company_id=? AND is_active=1`;
         const params: any[] = [cid];
-        if (input.audience === "sesmt_rh") {
-          usersSql += ` AND role IN ('sesmt','rh','admin','company_admin')`;
-        } else if (input.audience === "managers") {
-          usersSql += ` AND role IN ('manager','sector_lead','admin','company_admin')`;
-        }
+        const roleFilter: Record<string, string | null> = {
+          todos:          null,
+          colaboradores:  `'user'`,
+          rh:             `'rh'`,
+          sesmt:          `'sesmt'`,
+          admin:          `'admin','company_admin','admin_global'`,
+          chefia:         `'chefia','sector_lead','manager'`,
+          sesmt_rh:       `'sesmt','rh','admin','company_admin'`,                       // legado
+          managers:       `'manager','sector_lead','chefia','admin','company_admin'`,   // legado
+        };
+        const rolesIn = roleFilter[input.audience];
+        if (rolesIn) usersSql += ` AND role IN (${rolesIn})`;
         const [users] = await execP(db, usersSql, params) as any;
         const userList: any[] = users as any[];
         if (userList.length === 0) {
@@ -22635,7 +23314,10 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
         }
 
         const subject = `Campanha de Saúde: ${(camp as any).name}`;
-        const link = `/admin/biblioteca-preventiva#campanha-${input.campaignId}`;
+        // SPA roda sob /plataforma/ no domínio prod e dev (nginx prefix).
+        // Link tanto pra notificação no sino (relative, wouter cuida) quanto pra
+        // e-mail (absoluto: usa PUBLIC_BASE_URL + /plataforma).
+        const link = `/plataforma/campanhas/${input.campaignId}`;
         const introBody = input.customMessage?.trim() || (camp as any).description ||
           `Nova campanha de saúde preventiva disponível para acompanhamento — "${(camp as any).name}".`;
         const html = `
@@ -22648,8 +23330,13 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
             <p style="font-size:11px;color:#94a3b8">Você recebeu este aviso porque está cadastrado(a) na plataforma Saúde do Trabalho.</p>
           </div>`;
 
+        // SP8 — método "all" expande pra todos os 3 canais
+        const wantsNotif    = ["notification", "both", "all"].includes(input.method);
+        const wantsEmail    = ["email",        "both", "all"].includes(input.method);
+        const wantsWhatsapp = ["whatsapp",            "all"].includes(input.method);
+
         let notified = 0;
-        if (input.method === "notification" || input.method === "both") {
+        if (wantsNotif) {
           const dedupKey = `campaign_blast:${input.campaignId}`;
           for (const u of userList) {
             try {
@@ -22668,9 +23355,10 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
         }
 
         let emailsSent = 0, emailsFailed = 0;
-        if (input.method === "email" || input.method === "both") {
+        if (wantsEmail) {
           const { sendEmail } = await import("./_core/email");
           for (const u of userList) {
+            if (!u.email) { continue; }
             try {
               const res = await sendEmail({ to: u.email, toName: u.name ?? undefined, subject, html });
               if (res.ok) emailsSent++; else emailsFailed++;
@@ -22678,7 +23366,35 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
           }
         }
 
-        return { notified, emailsSent, emailsFailed, totalRecipients: userList.length };
+        // SP8 — Disparo WhatsApp: dispara TEMPLATE HSM (único modo válido fora da janela de 24h).
+        // Em PREVIEW (sem credenciais), o helper só loga e grava 'preview' em whatsapp_messages.
+        // Em PROD, requer template aprovado pela Meta (default sugerido: "campanha_saude_v1").
+        let whatsappSent = 0, whatsappFailed = 0, whatsappNoNumber = 0, whatsappOptedOut = 0;
+        if (wantsWhatsapp) {
+          const { sendWhatsappTemplate, isOptedOut } = await import("./_core/whatsapp");
+          const tplName = (input.whatsappTemplate ?? "campanha_saude_v1");
+          // Param do template: nome da campanha + mensagem custom (limitada por Meta a 1024 chars)
+          const tplParams = [
+            String((camp as any).name ?? "Campanha"),
+            String(introBody).slice(0, 600),
+          ];
+          for (const u of userList) {
+            const phone = (u as any).whatsapp_e164;
+            if (!phone) { whatsappNoNumber++; continue; }
+            try {
+              if (await isOptedOut(phone)) { whatsappOptedOut++; continue; }
+              const r = await sendWhatsappTemplate(phone, tplName, "pt_BR", tplParams, { userId: u.id, companyId: cid });
+              if (r.ok) whatsappSent++; else whatsappFailed++;
+            } catch { whatsappFailed++; }
+          }
+        }
+
+        return {
+          notified,
+          emailsSent, emailsFailed,
+          whatsappSent, whatsappFailed, whatsappNoNumber, whatsappOptedOut,
+          totalRecipients: userList.length,
+        };
       }),
 
   }),

@@ -128,6 +128,8 @@ function CampaignWizard({ onDone }: { onDone: () => void }) {
   const [branchId, setBranchId] = useState<number | null>(null);
   const [sectorId, setSectorId] = useState<number | null>(null);
   const [maxCompletionPercent, setMaxCompletionPercent] = useState<number>(100);
+  // Bruno round 3: filtro por perfil — necessário pra AEP (só chefias) e similares
+  const [targetRole, setTargetRole] = useState<"todos"|"colaborador"|"chefia"|"rh"|"sesmt"|"admin">("todos");
   const [templateKey, setTemplateKey] = useState<string>("");
   const [subject, setSubject] = useState<string>("");
   const [body, setBody] = useState<string>("");
@@ -180,6 +182,7 @@ function CampaignWizard({ onDone }: { onDone: () => void }) {
       branchId,
       sectorId,
       maxCompletionPercent,
+      targetRole,
     },
     { enabled: step >= 4 && campaignType !== "custom" && (targetModuleId !== null || targetSurveyId !== null) }
   );
@@ -222,6 +225,7 @@ function CampaignWizard({ onDone }: { onDone: () => void }) {
         branchId,
         sectorId,
         maxCompletionPercent,
+        targetRole,
         emailSubject: subject,
         emailBody: body,
         scheduleType,
@@ -339,7 +343,7 @@ function CampaignWizard({ onDone }: { onDone: () => void }) {
         {step === 3 && (
           <div className="space-y-4">
             <h2 className="text-lg font-semibold text-foreground">Filtros de público</h2>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
               <div>
                 <label className="text-xs font-medium text-muted-foreground">Filial</label>
                 <select
@@ -361,6 +365,25 @@ function CampaignWizard({ onDone }: { onDone: () => void }) {
                   <option value="">Todos</option>
                   {sectorsForBranch.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
                 </select>
+              </div>
+              {/* Bruno round 3: filtro Perfil — essencial pra AEP (chefias) e similares */}
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Perfil</label>
+                <select
+                  className="w-full border border-border rounded-md px-3 py-2 text-sm mt-1"
+                  value={targetRole}
+                  onChange={(e) => setTargetRole(e.target.value as any)}
+                >
+                  <option value="todos">Todos</option>
+                  <option value="colaborador">Colaborador</option>
+                  <option value="chefia">Chefia / Liderança</option>
+                  <option value="rh">RH</option>
+                  <option value="sesmt">SESMT</option>
+                  <option value="admin">Administrador</option>
+                </select>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Use <b>Chefia / Liderança</b> para enviar pesquisas como AEP só pra lideranças.
+                </p>
               </div>
               {campaignType === "course_pending" && (
                 <div>

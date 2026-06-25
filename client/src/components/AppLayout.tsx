@@ -10,6 +10,7 @@ import {
   Mail, ShieldAlert, CreditCard, FolderOpen, GraduationCap, Stethoscope,
   Link2, Layers, RotateCcw, Activity, Search, LineChart, Signature, FileText,
   LifeBuoy, Headphones, HeartHandshake, BarChart3, ListChecks, BookMarked,
+  Megaphone, Briefcase,
 } from "lucide-react";
 import { useState } from "react";
 import { trpc } from "@/lib/trpc";
@@ -41,6 +42,8 @@ const employeeNav: NavItem[] = [
   { label: "Qualificacoes e Habilitacoes", href: "/qualificacoes", icon: <IdCard size={16} /> },
   { label: "Certificados", href: "/certificados", icon: <Award size={16} />, feature: "certificates" },
   { label: "Pesquisas", href: "/pesquisas", icon: <ClipboardList size={16} />, feature: "surveys" },
+  // SP5 #3 — Campanhas Preventivas visíveis ao colaborador
+  { label: "Campanhas", href: "/campanhas", icon: <Megaphone size={16} /> },
   { label: "Area de Descompressao", href: "/area-de-descompressao", icon: <Leaf size={16} />, feature: "decompression" },
   { label: "Canal de Denuncia", href: "/denuncia", icon: <ShieldAlert size={16} /> },
   { label: "Suporte", href: "/suporte", icon: <LifeBuoy size={16} /> },
@@ -138,6 +141,7 @@ const superAdminNav: NavItem[] = [
   { label: "Clientes", href: "/super-admin/clientes", notRoles: ["sesmt", "psicologo"], icon: <Building2 size={16} /> },
   { label: "Catalogo Master", href: "/super-admin/catalogo", notRoles: ["sesmt", "psicologo"], icon: <Library size={16} /> },
   { label: "Horários de acesso", href: "/super-admin/horarios", notRoles: ["sesmt", "psicologo"], icon: <Clock size={16} /> },
+  { label: "CRM / Financeiro", href: "/super-admin/crm", notRoles: ["sesmt", "psicologo"], icon: <Briefcase size={16} /> },
 ];
 
 const ITEM_LABELS: Record<string, string> = {
