@@ -37,6 +37,10 @@ export default function AdminScheduling() {
   const { user } = useAuth();
   const isPsicologo = user?.role === "psicologo";
   const isAdminRole = ["admin", "rh", "admin_global", "super_admin", "sesmt"].includes(user?.role ?? "");
+  // SP3 #5 — RH só vê indicadores + cria nova consulta. Não pode mexer em status/finalizar/reagendar.
+  // Psicólogo e admin (e admin_global/super_admin) mantêm controle integral.
+  const isRhOnly = user?.role === "rh";
+  const canEditAppointment = !isRhOnly; // psicólogo + admin + admin_global + super_admin
   // Gestão de profissionais/disponibilidade pertence ao Psicólogo/Profissional de Saúde
   // (e admins gerais). O RH fica apenas com a visão de agendamentos/relatórios.
   const canManageProfessionals = ["psicologo", "admin", "admin_global", "company_admin", "super_admin"].includes(user?.role ?? "");
@@ -233,7 +237,9 @@ export default function AdminScheduling() {
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <StatusBadge status={a.status} />
-                    <Button size="sm" variant="outline" onClick={() => openStatus(a)}>Atualizar</Button>
+                    {canEditAppointment && (
+                      <Button size="sm" variant="outline" onClick={() => openStatus(a)}>Atualizar</Button>
+                    )}
                   </div>
                 </div>
               ))}

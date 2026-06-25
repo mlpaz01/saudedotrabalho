@@ -89,11 +89,28 @@ export default function AdminBibliotecaPreventiva() {
     },
     onError: (e: any) => toast.error(e?.message ?? "Erro ao clonar"),
   });
+  // SP5 #3 — Ativar/desativar campanha (visível pros colaboradores em /campanhas)
+  const setActiveMut = trpc.preventiveLibrary.setCampaignActive.useMutation({
+    onSuccess: (_r: any, vars: any) => {
+      toast.success(vars.isActive ? "Campanha ATIVADA — visível aos colaboradores em /campanhas." : "Campanha desativada.");
+      campaignsQ.refetch();
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Erro"),
+  });
   // Sprint 2 item 23 — Disparar Campanha
   const blastMut = trpc.preventiveLibrary.sendCampaignBlast.useMutation({
     onSuccess: (r: any) => {
       if (r.warning) toast.info(r.warning);
-      else toast.success(`Disparada: ${r.notified} notificação(ões) + ${r.emailsSent} e-mail(s) enviado(s)${r.emailsFailed ? ` (${r.emailsFailed} falharam)` : ""}.`);
+      else {
+        const parts = [];
+        if (r.notified) parts.push(`${r.notified} sino`);
+        if (r.emailsSent || r.emailsFailed) parts.push(`${r.emailsSent} e-mail${r.emailsFailed ? ` (${r.emailsFailed} falhas)` : ""}`);
+        if (r.whatsappSent || r.whatsappFailed || r.whatsappNoNumber) {
+          const wa = `${r.whatsappSent} WhatsApp${r.whatsappFailed ? ` (${r.whatsappFailed} falhas)` : ""}${r.whatsappNoNumber ? ` · ${r.whatsappNoNumber} sem número` : ""}${r.whatsappOptedOut ? ` · ${r.whatsappOptedOut} opt-out` : ""}`;
+          parts.push(wa);
+        }
+        toast.success(`Disparada: ${parts.join(" + ")}.`);
+      }
     },
     onError: (e: any) => toast.error(e?.message ?? "Erro ao disparar"),
   });
@@ -184,6 +201,22 @@ export default function AdminBibliotecaPreventiva() {
                               {c.theme && <div className="text-xs text-muted-foreground">{c.theme}</div>}
                             </div>
                             <span className="text-xs text-muted-foreground shrink-0">{sf.total} material(is)</span>
+                            {/* SP5 #3 — Toggle ativo/inativo (somente em campanhas próprias) */}
+                            {!isTemplate && (
+                              <label
+                                onClick={(e) => e.stopPropagation()}
+                                className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full cursor-pointer border ${c.is_active ? "bg-emerald-100 text-emerald-700 border-emerald-200" : "bg-slate-100 text-slate-500 border-slate-200"}`}
+                                title={c.is_active ? "Campanha ATIVA — colaboradores veem em /campanhas" : "Ativar para os colaboradores"}
+                              >
+                                <input
+                                  type="checkbox"
+                                  className="hidden"
+                                  checked={!!c.is_active}
+                                  onChange={(e) => setActiveMut.mutate({ campaignId: c.id, isActive: e.target.checked })}
+                                />
+                                {c.is_active ? "● ativa" : "○ inativa"}
+                              </label>
+                            )}
                             {/* Sprint 2 item 31 — Clone (apenas para templates, e apenas se não-superadmin) */}
                             {isTemplate && !isGlobal && (
                               <button
@@ -288,9 +321,11 @@ export default function AdminBibliotecaPreventiva() {
 }
 
 function BlastDialog({ campaign, loading, onClose, onConfirm }: any) {
-  const [audience, setAudience] = useState<"todos" | "sesmt_rh" | "managers">("todos");
-  const [method, setMethod] = useState<"notification" | "email" | "both">("notification");
+  const [audience, setAudience] = useState<"todos" | "colaboradores" | "rh" | "sesmt" | "admin" | "chefia">("todos");
+  // SP8 — canais expandidos com WhatsApp
+  const [method, setMethod] = useState<"notification" | "email" | "whatsapp" | "both" | "all">("notification");
   const [customMessage, setCustomMessage] = useState("");
+  const [whatsappTemplate, setWhatsappTemplate] = useState("campanha_saude_v1");
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-white rounded-lg shadow-xl max-w-lg w-full p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
@@ -306,20 +341,42 @@ function BlastDialog({ campaign, loading, onClose, onConfirm }: any) {
         <div>
           <label className="text-xs font-semibold text-slate-700">Audiência</label>
           <select className="w-full mt-1 border rounded-md px-2 py-1.5 text-sm" value={audience} onChange={(e) => setAudience(e.target.value as any)}>
-            <option value="todos">Todos os colaboradores ativos</option>
-            <option value="sesmt_rh">Apenas SESMT + RH + Admin</option>
-            <option value="managers">Apenas líderes/gestores</option>
+            <option value="todos">Todos os ativos da empresa</option>
+            <option value="colaboradores">Só Colaboradores</option>
+            <option value="chefia">Só Chefias / Líderes</option>
+            <option value="rh">Só RH</option>
+            <option value="sesmt">Só SESMT</option>
+            <option value="admin">Só Administradores</option>
           </select>
         </div>
 
         <div>
           <label className="text-xs font-semibold text-slate-700">Canal</label>
           <select className="w-full mt-1 border rounded-md px-2 py-1.5 text-sm" value={method} onChange={(e) => setMethod(e.target.value as any)}>
-            <option value="notification">Notificação no sino (na plataforma)</option>
-            <option value="email">E-mail</option>
-            <option value="both">Notificação + E-mail</option>
+            <option value="notification">📲 Notificação no sino (na plataforma)</option>
+            <option value="email">📧 E-mail</option>
+            <option value="whatsapp">💬 WhatsApp (template aprovado)</option>
+            <option value="both">📲 + 📧 Notificação + E-mail</option>
+            <option value="all">📲 + 📧 + 💬 Todos os canais</option>
           </select>
         </div>
+
+        {(method === "whatsapp" || method === "all") && (
+          <div>
+            <label className="text-xs font-semibold text-slate-700">Template WhatsApp aprovado pela Meta</label>
+            <input
+              type="text"
+              className="w-full mt-1 border rounded-md px-2 py-1.5 text-sm font-mono"
+              value={whatsappTemplate}
+              onChange={(e) => setWhatsappTemplate(e.target.value)}
+              placeholder="campanha_saude_v1"
+            />
+            <p className="text-[10px] text-slate-500 mt-1">
+              Nome exato do template aprovado em <a href="https://business.facebook.com/wa/manage/message-templates" target="_blank" rel="noreferrer" className="text-blue-600 underline">Meta Business → Templates</a>.
+              Em modo preview (sem credenciais), as mensagens são gravadas no banco sem envio real.
+            </p>
+          </div>
+        )}
 
         <div>
           <label className="text-xs font-semibold text-slate-700">Mensagem personalizada (opcional)</label>
@@ -334,7 +391,7 @@ function BlastDialog({ campaign, loading, onClose, onConfirm }: any) {
         <div className="flex justify-end gap-2 pt-2 border-t">
           <button onClick={onClose} disabled={loading} className="px-3 py-1.5 text-sm border rounded-md hover:bg-slate-50">Cancelar</button>
           <button
-            onClick={() => onConfirm({ audience, method, customMessage: customMessage.trim() || undefined })}
+            onClick={() => onConfirm({ audience, method, customMessage: customMessage.trim() || undefined, whatsappTemplate: (method === "whatsapp" || method === "all") ? whatsappTemplate.trim() : undefined })}
             disabled={loading}
             className="px-4 py-1.5 text-sm bg-emerald-600 text-white rounded-md hover:bg-emerald-700 flex items-center gap-1 disabled:opacity-60"
           >

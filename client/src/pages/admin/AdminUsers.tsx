@@ -301,7 +301,7 @@ export default function AdminUsers() {
 }
 
 // ----- CSV import -----------------------------------------------------------
-type ParsedRow = { email: string; nome: string; filial: string; setor: string; cargo: string; perfil: string };
+type ParsedRow = { email: string; nome: string; filial: string; setor: string; cargo: string; perfil: string; whatsapp: string };
 
 function stripAccents(s: string) {
   return s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
@@ -342,12 +342,14 @@ function parseCSV(text: string): ParsedRow[] {
   // por engano. Agora cargo casa só com cargo/função/position; perfil só com perfil/acesso/papel.
   let iCargo = find("cargo", "funcao", "função", "position");
   let iPerfil = find("perfil", "acesso", "papel");
+  // SP7 #1 — coluna nova "whatsapp"
+  let iWhats = find("whats", "celular", "telefone");
 
   const firstHasEmail = grid[0].some((c) => c.includes("@"));
   const hasHeader = iEmail !== -1 && !firstHasEmail;
   const dataRows = hasHeader ? grid.slice(1) : grid;
-  // Ordem padrão sem cabeçalho: email; nome; filial; setor; cargo; perfil
-  if (!hasHeader) { iEmail = 0; iNome = 1; iFilial = 2; iSetor = 3; iCargo = 4; iPerfil = 5; }
+  // Ordem padrão sem cabeçalho: email; nome; filial; setor; cargo; perfil; whatsapp
+  if (!hasHeader) { iEmail = 0; iNome = 1; iFilial = 2; iSetor = 3; iCargo = 4; iPerfil = 5; iWhats = 6; }
 
   const at = (row: string[], idx: number) => (idx >= 0 && idx < row.length ? row[idx] : "");
   return dataRows
@@ -358,16 +360,17 @@ function parseCSV(text: string): ParsedRow[] {
       setor: at(r, iSetor),
       cargo: at(r, iCargo),
       perfil: at(r, iPerfil),
+      whatsapp: at(r, iWhats),
     }))
     .filter((r) => r.email || r.nome);
 }
 
 const CSV_TEMPLATE =
-  "e-mail corporativo;nome;filial;setor;cargo;perfil\n" +
-  "joao.silva@empresa.com;João Silva;Matriz;Produção;Operador de Máquinas;colaborador\n" +
-  "ana.gestora@empresa.com;Ana Gestora;Matriz;Produção;Coordenadora de Produção;chefia\n" +
-  "maria.souza@empresa.com;Maria Souza;Filial São Paulo;Recursos Humanos;Analista de RH;rh\n" +
-  "carlos.lima@empresa.com;Carlos Lima;Matriz;Diretoria;Diretor Executivo;admin\n";
+  "e-mail corporativo;nome;filial;setor;cargo;perfil;whatsapp\n" +
+  "joao.silva@empresa.com;João Silva;Matriz;Produção;Operador de Máquinas;colaborador;(11) 98765-4321\n" +
+  "ana.gestora@empresa.com;Ana Gestora;Matriz;Produção;Coordenadora de Produção;chefia;(11) 99988-7766\n" +
+  "maria.souza@empresa.com;Maria Souza;Filial São Paulo;Recursos Humanos;Analista de RH;rh;(11) 95555-2222\n" +
+  "carlos.lima@empresa.com;Carlos Lima;Matriz;Diretoria;Diretor Executivo;admin;\n";
 
 function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported: () => void }) {
   const companiesQ = trpc.pgr.listCompanies.useQuery();
@@ -506,17 +509,20 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
                 </button>
               </div>
               <p className="text-xs text-muted-foreground">
-                <b>Colunas (nesta ordem):</b> <code>e-mail corporativo; nome; filial; setor; cargo; perfil</code>.
+                <b>Colunas (nesta ordem):</b> <code>e-mail corporativo; nome; filial; setor; cargo; perfil; whatsapp</code>.
                 <br />
                 <b>Cargo é obrigatório</b> — é usado pelo PGR/AEP/EPI/treinamentos. Aceita variações de cabeçalho: <code>cargo</code>, <code>função</code>, <code>position</code>.
                 <br />
                 <b>Perfil</b> aceito: <code>colaborador</code>, <code>chefia</code>, <code>rh</code> ou <code>admin</code>.
                 <br />
+                <b>WhatsApp (7ª coluna)</b> — opcional. Aceita formatos <code>(21) 96896-0994</code>, <code>21968960994</code> ou <code>+5521968960994</code>.
+                O sistema normaliza automaticamente para o padrão internacional E.164. Necessário para envio de campanhas e pesquisas via WhatsApp.
+                <br />
                 Filiais e setores inexistentes serão criados automaticamente.
               </p>
               <textarea
                 className="w-full border rounded-md px-3 py-2 text-sm font-mono h-28 bg-white"
-                placeholder="email;nome;filial;setor;cargo;perfil"
+                placeholder="email;nome;filial;setor;cargo;perfil;whatsapp"
                 value={raw}
                 onChange={(e) => setRaw(e.target.value)}
               />
@@ -810,6 +816,10 @@ function AssignmentDialog({ user, onClose, onSaved }: { user: any; onClose: () =
   const [role, setRole] = useState<string>(user?.role ?? "user");
   const [branchId, setBranchId] = useState<number | null>(user?.branchId ?? null);
   const [sectorId, setSectorId] = useState<number | null>(user?.sectorId ?? null);
+  // SP3 #1 — Cargo na edição (campo já existe no banco/importer; faltava na UI)
+  const [position, setPosition] = useState<string>(user?.position ?? user?.cargo ?? "");
+  // SP7 #1 — WhatsApp E.164 (auto-formatado no servidor)
+  const [whatsapp, setWhatsapp] = useState<string>(user?.whatsapp ?? user?.whatsapp_e164 ?? "");
   const sectorsQ = trpc.departmentsAdmin.list.useQuery(
     branchId ? { branchId } : (user?.companyId ? { companyId: user.companyId } : undefined)
   );
@@ -831,6 +841,8 @@ function AssignmentDialog({ user, onClose, onSaved }: { user: any; onClose: () =
       role: role as any,
       branchId: branchId,
       sectorId: sectorId,
+      position: position.trim() || null,
+      whatsapp: whatsapp.trim() || null,
     });
   }
 
@@ -861,6 +873,30 @@ function AssignmentDialog({ user, onClose, onSaved }: { user: any; onClose: () =
               <option value="rh">RH / Saúde</option>
               <option value="admin">Administrador</option>
             </select>
+          </div>
+          <div>
+            <Label>Cargo / Função</Label>
+            <Input
+              className="mt-2"
+              value={position}
+              onChange={(e) => setPosition(e.target.value)}
+              placeholder="Ex.: Analista Administrativo, Soldador, Recepcionista..."
+            />
+            <p className="text-xs text-muted-foreground mt-1">
+              Usado pelo PGR, GSE, IA de sugestão de riscos e treinamentos.
+            </p>
+          </div>
+          <div>
+            <Label>WhatsApp</Label>
+            <Input
+              className="mt-2"
+              value={whatsapp}
+              onChange={(e) => setWhatsapp(e.target.value)}
+              placeholder="(11) 98765-4321 ou +5511987654321"
+            />
+            <p className="text-xs text-muted-foreground mt-1">
+              Canal para campanhas, pesquisas e treinamentos. Será normalizado para padrão internacional (+55...).
+            </p>
           </div>
           <div>
             <Label>Filial</Label>

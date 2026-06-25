@@ -30,6 +30,9 @@ import AdminAuditLogs from "@/pages/admin/AdminAuditLogs";
 import AdminEvidenceReport from "@/pages/admin/AdminEvidenceReport";
 import RelatorioFiscalizacao from "@/pages/admin/RelatorioFiscalizacao";
 import RelatorioMetodologia from "@/pages/admin/RelatorioMetodologia";
+import { RelatorioCanalDenuncias as RelCanalDenuncias, RelatorioLei14457 as RelLei14457, RelatorioLgpd as RelLgpd } from "@/pages/admin/RelatoriosCompliance";
+import SurveyImprimir from "@/pages/admin/SurveyImprimir";
+import SurveyImportarPapel from "@/pages/admin/SurveyImportarPapel";
 import Denuncia from "@/pages/Denuncia";
 import DenunciaTrack from "@/pages/DenunciaTrack";
 import AdminDenuncias from "@/pages/admin/AdminDenuncias";
@@ -58,6 +61,8 @@ import SuperAdminDashboard from "@/pages/superadmin/SuperAdminDashboard";
 import SuperAdminClients from "@/pages/superadmin/SuperAdminClients";
 import SuperAdminCatalog from "@/pages/superadmin/SuperAdminCatalog";
 import SuperAdminAccessHours from "@/pages/superadmin/SuperAdminAccessHours";
+import SuperAdminCrm from "@/pages/superadmin/SuperAdminCrm";
+import CampanhasIndex, { CampanhaDetail } from "@/pages/Campanhas";
 import Configurador from "@/pages/admin/Configurador";
 import AdminBranches from "@/pages/admin/AdminBranches";
 import AdminScheduling from "@/pages/admin/AdminScheduling";
@@ -197,6 +202,13 @@ function Router() {
       <Route path="/admin/compliance" component={() => <ProtectedRoute component={ComplianceHub} adminOnly />} />
       <Route path="/admin/compliance/relatorio-fiscalizacao" component={() => <ProtectedRoute component={RelatorioFiscalizacao} adminOnly />} />
       <Route path="/admin/compliance/relatorio-metodologia" component={() => <ProtectedRoute component={RelatorioMetodologia} adminOnly />} />
+      {/* SP6 #6 — 3 relatórios novos de conformidade */}
+      <Route path="/admin/compliance/canal-denuncias" component={() => <ProtectedRoute component={RelCanalDenuncias} adminOnly />} />
+      <Route path="/admin/compliance/lei-14457" component={() => <ProtectedRoute component={RelLei14457} adminOnly />} />
+      <Route path="/admin/compliance/lgpd" component={() => <ProtectedRoute component={RelLgpd} adminOnly />} />
+      {/* SP6 EXTRA — pesquisa imprimível + lançamento batch */}
+      <Route path="/admin/pesquisas/imprimir/:surveyId" component={() => <ProtectedRoute component={SurveyImprimir} adminOnly />} />
+      <Route path="/admin/pesquisas/importar/:surveyId" component={() => <ProtectedRoute component={SurveyImportarPapel} adminOnly />} />
       <Route path="/admin/pesquisas" component={() => <ProtectedRoute component={AdminSurveys} adminOnly />} />
       <Route path="/admin/pesquisas/estudio" component={() => <ProtectedRoute component={SurveyStudio} adminOnly />} />
       <Route path="/admin/biblioteca" component={() => <ProtectedRoute component={AdminLibrary} adminOnly />} />
@@ -232,6 +244,9 @@ function Router() {
       <Route path="/super-admin/clientes" component={() => <SuperAdminRoute component={SuperAdminClients} />} />
       <Route path="/super-admin/catalogo" component={() => <SuperAdminRoute component={SuperAdminCatalog} />} />
       <Route path="/super-admin/horarios" component={() => <SuperAdminRoute component={SuperAdminAccessHours} />} />
+      <Route path="/super-admin/crm" component={() => <SuperAdminRoute component={SuperAdminCrm} />} />
+      <Route path="/campanhas" component={() => <ProtectedRoute component={CampanhasIndex} />} />
+      <Route path="/campanhas/:id" component={() => <ProtectedRoute component={CampanhaDetail} />} />
       <Route path="/missao" component={() => <Redirect to="/modulos" />} />
       <Route path="/missao/curso/:moduleId" component={() => <ProtectedRoute component={MissaoCourseMap} />} />
       <Route path="/missao/aula/:lessonId" component={() => <ProtectedRoute component={MissaoLessonPlayer} />} />

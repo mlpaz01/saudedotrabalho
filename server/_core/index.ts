@@ -61,6 +61,109 @@ app.use("/pdfs", express.static("/var/www/saudedotrabalho/public/pdfs"));
     }
   });
 
+  // ── Redirect helper: SPA roda sob /plataforma/ no nginx. Se alguém acessa
+  // /campanhas, /admin/*, etc direto (link de e-mail antigo, digitação manual),
+  // redireciona pro path correto. Evita 404 confuso pro Bruno.
+  app.get(["/campanhas", "/campanhas/*", "/admin", "/admin/*", "/inicio", "/cursos", "/cursos/*", "/pesquisas", "/pesquisas/*", "/certificados", "/perfil", "/suporte", "/super-admin", "/super-admin/*"], (req, res, next) => {
+    // Só redireciona pra navegação tipo browser (não API/JSON)
+    if (req.path.startsWith("/api/") || req.path.startsWith("/plataforma/")) return next();
+    const accept = String(req.headers.accept || "");
+    if (!accept.includes("text/html")) return next();
+    return res.redirect(302, `/plataforma${req.originalUrl}`);
+  });
+
+  // ── SP11 — Endpoint manual da Inteligência Preventiva ───────────────────
+  // Em prod, vai virar cron diário. Por enquanto pode ser chamado por admin.
+  app.post("/api/intel/run", async (req, res) => {
+    try {
+      const secret = req.headers["x-intel-secret"];
+      if (process.env.INTEL_SECRET && secret !== process.env.INTEL_SECRET) {
+        return res.status(403).json({ error: "forbidden" });
+      }
+      const { runPreventiveIntelligenceCron } = await import("./preventive_intelligence");
+      const r = await runPreventiveIntelligenceCron();
+      return res.json(r);
+    } catch (e: any) {
+      return res.status(500).json({ error: String(e?.message ?? e) });
+    }
+  });
+
+  // ── SP7 — Garante tabelas WhatsApp no boot (idempotente) ───────────────
+  (async () => {
+    try {
+      const { ensureWhatsappTables, getWhatsappEnv } = await import("./whatsapp");
+      await ensureWhatsappTables();
+      const env = getWhatsappEnv();
+      console.log(`[whatsapp] ${env.isPreview ? "MODO PREVIEW (sem credenciais Meta)" : "produção (Meta Cloud API)"}`);
+    } catch (e) { console.warn("[whatsapp] init falhou:", (e as any)?.message); }
+  })();
+
+  // ── SP7 — WhatsApp Webhook (Meta Cloud API) ─────────────────────────────
+  // GET: verificação inicial pela Meta (handshake hub.challenge)
+  app.get("/api/whatsapp/webhook", (req, res) => {
+    (async () => {
+      try {
+        const { getWhatsappEnv } = await import("./whatsapp");
+        const env = getWhatsappEnv();
+        const mode = req.query["hub.mode"];
+        const token = req.query["hub.verify_token"];
+        const challenge = req.query["hub.challenge"];
+        if (mode === "subscribe" && token === env.verifyToken) {
+          console.log("[whatsapp webhook] verified");
+          return res.status(200).send(String(challenge ?? ""));
+        }
+        console.warn("[whatsapp webhook] verify failed", { mode, token });
+        return res.status(403).send("forbidden");
+      } catch (e) {
+        console.error("[whatsapp webhook] verify error", e);
+        return res.status(500).send("error");
+      }
+    })();
+  });
+
+  // POST: recebe mensagens entrantes e status updates.
+  app.post("/api/whatsapp/webhook", async (req, res) => {
+    // Responde rápido — Meta exige <20s. Processamento em segundo plano.
+    res.sendStatus(200);
+    try {
+      const { logIncomingMessage, sendWhatsappText, normalizeE164BR } = await import("./whatsapp");
+      const { handleIncomingMessage } = await import("./whatsapp_state");
+      const body = req.body as any;
+      const entries = (body?.entry ?? []) as any[];
+      for (const entry of entries) {
+        for (const change of (entry.changes ?? [])) {
+          const value = change?.value ?? {};
+          const messages = (value.messages ?? []) as any[];
+          for (const m of messages) {
+            const from = "+" + String(m.from).replace(/^\+?/, "");
+            const phoneE164 = normalizeE164BR(from) ?? from;
+            const type = m.type as string;
+            let text: string | null = null;
+            if (type === "text") text = m.text?.body ?? "";
+            else if (type === "button") text = m.button?.text ?? m.button?.payload ?? "";
+            else if (type === "interactive") text = m.interactive?.button_reply?.title ?? m.interactive?.list_reply?.title ?? "";
+            await logIncomingMessage(phoneE164, type, text, m.id ?? null, m[type]?.id ?? null, m[type]?.mime_type ?? null);
+            const { reply } = await handleIncomingMessage(phoneE164, text);
+            if (reply) await sendWhatsappText(phoneE164, reply);
+          }
+          // status updates (sent/delivered/read/failed) — atualiza whatsapp_messages
+          for (const st of (value.statuses ?? []) as any[]) {
+            try {
+              const { getDb } = await import("../db");
+              const { sql: drzSql } = await import("drizzle-orm");
+              const db = await getDb();
+              if (db) {
+                await db.execute(drzSql`UPDATE whatsapp_messages SET status=${st.status} WHERE meta_msg_id=${st.id}`);
+              }
+            } catch (_) {}
+          }
+        }
+      }
+    } catch (err) {
+      console.error("[whatsapp webhook] process error", err);
+    }
+  });
+
   // ── Template downloads (CSV + documents) ────────────────────────────────
   app.get("/api/templates/colaboradores.csv", (_req, res) => {
     const csv = "email,nome,filial,setor,perfil\njoao@empresa.com,João Silva,Matriz,RH,Colaborador\nmaria@empresa.com,Maria Souza,Filial SP,TI,Chefia\n";

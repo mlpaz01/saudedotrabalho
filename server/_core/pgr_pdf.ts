@@ -37,6 +37,13 @@ function multiline(s: unknown): string {
  */
 function renderUserText(s: unknown): string {
   if (s == null || String(s).trim() === "") return "";
+  const raw = String(s).trim();
+  // SP4 #8 — Se vier HTML do RichTextEditor (contém tag), passa direto preservando
+  // formatação (negrito/listas/imagens/tabelas/alinhamento). Texto plano antigo
+  // segue a lógica markdown-leve abaixo.
+  if (/<\/?(p|h[1-6]|ul|ol|li|table|tr|td|th|img|b|i|u|strong|em|div|span|br)\b/i.test(raw)) {
+    return raw;
+  }
   const txt = esc(s);
   const blocks = txt.split(/\n\s*\n/);
   const html: string[] = [];
@@ -866,32 +873,28 @@ function gseGroupsSection(d: PgrData): string {
 // Lista as seções que de fato serão renderizadas, na MESMA ordem do corpo,
 // numerando dinamicamente. Sem números de página (PDF gerado a partir de HTML
 // sem paginação determinística), mas com ancoragem semântica clara.
-function renderSumarioPgr(d: PgrData): string {
-  const usaCustom = !!(d.textoIntroducao && d.textoIntroducao.trim());
+function renderSumarioPgr(d: PgrData, attCounts?: { complementares: number; oficiais: Array<{ label: string; n: number }> }): string {
+  // SP4 #14 — Estrutura nova do PDF conforme orientação Bruno (jun/2026):
+  // capa → sumário → identificação → revisões → intro → caracterização → GSE
+  // → conclusão → resp. técnica → anexos do PGR (LTCAT...) → anexos 1-5 (oficiais).
+  // Removido do PDF: Regime, GHE antigo, Notas Técnicas, Conclusão auto, Matriz,
+  // Plano Psicossocial, Cronograma, Hierarquia, Não Conformidades, Treinamentos NR.
   const items: string[] = [];
   items.push("Identificação da Empresa");
-  items.push("Regime de Trabalho");
   items.push("Histórico de Revisões");
-  if (d.gseGroups && d.gseGroups.length > 0) {
-    items.push(`Grupos Similares de Exposição (GSE) — ${d.gseGroups.length} grupo(s)`);
-  }
-  if (usaCustom) {
-    items.push("Introdução");
-    items.push("Inventário de Riscos do PGR");
-  } else {
-    items.push("PARTE I — Disposição Geral");
-    items.push("PARTE II — Antecipação, Reconhecimento e Avaliação dos Riscos");
-    items.push("PARTE III — Avaliação Quantitativa dos Riscos");
-    items.push("PARTE IV — Inventário de Riscos do PGR");
-    items.push("Gestão Operacional do GRO");
-  }
+  if (d.textoIntroducao && d.textoIntroducao.trim()) items.push("Introdução");
   if (caracterizacaoSetoresSection(d)) items.push("Caracterização Operacional dos Setores");
-  if (cronogramaSection(d)) items.push("Cronograma Preventivo");
-  if (hierarquiaControleSection(d)) items.push("Hierarquia de Controle");
-  if (naoConformidadesSection(d)) items.push("Não Conformidades");
-  if (treinamentosNrSection(d)) items.push("Treinamentos Obrigatórios por NR");
+  if (d.gseGroups && d.gseGroups.length > 0) {
+    items.push(`Grupos Similares de Exposição (GSE) — ${d.gseGroups.length} grupo(s) — Modelo NR-01`);
+  }
   if (d.textoConclusao && d.textoConclusao.trim()) items.push("Conclusão Técnica");
   items.push("Responsabilidade Técnica");
+  if (attCounts) {
+    if (attCounts.complementares > 0) items.push(`Anexos do PGR (${attCounts.complementares} documento(s) complementares)`);
+    attCounts.oficiais.forEach((o, idx) => {
+      items.push(`Anexo ${idx + 1} — ${o.label}`);
+    });
+  }
 
   const rows = items.map((label, i) => `
     <tr>
@@ -946,50 +949,20 @@ export async function generatePGRPDF(d: PgrData): Promise<string> {
   <div class="section">${identificacao(d)}</div>
   <div class="page-break"></div>
 
-  <div class="section">${regimeEGhe(d)}</div>
   <div class="section">${revisaoTable(d)}</div>
   <div class="page-break"></div>
 
-  ${(d.gseGroups && d.gseGroups.length > 0) ? `<div class="section">${gseGroupsSection(d)}</div><div class="page-break"></div>` : ""}
-
   ${d.textoIntroducao && d.textoIntroducao.trim()
     ? `<div class="section">
-         <h2>1. Introdução</h2>
+         <h2>Introdução</h2>
 ${renderUserText(d.textoIntroducao)}
        </div>
-       <div class="page-break"></div>
-
-       <h2>2. Inventário de Riscos do PGR</h2>
-       <p><small class="muted">Antecipação, Reconhecimento e Avaliação dos Riscos — NR-01, item 1.5.7.3.</small></p>
-       ${inventarioTable(d)}
-       ${gseEpcEpiSection(d)}
        <div class="page-break"></div>`
-    : `<div class="section">${parteI(d)}</div>
-       <div class="page-break"></div>
-
-       <div class="section">${parteII(d)}</div>
-       <div class="page-break"></div>
-
-       <div class="section">${parteIII()}</div>
-       <div class="page-break"></div>
-
-       <h2>4. PARTE IV — INVENTÁRIO DE RISCOS DO PGR</h2>
-       <p><small class="muted">Antecipação, Reconhecimento e Avaliação dos Riscos — NR-01, item 1.5.7.3.</small></p>
-       ${inventarioTable(d)}
-       ${gseEpcEpiSection(d)}
-
-       <div class="section">${textoFixoGRO()}</div>
-       <div class="page-break"></div>`}
+    : ""}
 
   ${caracterizacaoSetoresSection(d) ? `<div class="section">${caracterizacaoSetoresSection(d)}</div><div class="page-break"></div>` : ""}
 
-  ${cronogramaSection(d) ? `<div class="section">${cronogramaSection(d)}</div><div class="page-break"></div>` : ""}
-
-  ${hierarquiaControleSection(d) ? `<div class="section">${hierarquiaControleSection(d)}</div><div class="page-break"></div>` : ""}
-
-  ${naoConformidadesSection(d) ? `<div class="section">${naoConformidadesSection(d)}</div><div class="page-break"></div>` : ""}
-
-  ${treinamentosNrSection(d) ? `<div class="section">${treinamentosNrSection(d)}</div><div class="page-break"></div>` : ""}
+  ${(d.gseGroups && d.gseGroups.length > 0) ? `<div class="section">${gseGroupsSection(d)}</div><div class="page-break"></div>` : ""}
 
   ${d.textoConclusao && d.textoConclusao.trim()
     ? `<div class="section">
@@ -999,7 +972,7 @@ ${renderUserText(d.textoConclusao)}
        <div class="page-break"></div>`
     : ""}
 
-  <h2>5. Responsabilidade Técnica</h2>
+  <h2>Responsabilidade Técnica</h2>
   <p>Este Programa de Gerenciamento de Riscos foi elaborado sob responsabilidade técnica de
   <b>${respTec}</b>, em conformidade com as disposições da NR-01 (Portaria MTP nº 1.419/2024).</p>
   <table>
@@ -1035,6 +1008,18 @@ ${renderUserText(d.textoConclusao)}
  * @param pdfDiskPath caminho absoluto do PGR base em disco
  * @param attachments lista vinda da BD (pgr_attachments) com fileUrl + mimeType + titulo
  */
+/** Categorias oficiais — viram "Anexo 1..7" no PDF, na ordem abaixo.
+ * Bruno round 3: adicionado LGPD e Lei 14.457 (totalizando 7). */
+const ANEXOS_OFICIAIS_ORDEM = [
+  "Relatório Psicossocial",
+  "AEP",
+  "Conformidade NR-01",
+  "Conformidade Metodológica",
+  "Legitimidade do Canal de Denúncias",
+  "LGPD",
+  "Lei 14.457/2022",
+];
+
 export async function appendPdfAttachments(
   pdfDiskPath: string,
   attachments: Array<{ fileUrl: string | null; mimeType: string | null; titulo: string; tipo?: string }>
@@ -1056,55 +1041,90 @@ export async function appendPdfAttachments(
   const font = await base.embedFont(StandardFonts.Helvetica);
   const fontBold = await base.embedFont(StandardFonts.HelveticaBold);
 
-  // Capa "ANEXOS"
-  const cover = base.addPage(PageSizes.A4);
-  const cw = cover.getWidth(), ch = cover.getHeight();
-  cover.drawRectangle({ x: 0, y: ch - 30, width: cw, height: 30, color: rgb(0.118, 0.227, 0.373) }); // PRIMARY
-  cover.drawText("ANEXOS", { x: cw / 2 - 80, y: ch / 2 + 60, size: 48, font: fontBold, color: rgb(0.118, 0.227, 0.373) });
-  cover.drawText(`${valid.length} documento(s) anexado(s) a este PGR`, {
-    x: 70, y: ch / 2 + 20, size: 12, font, color: rgb(0.3, 0.3, 0.3),
+  // Separa complementares (LTCAT/PCA/etc) dos 5 oficiais (Anexo 1..5)
+  const complementares = valid.filter(a => !ANEXOS_OFICIAIS_ORDEM.includes(a.tipo ?? ""));
+  const oficiaisPorTipo = new Map<string, typeof valid>();
+  ANEXOS_OFICIAIS_ORDEM.forEach(t => oficiaisPorTipo.set(t, []));
+  valid.forEach(a => {
+    if (a.tipo && ANEXOS_OFICIAIS_ORDEM.includes(a.tipo)) {
+      oficiaisPorTipo.get(a.tipo)!.push(a);
+    }
   });
-  let yList = ch / 2 - 30;
-  for (let i = 0; i < valid.length && yList > 60; i++) {
-    const a = valid[i];
-    cover.drawText(`${i + 1}.`, { x: 60, y: yList, size: 11, font: fontBold, color: rgb(0.04, 0.65, 0.91) });
-    cover.drawText(safeAscii(a.titulo).slice(0, 80), { x: 80, y: yList, size: 11, font, color: rgb(0.1, 0.1, 0.1) });
-    if (a.tipo) cover.drawText(`(${safeAscii(a.tipo)})`, { x: 80 + Math.min(a.titulo.length, 80) * 5.5 + 6, y: yList, size: 9, font, color: rgb(0.45, 0.45, 0.45) });
-    yList -= 18;
+
+  function makeCoverPage(titulo: string, subtitulo: string, listaPequena?: string[]) {
+    const cover = base.addPage(PageSizes.A4);
+    const cw = cover.getWidth(), ch = cover.getHeight();
+    cover.drawRectangle({ x: 0, y: ch - 30, width: cw, height: 30, color: rgb(0.118, 0.227, 0.373) });
+    cover.drawText(safeAscii(titulo).toUpperCase(), {
+      x: cw / 2 - safeAscii(titulo).length * 6.5, y: ch / 2 + 60, size: 32, font: fontBold, color: rgb(0.118, 0.227, 0.373),
+    });
+    cover.drawText(safeAscii(subtitulo), {
+      x: 70, y: ch / 2 + 20, size: 12, font, color: rgb(0.3, 0.3, 0.3),
+    });
+    if (listaPequena && listaPequena.length) {
+      let y = ch / 2 - 20;
+      for (let i = 0; i < listaPequena.length && y > 60; i++) {
+        cover.drawText(`${i + 1}.`, { x: 60, y, size: 11, font: fontBold, color: rgb(0.04, 0.65, 0.91) });
+        cover.drawText(safeAscii(listaPequena[i]).slice(0, 80), { x: 80, y, size: 11, font, color: rgb(0.1, 0.1, 0.1) });
+        y -= 18;
+      }
+    }
+  }
+
+  async function inlineFile(a: { fileUrl: string | null; mimeType: string | null; titulo: string }) {
+    const localPath = resolveLocalPath(a.fileUrl!);
+    const buf = await fs.readFile(localPath);
+    const mime = (a.mimeType ?? "").toLowerCase();
+    if (mime.includes("pdf") || localPath.toLowerCase().endsWith(".pdf")) {
+      const src = await PDFDocument.load(buf, { ignoreEncryption: true });
+      const pages = await base.copyPages(src, src.getPageIndices());
+      for (const p of pages) base.addPage(p);
+      return true;
+    } else if (mime.includes("png") || mime.includes("jpg") || mime.includes("jpeg") || /\.(png|jpe?g)$/i.test(localPath)) {
+      const img = (mime.includes("png") || /\.png$/i.test(localPath))
+        ? await base.embedPng(buf) : await base.embedJpg(buf);
+      const page = base.addPage(PageSizes.A4);
+      const W = page.getWidth(), H = page.getHeight();
+      const margin = 36, maxW = W - 2 * margin, maxH = H - 2 * margin - 40;
+      const scale = Math.min(maxW / img.width, maxH / img.height, 1);
+      const w = img.width * scale, h = img.height * scale;
+      page.drawText(safeAscii(a.titulo).slice(0, 90), { x: margin, y: H - margin, size: 10, font: fontBold, color: rgb(0.118, 0.227, 0.373) });
+      page.drawImage(img, { x: (W - w) / 2, y: (H - h) / 2 - 10, width: w, height: h });
+      return true;
+    }
+    return false;
   }
 
   let appended = 0, skipped = 0;
-  for (const a of valid) {
-    try {
-      const localPath = resolveLocalPath(a.fileUrl!);
-      const buf = await fs.readFile(localPath);
-      const mime = (a.mimeType ?? "").toLowerCase();
-      if (mime.includes("pdf") || localPath.toLowerCase().endsWith(".pdf")) {
-        const src = await PDFDocument.load(buf, { ignoreEncryption: true });
-        const pages = await base.copyPages(src, src.getPageIndices());
-        for (const p of pages) base.addPage(p);
-        appended++;
-      } else if (mime.includes("png") || mime.includes("jpg") || mime.includes("jpeg") || /\.(png|jpe?g)$/i.test(localPath)) {
-        const img = (mime.includes("png") || /\.png$/i.test(localPath))
-          ? await base.embedPng(buf)
-          : await base.embedJpg(buf);
-        const page = base.addPage(PageSizes.A4);
-        const W = page.getWidth(), H = page.getHeight();
-        const margin = 36;
-        const maxW = W - 2 * margin, maxH = H - 2 * margin - 40;
-        const scale = Math.min(maxW / img.width, maxH / img.height, 1);
-        const w = img.width * scale, h = img.height * scale;
-        page.drawText(safeAscii(a.titulo).slice(0, 90), {
-          x: margin, y: H - margin, size: 10, font: fontBold, color: rgb(0.118, 0.227, 0.373),
-        });
-        page.drawImage(img, { x: (W - w) / 2, y: (H - h) / 2 - 10, width: w, height: h });
-        appended++;
-      } else {
+
+  // 1) Anexos do PGR (complementares: LTCAT, PCA, PPR, APR, etc.)
+  if (complementares.length > 0) {
+    makeCoverPage("Anexos do PGR", `${complementares.length} documento(s) complementares`, complementares.map(c => `${c.titulo} (${c.tipo ?? "Outro"})`));
+    for (const a of complementares) {
+      try {
+        const ok = await inlineFile(a);
+        if (ok) appended++; else skipped++;
+      } catch (err: any) {
+        console.warn(`[pgr_pdf] complementar "${a.titulo}" falhou:`, err?.message ?? err);
         skipped++;
       }
-    } catch (err: any) {
-      console.warn(`[pgr_pdf] anexo "${a.titulo}" falhou:`, err?.message ?? err);
-      skipped++;
+    }
+  }
+
+  // 2) Anexos oficiais — Anexo 1..5
+  for (let i = 0; i < ANEXOS_OFICIAIS_ORDEM.length; i++) {
+    const tipo = ANEXOS_OFICIAIS_ORDEM[i];
+    const items = oficiaisPorTipo.get(tipo) ?? [];
+    if (items.length === 0) continue;
+    makeCoverPage(`Anexo ${i + 1}`, `${tipo} — ${items.length} documento(s)`, items.map(it => it.titulo));
+    for (const a of items) {
+      try {
+        const ok = await inlineFile(a);
+        if (ok) appended++; else skipped++;
+      } catch (err: any) {
+        console.warn(`[pgr_pdf] anexo "${a.titulo}" falhou:`, err?.message ?? err);
+        skipped++;
+      }
     }
   }
 

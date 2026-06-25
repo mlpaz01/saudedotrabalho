@@ -211,27 +211,28 @@ export default function AdminRiskAssessments() {
                   </label>
                 </div>
 
-                <div className={form.aepOnly ? "" : "grid grid-cols-2 gap-3"}>
+                {/* Bruno round 3: empilha em telas pequenas pra evitar sobreposição texto longo dos templates DRPS/AEP */}
+                <div className={form.aepOnly ? "" : "grid grid-cols-1 md:grid-cols-2 gap-3"}>
                   {!form.aepOnly && (
-                    <div>
+                    <div className="min-w-0">
                       <Label>Template DRPS (quantitativo)</Label>
                       <Select value={form.drpsTemplateId?.toString()} onValueChange={(v) => setForm((f) => ({ ...f, drpsTemplateId: Number(v) }))}>
-                        <SelectTrigger><SelectValue placeholder="Selecionar DRPS" /></SelectTrigger>
-                        <SelectContent>
+                        <SelectTrigger className="w-full"><SelectValue placeholder="Selecionar DRPS" className="truncate" /></SelectTrigger>
+                        <SelectContent className="max-w-[90vw]">
                           {drpsTemplates.map((t) => (
-                            <SelectItem key={t.id} value={String(t.id)}>{t.title}</SelectItem>
+                            <SelectItem key={t.id} value={String(t.id)} className="text-sm whitespace-normal">{t.title}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
                     </div>
                   )}
-                  <div className={form.aepOnly ? "w-full" : ""}>
+                  <div className={`min-w-0 ${form.aepOnly ? "w-full" : ""}`}>
                     <Label>Template AEP (qualitativo)</Label>
                     <Select value={form.aepTemplateId?.toString()} onValueChange={(v) => setForm((f) => ({ ...f, aepTemplateId: Number(v) }))}>
-                      <SelectTrigger><SelectValue placeholder="Selecionar AEP" /></SelectTrigger>
-                      <SelectContent>
+                      <SelectTrigger className="w-full"><SelectValue placeholder="Selecionar AEP" className="truncate" /></SelectTrigger>
+                      <SelectContent className="max-w-[90vw]">
                         {aepTemplates.map((t) => (
-                          <SelectItem key={t.id} value={String(t.id)}>{t.title}</SelectItem>
+                          <SelectItem key={t.id} value={String(t.id)} className="text-sm whitespace-normal">{t.title}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>

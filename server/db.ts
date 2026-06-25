@@ -4053,6 +4053,8 @@ export async function getHierarchyTreeForCompany(companyId: number | null) {
   const usersRaw = await db.execute(
     sql.raw(`SELECT u.id, u.name, u.email, u.role, u.lastSignedIn,
                     u.company_id AS companyId, u.branch_id AS branchId, u.sector_id AS sectorId,
+                    u.position AS position,
+                    u.whatsapp_e164 AS whatsapp,
                     ce.employeeName AS cargoName,
                     (SELECT COUNT(*) FROM user_progress p WHERE p.userId = u.id) AS coursesStarted,
                     (SELECT COUNT(*) FROM user_progress p WHERE p.userId = u.id AND p.isCompleted = 1) AS coursesCompleted,
@@ -4183,6 +4185,8 @@ function formatUserStatsRow(u: any, totalModules: number, totalSurveys: number) 
     branchId: u.branchId != null ? Number(u.branchId) : null,
     sectorId: u.sectorId != null ? Number(u.sectorId) : null,
     cargo: u.cargoName ?? null,
+    position: u.position ?? null,
+    whatsapp: u.whatsapp ?? null,
     lastSignedIn: u.lastSignedIn,
     coursesStarted: Number(u.coursesStarted) || 0,
     coursesCompleted,
