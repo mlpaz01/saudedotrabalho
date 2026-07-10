@@ -324,10 +324,12 @@ export default function AdminRiskAssessments() {
                     <div className="text-blue-600 font-medium flex items-center gap-1"><FileSearch size={12} /> DRPS</div>
                     <div className="text-slate-700 mt-0.5">{rate}</div>
                   </div>
-                  <div className="bg-purple-50 px-2 py-1.5 rounded">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setLocation(`/admin/analise-risco/${a.id}/aep`); }}
+                    className="bg-purple-50 hover:bg-purple-100 transition-colors px-2 py-1.5 rounded text-left">
                     <div className="text-purple-600 font-medium flex items-center gap-1"><ClipboardCheck size={12} /> AEP</div>
-                    <div className="text-slate-700 mt-0.5">{a.aepResponses} liderança(s)</div>
-                  </div>
+                    <div className="text-slate-700 mt-0.5">{a.aepResponses} resposta(s) — gerir</div>
+                  </button>
                 </div>
 
                 {a.startDate && (

@@ -65,6 +65,11 @@ export default function SurveyImprimir() {
         <button className="btn" onClick={() => window.print()}>
           <Printer size={14} /> Imprimir
         </button>
+        {/* R5-P12 #9 — orienta o RH antes de imprimir, pra repassar a gestores/colaboradores */}
+        <div style={{ marginTop: 10, background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "10px 14px", fontSize: 12, color: "#92400e", maxWidth: 640 }}>
+          <b>Antes de aplicar:</b> oriente gestores e colaboradores a <b>assinalar só uma alternativa por pergunta</b> e <b>não rasurar</b>.
+          Perguntas rasuradas ou com múltiplas marcações são desconsideradas pela leitura automática (as demais respostas do questionário seguem válidas).
+        </div>
       </div>
       <div className="page">
         <div className="hdr">
@@ -74,6 +79,13 @@ export default function SurveyImprimir() {
         <div className="meta">
           <b>{d.company?.name ?? "—"}</b><br />
           {setorLabel} &nbsp;·&nbsp; Data: {today} &nbsp;·&nbsp; <b>Esta resposta é anônima.</b>
+        </div>
+        {/* R5-P12 #9 — orientações de preenchimento (a leitura automática por OCR depende disso) */}
+        <div style={{ border: "1px solid #cbd5e1", background: "#f8fafc", borderRadius: 8, padding: "10px 14px", margin: "10px 0 16px", fontSize: 12, lineHeight: 1.55 }}>
+          <b style={{ display: "block", marginBottom: 4, color: "#1e3a5f" }}>Como preencher</b>
+          <div>✔ Assinale <b>apenas uma alternativa</b> por pergunta.</div>
+          <div>✔ <b>Não realize rasuras.</b></div>
+          <div>✔ Perguntas rasuradas ou com múltiplas marcações poderão ser <b>desconsideradas</b> pela leitura automática.</div>
         </div>
         {(d.questions ?? []).map((q: any, i: number) => {
           const type = String(q.question_type || "text").toLowerCase();
@@ -108,8 +120,12 @@ export default function SurveyImprimir() {
             </div>
           );
         })}
-        <div className="footer">
-          Folha gerada em {today} · Plataforma Saúde do Trabalho · ID: SURVEY-{surveyId}{sectorId ? `-SETOR-${sectorId}` : ""}
+        {/* R5-P11 #3 — Aviso curto de confidencialidade no rodapé do PRÓPRIO questionário.
+            Etiquetas individuais e Termo de Responsabilidade por pesquisa foram REMOVIDOS:
+            agora vão num único termo + recibo por LOTE, em /admin/pesquisas/upload-impresso. */}
+        <div className="footer" style={{ fontSize: 10, lineHeight: 1.5 }}>
+          🔒 Este questionário possui caráter confidencial e será tratado conforme a Lei Geral de Proteção de Dados (LGPD) e a NR-01.
+          <br />Folha gerada em {today} · Plataforma Saúde do Trabalho · ID: SURVEY-{surveyId}{sectorId ? `-SETOR-${sectorId}` : ""}
         </div>
       </div>
     </>

@@ -15,6 +15,7 @@ import {
 import {
   Layers, Plus, Pencil, Trash2, Loader2, Save, Users, Building2,
   ShieldAlert, HardHat, ListChecks, Camera, GraduationCap, Sparkles,
+  Cog, Upload, FileText,
 } from "lucide-react";
 
 // Sub-componente: gerenciador de Grupos Similares de Exposição (GSE) — Sprint 1
@@ -462,7 +463,7 @@ function GseEditorDialog({
               <div className="max-w-6xl mx-auto">
                 {tab === "cargos" && <CargosTab cargos={cargos} setCargos={setCargos} />}
                 {tab === "setores" && <SetoresTab setores={setores} setSetores={setSetores} allSectors={allSectors} />}
-                {tab === "riscos" && <RiscosTab riscos={riscos} setRiscos={setRiscos} />}
+                {tab === "riscos" && <RiscosTab riscos={riscos} setRiscos={setRiscos} gseId={gseId} />}
                 {tab === "epc" && <EpcEpiTab items={epc} setItems={setEpc} isEpi={false} />}
                 {tab === "epi" && <EpcEpiTab items={epi} setItems={setEpi} isEpi={true} />}
                 {tab === "acoes" && <AcoesTab acoes={acoes} setAcoes={setAcoes} />}
@@ -541,12 +542,14 @@ function SetoresTab({
   );
 }
 
-function RiscosTab({ riscos, setRiscos }: { riscos: any[]; setRiscos: (v: any[]) => void }) {
+function RiscosTab({ riscos, setRiscos, gseId }: { riscos: any[]; setRiscos: (v: any[]) => void; gseId: number }) {
   function add() {
     setRiscos([...riscos, { tipo: "fisico", agente: "", severidade: "baixa", probabilidade: "baixa", riscoFinal: "baixo" }]);
   }
   function patch(i: number, p: any) { setRiscos(riscos.map((r, j) => j === i ? { ...r, ...p } : r)); }
   function del(i: number) { setRiscos(riscos.filter((_, j) => j !== i)); }
+  // P16 — Detalhamento Técnico do Risco (painel abre por risco JÁ salvo, com autopreenchimento IA).
+  const [detalhandoRiscoId, setDetalhandoRiscoId] = useState<number | null>(null);
   return (
     <div className="space-y-2">
       <div className="flex justify-between items-center">
@@ -606,12 +609,20 @@ function RiscosTab({ riscos, setRiscos }: { riscos: any[]; setRiscos: (v: any[])
               </Select>
             </div>
           </div>
-          <div className="flex justify-end">
+          <div className="flex justify-end items-center gap-2">
+            {r.id ? (
+              <Button size="sm" variant="outline" onClick={() => setDetalhandoRiscoId(r.id)} className="gap-1 text-blue-600 border-blue-200">
+                <Cog size={12} /> Detalhamento Técnico
+              </Button>
+            ) : (
+              <span className="text-[10px] text-slate-400 italic">Salve o GSE para abrir o Detalhamento Técnico</span>
+            )}
             <Button size="sm" variant="ghost" onClick={() => del(i)}><Trash2 size={13} className="text-rose-600" /></Button>
           </div>
         </div>
       ))}
       {riscos.length === 0 && <div className="text-xs text-slate-400 text-center py-4">Nenhum risco. Clique "Adicionar risco".</div>}
+      {detalhandoRiscoId && <DetalhamentoTecnicoDialog riscoId={detalhandoRiscoId} gseId={gseId} onClose={() => setDetalhandoRiscoId(null)} />}
     </div>
   );
 }
@@ -830,6 +841,201 @@ function TreinamentosTab({ items, setItems }: { items: any[]; setItems: (v: any[
         </div>
       ))}
       {items.length === 0 && <div className="text-xs text-slate-400 text-center py-4">Nenhum treinamento.</div>}
+    </div>
+  );
+}
+
+// P16 — Dialog de Detalhamento Técnico do Risco. Carrega o risco, opcionalmente
+// chama IA (Groq NHO/NR-15/ACGIH) para autopreencher, permite anexar laudos,
+// salva no BD via pgr.gse.setDetalhamento e será incorporado ao PDF do PGR.
+function DetalhamentoTecnicoDialog({ riscoId, gseId, onClose }: { riscoId: number; gseId: number; onClose: () => void }) {
+  const detQ = (trpc.pgr.gse as any).getDetalhamento.useQuery({ riscoId });
+  const laudosQ = (trpc.pgr.gse as any).listLaudosDoRisco.useQuery({ riscoId });
+  const utils = trpc.useUtils();
+  const suggestMut = (trpc.pgr.gse as any).aiSuggestDetalhamento.useMutation();
+  // P18 #10/#22 — Bruno: sugerir reaproveitar detalhamento já preenchido pro mesmo
+  // agente em outro GSE da empresa. Só faz sentido buscar quando ESTE risco ainda
+  // não tem detalhamento salvo (senão reaproveitar sobrescreveria trabalho já feito).
+  const similarQ = (trpc.pgr.gse as any).findSimilarDetalhamento.useQuery({ riscoId }, { enabled: !detQ.isLoading && !detQ.data });
+  const [dismissedSimilar, setDismissedSimilar] = useState(false);
+  const saveMut = (trpc.pgr.gse as any).setDetalhamento.useMutation({
+    onSuccess: () => { toast.success("Detalhamento salvo."); (utils.pgr.gse as any).getDetalhamento.invalidate({ riscoId }); },
+    onError: (e: any) => toast.error(e?.message ?? "Erro"),
+  });
+  const uploadMut = (trpc.pgr.gse as any).addLaudoRisco.useMutation({
+    onSuccess: () => { toast.success("Laudo anexado."); (utils.pgr.gse as any).listLaudosDoRisco.invalidate({ riscoId }); },
+    onError: (e: any) => toast.error(e?.message ?? "Erro"),
+  });
+
+  const [f, setF] = useState<any>({});
+
+  useEffect(() => {
+    if (!detQ.data) return;
+    const d: any = detQ.data;
+    setF({
+      intensidade: d.intensidade ?? "", concentracao: d.concentracao ?? "", unidade: d.unidade ?? "",
+      tempoExposicao: d.tempo_exposicao ?? "", frequenciaExposicao: d.frequencia_exposicao ?? "", viaExposicao: d.via_exposicao ?? "",
+      limiteTolerancia: d.limite_tolerancia ?? "", normaReferencia: d.norma_referencia ?? "", situacaoLimite: d.situacao_limite ?? "",
+      avaliacaoQuantitativa: !!Number(d.avaliacao_quantitativa),
+      dataMedicao: d.data_medicao ? String(d.data_medicao).slice(0, 10) : "",
+      proximaMedicao: d.proxima_medicao ? String(d.proxima_medicao).slice(0, 10) : "",
+      resultadoMedicao: d.resultado_medicao ?? "", laboratorio: d.laboratorio ?? "", instrumento: d.instrumento ?? "",
+      metodologia: d.metodologia ?? "",
+      criterioIa: d.criterio_ia ?? "", justificativaIa: d.justificativa_ia ?? "",
+      hierarquiaControles: d.hierarquia_controles ?? "", periodicidadeReavaliacao: d.periodicidade_reavaliacao ?? "",
+      avaliacaoEficaciaControles: d.avaliacao_eficacia_controles ?? "",
+      riscoResidualSeveridade: d.risco_residual_severidade ?? "", riscoResidualProbabilidade: d.risco_residual_probabilidade ?? "",
+      riscoResidualFinal: d.risco_residual_final ?? "",
+      aiGenerated: !!Number(d.ai_generated),
+    });
+  }, [detQ.data]);
+
+  async function autopreencher() {
+    try {
+      const sug = await suggestMut.mutateAsync({ riscoId });
+      setF((prev: any) => ({ ...prev, ...sug, aiGenerated: true }));
+      toast.success("Detalhamento preenchido pela IA — revise e clique em Salvar.");
+    } catch (e: any) { toast.error(e?.message ?? "IA falhou"); }
+  }
+
+  function reutilizarSimilar() {
+    const d: any = similarQ.data;
+    if (!d) return;
+    setF({
+      intensidade: d.intensidade ?? "", concentracao: d.concentracao ?? "", unidade: d.unidade ?? "",
+      tempoExposicao: d.tempo_exposicao ?? "", frequenciaExposicao: d.frequencia_exposicao ?? "", viaExposicao: d.via_exposicao ?? "",
+      limiteTolerancia: d.limite_tolerancia ?? "", normaReferencia: d.norma_referencia ?? "", situacaoLimite: d.situacao_limite ?? "",
+      avaliacaoQuantitativa: !!Number(d.avaliacao_quantitativa),
+      dataMedicao: "", proximaMedicao: "", // datas de medição não fazem sentido reaproveitar — cada GSE tem sua própria
+      resultadoMedicao: d.resultado_medicao ?? "", laboratorio: d.laboratorio ?? "", instrumento: d.instrumento ?? "",
+      metodologia: d.metodologia ?? "",
+      criterioIa: d.criterio_ia ?? "", justificativaIa: d.justificativa_ia ?? "",
+      hierarquiaControles: d.hierarquia_controles ?? "", periodicidadeReavaliacao: d.periodicidade_reavaliacao ?? "",
+      avaliacaoEficaciaControles: d.avaliacao_eficacia_controles ?? "",
+      riscoResidualSeveridade: d.risco_residual_severidade ?? "", riscoResidualProbabilidade: d.risco_residual_probabilidade ?? "",
+      riscoResidualFinal: d.risco_residual_final ?? "",
+      aiGenerated: !!Number(d.ai_generated),
+    });
+    setDismissedSimilar(true);
+    toast.success(`Detalhamento reaproveitado de "${d.gseName}" — revise e clique em Salvar.`);
+  }
+
+  function salvar() {
+    saveMut.mutate({ riscoId, ...f });
+  }
+
+  async function anexarLaudo(file: File) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const b64 = String(reader.result || "");
+      uploadMut.mutate({ riscoId, gseId, titulo: file.name, fileBase64: b64, fileName: file.name });
+    };
+    reader.readAsDataURL(file);
+  }
+
+  const laudos = (laudosQ.data ?? []) as any[];
+
+  return (
+    <Dialog open onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-4xl max-h-[92vh] overflow-hidden flex flex-col">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><Cog size={16} className="text-blue-600" /> Detalhamento Técnico do Risco</DialogTitle>
+          <DialogDescription>
+            Informações técnicas complementares para o Inventário de Riscos. Podem ser autopreenchidas pela IA e serão incorporadas ao PDF do PGR.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+          {similarQ.data && !dismissedSimilar && (
+            <div className="flex items-center justify-between gap-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-sm">
+              <span className="text-amber-800">
+                Já existe detalhamento técnico para <b>"{(similarQ.data as any).agente}"</b> em <b>{(similarQ.data as any).gseName}</b>. Deseja reutilizar?
+              </span>
+              <div className="flex gap-1.5 flex-shrink-0">
+                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={reutilizarSimilar}>Sim, reutilizar</Button>
+                <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setDismissedSimilar(true)}>Não</Button>
+              </div>
+            </div>
+          )}
+          <div className="flex justify-between items-center border-b pb-2">
+            <Button size="sm" onClick={autopreencher} disabled={suggestMut.isPending} className="gap-1 bg-indigo-600 hover:bg-indigo-700">
+              {suggestMut.isPending ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} Autopreencher com IA
+            </Button>
+            {f.aiGenerated && <Badge variant="outline" className="text-indigo-700 border-indigo-300">Preenchido por IA — revise antes de salvar</Badge>}
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-sm">
+            <FieldT l="Intensidade / faixa" v={f.intensidade} on={(x: string) => setF({ ...f, intensidade: x })} />
+            <FieldT l="Concentração" v={f.concentracao} on={(x: string) => setF({ ...f, concentracao: x })} />
+            <FieldT l="Unidade de medida" v={f.unidade} on={(x: string) => setF({ ...f, unidade: x })} />
+            <FieldT l="Tempo de exposição" v={f.tempoExposicao} on={(x: string) => setF({ ...f, tempoExposicao: x })} />
+            <FieldT l="Frequência" v={f.frequenciaExposicao} on={(x: string) => setF({ ...f, frequenciaExposicao: x })} />
+            <FieldT l="Via de exposição" v={f.viaExposicao} on={(x: string) => setF({ ...f, viaExposicao: x })} />
+            <FieldT l="Limite de tolerância" v={f.limiteTolerancia} on={(x: string) => setF({ ...f, limiteTolerancia: x })} />
+            <FieldT l="Norma / referência" v={f.normaReferencia} on={(x: string) => setF({ ...f, normaReferencia: x })} />
+            <FieldT l="Situação frente ao limite" v={f.situacaoLimite} on={(x: string) => setF({ ...f, situacaoLimite: x })} />
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            <input type="checkbox" checked={!!f.avaliacaoQuantitativa} onChange={e => setF({ ...f, avaliacaoQuantitativa: e.target.checked })} />
+            <span>Necessita avaliação quantitativa (medição instrumental)</span>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-sm">
+            <FieldT l="Data da medição" v={f.dataMedicao} on={(x: string) => setF({ ...f, dataMedicao: x })} type="date" />
+            <FieldT l="Próxima medição" v={f.proximaMedicao} on={(x: string) => setF({ ...f, proximaMedicao: x })} type="date" />
+            <FieldT l="Resultado da medição" v={f.resultadoMedicao} on={(x: string) => setF({ ...f, resultadoMedicao: x })} />
+            <FieldT l="Laboratório" v={f.laboratorio} on={(x: string) => setF({ ...f, laboratorio: x })} />
+            <FieldT l="Instrumento" v={f.instrumento} on={(x: string) => setF({ ...f, instrumento: x })} />
+            <FieldT l="Periodicidade reavaliação" v={f.periodicidadeReavaliacao} on={(x: string) => setF({ ...f, periodicidadeReavaliacao: x })} />
+          </div>
+
+          <div className="space-y-2">
+            <div><Label className="text-xs">Metodologia de medição</Label><Textarea rows={2} value={f.metodologia ?? ""} onChange={e => setF({ ...f, metodologia: e.target.value })} /></div>
+            <div><Label className="text-xs">Critério técnico usado pela IA</Label><Textarea rows={2} value={f.criterioIa ?? ""} onChange={e => setF({ ...f, criterioIa: e.target.value })} /></div>
+            <div><Label className="text-xs">Justificativa técnica da classificação</Label><Textarea rows={2} value={f.justificativaIa ?? ""} onChange={e => setF({ ...f, justificativaIa: e.target.value })} /></div>
+            <div><Label className="text-xs">Hierarquia de medidas de controle (eliminação → substituição → engenharia → administrativas → EPC → EPI)</Label><Textarea rows={3} value={f.hierarquiaControles ?? ""} onChange={e => setF({ ...f, hierarquiaControles: e.target.value })} /></div>
+            <div><Label className="text-xs">Avaliação da eficácia das medidas de controle</Label><Textarea rows={2} value={f.avaliacaoEficaciaControles ?? ""} onChange={e => setF({ ...f, avaliacaoEficaciaControles: e.target.value })} /></div>
+          </div>
+
+          <div className="border rounded-lg p-3 bg-emerald-50/40 space-y-2">
+            <p className="text-xs font-semibold text-emerald-800">Risco residual (após implantação das medidas)</p>
+            <div className="grid grid-cols-3 gap-2 text-sm">
+              <FieldT l="Severidade" v={f.riscoResidualSeveridade} on={(x: string) => setF({ ...f, riscoResidualSeveridade: x })} />
+              <FieldT l="Probabilidade" v={f.riscoResidualProbabilidade} on={(x: string) => setF({ ...f, riscoResidualProbabilidade: x })} />
+              <FieldT l="Risco final" v={f.riscoResidualFinal} on={(x: string) => setF({ ...f, riscoResidualFinal: x })} />
+            </div>
+          </div>
+
+          <div className="border rounded-lg p-3 bg-slate-50 space-y-2">
+            <p className="text-xs font-semibold flex items-center gap-1"><FileText size={12} /> Laudos de avaliação quantitativa</p>
+            {laudos.length === 0 && <p className="text-xs text-slate-400">Nenhum laudo anexo.</p>}
+            {laudos.map((l: any) => (
+              <div key={l.id} className="flex justify-between text-xs border-b py-1">
+                <span>{l.titulo}</span>
+                {l.file_url && <a href={l.file_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">baixar</a>}
+              </div>
+            ))}
+            <label className="inline-flex items-center gap-2 cursor-pointer text-xs text-blue-600 hover:underline">
+              <Upload size={12} /> Anexar laudo (PDF/imagem)
+              <input type="file" accept="application/pdf,image/*" className="hidden" onChange={e => { const fi = e.target.files?.[0]; if (fi) anexarLaudo(fi); }} />
+            </label>
+          </div>
+        </div>
+        <DialogFooter className="border-t pt-3">
+          <Button variant="outline" onClick={onClose}>Cancelar</Button>
+          <Button onClick={salvar} disabled={saveMut.isPending} className="gap-1">
+            {saveMut.isPending ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />} Salvar detalhamento
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function FieldT({ l, v, on, type = "text" }: { l: string; v: any; on: (x: string) => void; type?: string }) {
+  return (
+    <div>
+      <Label className="text-xs">{l}</Label>
+      <Input type={type} value={v ?? ""} onChange={(e) => on(e.target.value)} />
     </div>
   );
 }

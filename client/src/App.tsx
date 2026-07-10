@@ -30,9 +30,11 @@ import AdminAuditLogs from "@/pages/admin/AdminAuditLogs";
 import AdminEvidenceReport from "@/pages/admin/AdminEvidenceReport";
 import RelatorioFiscalizacao from "@/pages/admin/RelatorioFiscalizacao";
 import RelatorioMetodologia from "@/pages/admin/RelatorioMetodologia";
+import AdminFaturamentoPsi from "@/pages/admin/AdminFaturamentoPsi";
 import { RelatorioCanalDenuncias as RelCanalDenuncias, RelatorioLei14457 as RelLei14457, RelatorioLgpd as RelLgpd } from "@/pages/admin/RelatoriosCompliance";
 import SurveyImprimir from "@/pages/admin/SurveyImprimir";
 import SurveyImportarPapel from "@/pages/admin/SurveyImportarPapel";
+import UploadQuestionariosImpressos from "@/pages/admin/UploadQuestionariosImpressos";
 import Denuncia from "@/pages/Denuncia";
 import DenunciaTrack from "@/pages/DenunciaTrack";
 import AdminDenuncias from "@/pages/admin/AdminDenuncias";
@@ -50,9 +52,9 @@ import Trails from "@/pages/Trails";
 import AdminCompanySettings from "@/pages/admin/AdminCompanySettings";
 import AdminSmtpSettings from "@/pages/admin/AdminSmtpSettings";
 import ManagerDashboard from "@/pages/ManagerDashboard";
-import AdminChefia from "@/pages/admin/AdminChefia";
 import AdminVisao360 from "@/pages/admin/AdminVisao360";
 import EmployeeHome from "@/pages/EmployeeHome";
+import FirstAid from "@/pages/FirstAid";
 import AdminExpirations from "@/pages/AdminExpirations";
 import MyLicenses from "@/pages/MyLicenses";
 import Qualificacoes from "@/pages/Qualificacoes";
@@ -62,11 +64,16 @@ import SuperAdminClients from "@/pages/superadmin/SuperAdminClients";
 import SuperAdminCatalog from "@/pages/superadmin/SuperAdminCatalog";
 import SuperAdminAccessHours from "@/pages/superadmin/SuperAdminAccessHours";
 import SuperAdminCrm from "@/pages/superadmin/SuperAdminCrm";
+import IntermediadorDashboard from "@/pages/IntermediadorDashboard";
+import Cipa from "@/pages/Cipa";
+import AdminCipa from "@/pages/admin/AdminCipa";
+import AdminFirstAid from "@/pages/admin/AdminFirstAid";
 import CampanhasIndex, { CampanhaDetail } from "@/pages/Campanhas";
 import Configurador from "@/pages/admin/Configurador";
 import AdminBranches from "@/pages/admin/AdminBranches";
 import AdminScheduling from "@/pages/admin/AdminScheduling";
 import AgendarAcolhimento from "@/pages/AgendarAcolhimento";
+import Sipat from "@/pages/Sipat";
 import VerifyCertificate from "@/pages/VerifyCertificate";
 import AdminPGRExecutive from "@/pages/admin/AdminPGRExecutive";
 import AdminPGRAudit from "@/pages/admin/AdminPGRAudit";
@@ -82,6 +89,7 @@ import AdminPGRRevision from "@/pages/admin/AdminPGRRevision";
 import AdminSSTDashboard from "@/pages/admin/AdminSSTDashboard";
 import AdminAcoesVinculadas from "@/pages/admin/AdminAcoesVinculadas";
 import AdminRiskAssessments from "@/pages/admin/AdminRiskAssessments";
+import AdminAepGestao from "@/pages/admin/AdminAepGestao";
 import AdminRiskAssessmentDetail from "@/pages/admin/AdminRiskAssessmentDetail";
 import AdminPGR from "@/pages/admin/AdminPGR";
 import AdminSesmtDefaults from "@/pages/admin/AdminSesmtDefaults";
@@ -92,6 +100,10 @@ import AdminFatores from "@/pages/admin/AdminFatores";
 import AdminPrograms from "@/pages/admin/AdminPrograms";
 import AdminProgramas from "@/pages/admin/AdminProgramas";
 import AdminBibliotecaPreventiva from "@/pages/admin/AdminBibliotecaPreventiva";
+import AdminSipat from "@/pages/admin/AdminSipat";
+import AdminCyclesDashboard from "@/pages/admin/AdminCyclesDashboard";
+import AdminPlanoAcaoPrazos from "@/pages/admin/AdminPlanoAcaoPrazos";
+import ChefiaDashboard from "@/pages/admin/ChefiaDashboard";
 import AdminClientPlans from "@/pages/admin/AdminClientPlans";
 import AdminHRImports from "@/pages/admin/AdminHRImports";
 import AdminRiskConsolidated from "@/pages/admin/AdminRiskConsolidated";
@@ -116,11 +128,34 @@ function isManagerRole(role?: string) {
     || role === "chefia" || role === "sesmt" || role === "psicologo";
 }
 
+// P15 #4 — Integrante da CIPA acessa só /admin/cipa (via employeeNav "Gestão da CIPA"),
+// não o resto do admin. Checagem própria em vez de entrar em isManagerRole.
+function canAccessCipaAdmin(role?: string) {
+  return isManagerRole(role) || role === "cipa";
+}
+
+function CipaAdminRoute({ component: Component }: { component: React.ComponentType }) {
+  const { user, loading } = useAuth();
+  if (loading) return <div className="min-h-screen brand-gradient flex items-center justify-center"><div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" /></div>;
+  if (!user) return <Redirect to="/login" />;
+  if (!canAccessCipaAdmin(user.role)) return <Redirect to="/inicio" />;
+  return <Component />;
+}
+
 function SuperAdminRoute({ component: Component }: { component: React.ComponentType }) {
   const { user, loading } = useAuth();
   if (loading) return <div className="min-h-screen brand-gradient flex items-center justify-center"><div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" /></div>;
   if (!user) return <Redirect to="/login" />;
   if (!isSuperAdmin(user.role)) return <Redirect to="/inicio" />;
+  return <Component />;
+}
+
+// P14 #5 — Perfil Intermediador: área comercial própria, isolada do admin/RH.
+function IntermediadorRoute({ component: Component }: { component: React.ComponentType }) {
+  const { user, loading } = useAuth();
+  if (loading) return <div className="min-h-screen brand-gradient flex items-center justify-center"><div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" /></div>;
+  if (!user) return <Redirect to="/login" />;
+  if (user.role !== "intermediador" && user.role !== "super_admin") return <Redirect to="/inicio" />;
   return <Component />;
 }
 
@@ -137,7 +172,8 @@ function RoleAwareDashboard() {
   if (loading) return <div className="min-h-screen brand-gradient flex items-center justify-center"><div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" /></div>;
   if (!user) return <Redirect to="/login" />;
   if (isSuperAdmin(user.role)) return <Redirect to="/super-admin" />;
-  if (user.role === "chefia") return <Redirect to="/admin/chefia" />;
+  if (user.role === "chefia") return <Redirect to="/admin/chefia-dashboard" />;
+  if (user.role === "intermediador") return <Redirect to="/intermediador" />;
   if (isManagerRole(user.role)) return <ManagerDashboard />;
   return <Redirect to="/inicio" />;
 }
@@ -151,7 +187,8 @@ function Router() {
       <Route path="/primeiro-acesso" component={SetPassword} />
       <Route path="/ativar" component={Activate} />
       <Route path="/dashboard" component={RoleAwareDashboard} />
-      <Route path="/admin/chefia" component={() => <ProtectedRoute component={AdminChefia} adminOnly />} />
+      {/* Bruno R5-P8 #3 — Unifica: /admin/chefia (legado) redireciona pro novo Painel da Chefia, fim da divergência */}
+      <Route path="/admin/chefia" component={() => <Redirect to="/admin/chefia-dashboard" />} />
       <Route path="/admin/visao-360" component={() => <ProtectedRoute component={AdminVisao360} adminOnly />} />
       <Route path="/inicio" component={() => <ProtectedRoute component={EmployeeHome} />} />
       <Route path="/modulos" component={() => <ProtectedRoute component={Modules} />} />
@@ -161,6 +198,7 @@ function Router() {
       <Route path="/certificados" component={() => <ProtectedRoute component={Certificates} />} />
       <Route path="/minhas-licencas" component={() => <ProtectedRoute component={MyLicenses} />} />
       <Route path="/qualificacoes" component={() => <ProtectedRoute component={Qualificacoes} />} />
+      <Route path="/primeiros-socorros" component={() => <ProtectedRoute component={FirstAid} />} />
       <Route path="/admin/qualificacoes" component={() => <ProtectedRoute component={AdminQualifications} adminOnly />} />
       <Route path="/area-de-descompressao" component={() => <ProtectedRoute component={Decompression} />} />
       <Route path="/dashboard-classic" component={() => <ProtectedRoute component={Dashboard} />} />
@@ -209,6 +247,8 @@ function Router() {
       {/* SP6 EXTRA — pesquisa imprimível + lançamento batch */}
       <Route path="/admin/pesquisas/imprimir/:surveyId" component={() => <ProtectedRoute component={SurveyImprimir} adminOnly />} />
       <Route path="/admin/pesquisas/importar/:surveyId" component={() => <ProtectedRoute component={SurveyImportarPapel} adminOnly />} />
+      {/* R5-P11 #3 — Nova metodologia: 1 termo + 1 recibo por LOTE */}
+      <Route path="/admin/pesquisas/upload-impresso" component={() => <ProtectedRoute component={UploadQuestionariosImpressos} adminOnly />} />
       <Route path="/admin/pesquisas" component={() => <ProtectedRoute component={AdminSurveys} adminOnly />} />
       <Route path="/admin/pesquisas/estudio" component={() => <ProtectedRoute component={SurveyStudio} adminOnly />} />
       <Route path="/admin/biblioteca" component={() => <ProtectedRoute component={AdminLibrary} adminOnly />} />
@@ -219,6 +259,8 @@ function Router() {
       <Route path="/admin/acoes-vinculadas" component={() => <ProtectedRoute component={AdminAcoesVinculadas} adminOnly />} />
       <Route path="/admin/analise-risco" component={() => <ProtectedRoute component={AdminRiskAssessments} adminOnly />} />
       <Route path="/admin/analise-risco/:id" component={(p: any) => <ProtectedRoute component={() => <AdminRiskAssessmentDetail id={Number(p.params?.id)} />} adminOnly />} />
+      {/* P17 #3 — Rastreabilidade/exceção/invalidação da AEP (Bruno, CAMED piloto) */}
+      <Route path="/admin/analise-risco/:id/aep" component={(p: any) => <ProtectedRoute component={() => <AdminAepGestao assessmentId={Number(p.params?.id)} />} adminOnly />} />
       <Route path="/admin/pgr" component={() => <ProtectedRoute component={AdminPGR} adminOnly />} />
       <Route path="/admin/sesmt-defaults" component={() => <ProtectedRoute component={AdminSesmtDefaults} adminOnly />} />
       <Route path="/admin/pgr/executivo" component={() => <ProtectedRoute component={AdminPGRExecutive} adminOnly />} />
@@ -230,6 +272,20 @@ function Router() {
       <Route path="/admin/programs" component={() => <ProtectedRoute component={AdminPrograms} adminOnly />} />
       <Route path="/admin/programas" component={() => <ProtectedRoute component={AdminProgramas} adminOnly />} />
       <Route path="/admin/biblioteca-preventiva" component={() => <ProtectedRoute component={AdminBibliotecaPreventiva} adminOnly />} />
+      {/* Bruno R5-P5/Fase3 #8.1 — Módulo SIPAT */}
+      <Route path="/admin/sipat" component={() => <ProtectedRoute component={AdminSipat} adminOnly />} />
+      {/* P15 #4 — Módulo CIPA */}
+      <Route path="/admin/cipa" component={() => <CipaAdminRoute component={AdminCipa} />} />
+      {/* P17 #7 — Rota do colaborador pra CIPA (link "CIPA" do employeeNav) */}
+      <Route path="/cipa" component={() => <ProtectedRoute component={Cipa} />} />
+      {/* P15 #5 — Kit de Primeiros Socorros (NR-07) */}
+      <Route path="/admin/primeiros-socorros" component={() => <ProtectedRoute component={AdminFirstAid} adminOnly />} />
+      {/* Bruno R5-P6 #1 — Dashboard dos Ciclos Psicossociais (PRIORIDADE MÁXIMA) */}
+      <Route path="/admin/ciclos-dashboard" component={() => <ProtectedRoute component={AdminCyclesDashboard} adminOnly />} />
+      {/* Bruno R5-P6 #6 — Dashboard de Prazos do Plano de Ação (RH visão completa, Chefia só setor) */}
+      <Route path="/admin/plano-acao-prazos" component={() => <ProtectedRoute component={AdminPlanoAcaoPrazos} adminOnly />} />
+      {/* Bruno R5-P7 #3 — Dashboard exclusivo da Chefia (visão do seu setor) */}
+      <Route path="/admin/chefia-dashboard" component={() => <ProtectedRoute component={ChefiaDashboard} adminOnly />} />
       <Route path="/admin/planos-clientes" component={() => <ProtectedRoute component={AdminClientPlans} adminOnly />} />
       <Route path="/admin/importar-rh" component={() => <ProtectedRoute component={AdminHRImports} adminOnly />} />
       <Route path="/admin/risco-consolidado" component={() => <ProtectedRoute component={AdminRiskConsolidated} adminOnly />} />
@@ -238,6 +294,9 @@ function Router() {
       <Route path="/admin/pesquisas/:id/resultados" component={() => <ProtectedRoute component={SurveyResults} adminOnly />} />
       <Route path="/suporte" component={() => <ProtectedRoute component={Suporte} />} />
       <Route path="/admin/suporte" component={() => <ProtectedRoute component={AdminSuporte} adminOnly />} />
+      {/* R5-P12 #12 — Faturamento Psicológico */}
+      {/* P13 #4 — Faturamento Psicológico é exclusivo do Super Admin (RH não acessa). */}
+      <Route path="/admin/faturamento-psi" component={() => <SuperAdminRoute component={AdminFaturamentoPsi} />} />
       <Route path="/pesquisas" component={() => <ProtectedRoute component={EmployeeSurveys} />} />
       <Route path="/pesquisas/:id/responder" component={() => <ProtectedRoute component={SurveyAnswer} />} />
       <Route path="/super-admin" component={() => <SuperAdminRoute component={SuperAdminDashboard} />} />
@@ -245,6 +304,7 @@ function Router() {
       <Route path="/super-admin/catalogo" component={() => <SuperAdminRoute component={SuperAdminCatalog} />} />
       <Route path="/super-admin/horarios" component={() => <SuperAdminRoute component={SuperAdminAccessHours} />} />
       <Route path="/super-admin/crm" component={() => <SuperAdminRoute component={SuperAdminCrm} />} />
+      <Route path="/intermediador" component={() => <IntermediadorRoute component={IntermediadorDashboard} />} />
       <Route path="/campanhas" component={() => <ProtectedRoute component={CampanhasIndex} />} />
       <Route path="/campanhas/:id" component={() => <ProtectedRoute component={CampanhaDetail} />} />
       <Route path="/missao" component={() => <Redirect to="/modulos" />} />
@@ -253,6 +313,10 @@ function Router() {
       <Route path="/denuncia" component={Denuncia} />
       <Route path="/verificar/:code" component={VerifyCertificate} />
       <Route path="/acolhimento" component={() => <ProtectedRoute component={AgendarAcolhimento} />} />
+      {/* R5-P9 #8: alias — ChefiaDashboard.tsx e EmployeeHome.tsx usam /agendar-acolhimento */}
+      <Route path="/agendar-acolhimento" component={() => <ProtectedRoute component={AgendarAcolhimento} />} />
+      {/* R5-P9 #13: SIPAT interativa pro colaborador */}
+      <Route path="/sipat" component={() => <ProtectedRoute component={Sipat} />} />
       <Route path="/denuncia/acompanhar" component={DenunciaTrack} />
       <Route path="/admin/denuncias" component={() => <ProtectedRoute component={AdminDenuncias} adminOnly />} />
       <Route path="/admin/denuncias/indicadores" component={() => <ProtectedRoute component={AdminDenunciaIndicadores} adminOnly />} />
@@ -278,6 +342,5 @@ function App() {
 }
 
 export default App;
-
 
 

@@ -366,11 +366,11 @@ function parseCSV(text: string): ParsedRow[] {
 }
 
 const CSV_TEMPLATE =
-  "e-mail corporativo;nome;filial;setor;cargo;perfil;whatsapp\n" +
-  "joao.silva@empresa.com;João Silva;Matriz;Produção;Operador de Máquinas;colaborador;(11) 98765-4321\n" +
-  "ana.gestora@empresa.com;Ana Gestora;Matriz;Produção;Coordenadora de Produção;chefia;(11) 99988-7766\n" +
-  "maria.souza@empresa.com;Maria Souza;Filial São Paulo;Recursos Humanos;Analista de RH;rh;(11) 95555-2222\n" +
-  "carlos.lima@empresa.com;Carlos Lima;Matriz;Diretoria;Diretor Executivo;admin;\n";
+  "e-mail corporativo;nome;filial;setor;cargo;perfil\n" +
+  "joao.silva@empresa.com;João Silva;Matriz;Produção;Operador de Máquinas;colaborador\n" +
+  "ana.gestora@empresa.com;Ana Gestora;Matriz;Produção;Coordenadora de Produção;chefia\n" +
+  "maria.souza@empresa.com;Maria Souza;Filial São Paulo;Recursos Humanos;Analista de RH;rh\n" +
+  "carlos.lima@empresa.com;Carlos Lima;Matriz;Diretoria;Diretor Executivo;admin\n";
 
 function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported: () => void }) {
   const companiesQ = trpc.pgr.listCompanies.useQuery();
@@ -509,20 +509,19 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
                 </button>
               </div>
               <p className="text-xs text-muted-foreground">
-                <b>Colunas (nesta ordem):</b> <code>e-mail corporativo; nome; filial; setor; cargo; perfil; whatsapp</code>.
+                <b>Colunas (nesta ordem):</b> <code>e-mail corporativo; nome; filial; setor; cargo; perfil</code>.
                 <br />
                 <b>Cargo é obrigatório</b> — é usado pelo PGR/AEP/EPI/treinamentos. Aceita variações de cabeçalho: <code>cargo</code>, <code>função</code>, <code>position</code>.
                 <br />
                 <b>Perfil</b> aceito: <code>colaborador</code>, <code>chefia</code>, <code>rh</code> ou <code>admin</code>.
                 <br />
-                <b>WhatsApp (7ª coluna)</b> — opcional. Aceita formatos <code>(21) 96896-0994</code>, <code>21968960994</code> ou <code>+5521968960994</code>.
-                O sistema normaliza automaticamente para o padrão internacional E.164. Necessário para envio de campanhas e pesquisas via WhatsApp.
-                <br />
                 Filiais e setores inexistentes serão criados automaticamente.
+                <br />
+                <i>WhatsApp pode ser preenchido depois, individualmente, na tela de edição do colaborador.</i>
               </p>
               <textarea
                 className="w-full border rounded-md px-3 py-2 text-sm font-mono h-28 bg-white"
-                placeholder="email;nome;filial;setor;cargo;perfil;whatsapp"
+                placeholder="email;nome;filial;setor;cargo;perfil"
                 value={raw}
                 onChange={(e) => setRaw(e.target.value)}
               />
@@ -828,6 +827,14 @@ function AssignmentDialog({ user, onClose, onSaved }: { user: any; onClose: () =
     onSuccess: () => { toast.success("Colaborador atualizado"); onSaved(); },
     onError: (e) => toast.error(e.message),
   });
+  // Bruno R5 #1 — Reenvio manual do e-mail de boas-vindas/ativação.
+  const resendMut = trpc.admin.resendWelcomeEmail.useMutation({
+    onSuccess: (r: any) => {
+      if (r?.preview) toast.success("E-mail em modo preview (SMTP não configurado) — verifique log do servidor.");
+      else toast.success(`E-mail de boas-vindas reenviado para ${r?.to || email}.`);
+    },
+    onError: (e) => toast.error(`Falha ao reenviar: ${e.message}`),
+  });
 
   const branches = (branchesQ.data ?? []) as any[];
   const sectors = (sectorsQ.data ?? []) as any[];
@@ -927,7 +934,19 @@ function AssignmentDialog({ user, onClose, onSaved }: { user: any; onClose: () =
             </select>
           </div>
         </div>
-        <DialogFooter>
+        <DialogFooter className="flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              if (!confirm(`Reenviar e-mail de boas-vindas para ${email}?\n\nIsso vai gerar um novo link de ativação (válido por 7 dias) e enviar para a caixa de entrada do colaborador.`)) return;
+              resendMut.mutate({ userId: user.id });
+            }}
+            disabled={resendMut.isPending}
+            className="px-3 py-2 border border-sky-300 text-sky-700 hover:bg-sky-50 rounded-md text-sm mr-auto"
+            title="Gera novo link de ativação e dispara o e-mail"
+          >
+            {resendMut.isPending ? "Enviando..." : "↻ Reenviar e-mail de boas-vindas"}
+          </button>
           <button type="button" onClick={onClose} className="px-3 py-2 border rounded-md text-sm">Cancelar</button>
           <button
             type="button"

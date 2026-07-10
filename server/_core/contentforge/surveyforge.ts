@@ -60,7 +60,13 @@ Rules:
 - For multiple_choice: exactly 4 options + correctIndex (0-3)
 - For text: omit options and correctIndex
 - Generate EXACTLY ${questionCount} questions
-- All text in Brazilian Portuguese, professional but accessible tone`;
+- All text in Brazilian Portuguese, professional but accessible tone
+
+Bruno R5-P2 #17 — STRICT TYPE COHERENCE:
+- Use "likert" ONLY when the question naturally asks about FREQUENCY ("com que frequência", "quantas vezes") or AGREEMENT/INTENSITY ("em que medida você concorda", "o quanto", "qual o nível"). The 5-point scale MUST be a sensible answer.
+- If the question asks for free explanation, opinion in words, or contains "Por quê", "Explique", "Descreva", "Conte como", "Sugestões", use "text".
+- If the question asks to choose between concrete options (sector, time of day, yes/no), use "multiple_choice".
+- NEVER use "likert" for open-ended questions — pick "text" instead.`;
 
   const raw = await orChat([
     { role: "system", content: sys },
@@ -76,6 +82,17 @@ Rules:
   // Anti-bias: for knowledge quizzes, redistribute correctIndex if too concentrated
   if (type === "knowledge") {
     redistributeCorrectAnswers(parsed.questions);
+  }
+
+  // Bruno R5-P2 #17 — Pós-validação: corrige incoerência likert↔texto detectável por heurística.
+  // Se a pergunta tem marcas de aberta ("Por quê?", "Explique", "Descreva", "Conte"), força "text".
+  const openMarkers = /(\bpor\s*qu[eê]\b|\bexplique\b|\bdescreva\b|\bconte\b|\bsugest[õo]es\b|\bcomente\b|\brelate\b|justifique)/i;
+  for (const q of parsed.questions) {
+    if (q.type === "likert" && openMarkers.test(q.text || "")) {
+      console.log(`[surveyforge] coerced likert→text: "${(q.text||'').slice(0,60)}…"`);
+      q.type = "text";
+      delete q.options; delete q.correctIndex;
+    }
   }
 
   return parsed as GeneratedSurvey;

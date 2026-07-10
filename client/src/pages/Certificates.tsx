@@ -27,7 +27,9 @@ function printCertificate(cert: Cert, userName: string) {
     day: "2-digit", month: "long", year: "numeric",
   });
 
-  const logoUrl = `${window.location.origin}/logo.png`;
+  // R5-P10 #8 — '/logo.png' (sem prefixo) redirecionava pra um placeholder pequeno;
+  // o servidor serve o logo oficial em /plataforma/logo.png (305 KB).
+  const logoUrl = `${window.location.origin}/plataforma/logo.png`;
 
   const html = `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -67,7 +69,7 @@ function printCertificate(cert: Cert, userName: string) {
     .corner.tr { top: 16px; right: 16px; border-top: 2px solid #2d7a5f; border-right: 2px solid #2d7a5f; }
     .corner.bl { bottom: 16px; left: 16px; border-bottom: 2px solid #2d7a5f; border-left: 2px solid #2d7a5f; }
     .corner.br { bottom: 16px; right: 16px; border-bottom: 2px solid #2d7a5f; border-right: 2px solid #2d7a5f; }
-    .logo { width: 56px; height: 56px; object-fit: contain; }
+    .logo { width: 110px; height: 110px; object-fit: contain; margin-bottom: 4px; }
     .org-name {
       font-family: 'Playfair Display', serif;
       font-size: 14px; font-weight: 700;
@@ -98,8 +100,9 @@ function printCertificate(cert: Cert, userName: string) {
     .signer-line { width: 140px; height: 1px; background: #1e3a5f; margin: 0 auto 4px; }
     .signer-name { font-size: 11px; color: #1e3a5f; font-weight: 600; }
     .signer-role { font-size: 9px; color: #6b7280; }
-    .code-block { text-align: right; }
+    .code-block { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
     .code-label { font-size: 9px; color: #9ca3af; text-transform: uppercase; letter-spacing: 1px; }
+    .qr-code { width: 90px; height: 90px; margin-top: 6px; border: 1px solid #e5e7eb; padding: 2px; background: #fff; }
     .code-value { font-size: 9px; color: #6b7280; font-family: monospace; }
   </style>
 </head>
@@ -135,6 +138,8 @@ function printCertificate(cert: Cert, userName: string) {
       <div class="code-block">
         <p class="code-label">Código de Verificação</p>
         <p class="code-value">${cert.certificateCode}</p>
+        ${/* R5-P9 #12: QR de rastreabilidade pra verificar o certificado online */ ""}
+        <img class="qr-code" src="https://quickchart.io/qr?text=${encodeURIComponent(`${window.location.origin}/verificar/${cert.certificateCode}`)}&size=110&margin=0" alt="QR Code" />
       </div>
     </div>
   </div>

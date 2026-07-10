@@ -27,14 +27,15 @@ export function RichTextEditor({
 }) {
   const ref = useRef<HTMLDivElement>(null);
 
-  // Carrega valor inicial uma vez. Re-renderizar com `value` quebraria cursor.
+  // Bruno R5 #7: dados do tRPC chegam DEPOIS do mount → useEffect precisa ouvir `value`.
+  // Para não derrubar o cursor durante digitação, só re-aplica se o editor não está focado.
   useEffect(() => {
     if (!ref.current) return;
-    if (ref.current.innerHTML !== value) {
+    if (document.activeElement === ref.current) return;
+    if (ref.current.innerHTML !== (value || "")) {
       ref.current.innerHTML = value || "";
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [value]);
 
   function exec(cmd: string, arg?: string) {
     ref.current?.focus();

@@ -8,10 +8,10 @@ import {
   FileText, Download, Loader2,
   ClipboardCheck, Users, BookOpen, FileSearch, Printer,
   ChevronDown, ChevronRight, BarChart3, Building2, Layers,
-  ExternalLink, ShieldAlert, ListChecks, ScrollText,
+  ExternalLink, ShieldAlert, ListChecks, ScrollText, GraduationCap,
 } from "lucide-react";
 
-type TabId = "overview" | "fiscalizacao" | "evidencias" | "dossie" | "documentos";
+type TabId = "overview" | "fiscalizacao" | "evidencias" | "dossie" | "documentos" | "maturidade";
 
 const AXIS_ICONS: Record<string, any> = {
   ciclo: ShieldCheck,
@@ -74,6 +74,7 @@ export default function ComplianceHub() {
   const [expandedAxis, setExpandedAxis] = useState<string | null>(null);
 
   const statusQ  = trpc.compliance.nr01Status.useQuery();
+  const maturityQ = trpc.compliance.maturityIndex.useQuery();
   const usersQ   = trpc.audit.listAuditUsers.useQuery();
   const dossieQ  = trpc.audit.evidenceReport.useQuery({ userId: dossieUserId ?? 0 }, { enabled: !!dossieUserId });
   const evidQ    = trpc.compliance.nr01Evidences.useQuery();
@@ -88,6 +89,7 @@ export default function ComplianceHub() {
 
   const TABS: { id: TabId; label: string; icon: any }[] = [
     { id: "overview",     label: "Visão Geral",          icon: BarChart3 },
+    { id: "maturidade",   label: "Maturidade",           icon: ShieldAlert },
     { id: "fiscalizacao", label: "Simular Fiscalização", icon: ClipboardCheck },
     { id: "evidencias",   label: "Evidências",           icon: FileSearch },
     { id: "dossie",       label: "Dossiê Individual",    icon: Users },
@@ -197,6 +199,57 @@ export default function ComplianceHub() {
                     </div>
                   </div>
                 )}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* P18 #21 — Bruno: visão executiva única (Conformidade Geral + eixos) pra
+            reuniões com cliente/auditoria, separada do operacional de "Visão Geral". */}
+        {tab === "maturidade" && (
+          <div className="space-y-5">
+            {maturityQ.isLoading ? (
+              <div className="flex justify-center py-16"><Loader2 className="animate-spin text-slate-400" size={28} /></div>
+            ) : !maturityQ.data ? (
+              <div className="bg-white rounded-xl border p-8 text-center text-sm text-slate-400">Sem dados suficientes ainda.</div>
+            ) : (
+              <>
+                <div className="bg-white rounded-xl border p-6 flex flex-col md:flex-row items-center gap-8">
+                  <ScoreGauge score={maturityQ.data.conformidadeGeral} />
+                  <div className="flex-1 min-w-0">
+                    <h2 className="font-semibold text-lg mb-1">Índice de Maturidade em Conformidade</h2>
+                    <p className="text-sm text-slate-500">
+                      {maturityQ.data.company?.name} — visão executiva combinando pesquisas, treinamentos
+                      prioritários, evidências documentais, plano de ação, CIPA, SIPAT e primeiros socorros.
+                      Pensado para reuniões com clientes e auditorias.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-xl border p-5">
+                  <h3 className="font-semibold text-sm mb-4">Distribuição por eixo</h3>
+                  <div className="space-y-3">
+                    {(maturityQ.data.axes as any[]).map((ax) => {
+                      const c = ax.score >= 70 ? "emerald" : ax.score >= 40 ? "amber" : "rose";
+                      return (
+                        <div key={ax.key} className="flex items-center gap-3">
+                          <span className="text-sm w-40 flex-shrink-0">{ax.label}</span>
+                          <div className="flex-1 bg-slate-100 rounded-full h-2.5">
+                            <div className={`h-2.5 rounded-full bg-${c}-500`} style={{ width: `${ax.score}%` }} />
+                          </div>
+                          <span className={`text-sm font-bold w-12 text-right text-${c}-600`}>{ax.score}%</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-xl border p-5 text-xs text-slate-500 grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div><span className="text-slate-400">DRPS respondido:</span> {maturityQ.data.details.drpsRespondido ? "Sim" : "Não"}</div>
+                  <div><span className="text-slate-400">AEP respondido:</span> {maturityQ.data.details.aepRespondido ? "Sim" : "Não"}</div>
+                  <div><span className="text-slate-400">Participação pesquisas:</span> {maturityQ.data.details.respondentes}/{maturityQ.data.details.totalEmp}</div>
+                  <div><span className="text-slate-400">Ações no prazo:</span> {maturityQ.data.details.planCount - maturityQ.data.details.planOverdue}/{maturityQ.data.details.planCount}</div>
+                </div>
               </>
             )}
           </div>
@@ -389,6 +442,30 @@ export default function ComplianceHub() {
                   </div>
 
                   <div className="bg-white rounded-xl border p-5">
+                    {/* P18 #14 — Bruno (Tatiana/CAMED): conclusão de curso é evidência válida mesmo
+                        sem certificado emitido (emissão é manual, pós-conclusão). Sem isso o dossiê
+                        ficava zerado apesar de trilha real de lesson_completed. */}
+                    <h3 className="font-semibold mb-3 text-sm flex items-center gap-2"><GraduationCap size={14} /> Cursos Concluídos ({r.completedModules?.length ?? 0})</h3>
+                    {!r.completedModules?.length ? <p className="text-sm text-slate-400">Nenhum curso concluído ainda.</p> : (
+                      <table className="w-full text-xs">
+                        <thead className="bg-slate-50 text-left"><tr><th className="p-2">Curso</th><th className="p-2">Concluído em</th><th className="p-2">Certificado</th></tr></thead>
+                        <tbody>
+                          {r.completedModules.map((m: any) => {
+                            const cert = (r.certs ?? []).find((c: any) => Number(c.moduleId) === Number(m.moduleId));
+                            return (
+                              <tr key={m.moduleId} className="border-t">
+                                <td className="p-2">{m.moduleTitle}</td>
+                                <td className="p-2">{m.completedAt ? new Date(m.completedAt).toLocaleString("pt-BR") : "—"}</td>
+                                <td className="p-2">{cert ? <span className="text-emerald-600 font-medium">Emitido</span> : <span className="text-amber-600">Não emitido</span>}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+
+                  <div className="bg-white rounded-xl border p-5">
                     <h3 className="font-semibold mb-3 text-sm flex items-center gap-2"><BookOpen size={14} /> Certificados ({r.certs?.length ?? 0})</h3>
                     {!r.certs?.length ? <p className="text-sm text-slate-400">Nenhum certificado emitido.</p> : (
                       <table className="w-full text-xs">
@@ -470,6 +547,28 @@ export default function ComplianceHub() {
             <div className="bg-white rounded-xl border p-5">
               <h2 className="font-semibold text-lg mb-1">Documentos Oficiais NR-01</h2>
               <p className="text-sm text-slate-500">Links diretos para fontes oficiais do Ministério do Trabalho e Emprego relacionados à NR-01.</p>
+            </div>
+            {/* R5-P9 #16: Metodologia oficial de coleta de dados psicossociais (digital + impressa com OCR/termo/recibo) */}
+            <div className="bg-gradient-to-br from-indigo-50 to-blue-50 border border-indigo-200 rounded-xl p-5">
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-lg bg-indigo-100 flex items-center justify-center flex-shrink-0">
+                  <ScrollText size={18} className="text-indigo-600" />
+                </div>
+                <div className="flex-1">
+                  <h3 className="font-semibold text-indigo-900 mb-1">Metodologia de Coleta de Dados Psicossociais</h3>
+                  <p className="text-xs text-indigo-800 leading-relaxed mb-2">
+                    Duas vias operacionais oficiais, em conformidade com NR-01, Lei 14.457/2022 e LGPD:
+                  </p>
+                  <ul className="text-xs text-indigo-900 space-y-1 list-disc pl-4 mb-2">
+                    <li><b>Digital:</b> DRPS/MBI online na plataforma, respostas anônimas agregadas por setor.</li>
+                    <li><b>Impressa:</b> impressão → aplicação → lançamento em lote pelo RH com <b>Termo de Confidencialidade</b> eletrônico (nome+CPF+cargo), <b>Recibo de Confidencialidade</b> em PDF com código único + QR Code de rastreabilidade fixado externamente ao envelope lacrado, e integração automática no banco como respostas anônimas.</li>
+                  </ul>
+                  <p className="text-xs text-indigo-700">
+                    Esta metodologia é <b>renderizada automaticamente</b> em todo PGR emitido pela plataforma, garantindo
+                    documentação técnica consistente para auditoria externa.
+                  </p>
+                </div>
+              </div>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {DOCS_OFICIAIS.map((doc) => (

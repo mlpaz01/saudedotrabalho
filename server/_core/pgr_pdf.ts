@@ -9,6 +9,7 @@
 import puppeteer from "puppeteer";
 import path from "path";
 import fs from "fs/promises";
+import { metodologiaPsicossocialHtml } from "@shared/const";
 
 const UPLOAD_DIR = "/var/www/saudedotrabalho/uploads/pgr_pdfs";
 
@@ -203,9 +204,25 @@ export type PgrGseGroup = {
   cargos: string[];
   setores: { id: number; name: string; branchName?: string | null }[];
   riscos: {
+    id?: number;
     tipo: string; agente: string; fonteGeradora?: string | null; possivelDano?: string | null;
     tipoExposicao?: string | null; severidade: string; probabilidade: string; riscoFinal: string;
     notes?: string | null;
+    // P16 — Detalhamento Técnico do Risco (opcional; se preenchido, vira sub-seção no PDF)
+    detalhamento?: {
+      intensidade?: string | null; concentracao?: string | null; unidade?: string | null;
+      tempoExposicao?: string | null; frequenciaExposicao?: string | null; viaExposicao?: string | null;
+      limiteTolerancia?: string | null; normaReferencia?: string | null; situacaoLimite?: string | null;
+      avaliacaoQuantitativa?: number | boolean | null;
+      dataMedicao?: string | null; proximaMedicao?: string | null;
+      resultadoMedicao?: string | null; laboratorio?: string | null; instrumento?: string | null;
+      metodologia?: string | null; criterioIa?: string | null; justificativaIa?: string | null;
+      hierarquiaControles?: string | null; periodicidadeReavaliacao?: string | null;
+      avaliacaoEficaciaControles?: string | null;
+      riscoResidualSeveridade?: string | null; riscoResidualProbabilidade?: string | null; riscoResidualFinal?: string | null;
+      aiGenerated?: number | boolean | null;
+      laudos?: { titulo?: string | null; fileUrl?: string | null }[];
+    } | null;
   }[];
   epc: { descricao: string; aplicacao?: string | null }[];
   epi: { descricao: string; ca?: string | null; aplicacao?: string | null; validade?: string | null }[];
@@ -841,6 +858,47 @@ function gseGroupsSection(d: PgrData): string {
       ${riscosRows}
     </table>` : `<p><small class="muted"><i>Nenhum risco inventariado neste GSE.</i></small></p>`}
 
+    ${(() => {
+      // P16 — Detalhamento Técnico: renderiza sub-seção por risco que tem detalhamento salvo.
+      const detIt = g.riscos.filter((r: any) => r && r.detalhamento);
+      if (!detIt.length) return "";
+      const rows = detIt.map((r: any) => {
+        const d = r.detalhamento;
+        const dl = (k: string, v: any) => v ? `<tr><td style="width:35%"><b>${esc(k)}</b></td><td>${esc(String(v))}</td></tr>` : "";
+        const laudos = (d.laudos ?? []).map((l: any) => `<li>${esc(l.titulo || "Laudo")}${l.fileUrl ? ` — <a href="${esc(l.fileUrl)}">arquivo</a>` : ""}</li>`).join("");
+        return `
+        <div style="margin:4mm 0;padding:3mm;border-left:3px solid #3b82f6;background:#f8fafc">
+          <p style="margin:0 0 2mm 0;font-weight:600">${esc(r.agente)} — ${esc(tipoLabel[r.tipo] || r.tipo)}${d.aiGenerated ? ` <span style="font-size:7pt;background:#ede9fe;color:#6d28d9;padding:1px 4px;border-radius:3px">preenchido por IA</span>` : ""}</p>
+          <table style="font-size:8.5pt;width:100%">
+            ${dl("Intensidade / faixa", d.intensidade)}
+            ${dl("Concentração", d.concentracao)}
+            ${dl("Unidade de medida", d.unidade)}
+            ${dl("Tempo de exposição", d.tempoExposicao)}
+            ${dl("Frequência da exposição", d.frequenciaExposicao)}
+            ${dl("Via de exposição", d.viaExposicao)}
+            ${dl("Limite de tolerância", d.limiteTolerancia)}
+            ${dl("Norma / referência", d.normaReferencia)}
+            ${dl("Situação frente ao limite", d.situacaoLimite)}
+            ${dl("Avaliação quantitativa", (d.avaliacaoQuantitativa === 1 || d.avaliacaoQuantitativa === true) ? "Sim" : (d.avaliacaoQuantitativa != null ? "Não" : null))}
+            ${dl("Data da medição", d.dataMedicao)}
+            ${dl("Próxima medição prevista", d.proximaMedicao)}
+            ${dl("Resultado da medição", d.resultadoMedicao)}
+            ${dl("Laboratório responsável", d.laboratorio)}
+            ${dl("Instrumento", d.instrumento)}
+            ${dl("Metodologia", d.metodologia)}
+            ${dl("Critério técnico da IA", d.criterioIa)}
+            ${dl("Justificativa da classificação", d.justificativaIa)}
+            ${dl("Hierarquia de medidas de controle", d.hierarquiaControles)}
+            ${dl("Periodicidade de reavaliação", d.periodicidadeReavaliacao)}
+            ${dl("Avaliação da eficácia dos controles", d.avaliacaoEficaciaControles)}
+            ${(d.riscoResidualSeveridade || d.riscoResidualProbabilidade || d.riscoResidualFinal) ? `<tr><td><b>Risco residual (após controles)</b></td><td>Severidade: ${esc(d.riscoResidualSeveridade ?? "—")} · Probabilidade: ${esc(d.riscoResidualProbabilidade ?? "—")} · Final: <b>${esc(d.riscoResidualFinal ?? "—")}</b></td></tr>` : ""}
+          </table>
+          ${laudos ? `<p style="margin:2mm 0 0 0;font-size:8.5pt"><b>Laudos anexos:</b></p><ul style="font-size:8.5pt;margin:1mm 0">${laudos}</ul>` : ""}
+        </div>`;
+      }).join("");
+      return `<h4>Detalhamento Técnico dos Riscos</h4>${rows}`;
+    })()}
+
     ${epcRows ? `<h4>EPC — Equipamentos de Proteção Coletiva</h4>
     <table style="font-size:9pt"><tr><th>Descrição</th><th>Aplicação</th></tr>${epcRows}</table>` : ""}
 
@@ -873,47 +931,109 @@ function gseGroupsSection(d: PgrData): string {
 // Lista as seções que de fato serão renderizadas, na MESMA ordem do corpo,
 // numerando dinamicamente. Sem números de página (PDF gerado a partir de HTML
 // sem paginação determinística), mas com ancoragem semântica clara.
-function renderSumarioPgr(d: PgrData, attCounts?: { complementares: number; oficiais: Array<{ label: string; n: number }> }): string {
-  // SP4 #14 — Estrutura nova do PDF conforme orientação Bruno (jun/2026):
-  // capa → sumário → identificação → revisões → intro → caracterização → GSE
-  // → conclusão → resp. técnica → anexos do PGR (LTCAT...) → anexos 1-5 (oficiais).
-  // Removido do PDF: Regime, GHE antigo, Notas Técnicas, Conclusão auto, Matriz,
-  // Plano Psicossocial, Cronograma, Hierarquia, Não Conformidades, Treinamentos NR.
-  const items: string[] = [];
-  items.push("Identificação da Empresa");
-  items.push("Histórico de Revisões");
-  if (d.textoIntroducao && d.textoIntroducao.trim()) items.push("Introdução");
-  if (caracterizacaoSetoresSection(d)) items.push("Caracterização Operacional dos Setores");
-  if (d.gseGroups && d.gseGroups.length > 0) {
-    items.push(`Grupos Similares de Exposição (GSE) — ${d.gseGroups.length} grupo(s) — Modelo NR-01`);
+function renderSumarioPgr(d: PgrData & { sumarioCustom?: string | null }, attCounts?: { complementares: number; oficiais: Array<{ label: string; n: number }> }): string {
+  // Bruno R4 #6: sumário editável. Se o usuário preencheu, usa o HTML dele;
+  // senão, gera automático conforme as seções existentes.
+  if (d.sumarioCustom && d.sumarioCustom.trim()) {
+    return `
+    <div class="section" style="page-break-inside:avoid">
+      <h2>Sumário</h2>
+      ${d.sumarioCustom}
+    </div>`;
   }
-  if (d.textoConclusao && d.textoConclusao.trim()) items.push("Conclusão Técnica");
-  items.push("Responsabilidade Técnica");
-  if (attCounts) {
-    if (attCounts.complementares > 0) items.push(`Anexos do PGR (${attCounts.complementares} documento(s) complementares)`);
-    attCounts.oficiais.forEach((o, idx) => {
-      items.push(`Anexo ${idx + 1} — ${o.label}`);
+  // Bruno R5-P4 #2 — Sumário com HIERARQUIA (capítulo + subseções).
+  // Estrutura: 1. Identificação → 1.1 Dados gerais / 1.2 Contratante / 1.3 RT
+  //            2. Revisões  3. Introdução  4. Caracterização (1 sub por setor)
+  //            5. GSE (1 sub por grupo)  6. Conclusão  7. RT  8. Anexos (1 sub por anexo)
+  type SItem = { num: string; label: string; level: number };
+  const items: SItem[] = [];
+  let cap = 0;
+
+  // 1. Identificação
+  cap++;
+  items.push({ num: `${cap}.`, label: "Identificação da Empresa", level: 1 });
+  items.push({ num: `${cap}.1`, label: "Dados Cadastrais e Atividade", level: 2 });
+  if (d.contratanteAtivo) items.push({ num: `${cap}.2`, label: "Contratante", level: 2 });
+
+  // 2. Revisões
+  cap++;
+  items.push({ num: `${cap}.`, label: "Histórico de Revisões", level: 1 });
+
+  // 3. Introdução
+  if (d.textoIntroducao && d.textoIntroducao.trim()) {
+    cap++;
+    items.push({ num: `${cap}.`, label: "Introdução Técnica", level: 1 });
+  }
+
+  // 4. Caracterização Operacional dos Setores (com 1 subitem por setor)
+  if (caracterizacaoSetoresSection(d) && Array.isArray(d.caracterizacaoSetores) && d.caracterizacaoSetores.length > 0) {
+    cap++;
+    items.push({ num: `${cap}.`, label: "Caracterização Operacional dos Setores", level: 1 });
+    d.caracterizacaoSetores.slice(0, 30).forEach((cs: any, i: number) => {
+      items.push({ num: `${cap}.${i + 1}`, label: String(cs.setor || `Setor ${i + 1}`), level: 2 });
     });
   }
 
-  const rows = items.map((label, i) => `
-    <tr>
-      <td style="width:8mm;text-align:right;color:${ACCENT};font-weight:700">${i + 1}.</td>
-      <td style="padding-left:4mm">${esc(label)}</td>
-    </tr>`).join("");
+  // 5. GSE
+  if (d.gseGroups && d.gseGroups.length > 0) {
+    cap++;
+    items.push({ num: `${cap}.`, label: `Grupos Similares de Exposição (GSE) - ${d.gseGroups.length} grupo(s) - Modelo NR-01`, level: 1 });
+    d.gseGroups.slice(0, 30).forEach((g: any, i: number) => {
+      items.push({ num: `${cap}.${i + 1}`, label: String(g.nome || `GSE ${i + 1}`), level: 2 });
+    });
+  }
+
+  // 6. Conclusão técnica
+  if (d.textoConclusao && d.textoConclusao.trim()) {
+    cap++;
+    items.push({ num: `${cap}.`, label: "Conclusão Técnica", level: 1 });
+  }
+
+  // 7. Responsabilidade Técnica
+  cap++;
+  items.push({ num: `${cap}.`, label: "Responsabilidade Técnica e Assinatura", level: 1 });
+
+  // 8. Anexos
+  if (attCounts && (attCounts.complementares > 0 || attCounts.oficiais.length > 0)) {
+    cap++;
+    items.push({ num: `${cap}.`, label: "Anexos", level: 1 });
+    let sub = 0;
+    if (attCounts.complementares > 0) {
+      sub++;
+      items.push({ num: `${cap}.${sub}`, label: `Documentos complementares (${attCounts.complementares})`, level: 2 });
+    }
+    attCounts.oficiais.forEach((o) => {
+      sub++;
+      items.push({ num: `${cap}.${sub}`, label: `${o.label} (${o.count} documento(s))`, level: 2 });
+    });
+  }
+
+  const rows = items.map((it) => {
+    const isMain = it.level === 1;
+    const labelCss = isMain
+      ? `font-weight:700;color:${PRIMARY};font-size:11pt;border-bottom:1px dotted #cbd5e1;padding-bottom:2mm`
+      : `font-weight:400;color:#475569;font-size:10pt;padding-left:8mm`;
+    const numCss = isMain
+      ? `font-weight:800;color:${ACCENT};font-size:11pt;text-align:right;width:14mm`
+      : `font-weight:600;color:#94a3b8;font-size:9.5pt;text-align:right;width:14mm`;
+    return `<tr>
+      <td style="${numCss};padding:${isMain ? "3mm 3mm 3mm 0" : "1.5mm 3mm 1.5mm 0"}">${esc(it.num)}</td>
+      <td style="${labelCss};padding:${isMain ? "3mm 0" : "1.5mm 0"}">${esc(it.label)}</td>
+    </tr>`;
+  }).join("");
 
   return `
-  <div class="section" style="page-break-inside:avoid">
+  <div class="section">
     <h2>Sumário</h2>
     <p class="muted" style="font-size:9pt;margin-top:-4px">
-      Conteúdo do relatório na ordem em que aparece a seguir.
+      Conteúdo do relatório organizado por capítulo. Subitens estão indentados.
     </p>
-    <table style="border:none;margin-top:8mm">
-      <colgroup><col style="width:8mm"><col></colgroup>
+    <table style="border:none;margin-top:6mm;width:100%">
+      <colgroup><col style="width:14mm"><col></colgroup>
       <tbody>${rows}</tbody>
     </table>
     <style>
-      .section table tr td { border:none !important; padding:2.5mm 2mm; }
+      .section table tr td { border:none !important; }
     </style>
   </div>`;
 }
@@ -959,6 +1079,12 @@ ${renderUserText(d.textoIntroducao)}
        </div>
        <div class="page-break"></div>`
     : ""}
+
+  <!-- R5-P12 #11: Metodologia canônica (fonte única @shared/const) — mesma em PGR, Laudos e relatórios. -->
+  <div class="section">
+    ${metodologiaPsicossocialHtml({ headingTag: "h2", subTag: "h3" })}
+  </div>
+  <div class="page-break"></div>
 
   ${caracterizacaoSetoresSection(d) ? `<div class="section">${caracterizacaoSetoresSection(d)}</div><div class="page-break"></div>` : ""}
 
@@ -1008,8 +1134,9 @@ ${renderUserText(d.textoConclusao)}
  * @param pdfDiskPath caminho absoluto do PGR base em disco
  * @param attachments lista vinda da BD (pgr_attachments) com fileUrl + mimeType + titulo
  */
-/** Categorias oficiais — viram "Anexo 1..7" no PDF, na ordem abaixo.
- * Bruno round 3: adicionado LGPD e Lei 14.457 (totalizando 7). */
+/** Categorias oficiais — viram "Anexo 1..8" no PDF, na ordem abaixo.
+ * Bruno round 3: adicionado LGPD e Lei 14.457 (totalizando 7).
+ * P18 GRANDE: adicionado Relatório da CIPA (totalizando 8). */
 const ANEXOS_OFICIAIS_ORDEM = [
   "Relatório Psicossocial",
   "AEP",
@@ -1018,6 +1145,7 @@ const ANEXOS_OFICIAIS_ORDEM = [
   "Legitimidade do Canal de Denúncias",
   "LGPD",
   "Lei 14.457/2022",
+  "Relatório da CIPA",
 ];
 
 export async function appendPdfAttachments(
@@ -1116,7 +1244,8 @@ export async function appendPdfAttachments(
     const tipo = ANEXOS_OFICIAIS_ORDEM[i];
     const items = oficiaisPorTipo.get(tipo) ?? [];
     if (items.length === 0) continue;
-    makeCoverPage(`Anexo ${i + 1}`, `${tipo} — ${items.length} documento(s)`, items.map(it => it.titulo));
+    // Bruno R5-P4 #3 — Hífen ASCII no lugar do em-dash (caía em safeAscii como "?")
+    makeCoverPage(`Anexo ${i + 1}`, `${tipo} - ${items.length} documento(s)`, items.map(it => it.titulo));
     for (const a of items) {
       try {
         const ok = await inlineFile(a);
@@ -1135,10 +1264,27 @@ export async function appendPdfAttachments(
 
 // pdf-lib WinAnsi não suporta vários caracteres unicode (acentos exóticos, emojis).
 // Reduz para ASCII tolerável; aspectos visuais bonitos ficam no HTML do PGR principal.
+// Bruno R5-P4 #3 — Substituições EXPLÍCITAS pra evitar "?" feio em títulos de anexo.
 function safeAscii(s: string): string {
   return (s || "")
+    // Travessões/hífens unicode → hífen ASCII
+    .replace(/[‐‑‒–—―−]/g, "-")
+    // Aspas curvas → aspas retas
+    .replace(/[‘’‚‛]/g, "'")
+    .replace(/[“”„‟]/g, '"')
+    // Reticências unicode → 3 pontos
+    .replace(/…/g, "...")
+    // Bullet/middle-dot → " - "
+    .replace(/[·•]/g, "-")
+    // NBSP → espaço normal
+    .replace(/ /g, " ")
+    // Tira acentos combinantes (mantém letras base): "Análise" → "Analise"
     .normalize("NFD").replace(/[̀-ͯ]/g, "")
-    .replace(/[^\x20-\x7E]/g, "?");
+    // Símbolo de seção, copyright, etc.
+    .replace(/§/g, "S").replace(/©/g, "(c)").replace(/®/g, "(R)")
+    // Resto não-ASCII vira espaço (não "?", que polui visualmente)
+    .replace(/[^\x20-\x7E]/g, " ")
+    .replace(/\s+/g, " ").trim();
 }
 
 function resolveLocalPath(fileUrl: string): string {

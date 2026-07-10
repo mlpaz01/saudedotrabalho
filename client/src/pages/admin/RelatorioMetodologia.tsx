@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { trpc } from "@/lib/trpc";
 import { Loader2 } from "lucide-react";
+import { metodologiaPsicossocialHtml } from "@shared/const";
 
 export default function RelatorioMetodologia() {
   const q = trpc.compliance.relatorioMetodologiaData.useQuery();
@@ -256,6 +257,9 @@ export default function RelatorioMetodologia() {
           {" "}{d.stats.termCount} aceites eletrônicos) estão armazenadas na plataforma e disponíveis para
           apresentação a auditores, fiscais do trabalho e juízes em eventuais processos trabalhistas ou administrativos.
         </p>
+
+        {/* R5-P12 #11 — metodologia canônica (mesma fonte do PGR, Laudos e demais relatórios) */}
+        <div style={{ marginTop: 24 }} dangerouslySetInnerHTML={{ __html: metodologiaPsicossocialHtml({ headingTag: "h2", subTag: "h3" }) }} />
 
         {/* Assinatura */}
         <div style={{ marginTop: 48, borderTop: "2px solid #e2e8f0", paddingTop: 24 }}>

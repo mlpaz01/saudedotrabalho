@@ -33,6 +33,11 @@ export default function Login() {
 
   const login = trpc.auth.corporateLogin.useMutation({
     onSuccess: () => {
+      // P18 #5 CRÍTICO (Bruno) — impersonatedCompanyId/delegatedRole ficavam no
+      // localStorage entre sessões; um login novo herdava a empresa/perfil de uma
+      // impersonação anterior (só aba anônima escapava). Todo login novo começa limpo.
+      window.localStorage.removeItem("impersonatedCompanyId");
+      window.localStorage.removeItem("delegatedRole");
       toast.success("Bem-vindo(a) de volta!");
       window.location.href = "/plataforma/dashboard";
     },

@@ -5,6 +5,7 @@
 import puppeteer from "puppeteer";
 import path from "path";
 import fs from "fs/promises";
+import { metodologiaPsicossocialHtml } from "@shared/const";
 
 const UPLOAD_DIR = "/var/www/saudedotrabalho/uploads/risk_pdfs";
 
@@ -327,6 +328,9 @@ export async function generateRiskLaudoPDF(
   A AEP qualitativa foi estruturada para aprofundamento organizacional dos fatores identificados no DRPS.</div>
   <p>Foram coletadas <b>${a.aepResponses} resposta(s)</b> ao instrumento AEP.</p>
 
+  <!-- R5-P12 #11 — metodologia canônica de coleta/processamento (mesma do PGR e relatórios) -->
+  ${metodologiaPsicossocialHtml({ headingTag: "h2", subTag: "h3" })}
+
   <h2>5. Critérios Técnicos de Avaliação</h2>
   <table>
     <tr><th>Nível de risco</th><th>Score DRPS médio</th><th>Ação recomendada</th></tr>
@@ -534,56 +538,88 @@ export async function generateRiskLaudoPDF(
 }
 
 // ── 2. INVENTÁRIO + MATRIZ ───────────────────────────────────────────────────
+// Bruno R5-P2 #18 — Quando a avaliação não tem setor único, agrupa por filial/setor
+// com page-break entre setores ao invés de consolidar tudo numa única tabela.
 export async function generateInventoryPDF(
   a: AssessmentData,
-  inventory: InventoryRow[]
+  inventory: InventoryRow[],
+  sectorGroups?: SectorGroup[]
 ): Promise<string> {
   await fs.mkdir(UPLOAD_DIR, { recursive: true });
   const outPath = path.join(UPLOAD_DIR, `inventario_${a.id}.pdf`);
 
-  const rows = inventory.map((it, i) => {
-    const fonte = (it.fontesGeradoras && String(it.fontesGeradoras).trim())
-      ? it.fontesGeradoras
-      : (it.description && String(it.description).trim() ? it.description : "—");
-    const medidas = (it.medidasExistentes && String(it.medidasExistentes).trim())
-      ? it.medidasExistentes
-      : "A definir conforme plano de ação";
+  function buildRows(items: InventoryRow[]): string {
+    return items.map((it, i) => {
+      const fonte = (it.fontesGeradoras && String(it.fontesGeradoras).trim())
+        ? it.fontesGeradoras
+        : (it.description && String(it.description).trim() ? it.description : "—");
+      const medidas = (it.medidasExistentes && String(it.medidasExistentes).trim())
+        ? it.medidasExistentes
+        : "A definir conforme plano de ação";
+      return `
+      <tr>
+        <td>${i + 1}</td>
+        <td><b>${esc(it.factorName)}</b></td>
+        <td>${esc(fonte)}</td>
+        <td>${esc(medidas)}</td>
+        <td class="matrix-cell" style="background:${classToColor(it.gravidade)}">${classToLabel(it.gravidade)}</td>
+        <td class="matrix-cell" style="background:${classToColor(it.probabilidade)}">${classToLabel(it.probabilidade)}</td>
+        <td class="matrix-cell" style="background:${classToColor(it.riscoFinal)}">${classToLabel(it.riscoFinal)}</td>
+        <td style="text-align:center">${it.drpsScoreAvg != null ? Number(it.drpsScoreAvg).toFixed(2) : "—"}</td>
+      </tr>`;
+    }).join("");
+  }
+
+  function buildTable(items: InventoryRow[], label: string): string {
+    if (items.length === 0) {
+      return `<p style="font-style:italic;color:#64748b;margin:6px 0 14px;">Nenhum risco cadastrado no setor <b>${esc(label)}</b>.</p>`;
+    }
+    // P17 #5 — <thead> repete o cabeçalho a cada página quando a tabela quebra;
+    // sem isso o cabeçalho só aparecia na 1ª página do setor.
     return `
-    <tr>
-      <td>${i + 1}</td>
-      <td><b>${esc(it.factorName)}</b></td>
-      <td>${esc(fonte)}</td>
-      <td>${esc(medidas)}</td>
-      <td class="matrix-cell" style="background:${classToColor(it.gravidade)}">${classToLabel(it.gravidade)}</td>
-      <td class="matrix-cell" style="background:${classToColor(it.probabilidade)}">${classToLabel(it.probabilidade)}</td>
-      <td class="matrix-cell" style="background:${classToColor(it.riscoFinal)}">${classToLabel(it.riscoFinal)}</td>
-      <td style="text-align:center">${it.drpsScoreAvg != null ? Number(it.drpsScoreAvg).toFixed(2) : "—"}</td>
-    </tr>`;
-  }).join("");
+    <table>
+      <thead>
+        <tr>
+          <th style="width:4%">#</th>
+          <th style="width:22%">Fator de risco</th>
+          <th style="width:22%">Fontes geradoras</th>
+          <th style="width:22%">Medidas existentes</th>
+          <th>Grav.</th><th>Prob.</th><th>Risco</th>
+          <th style="width:8%">DRPS</th>
+        </tr>
+      </thead>
+      <tbody>${buildRows(items)}</tbody>
+    </table>`;
+  }
+
+  // P17 #5 — Bruno (CAMED): "algumas páginas cortadas" + "título isolado numa página".
+  // Causa: h3+tabela inteiros dentro de .section (page-break-inside:avoid). Quando a
+  // tabela do setor é mais alta que uma página, o navegador não consegue evitar a
+  // quebra e corta o conteúdo. Fix: título com "não quebrar logo depois" (fica preso
+  // ao topo da tabela) e a tabela quebra livremente entre linhas (cada <tr> protegida
+  // individualmente via CSS, cabeçalho repetido via <thead>).
+  const hasSectors = !!(sectorGroups && sectorGroups.length > 0);
+  const body = hasSectors
+    ? sectorGroups!.map((sg, idx) => `
+        <h3 style="page-break-after:avoid">${idx + 1}. ${esc(sg.assessment?.branchName ? `Filial ${sg.assessment.branchName} — ` : "")}Setor: ${esc(sg.sectorName)}</h3>
+        ${buildTable(sg.inventory, sg.sectorName)}
+        ${idx < sectorGroups!.length - 1 ? '<div class="page-break"></div>' : ''}
+      `).join("")
+    : `<h2 style="margin-top:0;page-break-after:avoid">Inventário + Matriz de Classificação por Setor</h2>${buildTable(inventory, a.sectorName || "Setor único")}`;
 
   const html = `<!doctype html><html><head><meta charset="utf-8">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
   <style>${BASE_CSS}
     @page { size: A4 landscape; margin: 14mm; }
+    table tr { page-break-inside: avoid; }
   </style></head><body>
   <div class="header-strip">
     <div class="name">${esc(a.companyName)}</div>
     <div class="meta">Inventário de Riscos Psicossociais — ${esc(a.cycleName)}</div>
-    <div class="meta">Setor avaliado: <b>${esc(a.sectorName || "Não especificado")}</b></div>
+    <div class="meta">${hasSectors ? `${sectorGroups!.length} setor(es) — detalhados individualmente abaixo` : `Setor avaliado: <b>${esc(a.sectorName || "Não especificado")}</b>`}</div>
   </div>
-  <h2 style="margin-top:0">Inventário + Matriz de Classificação por Setor</h2>
-  <table>
-    <tr>
-      <th style="width:4%">#</th>
-      <th style="width:22%">Fator de risco</th>
-      <th style="width:22%">Fontes geradoras</th>
-      <th style="width:22%">Medidas existentes</th>
-      <th>Grav.</th><th>Prob.</th><th>Risco</th>
-      <th style="width:8%">DRPS</th>
-    </tr>
-    ${rows}
-  </table>
-  <p><small class="muted">Escala DRPS: 0 (sem risco) a 4 (risco extremo) — média ponderada por fator.</small></p>
+  ${body}
+  <p><small class="muted">Escala DRPS: 0 (sem risco) a 4 (risco extremo) — média ponderada por fator. Cada setor é apresentado em sua própria tabela, sem agregação cross-setor.</small></p>
   <div class="footer-note">${esc(a.responsibleTechnician || "—")}</div>
   </body></html>`;
 
@@ -592,9 +628,11 @@ export async function generateInventoryPDF(
 }
 
 // ── 3. CRONOGRAMA 12 MESES ───────────────────────────────────────────────────
+// Bruno R5-P2 #18 — Cronograma individualizado por filial→setor quando há sectorGroups.
 export async function generateCronogramaPDF(
   a: AssessmentData,
-  actions: ActionPlanRow[]
+  actions: ActionPlanRow[],
+  sectorGroups?: SectorGroup[]
 ): Promise<string> {
   await fs.mkdir(UPLOAD_DIR, { recursive: true });
   const outPath = path.join(UPLOAD_DIR, `cronograma_${a.id}.pdf`);
@@ -602,17 +640,37 @@ export async function generateCronogramaPDF(
   const months = next12Months(a.startDate || null);
   const headers = months.map((m) => `<th style="text-align:center;width:6%">${esc(monthLabel(m))}</th>`).join("");
 
-  const rows = actions.map((ac) => {
-    const cells = months.map((m) => {
-      const filled = ac.monthlyProgress && (ac.monthlyProgress as any)[m];
-      return `<td style="text-align:center">${filled ? `<span class="month-dot"></span>` : `<span class="month-empty"></span>`}</td>`;
+  function buildBlock(acts: ActionPlanRow[], label: string): string {
+    if (acts.length === 0) {
+      return `<p style="font-style:italic;color:#64748b;margin:6px 0 14px;">Nenhuma ação cadastrada para <b>${esc(label)}</b>.</p>`;
+    }
+    const rows = acts.map((ac) => {
+      const cells = months.map((m) => {
+        const filled = ac.monthlyProgress && (ac.monthlyProgress as any)[m];
+        return `<td style="text-align:center">${filled ? `<span class="month-dot"></span>` : `<span class="month-empty"></span>`}</td>`;
+      }).join("");
+      return `<tr>
+        <td><b>${esc(ac.factorName)}</b><br><small class="muted">${esc(ac.actionDescription)}</small></td>
+        <td><span class="badge" style="background:${classToColor(ac.priority)}">${classToLabel(ac.priority)}</span></td>
+        ${cells}
+      </tr>`;
     }).join("");
-    return `<tr>
-      <td><b>${esc(ac.factorName)}</b><br><small class="muted">${esc(ac.actionDescription)}</small></td>
-      <td><span class="badge" style="background:${classToColor(ac.priority)}">${classToLabel(ac.priority)}</span></td>
-      ${cells}
-    </tr>`;
-  }).join("");
+    return `<table>
+      <tr><th style="width:28%">Programa Preventivo</th><th style="width:9%">Prioridade</th>${headers}</tr>
+      ${rows}
+    </table>`;
+  }
+
+  const hasSectors = !!(sectorGroups && sectorGroups.length > 0);
+  const body = hasSectors
+    ? sectorGroups!.map((sg, idx) => `
+        <div class="section">
+          <h3>${idx + 1}. ${esc(sg.assessment?.branchName ? `Filial ${sg.assessment.branchName} — ` : "")}Setor: ${esc(sg.sectorName)}</h3>
+          ${buildBlock(sg.actions, sg.sectorName)}
+        </div>
+        ${idx < sectorGroups!.length - 1 ? '<div class="page-break"></div>' : ''}
+      `).join("")
+    : `<h2 style="margin-top:0">Cronograma de Implementação — 12 meses</h2>${buildBlock(actions, a.sectorName || "Setor único")}`;
 
   const html = `<!doctype html><html><head><meta charset="utf-8">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
@@ -620,20 +678,12 @@ export async function generateCronogramaPDF(
     @page { size: A4 landscape; margin: 14mm; }
   </style></head><body>
   <div class="header-strip">
-    <div class="name">${esc(a.companyName)}${a.sectorName ? ` — ${esc(a.sectorName)}` : ""}</div>
+    <div class="name">${esc(a.companyName)}${(!hasSectors && a.sectorName) ? ` — ${esc(a.sectorName)}` : ""}</div>
     <div class="meta">Cronograma 12 meses — ${esc(a.cycleName)}</div>
+    <div class="meta">${hasSectors ? `${sectorGroups!.length} setor(es) — cronograma individualizado abaixo` : ""}</div>
   </div>
-  <h2 style="margin-top:0">Cronograma de Implementação — 12 meses</h2>
-  ${actions.length === 0 ? `<p><i>Nenhuma ação cadastrada ainda.</i></p>` : `
-  <table>
-    <tr>
-      <th style="width:28%">Programa Preventivo</th>
-      <th style="width:9%">Prioridade</th>
-      ${headers}
-    </tr>
-    ${rows}
-  </table>`}
-  <p><small class="muted">Marcadores verdes indicam meses programados para execução do programa preventivo.</small></p>
+  ${body}
+  <p><small class="muted">Marcadores verdes indicam meses programados para execução do programa preventivo. Cada setor tem seu próprio cronograma, sem mistura cross-setor.</small></p>
   <div class="footer-note">${esc(a.responsibleTechnician || "—")}</div>
   </body></html>`;
 
@@ -831,11 +881,13 @@ export async function generateAEPLaudoPDF(
   <h2>9. Responsabilidade Técnica e Assinatura</h2>
   <p>Esta análise foi elaborada sob responsabilidade técnica de
   <b>${esc(a.responsibleTechnician || "—")}</b>, profissional habilitada conforme
-  legislação vigente.</p>
+  legislação vigente.${a.responsibleProfession ? ` ${esc(a.responsibleProfession)}.` : ""}
+  ${a.responsibleArt ? ` ART nº ${esc(a.responsibleArt)}.` : ""}</p>
   <div class="signature">
-    <div class="line"></div>
+    ${a.responsibleSignatureUrl ? `<div style="text-align:center;margin-top:24mm;"><img src="${esc(a.responsibleSignatureUrl)}" alt="Assinatura" style="max-width:70mm;max-height:24mm;object-fit:contain;display:inline-block"/></div>` : ""}
+    <div class="line" style="margin-top:${a.responsibleSignatureUrl ? '0' : '30mm'}"></div>
     <div style="text-align:center">${esc(a.responsibleTechnician || "—")}<br>
-    <small class="muted">Responsável Técnica</small></div>
+    <small class="muted">Responsável Técnica${a.responsibleRegistration ? ` · ${esc(a.responsibleRegistration)}` : ""}</small></div>
   </div>
 
   <h2>10. Referências</h2>

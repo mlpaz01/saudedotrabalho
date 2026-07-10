@@ -1,6 +1,12 @@
 import { useEffect } from "react";
 import { trpc } from "@/lib/trpc";
 import { Loader2, Printer } from "lucide-react";
+import { metodologiaPsicossocialHtml } from "@shared/const";
+
+// R5-P12 #11 — bloco de metodologia canônica reusável nos relatórios (mesma fonte do PGR/Laudo).
+function MetodologiaBlock() {
+  return <div dangerouslySetInnerHTML={{ __html: metodologiaPsicossocialHtml({ headingTag: "h2", subTag: "h3" }) }} />;
+}
 
 /**
  * SP6 #6 — 3 relatórios de conformidade.
@@ -178,6 +184,9 @@ export function RelatorioLei14457() {
           <li>Configuração ativa do Regimento Interno com cláusulas anti-assédio (modelo NR-01).</li>
         </ul>
 
+        {/* R5-P12 #11 — metodologia canônica (mesma do PGR e Laudos) */}
+        <MetodologiaBlock />
+
         <div className="info">
           Este relatório serve como evidência primária em fiscalizações do Ministério do Trabalho, ação trabalhista
           ou autuação relativa ao descumprimento da Lei 14.457/2022.
@@ -261,6 +270,9 @@ export function RelatorioLgpd() {
           <div className="card"><div className="label">Denúncias anônimas preservadas</div><div className="value">{d.denuncias.anonimas}</div></div>
           <div className="card"><div className="label">Total denúncias registradas</div><div className="value">{d.denuncias.total}</div></div>
         </div>
+
+        {/* R5-P12 #11 — metodologia canônica (mesma do PGR e Laudos) */}
+        <MetodologiaBlock />
 
         <div className="info">
           Este relatório atende a solicitações típicas de departamentos jurídicos, compliance, due diligence

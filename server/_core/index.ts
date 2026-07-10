@@ -88,6 +88,64 @@ app.use("/pdfs", express.static("/var/www/saudedotrabalho/public/pdfs"));
     }
   });
 
+  // ── R5-P12 #1b — Envio do link da consulta no DIA (cenário sem link fixo) ──
+  // Para consultas de HOJE que já têm meeting_url definido (o psicólogo informou)
+  // e ainda não tiveram o link enviado, dispara e-mail ao colaborador.
+  // Idempotente via coluna appointments.link_email_sent. Vira cron diário em prod.
+  app.post("/api/appointments/send-today-links", async (req, res) => {
+    try {
+      const secret = req.headers["x-intel-secret"];
+      if (process.env.INTEL_SECRET && secret !== process.env.INTEL_SECRET) {
+        return res.status(403).json({ error: "forbidden" });
+      }
+      const { getDb } = await import("../db");
+      const { sendEmail, buildAppointmentEmail, getEmailLinkBaseUrl } = await import("./email");
+      const db = await getDb();
+      if (!db) return res.status(500).json({ error: "db" });
+      try { await db.execute("ALTER TABLE appointments ADD COLUMN link_email_sent TINYINT(1) NOT NULL DEFAULT 0" as any); } catch (_) {}
+      const [rows]: any = await db.execute(`
+        SELECT a.id, a.scheduled_at, a.duration_minutes, a.meeting_url, a.notes,
+               u.name AS collab_name, u.email AS collab_email,
+               p.name AS prof_name, p.specialty,
+               c.name AS company_name
+        FROM appointments a
+        JOIN users u ON u.id=a.collaborator_id
+        JOIN appointment_professionals p ON p.id=a.professional_id
+        LEFT JOIN companies c ON c.id=a.company_id
+        WHERE DATE(a.scheduled_at)=CURDATE()
+          AND a.status IN ('pending','confirmed','in_progress','rescheduled')
+          AND a.meeting_url IS NOT NULL AND a.meeting_url<>''
+          AND COALESCE(a.link_email_sent,0)=0` as any);
+      const list = Array.isArray(rows) ? rows : [];
+      const base = getEmailLinkBaseUrl();
+      let sent = 0;
+      for (const a of list) {
+        if (!a.collab_email) continue;
+        const d = new Date(a.scheduled_at);
+        const dateStr = d.toLocaleDateString("pt-BR");
+        const timeStr = d.toTimeString().slice(0, 5);
+        try {
+          await sendEmail({
+            to: a.collab_email, toName: a.collab_name || a.collab_email,
+            subject: `Sua consulta é hoje — link de acesso · ${timeStr}`,
+            html: buildAppointmentEmail({
+              collaboratorName: a.collab_name || "—", professionalName: a.prof_name || "—",
+              professionalSpecialty: a.specialty || null, date: dateStr, time: timeStr,
+              durationMin: Number(a.duration_minutes || 30), meetingUrl: a.meeting_url,
+              notes: a.notes || null, companyName: a.company_name || "Saúde do Trabalho", base,
+              audience: "collaborator",
+            }),
+          });
+          await db.execute("UPDATE appointments SET link_email_sent=1 WHERE id=?" as any, [a.id] as any);
+          sent++;
+        } catch (e) { console.warn("[appt today-link] falhou id", a.id, (e as any)?.message); }
+      }
+      return res.json({ ok: true, candidates: list.length, sent });
+    } catch (e: any) {
+      return res.status(500).json({ error: String(e?.message ?? e) });
+    }
+  });
+
   // ── SP7 — Garante tabelas WhatsApp no boot (idempotente) ───────────────
   (async () => {
     try {

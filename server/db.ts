@@ -1252,7 +1252,17 @@ export async function getEvidenceReport(userId: number) {
 
   const auditTrail = await db.select().from(auditLogs).where(eq(auditLogs.userId, userId)).orderBy(desc(auditLogs.createdAt)).limit(500);
 
-  return { user, certs, attempts, acceptances, auditTrail };
+  // P18 #14 — Bruno (CAMED/Tatiana): o dossiê só olhava certificado/aceite/avaliação e
+  // ficava zerado mesmo com trilha de conclusão de curso real (user_progress.isCompleted=1
+  // + lesson_completed em audit_logs). Certificado é emissão MANUAL pós-conclusão — cursos
+  // concluídos sem certificado emitido são evidência válida e precisam aparecer também.
+  const completedModules = await db
+    .select({ moduleId: userProgress.moduleId, moduleTitle: modules.title, completedAt: userProgress.completedAt })
+    .from(userProgress)
+    .innerJoin(modules, eq(modules.id, userProgress.moduleId))
+    .where(and(eq(userProgress.userId, userId), eq(userProgress.isCompleted, true)));
+
+  return { user, certs, attempts, acceptances, auditTrail, completedModules };
 
 }
 
@@ -2148,17 +2158,13 @@ export async function getManagerDashboard(companyId: number | null) {
 
 
 
-  // Total active employees in company (corporate_emails)
-
-  const empWhere = companyId
-
-    ? and(eq(corporateEmails.isActive, true), eq(corporateEmails.companyId, companyId))
-
-    : eq(corporateEmails.isActive, true);
-
-  const empCount = await db.select({ count: sql<number>`count(*)` }).from(corporateEmails).where(empWhere);
-
-  const totalEmployees = Number(empCount[0]?.count ?? 0);
+  // R5-P9 #3: alinhado com tela Colaboradores (users WHERE is_active=1). Antes contava
+  // corporate_emails (incluía registros sem cadastro real), gerando divergência ex.: 18 vs 12.
+  const empCountRaw = companyId
+    ? await db.execute(sql.raw(`SELECT COUNT(*) AS c FROM users WHERE company_id=${companyId} AND is_active=1`))
+    : await db.execute(sql.raw(`SELECT COUNT(*) AS c FROM users WHERE is_active=1`));
+  const empCountRows: any = Array.isArray((empCountRaw as any)[0]) ? (empCountRaw as any)[0] : (empCountRaw as any);
+  const totalEmployees = Number(empCountRows[0]?.c ?? 0);
 
 
 
@@ -3773,13 +3779,18 @@ export async function deleteSurvey(id: number) {
 
 
 
-export async function submitSurveyResponse(surveyId: number, answers: { questionId: number; value: string }[], userId?: number, branchId?: number, sectorId?: number) {
+export async function submitSurveyResponse(surveyId: number, answers: { questionId: number; value: string }[], userId?: number, branchId?: number, sectorId?: number, ip?: string, userAgent?: string) {
 
   const db = await getDb();
 
   if (!db) throw new Error("DB unavailable");
 
-  const r: any = await db.execute(_rawSql`INSERT INTO survey_responses (survey_id, user_id, branch_id, sector_id) VALUES (${surveyId}, ${userId ?? null}, ${branchId ?? null}, ${sectorId ?? null})`);
+  // P18 #9/#19 — Bruno (auditoria da AEP): IP e dispositivo por resposta, pra rastrear
+  // quem respondeu de fato (não existia captura alguma antes).
+  try { await db.execute(_rawSql`ALTER TABLE survey_responses ADD COLUMN ip_address VARCHAR(45)`); } catch (_) {}
+  try { await db.execute(_rawSql`ALTER TABLE survey_responses ADD COLUMN user_agent VARCHAR(500)`); } catch (_) {}
+
+  const r: any = await db.execute(_rawSql`INSERT INTO survey_responses (survey_id, user_id, branch_id, sector_id, ip_address, user_agent) VALUES (${surveyId}, ${userId ?? null}, ${branchId ?? null}, ${sectorId ?? null}, ${ip ?? null}, ${userAgent ?? null})`);
 
   const responseId = Number((r as any)[0]?.insertId ?? (r as any).insertId ?? 0);
 
@@ -3840,29 +3851,60 @@ export async function getSurveyResults(surveyId: number) {
 
 
 export async function listActiveSurveysForUser(userId: number) {
-
   const db = await getDb();
-
   if (!db) return [];
-
-  const userR: any = await db.execute(_rawSql`SELECT company_id FROM users WHERE id=${userId} LIMIT 1`);
-
+  const userR: any = await db.execute(_rawSql`SELECT company_id, role FROM users WHERE id=${userId} LIMIT 1`);
   const cid = (userR as any)[0]?.[0]?.company_id;
-
+  const role = (userR as any)[0]?.[0]?.role;
   if (!cid) return [];
 
-  const r: any = await db.execute(_rawSql`SELECT s.id, s.title, s.description, s.category, s.is_anonymous AS isAnonymous
+  // Bruno R5-P2 #15 — Tabela de completion para anonymous surveys (preserva anonimato
+  // da RESPOSTA, mas registra QUEM completou para sumir da lista de pendências).
+  try {
+    await db.execute(_rawSql`CREATE TABLE IF NOT EXISTS survey_user_completions (
+      user_id INT NOT NULL, survey_id INT NOT NULL,
+      completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, survey_id),
+      INDEX idx_su_user (user_id), INDEX idx_su_survey (survey_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  } catch {}
 
+  // P17 #3 — AEP é destinada a chefia/liderança (Bruno/CAMED: colaboradores comuns
+  // não devem sequer ver a pesquisa). Exceção controlada via aep_exceptions.
+  try {
+    await db.execute(_rawSql`CREATE TABLE IF NOT EXISTS aep_exceptions (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      assessment_id INT NOT NULL, user_id INT NOT NULL, granted_by INT NOT NULL,
+      note TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_aep_exc (assessment_id, user_id),
+      INDEX idx_aep_exc_assessment (assessment_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  } catch {}
+  const aepEligible = ["chefia", "admin", "rh", "sesmt", "psicologo", "admin_global", "company_admin", "super_admin"].includes(String(role)) ? 1 : 0;
+
+  // Bruno R5-P2 #14 — JOIN com risk_assessments pra trazer cycleName/status/data.
+  // #16 — isPriority: pesquisas DRPS/AEP de ciclo ativo (não draft/archived).
+  const r: any = await db.execute(_rawSql`
+    SELECT s.id, s.title, s.description, s.category, s.is_anonymous AS isAnonymous, s.created_at AS createdAt,
+           ra.id AS cycleId, ra.cycle_name AS cycleName, ra.status AS cycleStatus,
+           ra.start_date AS cycleStartDate, ra.end_date AS cycleEndDate,
+           CASE
+             WHEN ra.id IS NOT NULL AND ra.status IN ('open','active','collecting','analyzing','review') THEN 1
+             WHEN s.category IN ('psicossocial','aep') AND s.status='active' THEN 1
+             ELSE 0
+           END AS isPriority
     FROM surveys s
-
+    LEFT JOIN risk_assessments ra ON (ra.drps_survey_id = s.id OR ra.aep_survey_id = s.id)
     WHERE s.company_id=${cid} AND s.status='active'
-
       AND NOT EXISTS (SELECT 1 FROM survey_responses sr WHERE sr.survey_id=s.id AND sr.user_id=${userId})
-
-    ORDER BY s.created_at DESC`);
-
+      AND NOT EXISTS (SELECT 1 FROM survey_user_completions suc WHERE suc.survey_id=s.id AND suc.user_id=${userId})
+      AND (
+        s.category <> 'aep'
+        OR ${aepEligible}
+        OR EXISTS (SELECT 1 FROM aep_exceptions ae WHERE ae.assessment_id = ra.id AND ae.user_id = ${userId})
+      )
+    ORDER BY isPriority DESC, s.created_at DESC`);
   return (r as any)[0] ?? [];
-
 }
 
 
@@ -4356,6 +4398,13 @@ export async function computeWellbeingIndex(userId: number, companyId: number | 
   const st = _statusFromScore(score);
   const cid = companyId ?? "NULL";
 
+  // Bruno R5-P5 #5 — DELETE antes do INSERT pra mesmo (user_id, snapshot_month).
+  // Antes: cada clique em "Recalcular índice" criava linha nova → dashboard somava
+  // múltiplos snapshots do mesmo colaborador (18 funcionários viraram 73).
+  // Agora: idempotente — recalcular não infla os contadores.
+  try {
+    await db.execute(sql.raw(`DELETE FROM wellbeing_index WHERE user_id=${userId} AND snapshot_month = DATE_FORMAT(CURDATE(), '%Y-%m-01')`));
+  } catch {}
   await db.execute(
     sql.raw(`INSERT INTO wellbeing_index
       (user_id, company_id, score, burnout_risk, workload_level, engagement_pct, days_without_leave, trend, status_label, snapshot_month)

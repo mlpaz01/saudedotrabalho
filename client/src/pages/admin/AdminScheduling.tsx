@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
@@ -9,18 +9,27 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   Calendar, Clock, User, Plus, Pencil, Trash2, CheckCircle,
-  XCircle, AlertCircle, Video, PhoneCall,
+  XCircle, AlertCircle, Video, PhoneCall, FileText,
 } from "lucide-react";
 import AppLayout from "@/components/AppLayout";
+import { ETHICAL_ALERT_TEMPLATES, ETHICAL_ALERT_DISCLAIMER } from "@shared/const";
 
 const DAYS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 const STATUS_BADGE: Record<string, { label: string; cls: string; icon: any }> = {
   pending:     { label: "Agendado",      cls: "bg-amber-100 text-amber-700",   icon: AlertCircle },
   confirmed:   { label: "Confirmado",    cls: "bg-blue-100 text-blue-700",     icon: CheckCircle },
+  // R5-P9 #15: status "Em andamento" adicionado (pedido literal do Bruno)
+  in_progress: { label: "Em andamento",  cls: "bg-indigo-100 text-indigo-700", icon: Clock },
   completed:   { label: "Realizado",     cls: "bg-emerald-100 text-emerald-700", icon: CheckCircle },
   cancelled:   { label: "Cancelado",     cls: "bg-red-100 text-red-700",       icon: XCircle },
   no_show:     { label: "Não compareceu",cls: "bg-orange-100 text-orange-700", icon: AlertCircle },
   rescheduled: { label: "Reagendado",    cls: "bg-purple-100 text-purple-700", icon: Clock },
+  // R5-P12 #12 — status auditáveis detalhados
+  no_show_collaborator: { label: "Não compareceu (colab.)", cls: "bg-orange-100 text-orange-700", icon: AlertCircle },
+  no_show_professional: { label: "Não compareceu (psic.)",  cls: "bg-orange-100 text-orange-700", icon: AlertCircle },
+  cancelled_by_collaborator: { label: "Cancelada pelo colaborador", cls: "bg-red-100 text-red-700", icon: XCircle },
+  cancelled_by_professional: { label: "Cancelada pelo psicólogo",   cls: "bg-red-100 text-red-700", icon: XCircle },
+  cancelled_by_company:      { label: "Cancelada pela empresa",     cls: "bg-red-100 text-red-700", icon: XCircle },
 };
 
 function StatusBadge({ status }: { status: string }) {
@@ -47,6 +56,9 @@ export default function AdminScheduling() {
 
   // Apenas psicólogo + admins veem (e escrevem) as observações profissionais (LGPD).
   const canSeeOutcome = ["psicologo", "admin", "admin_global", "company_admin", "super_admin"].includes(user?.role ?? "");
+  const isSuperAdmin = user?.role === "super_admin";
+  // P14 #2 — Evolução Clínica: acesso restrito à psicóloga responsável + Super Admin (auditoria).
+  const canSeeClinicalEvolution = isPsicologo || isSuperAdmin;
   const [tab, setTab] = useState<"appointments" | "professionals" | "indicators">("appointments");
   const [showProfDialog, setShowProfDialog] = useState(false);
   const [editingProf, setEditingProf] = useState<any>(null);
@@ -55,8 +67,20 @@ export default function AdminScheduling() {
   const [showStatusDialog, setShowStatusDialog] = useState(false);
   const [editingAppt, setEditingAppt] = useState<any>(null);
   const [showBookDialog, setShowBookDialog] = useState(false);
+  // P14 #2 — Evolução Clínica (prontuário evolutivo)
+  const [showEvoDialog, setShowEvoDialog] = useState(false);
+  const [evoTarget, setEvoTarget] = useState<any>(null);
+  const [evoFrom, setEvoFrom] = useState("");
+  const [evoTo, setEvoTo] = useState("");
+  const [newEvoNote, setNewEvoNote] = useState("");
+  // P14 #3 — Alerta ético Psicologia → RH
+  const [showEthicalDialog, setShowEthicalDialog] = useState(false);
+  const [ethicalTarget, setEthicalTarget] = useState<any>(null);
+  const [ethicalTemplateKey, setEthicalTemplateKey] = useState(ETHICAL_ALERT_TEMPLATES[0]?.key ?? "");
 
   const profQuery = trpc.scheduling.listProfessionals.useQuery({});
+  // R5-P11 #11 — psicólogo logado: cadastro próprio (cria on-demand se faltar).
+  const myProfQuery = (trpc.scheduling as any).myProfessional.useQuery(undefined, { enabled: isPsicologo });
   const apptQuery = trpc.scheduling.listAppointments.useQuery({});
   const collaboratorsQuery = trpc.scheduling.listCollaborators.useQuery(undefined, { enabled: isAdminRole });
 
@@ -71,6 +95,49 @@ export default function AdminScheduling() {
     onSuccess: () => { apptQuery.refetch(); setShowBookDialog(false); toast.success("Consulta agendada com sucesso!"); },
     onError: (e) => toast.error(e.message),
   });
+  // R5-P12 #12 — controle operacional da consulta (iniciar / encerrar / não compareceu)
+  const startMut = (trpc.scheduling as any).startConsultation.useMutation({
+    onSuccess: () => { apptQuery.refetch(); toast.success("Consulta iniciada."); }, onError: (e: any) => toast.error(e.message),
+  });
+  const endMut = (trpc.scheduling as any).endConsultation.useMutation({
+    onSuccess: (r: any) => { apptQuery.refetch(); toast.success(`Consulta encerrada (${r?.effectiveMinutes ?? "?"} min).`); }, onError: (e: any) => toast.error(e.message),
+  });
+  const noShowMut = (trpc.scheduling as any).markNoShow.useMutation({
+    onSuccess: (r: any) => { apptQuery.refetch(); toast.success(`Registrado. Espera ${r?.waitMinutes} min — ${r?.billable ? "faturável" : "não faturável"}.`); }, onError: (e: any) => toast.error(e.message),
+  });
+  function registrarNoShow(a: any) {
+    const mins = Number(prompt("Quantos minutos você permaneceu disponível aguardando o colaborador?", "20"));
+    if (!mins || mins <= 0) return;
+    const end = new Date();
+    const start = new Date(end.getTime() - mins * 60000);
+    noShowMut.mutate({ id: a.id, waitStart: start.toISOString(), waitEnd: end.toISOString() });
+  }
+
+  // P14 #2 — Evolução Clínica (prontuário evolutivo)
+  function openEvolution(a: any) { setEvoTarget(a); setEvoFrom(""); setEvoTo(""); setNewEvoNote(""); setShowEvoDialog(true); }
+  const evoQuery = (trpc.scheduling as any).listClinicalEvolutions.useQuery(
+    { collaboratorEmail: evoTarget?.collaboratorEmail ?? "", from: evoFrom || undefined, to: evoTo || undefined },
+    { enabled: showEvoDialog && !!evoTarget?.collaboratorEmail }
+  );
+  const addEvoMut = (trpc.scheduling as any).addClinicalEvolution.useMutation({
+    onSuccess: () => { setNewEvoNote(""); evoQuery.refetch(); toast.success("Evolução registrada."); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  function saveEvolution() {
+    if (!evoTarget?.collaboratorEmail || !newEvoNote.trim()) return;
+    addEvoMut.mutate({ collaboratorEmail: evoTarget.collaboratorEmail, appointmentId: evoTarget.id, note: newEvoNote.trim() });
+  }
+
+  // P14 #3 — Alerta ético Psicologia → RH
+  function openEthicalAlert(a: any) { setEthicalTarget(a); setEthicalTemplateKey(ETHICAL_ALERT_TEMPLATES[0]?.key ?? ""); setShowEthicalDialog(true); }
+  const sendEthicalMut = (trpc.scheduling as any).sendEthicalAlert.useMutation({
+    onSuccess: (r: any) => { setShowEthicalDialog(false); toast.success(`Alerta enviado ao RH (${r?.recipients ?? 0} destinatário(s)).`); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  function sendEthicalAlert() {
+    if (!ethicalTarget?.collaboratorEmail || !ethicalTemplateKey) return;
+    sendEthicalMut.mutate({ collaboratorEmail: ethicalTarget.collaboratorEmail, templateKey: ethicalTemplateKey });
+  }
 
   // Professional form state
   const [profForm, setProfForm] = useState({ name: "", email: "", specialty: "", bio: "" });
@@ -92,7 +159,9 @@ export default function AdminScheduling() {
     onSuccess: () => { toast.success("Disponibilidade salva."); setShowAvailDialog(false); },
   });
 
-  function openAvail(p: any) { setSelectedProf(p); setShowAvailDialog(true); }
+  // VÍDEO V5 — link de reunião (Meet/Teams) próprio do profissional, salvo junto da disponibilidade.
+  const [meetLink, setMeetLink] = useState("");
+  function openAvail(p: any) { setSelectedProf(p); setMeetLink(p?.meetingUrlTemplate ?? p?.meeting_url_template ?? ""); setShowAvailDialog(true); }
   function addSlot() { setAvailSlots(prev => [...prev, { dayOfWeek: 1, startTime: "08:00", endTime: "17:00", slotDurationMinutes: 30 }]); }
   function removeSlot(i: number) { setAvailSlots(prev => prev.filter((_, j) => j !== i)); }
   function updateSlot(i: number, field: string, val: any) {
@@ -101,6 +170,12 @@ export default function AdminScheduling() {
   function saveAvail() {
     if (!selectedProf) return;
     saveAvailMut.mutate({ professionalId: selectedProf.id, slots: availSlots });
+    // Persiste o link de reunião padrão (template) sem bloquear o save de disponibilidade.
+    saveProfMut.mutate({
+      id: selectedProf.id, name: selectedProf.name, email: selectedProf.email ?? "",
+      specialty: selectedProf.specialty ?? "", bio: selectedProf.bio ?? "",
+      meetingUrlTemplate: meetLink || undefined,
+    });
   }
 
   // Status dialog
@@ -115,6 +190,44 @@ export default function AdminScheduling() {
     });
     setShowStatusDialog(true);
   }
+  // VÍDEO V5 — gera um laudo/relatório imprimível do atendimento (restrito ao profissional/admin).
+  function imprimirLaudo() {
+    if (!editingAppt) return;
+    const a: any = editingAppt;
+    const statusLabel = STATUS_BADGE[statusForm.status]?.label ?? statusForm.status;
+    const dt = a.scheduledAt ? new Date(a.scheduledAt).toLocaleString("pt-BR") : "—";
+    const win = window.open("", "_blank");
+    if (!win) { toast.error("Permita pop-ups para gerar o relatório."); return; }
+    win.document.write(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">
+<title>Relatório de Atendimento Psicológico</title>
+<style>
+  body{font-family:Inter,Arial,sans-serif;color:#1e293b;max-width:760px;margin:0 auto;padding:32px 40px}
+  h1{font-size:18px;color:#1e3a5f;border-bottom:2px solid #1e3a5f;padding-bottom:8px;margin:0 0 4px}
+  .sub{font-size:11px;color:#64748b;margin-bottom:18px}
+  .row{font-size:13px;margin:6px 0}.row b{color:#475569}
+  .box{border:1px solid #cbd5e1;border-radius:8px;padding:14px 18px;margin-top:14px;background:#f8fafc}
+  .sig{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:#b91c1c;font-weight:700}
+  .ev{white-space:pre-wrap;font-size:13px;line-height:1.6;margin-top:6px}
+  .ft{font-size:10px;color:#94a3b8;text-align:center;margin-top:28px;padding-top:10px;border-top:1px solid #e2e8f0}
+  @page{size:A4;margin:0}@media print{body{padding:20mm}}
+</style></head><body>
+  <h1>Relatório de Atendimento Psicológico</h1>
+  <p class="sub">Documento sigiloso — uso restrito ao profissional de saúde (LGPD / sigilo profissional)</p>
+  <div class="row"><b>Colaborador:</b> ${a.collaboratorName ?? "—"} ${a.collaboratorEmail ? `(${a.collaboratorEmail})` : ""}</div>
+  <div class="row"><b>Profissional:</b> ${a.professionalName ?? "—"}</div>
+  <div class="row"><b>Data/hora:</b> ${dt} · ${a.durationMinutes ?? 30} min</div>
+  <div class="row"><b>Situação:</b> ${statusLabel}</div>
+  ${a.meetingUrl ? `<div class="row"><b>Link da reunião:</b> ${a.meetingUrl}</div>` : ""}
+  <div class="box">
+    <div class="sig">Evolução / observações clínicas (sigiloso)</div>
+    <div class="ev">${(statusForm.outcomeNotes || "—").replace(/</g, "&lt;")}</div>
+  </div>
+  <div class="ft">Saúde do Trabalho · Relatório gerado eletronicamente · Documento confidencial</div>
+  <script>window.onload=()=>setTimeout(()=>window.print(),300);</script>
+</body></html>`);
+    win.document.close();
+  }
+
   function saveStatus() {
     if (!editingAppt) return;
     updateStatusMut.mutate({
@@ -163,22 +276,67 @@ export default function AdminScheduling() {
   const profs = profQuery.data ?? [];
   const allAppts = apptQuery.data ?? [];
   const collaborators = collaboratorsQuery.data ?? [];
-  const myProf = isPsicologo ? profs.find((p) => p.email === user?.email) : null;
-  const appts = isPsicologo
+  // R5-P11 #11 — myProf vem da nova proc dedicada (cria cadastro se faltar);
+  // fallback antigo (match por email) só pra retrocompat.
+  const myProf = isPsicologo
+    ? (myProfQuery.data ?? profs.find((p) => p.email === user?.email) ?? null)
+    : null;
+  const baseAppts = isPsicologo
     ? allAppts.filter((a) => myProf ? a.professionalName === myProf.name : false)
     : allAppts;
+  // R5-P9 #15: filtros rápidos de período + busca por nome + filtro por status.
+  const [periodFilter, setPeriodFilter] = useState<"hoje"|"semana"|"mes"|"todos">("todos");
+  const [statusFilter, setStatusFilter] = useState<string>("todos");
+  const [search, setSearch] = useState("");
+  const appts = useMemo(() => {
+    const now = new Date();
+    const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const endToday = new Date(startToday.getTime() + 24*60*60*1000);
+    const dayOfWeek = startToday.getDay();
+    const startWeek = new Date(startToday.getTime() - dayOfWeek*24*60*60*1000);
+    const endWeek = new Date(startWeek.getTime() + 7*24*60*60*1000);
+    const startMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const endMonth = new Date(now.getFullYear(), now.getMonth()+1, 1);
+    const q = search.trim().toLowerCase();
+    return baseAppts.filter((a: any) => {
+      if (statusFilter !== "todos" && a.status !== statusFilter) return false;
+      if (q) {
+        const hay = `${a.collaboratorName ?? ""} ${a.collaboratorEmail ?? ""} ${a.professionalName ?? ""}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      if (periodFilter === "todos") return true;
+      const at = a.scheduledAt ? new Date(a.scheduledAt) : null;
+      if (!at) return false;
+      if (periodFilter === "hoje") return at >= startToday && at < endToday;
+      if (periodFilter === "semana") return at >= startWeek && at < endWeek;
+      if (periodFilter === "mes") return at >= startMonth && at < endMonth;
+      return true;
+    });
+  }, [baseAppts, periodFilter, statusFilter, search]);
 
   return (
     <AppLayout>
       <div className="p-6 space-y-4">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><Calendar size={22} /> Agenda de Acolhimento</h1>
-            <p className="text-sm text-slate-500 mt-0.5">Gerencie profissionais, disponibilidade e agendamentos</p>
+            <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+              <Calendar size={22} /> {isPsicologo ? "Gestão de Atendimentos Psicológicos" : "Agenda de Acolhimento"}
+            </h1>
+            <p className="text-sm text-slate-500 mt-0.5">
+              {isPsicologo
+                ? "Sua agenda, disponibilidade, status, evolução clínica e indicadores."
+                : "Gerencie profissionais, disponibilidade e agendamentos"}
+            </p>
           </div>
           {isAdminRole && tab === "appointments" && (
             <Button size="sm" onClick={openBook} className="gap-1">
               <Plus size={14} /> Nova Consulta
+            </Button>
+          )}
+          {/* R5-P11 #11 — atalho direto pro psicólogo configurar a própria agenda */}
+          {isPsicologo && myProf && (
+            <Button size="sm" variant="outline" onClick={() => openAvail(myProf)} className="gap-1">
+              <Clock size={14} /> Minha Disponibilidade
             </Button>
           )}
         </div>
@@ -201,6 +359,41 @@ export default function AdminScheduling() {
         {/* ── Appointments Tab ── */}
         {tab === "appointments" && (
           <div className="space-y-3">
+            {/* R5-P9 #15: filtros de período + status + busca */}
+            <div className="flex flex-wrap items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg p-2">
+              <span className="text-xs font-semibold text-slate-500 ml-1">Período:</span>
+              {[
+                { v: "hoje" as const, l: "Hoje" },
+                { v: "semana" as const, l: "Semana" },
+                { v: "mes" as const, l: "Mês" },
+                { v: "todos" as const, l: "Todos" },
+              ].map(opt => (
+                <button
+                  key={opt.v}
+                  onClick={() => setPeriodFilter(opt.v)}
+                  className={`text-xs px-2.5 py-1 rounded-full font-medium transition-colors ${periodFilter === opt.v ? "bg-primary text-white" : "bg-white text-slate-600 border border-slate-200 hover:border-slate-300"}`}
+                >{opt.l}</button>
+              ))}
+              <span className="text-xs font-semibold text-slate-500 ml-3">Status:</span>
+              <select
+                value={statusFilter}
+                onChange={e => setStatusFilter(e.target.value)}
+                className="text-xs border border-slate-200 rounded px-2 py-1 bg-white"
+              >
+                <option value="todos">Todos</option>
+                {Object.entries(STATUS_BADGE).map(([k, v]) => (
+                  <option key={k} value={k}>{v.label}</option>
+                ))}
+              </select>
+              <input
+                type="search"
+                placeholder="Buscar colaborador ou profissional..."
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                className="text-xs border border-slate-200 rounded px-2 py-1 flex-1 min-w-[200px] bg-white"
+              />
+              <span className="text-xs text-slate-500 ml-auto">{appts.length} resultado(s)</span>
+            </div>
             {apptQuery.isLoading && <p className="text-slate-400 text-sm">Carregando...</p>}
             {!apptQuery.isLoading && appts.length === 0 && (
               <div className="text-center py-16 text-slate-400">
@@ -235,8 +428,24 @@ export default function AdminScheduling() {
                       </a>
                     )}
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
                     <StatusBadge status={a.status} />
+                    {/* R5-P12 #12 — controle operacional do psicólogo */}
+                    {isPsicologo && ["pending", "confirmed"].includes(a.status) && (
+                      <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white" onClick={() => startMut.mutate({ id: a.id })}>Iniciar</Button>
+                    )}
+                    {isPsicologo && a.status === "in_progress" && (
+                      <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700 text-white" onClick={() => endMut.mutate({ id: a.id })}>Encerrar</Button>
+                    )}
+                    {isPsicologo && ["pending", "confirmed", "in_progress"].includes(a.status) && (
+                      <Button size="sm" variant="outline" className="text-orange-700 border-orange-300" onClick={() => registrarNoShow(a)}>Não compareceu</Button>
+                    )}
+                    {canSeeClinicalEvolution && (
+                      <Button size="sm" variant="outline" className="text-violet-700 border-violet-200" onClick={() => openEvolution(a)}>Evolução Clínica</Button>
+                    )}
+                    {isPsicologo && (
+                      <Button size="sm" variant="outline" className="text-amber-700 border-amber-200" onClick={() => openEthicalAlert(a)}>Alerta ao RH</Button>
+                    )}
                     {canEditAppointment && (
                       <Button size="sm" variant="outline" onClick={() => openStatus(a)}>Atualizar</Button>
                     )}
@@ -447,7 +656,20 @@ export default function AdminScheduling() {
         <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Disponibilidade — {selectedProf?.name}</DialogTitle></DialogHeader>
           <div className="space-y-3 py-2">
-            <p className="text-xs text-slate-500">Defina os dias e horários em que este profissional atende.</p>
+            {/* VÍDEO V5 — link de reunião padrão (Meet/Teams) do profissional */}
+            <div className="border border-slate-200 rounded-lg p-3 bg-slate-50">
+              <label className="text-xs font-semibold text-slate-600 flex items-center gap-1">
+                <Video size={13} /> Meu link de reunião (Google Meet / Teams)
+              </label>
+              <Input
+                value={meetLink}
+                onChange={e => setMeetLink(e.target.value)}
+                placeholder="https://meet.google.com/sua-sala-fixa"
+                className="mt-1"
+              />
+              <p className="text-[11px] text-slate-500 mt-1">Usado automaticamente ao confirmar uma consulta online. Salvo junto da disponibilidade.</p>
+            </div>
+            <p className="text-xs text-slate-500">Defina os dias e horários em que você atende.</p>
             {availSlots.map((s, i) => (
               <div key={i} className="border border-slate-200 rounded-lg p-3 space-y-2">
                 <div className="flex items-center justify-between">
@@ -500,6 +722,37 @@ export default function AdminScheduling() {
         <DialogContent className="max-w-md">
           <DialogHeader><DialogTitle>Atualizar Agendamento</DialogTitle></DialogHeader>
           <div className="space-y-3 py-2">
+            {/* R5-P10 #11 — mini-histórico do colaborador (não revela observações clínicas) */}
+            {editingAppt && (
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs space-y-1">
+                <div className="font-semibold text-slate-700">
+                  {(editingAppt as any).collaboratorName ?? "Colaborador"}
+                </div>
+                <div className="text-slate-500">{(editingAppt as any).collaboratorEmail}</div>
+                <div className="text-slate-500">
+                  Atendimentos com você:{" "}
+                  <b>
+                    {
+                      baseAppts.filter(
+                        (a: any) =>
+                          a.id !== editingAppt.id &&
+                          a.collaboratorEmail === (editingAppt as any).collaboratorEmail
+                      ).length
+                    }
+                  </b>{" "}
+                  · Profissional: <b>{editingAppt.professionalName}</b>
+                </div>
+                <div className="text-slate-500">
+                  Agendado para:{" "}
+                  <b>
+                    {editingAppt.scheduledAt
+                      ? new Date(editingAppt.scheduledAt).toLocaleString("pt-BR")
+                      : "—"}
+                  </b>{" "}
+                  · {editingAppt.durationMinutes} min
+                </div>
+              </div>
+            )}
             <div>
               <label className="text-sm font-medium text-slate-700">Status</label>
               <select
@@ -509,6 +762,7 @@ export default function AdminScheduling() {
               >
                 <option value="pending">Agendado</option>
                 <option value="confirmed">Confirmado</option>
+                <option value="in_progress">Em andamento</option>
                 <option value="completed">Realizado</option>
                 <option value="cancelled">Cancelado</option>
                 <option value="no_show">Não compareceu</option>
@@ -542,9 +796,112 @@ export default function AdminScheduling() {
                 />
               </div>
             )}
+            <div className="flex gap-2 justify-between pt-1">
+              {/* VÍDEO V5 — gerar relatório/laudo do atendimento (só quem vê o sigiloso) */}
+              {canSeeOutcome ? (
+                <Button variant="outline" type="button" onClick={() => imprimirLaudo()} className="gap-1">
+                  <FileText size={14} /> Gerar relatório
+                </Button>
+              ) : <span />}
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={() => setShowStatusDialog(false)}>Cancelar</Button>
+                <Button onClick={saveStatus} disabled={updateStatusMut.isPending}>Salvar</Button>
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* P14 #2 — Evolução Clínica (prontuário evolutivo) */}
+      <Dialog open={showEvoDialog} onOpenChange={setShowEvoDialog}>
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Evolução Clínica — {evoTarget?.collaboratorName ?? "Colaborador"}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="bg-rose-50 border border-rose-200 rounded-lg p-2.5 text-xs text-rose-700">
+              Conteúdo sigiloso — visível apenas para a psicóloga responsável por este colaborador e para o Super Admin (auditoria). Protegido pelo Código de Ética do Psicólogo e pela LGPD.
+            </div>
+            <div className="flex gap-2">
+              <div className="flex-1">
+                <label className="text-xs font-medium text-slate-600">De</label>
+                <Input type="date" value={evoFrom} onChange={e => setEvoFrom(e.target.value)} />
+              </div>
+              <div className="flex-1">
+                <label className="text-xs font-medium text-slate-600">Até</label>
+                <Input type="date" value={evoTo} onChange={e => setEvoTo(e.target.value)} />
+              </div>
+            </div>
+            {isPsicologo && (
+              <div className="border border-slate-200 rounded-lg p-3 bg-slate-50 space-y-2">
+                <label className="text-sm font-medium text-slate-700">Nova evolução</label>
+                <Textarea
+                  value={newEvoNote}
+                  onChange={e => setNewEvoNote(e.target.value)}
+                  rows={3}
+                  placeholder="Registre a evolução do atendimento. Fica salvo automaticamente no histórico cronológico do colaborador."
+                />
+                <div className="flex justify-end">
+                  <Button size="sm" onClick={saveEvolution} disabled={addEvoMut.isPending || !newEvoNote.trim()}>Registrar evolução</Button>
+                </div>
+              </div>
+            )}
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-slate-500 uppercase">Histórico cronológico</p>
+              {evoQuery.isLoading && <p className="text-sm text-slate-400">Carregando…</p>}
+              {!evoQuery.isLoading && (evoQuery.data ?? []).length === 0 && (
+                <p className="text-sm text-slate-400">Nenhuma evolução registrada neste período.</p>
+              )}
+              {(evoQuery.data ?? []).map((e: any) => (
+                <div key={e.id} className="border border-slate-200 rounded-lg p-3">
+                  <div className="flex justify-between items-baseline mb-1">
+                    <span className="text-xs font-medium text-slate-500">
+                      {e.createdAt ? new Date(e.createdAt).toLocaleString("pt-BR") : "—"}
+                    </span>
+                    {e.createdByName && <span className="text-[11px] text-slate-400">{e.createdByName}</span>}
+                  </div>
+                  <p className="text-sm text-slate-700 whitespace-pre-wrap">{e.note}</p>
+                </div>
+              ))}
+            </div>
+            <div className="flex justify-end pt-1">
+              <Button variant="outline" onClick={() => setShowEvoDialog(false)}>Fechar</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* P14 #3 — Alerta ético Psicologia → RH (sem sigilo clínico) */}
+      <Dialog open={showEthicalDialog} onOpenChange={setShowEthicalDialog}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Alerta ao RH — {ethicalTarget?.collaboratorName ?? "Colaborador"}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5 text-xs text-amber-800">
+              {ETHICAL_ALERT_DISCLAIMER}
+            </div>
+            <div>
+              <label className="text-sm font-medium text-slate-700">Modelo de recomendação</label>
+              <select
+                value={ethicalTemplateKey}
+                onChange={e => setEthicalTemplateKey(e.target.value)}
+                className="w-full border border-slate-200 rounded px-3 py-1.5 text-sm mt-1"
+              >
+                {ETHICAL_ALERT_TEMPLATES.map(t => (
+                  <option key={t.key} value={t.key}>{t.label}</option>
+                ))}
+              </select>
+              <p className="text-xs text-slate-500 mt-2 border-l-2 border-slate-200 pl-2">
+                {ETHICAL_ALERT_TEMPLATES.find(t => t.key === ethicalTemplateKey)?.body}
+              </p>
+            </div>
+            <p className="text-xs text-slate-500">
+              O RH da empresa do colaborador receberá uma notificação e um e-mail com este texto. Não é possível editar ou adicionar texto livre — apenas escolher um dos modelos pré-aprovados.
+            </p>
             <div className="flex gap-2 justify-end pt-1">
-              <Button variant="outline" onClick={() => setShowStatusDialog(false)}>Cancelar</Button>
-              <Button onClick={saveStatus} disabled={updateStatusMut.isPending}>Salvar</Button>
+              <Button variant="outline" onClick={() => setShowEthicalDialog(false)}>Cancelar</Button>
+              <Button onClick={sendEthicalAlert} disabled={sendEthicalMut.isPending}>Enviar ao RH</Button>
             </div>
           </div>
         </DialogContent>

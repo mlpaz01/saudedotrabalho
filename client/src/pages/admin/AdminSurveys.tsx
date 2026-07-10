@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import {
   Plus, ClipboardList, Play, Square, BarChart3, Pencil, Trash2,
-  Sparkles as SparklesIcon, Search, LayoutGrid, List,
+  Sparkles as SparklesIcon, Search, LayoutGrid, List, Printer, Upload,
 } from "lucide-react";
 
 /* ─── Shared CSS ─────────────────────────────────────────── */
@@ -304,6 +304,13 @@ export default function AdminSurveys() {
                 <button className={`ucg-vt-btn${viewMode === "cards" ? " active" : ""}`} onClick={() => setViewMode("cards")} title="Cards"><LayoutGrid size={15} /></button>
                 <button className={`ucg-vt-btn${viewMode === "list" ? " active" : ""}`} onClick={() => setViewMode("list")} title="Lista"><List size={15} /></button>
               </div>
+              {/* VÍDEO V1 — entrada visível pro RH achar o upload de questionários impressos */}
+              <Link href="/admin/pesquisas/upload-impresso">
+                <a className="ucg-btn-ai" style={{ textDecoration: "none" }} title="Lançar questionários respondidos em papel (upload + termo + recibo)">
+                  <Upload size={15} />
+                  Upload impresso
+                </a>
+              </Link>
               <Link href="/admin/pesquisas/estudio">
                 <a className="ucg-btn-ai">
                   <SparklesIcon size={15} />
@@ -360,6 +367,7 @@ export default function AdminSurveys() {
                         {s.status === "active" && <Link href={`/admin/pesquisas/${s.id}/resultados`}><a className="ucg-fb ucg-fp" style={{ textDecoration: "none" }}><BarChart3 size={12} />Ver resultados</a></Link>}
                         {s.status === "closed" && <Link href={`/admin/pesquisas/${s.id}/resultados`}><a className="ucg-fb ucg-fp" style={{ textDecoration: "none" }}><BarChart3 size={12} />Resultados</a></Link>}
                         <Link href={`/admin/pesquisas/${s.id}/editar`}><a className="ucg-fb ucg-fg" style={{ textDecoration: "none" }}><Pencil size={12} />Editar</a></Link>
+                        <Link href={`/admin/pesquisas/imprimir/${s.id}`}><a className="ucg-fb ucg-fg" style={{ textDecoration: "none" }} title="Imprimir pesquisa"><Printer size={12} />Imprimir</a></Link>
                         {s.status === "active" && <button className="ucg-fb ucg-fg" onClick={() => closeMut.mutate({ id: s.id })} disabled={closeMut.isPending} title="Encerrar"><Square size={12} /></button>}
                         {s.status === "closed" && <button className="ucg-fb ucg-fg" onClick={() => launchMut.mutate({ id: s.id })} disabled={launchMut.isPending} title="Reabrir"><Play size={12} /></button>}
                         <button className="ucg-fb ucg-fd" style={{ flex: "none", padding: "7px 10px" }} onClick={() => { setDeleteSurveyId(s.id); setDeleteSurveyTitle(s.title); }} title="Excluir"><Trash2 size={12} /></button>
@@ -393,6 +401,7 @@ export default function AdminSurveys() {
                       {s.status === "active" && <Link href={`/admin/pesquisas/${s.id}/resultados`}><a className="ucg-fb ucg-fp" style={{ textDecoration: "none" }}><BarChart3 size={12} />Resultados</a></Link>}
                       {s.status === "closed" && <Link href={`/admin/pesquisas/${s.id}/resultados`}><a className="ucg-fb ucg-fp" style={{ textDecoration: "none" }}><BarChart3 size={12} />Resultados</a></Link>}
                       <Link href={`/admin/pesquisas/${s.id}/editar`}><a className="ucg-fb ucg-fg" style={{ textDecoration: "none" }}><Pencil size={12} />Editar</a></Link>
+                      <Link href={`/admin/pesquisas/imprimir/${s.id}`}><a className="ucg-fb ucg-fg" style={{ textDecoration: "none" }} title="Imprimir pesquisa"><Printer size={12} />Imprimir</a></Link>
                       {s.status === "active" && <button className="ucg-fb ucg-fg" onClick={() => closeMut.mutate({ id: s.id })} disabled={closeMut.isPending} title="Encerrar"><Square size={12} /></button>}
                       {s.status === "closed" && <button className="ucg-fb ucg-fg" onClick={() => launchMut.mutate({ id: s.id })} disabled={launchMut.isPending} title="Reabrir"><Play size={12} /></button>}
                       <button className="ucg-fb ucg-fd" style={{ flex: "none", padding: "7px 10px" }} onClick={() => { setDeleteSurveyId(s.id); setDeleteSurveyTitle(s.title); }} title="Excluir"><Trash2 size={12} /></button>

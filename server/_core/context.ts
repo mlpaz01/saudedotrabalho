@@ -7,7 +7,13 @@ import { sdk } from "./sdk";
 export type TrpcContext = {
   req: CreateExpressContextOptions["req"];
   res: CreateExpressContextOptions["res"];
-  user: (User & { _isImpersonating?: boolean; _originalCompanyId?: number | null }) | null;
+  user: (User & {
+    _isImpersonating?: boolean;
+    _originalCompanyId?: number | null;
+    // P15 #6 — Administração Delegada: SuperAdmin assumindo um role específico.
+    _isDelegating?: boolean;
+    _originalRole?: string;
+  }) | null;
 };
 
 export async function createContext(
@@ -36,6 +42,21 @@ export async function createContext(
           companyId: impersonatedId as any,
           _isImpersonating: true,
           _originalCompanyId: (user as any).companyId ?? null,
+        } as any;
+      }
+    }
+    // P15 #6 — Administração Delegada: SuperAdmin pode assumir role delegado (RH, SESMT, etc)
+    // e ter as permissões daquele perfil. O role original fica guardado pra auditoria.
+    const rawRole = opts.req.headers["x-delegated-role"];
+    const roleHeader = Array.isArray(rawRole) ? rawRole[0] : rawRole;
+    if (roleHeader && typeof roleHeader === "string") {
+      const validRoles = ["admin", "rh", "sesmt", "psicologo", "chefia", "company_admin", "cipa"];
+      if (validRoles.includes(roleHeader)) {
+        finalUser = {
+          ...(finalUser ?? user) as any,
+          role: roleHeader,
+          _isDelegating: true,
+          _originalRole: "super_admin",
         } as any;
       }
     }

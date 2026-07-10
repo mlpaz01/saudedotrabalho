@@ -221,14 +221,15 @@ export default function AdminVisao360() {
   // table rows — first 5 users with enough data to show
   const tableUsers = users.slice(0, 5);
 
-  // Donut segments (static placeholder proportional to real total)
-  const donutTotal = total > 0 ? total : 1249;
+  // Bruno R5-P5/Fase3 #7 — Donut Apto/Restrição/Inapto removido (sem módulo PCMSO).
+  // Substituído por bandas do Índice de Bem-Estar Psicossocial (dados REAIS).
+  const psicoQ = trpc.analytics.psychosocialDashboard.useQuery({});
+  const psicoBands = (psicoQ.data as any)?.bands || { sem_risco: 0, sinal_precoce: 0, risco_moderado: 0, risco_elevado: 0 };
   const donutSegments: DonutSegment[] = [
-    { label: "Apto", value: Math.round(donutTotal * 0.652), color: C.green },
-    { label: "Apto c/ restrição", value: Math.round(donutTotal * 0.178), color: C.amber },
-    { label: "Inapto temporário", value: Math.round(donutTotal * 0.072), color: C.orange },
-    { label: "Inapto permanente", value: Math.round(donutTotal * 0.027), color: C.red },
-    { label: "Não avaliado", value: Math.round(donutTotal * 0.073), color: C.gray },
+    { label: "Sem risco",       value: Number(psicoBands.sem_risco       || 0), color: C.green  },
+    { label: "Sinal precoce",   value: Number(psicoBands.sinal_precoce   || 0), color: C.amber  },
+    { label: "Risco moderado",  value: Number(psicoBands.risco_moderado  || 0), color: C.orange },
+    { label: "Risco elevado",   value: Number(psicoBands.risco_elevado   || 0), color: C.red    },
   ];
   const donutActual = donutSegments.reduce((a, s) => a + s.value, 0);
 
@@ -399,8 +400,8 @@ export default function AdminVisao360() {
         )}
 
         {activeTab === "dashboard" && <>
-        {/* ── KPI STRIP ────────────────────────────────────────────────────── */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 18, marginBottom: 22 }}>
+        {/* ── KPI STRIP — R5-P9 #6: KPI "Exames Próximos" removido (sem integração ASO real) ── */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 18, marginBottom: 22 }}>
 
           {/* KPI 1 — Colaboradores */}
           <div style={{ ...cardStyle, transition: ".16s" }}>
@@ -434,19 +435,10 @@ export default function AdminVisao360() {
             </div>
           </div>
 
-          {/* KPI 3 — Exames Próximos */}
-          <div style={{ ...cardStyle, transition: ".16s" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{ width: 46, height: 46, borderRadius: 13, display: "grid", placeItems: "center", background: C.blueSoft, color: C.blue, flexShrink: 0 }}>
-                <IconCalendar />
-              </div>
-              <div style={{ fontSize: 13, color: C.ink2, fontWeight: 600 }}>Exames Próximos</div>
-            </div>
-            <div style={{ fontSize: 31, fontWeight: 800, letterSpacing: "-0.03em", marginTop: 14, color: C.ink }}>72</div>
-            <div style={{ fontSize: 12, color: C.ink3, fontWeight: 600, marginTop: 9 }}>Próximos 30 dias</div>
-          </div>
+          {/* R5-P9 #6: card "Exames Próximos" removido (não há integração ASO/Medicina Ocupacional;
+              o "72" era hardcoded e gerava dúvida). Volta quando houver integração real. */}
 
-          {/* KPI 4 — Atestados Ativos (dark) */}
+          {/* KPI 3 — Atestados Ativos (dark) */}
           <div style={{
             background: `linear-gradient(145deg, ${C.navyTop}, ${C.navyBot})`,
             border: `1px solid ${C.navyBot}`,
@@ -490,15 +482,14 @@ export default function AdminVisao360() {
               </button>
             </div>
 
-            {/* Alert rows */}
+            {/* Bruno R5-P5 #6 — Removidos alertas FAKE de ASO/exames (não há módulo PCMSO
+                 importado). Mostra apenas alertas baseados em dados reais da plataforma. */}
             {[
               {
                 dot: C.red,
                 title: `${pendingCount} pendência${pendingCount !== 1 ? "s" : ""} crítica${pendingCount !== 1 ? "s" : ""} precisam de atenção`,
                 sub: "Usuários sem senha configurada",
               },
-              { dot: C.orange, title: "72 exames vencem nos próximos 30 dias", sub: "ASO Periódico e Admissional" },
-              { dot: C.amber, title: "5 colaboradores com atestado há mais de 15 dias", sub: "Requer acompanhamento médico" },
             ].map((alert, i) => (
               <div key={i} style={{
                 display: "flex", alignItems: "flex-start", gap: 13,
@@ -585,9 +576,8 @@ export default function AdminVisao360() {
         {/* ── BOTTOM GRID ──────────────────────────────────────────────────── */}
         <div style={{ display: "grid", gridTemplateColumns: "1.78fr 1fr", gap: 20 }}>
 
-          {/* Left — Próximos Exames */}
-          <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
-            {/* card header */}
+          {/* Left — Bruno R5-P5 #6 — Card de Próximos Exames removido (sem módulo PCMSO importado) */}
+          <div style={{ ...cardStyle, padding: 0, overflow: "hidden", display: "none" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 22px 14px", borderBottom: `1px solid ${C.border}` }}>
               <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: C.ink }}>Próximos Exames ASO e Ocupacionais</h3>
               <button style={{
@@ -740,11 +730,14 @@ export default function AdminVisao360() {
             {/* body */}
             <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flex: 1 }}>
               <div style={{ flex: 1 }}>
+                {/* Bruno R5-P5 #6 — Insight baseado em dados REAIS importáveis hoje
+                    (Absenteísmo, Atestados, Acidentes, Turnover, Indicadores Disciplinares).
+                    Não cita ASO/exames que não temos módulo. */}
                 <p style={{ fontSize: 13, color: C.ink2, lineHeight: 1.55, marginBottom: 13 }}>
-                  A análise dos dados de <strong style={{ color: C.ink, fontWeight: 700 }}>engajamento por setor</strong> indica que colaboradores de Logística e Produção apresentam os menores índices de adesão aos programas de saúde, com risco elevado de absenteísmo no próximo trimestre.
+                  Use as <strong style={{ color: C.ink, fontWeight: 700 }}>importações de Absenteísmo, Atestados, Acidentes, Turnover e Indicadores Disciplinares</strong> para receber alertas preventivos automáticos por setor.
                 </p>
                 <p style={{ fontSize: 13, color: C.ink2, lineHeight: 1.55, marginBottom: 0 }}>
-                  Recomenda-se priorizar <strong style={{ color: C.ink, fontWeight: 700 }}>campanhas de conscientização</strong> e agendamento proativo de ASOs vencidos nesses setores para reduzir em até <strong style={{ color: C.ink, fontWeight: 700 }}>23% as pendências críticas</strong> até o fim do mês.
+                  Após o primeiro upload, a IA cruza esses dados com as respostas DRPS/AEP e gera recomendações priorizadas por filial e setor.
                 </p>
               </div>
               <div style={{

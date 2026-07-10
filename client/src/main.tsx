@@ -43,10 +43,14 @@ const trpcClient = trpc.createClient({
       url: "/api/trpc",
       transformer: superjson,
       headers() {
-        // Super admin impersonation: forward chosen company id to server
         if (typeof window !== "undefined") {
+          const h: Record<string, string> = {};
           const impersonatedId = window.localStorage.getItem("impersonatedCompanyId");
-          if (impersonatedId) return { "x-impersonate-company-id": impersonatedId };
+          if (impersonatedId) h["x-impersonate-company-id"] = impersonatedId;
+          // P15 #6 — Administração Delegada: role assumido temporariamente pelo SuperAdmin.
+          const delegatedRole = window.localStorage.getItem("delegatedRole");
+          if (delegatedRole) h["x-delegated-role"] = delegatedRole;
+          return h;
         }
         return {};
       },

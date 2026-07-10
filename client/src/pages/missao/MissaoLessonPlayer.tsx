@@ -147,8 +147,19 @@ export default function MissaoLessonPlayer() {
     return (
       <div className={`min-h-screen flex items-center justify-center p-6 ${courseDone ? "bg-gradient-to-b from-amber-50 to-amber-100" : "bg-gradient-to-b from-amber-50 to-emerald-50"}`}>
         <div className="w-full max-w-md text-center">
-          <div className={`w-28 h-28 mx-auto mb-6 rounded-full flex items-center justify-center animate-bounce ${courseDone ? "bg-amber-200 border-4 border-amber-400" : "bg-amber-100 border-4 border-amber-300"}`}>
-            {courseDone ? <Award className="w-14 h-14 text-amber-600" /> : <Trophy className="w-14 h-14 text-amber-500" />}
+          {/* Bruno R5-P5/Fase3 #4 — Logo da empresa em destaque ao concluir curso.
+              Carrega via <img> com fallback automático pro ícone caso 404. */}
+          <div className={`w-32 h-32 mx-auto mb-6 rounded-full flex items-center justify-center animate-bounce overflow-hidden ${courseDone ? "bg-white border-4 border-amber-400" : "bg-white border-4 border-amber-300"}`}>
+            <img
+              src="/logo.png"
+              alt="Logo"
+              style={{ maxWidth: "85%", maxHeight: "85%", objectFit: "contain" }}
+              onError={(e) => {
+                const t = e.currentTarget as HTMLImageElement;
+                if (t.dataset.fallback !== "1") { t.dataset.fallback = "1"; t.src = "/plataforma/logo.png"; }
+                else { t.style.display = "none"; }
+              }}
+            />
           </div>
           <h1 className="text-3xl font-extrabold mb-2">{courseDone ? "Curso concluído! 🎉" : "Lição concluída!"}</h1>
           <p className="text-muted-foreground mb-6">{data.lesson.title}</p>

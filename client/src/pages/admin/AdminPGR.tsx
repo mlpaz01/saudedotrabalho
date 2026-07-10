@@ -6,6 +6,7 @@ import RiskMatrix from "./RiskMatrix";
 import SignatureUpload from "./SignatureUpload";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { RichTextEditor } from "@/components/RichTextEditor";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -80,6 +81,8 @@ function emptyDoc(): any {
     hierarquia_controle: [] as HierarquiaRow[],
     nao_conformidades: [] as NcRow[],
     treinamentos_nr: [] as TreinNrRow[],
+    // Bruno R4 #6: sumário editável (HTML; null = gera automático)
+    sumario_custom: "",
   };
 }
 
@@ -202,12 +205,12 @@ export default function AdminPGR() {
   const removeAttachM = trpc.pgr.removeAttachment.useMutation({
     onSuccess: () => { attachQ.refetch(); toast.success("Anexo removido"); },
   });
-  // SP4 #9 + Bruno round 3 — tipos categorizados: complementares + 7 oficiais
-  // (Anexos 1..7 no fim do PDF, item #14 atualizado).
+  // SP4 #9 + Bruno round 3 — tipos categorizados: complementares + 8 oficiais
+  // (Anexos 1..8 no fim do PDF, item #14 atualizado; P18 GRANDE adicionou CIPA).
   const ATTACH_TIPOS = [
     // Complementares (vão no quadro "Anexos do PGR")
     "LTCAT","PCA","PPR","APR","Laudo Técnico","Medição","Foto/Imagem","Declaração","Certificado","Outro",
-    // Anexos oficiais — viram Anexo 1..7 do PDF
+    // Anexos oficiais — viram Anexo 1..8 do PDF
     "Relatório Psicossocial",
     "AEP",
     "Conformidade NR-01",
@@ -215,6 +218,7 @@ export default function AdminPGR() {
     "Legitimidade do Canal de Denúncias",
     "LGPD",
     "Lei 14.457/2022",
+    "Relatório da CIPA",
   ];
   const [statusNotes, setStatusNotes] = useState("");
   const historyQ = trpc.pgr.getHistory.useQuery(
@@ -264,6 +268,8 @@ export default function AdminPGR() {
         hierarquia_controle: Array.isArray(d.hierarquia_controle) ? d.hierarquia_controle : (typeof d.hierarquia_controle === "string" ? JSON.parse(d.hierarquia_controle || "[]") : (d.hierarquiaControle ?? [])),
         nao_conformidades: Array.isArray(d.nao_conformidades) ? d.nao_conformidades : (typeof d.nao_conformidades === "string" ? JSON.parse(d.nao_conformidades || "[]") : (d.naoConformidades ?? [])),
         treinamentos_nr: Array.isArray(d.treinamentos_nr) ? d.treinamentos_nr : (typeof d.treinamentos_nr === "string" ? JSON.parse(d.treinamentos_nr || "[]") : (d.treinamentosNr ?? [])),
+        // Bruno R4 #6
+        sumario_custom: String(d.sumario_custom ?? d.sumarioCustom ?? ""),
       });
       setEditId(id === "new" ? "new" : (d.id ?? id));
       if (id !== "new") setPdfUrl(d.pdf_url ?? null);
@@ -306,6 +312,7 @@ export default function AdminPGR() {
           hierarquiaControle: doc.hierarquia_controle,
           naoConformidades: doc.nao_conformidades,
           treinamentosNr: doc.treinamentos_nr,
+          sumarioCustom: doc.sumario_custom || null,
     });
   }
 
@@ -592,30 +599,8 @@ export default function AdminPGR() {
                   {importRhM.isPending ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} Importar
                 </Button>
               </div>
-              <div className="bg-white border rounded-lg p-3 flex flex-col gap-2">
-                <div className="font-medium text-sm text-slate-900">Importar Ciclo Psicossocial</div>
-                <div className="text-xs text-slate-600">Traz inventário e plano de ação do ciclo selecionado para dentro do PGR.</div>
-                <div className="flex gap-2">
-                  <Select value={cycleSelect} onValueChange={setCycleSelect}>
-                    <SelectTrigger className="text-sm h-9"><SelectValue placeholder="Selecione o ciclo" /></SelectTrigger>
-                    <SelectContent>
-                      {(cyclesQ.data ?? []).length === 0 && (
-                        <div className="px-3 py-2 text-xs text-slate-500">Nenhum ciclo cadastrado.</div>
-                      )}
-                      {((cyclesQ.data ?? []) as any[]).map((c: any) => (
-                        <SelectItem key={c.id} value={String(c.id)}>
-                          {c.cycleName} {c.branchName ? `· ${c.branchName}` : "· Consolidado"} ({c.invCount} riscos · {c.planCount} ações)
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Button size="sm" disabled={!cycleSelect || importCycleM.isPending}
-                    onClick={() => importCycleM.mutate({ pgrId: editId as number, assessmentId: Number(cycleSelect) })}
-                    className="gap-1">
-                    {importCycleM.isPending ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} Importar
-                  </Button>
-                </div>
-              </div>
+              {/* Bruno R5-P2 #13 — Removido "Importar Ciclo Psicossocial":
+                  funcionalidade duplicada com Anexos Oficiais (Psicossocial via checkbox+ciclo). */}
             </div>
           </section>
         )}
@@ -750,11 +735,48 @@ export default function AdminPGR() {
 
 
 
+        {/* Bruno R4 #6 — Sumário editável do PGR */}
+        <section className="bg-white border rounded-xl p-5 space-y-3">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <h2 className="font-semibold text-foreground flex items-center gap-2">
+              <FileText size={16}/>Sumário do PGR (editável)
+            </h2>
+            {doc.sumario_custom && (
+              <Button size="sm" variant="outline" onClick={() => setDoc({...doc, sumario_custom: ""})} className="gap-1 text-xs">
+                <X size={12}/> Limpar (voltar ao sumário automático)
+              </Button>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Em branco, o sistema gera automaticamente um sumário com as seções do PGR.
+            Para personalizar, edite abaixo — vale negrito, listas, alinhamento, etc.
+            O conteúdo definido aqui substitui o sumário automático no PDF.
+          </p>
+          <RichTextEditor
+            value={doc.sumario_custom || ""}
+            onChange={(html) => setDoc({...doc, sumario_custom: html})}
+            minHeight={180}
+            placeholder="Ex.: 1. Identificação da Empresa&#10;2. Histórico de Revisões&#10;3. Introdução&#10;..."
+          />
+        </section>
+
+        {/* Bruno R4 #4 — atalhos pros 5 anexos oficiais */}
+        {editId !== "new" && typeof editId === "number" && (
+          <section className="bg-white border rounded-xl p-5 space-y-3">
+            <h2 className="font-semibold text-foreground flex items-center gap-2"><Paperclip size={16}/>Anexos Oficiais (vão ao final do PDF do PGR)</h2>
+            <p className="text-xs text-muted-foreground">
+              Marque as caixas abaixo para gerar/anexar relatórios. Para Psicossocial e AEP, selecione o ciclo desejado.
+              Todos os anexos são adicionados integralmente ao final do PDF.
+            </p>
+            <AnexosOficiaisPanel pgrId={editId as number} cycles={(cyclesQ.data ?? []) as any[]} existing={(attachQ.data ?? []) as any[]} onChange={() => attachQ.refetch()} />
+          </section>
+        )}
+
         {/* Anexos e Evidencias */}
         {editId !== "new" && (
           <section className="bg-white border rounded-xl p-5 space-y-3">
             <div className="flex items-center justify-between">
-              <h2 className="font-semibold text-foreground flex items-center gap-2"><Paperclip size={16}/>Anexos e Evidencias</h2>
+              <h2 className="font-semibold text-foreground flex items-center gap-2"><Paperclip size={16}/>Anexos e Evidencias (LTCAT, PCA, PPR, APR, etc)</h2>
               <Button size="sm" variant="outline" className="gap-1" onClick={() => { setAttachForm({ tipo: "Outro", titulo: "", descricao: "", fileUrl: "", fileName: "", dataReferencia: "", numeroDoc: "" }); setAttachOpen(true); }}>
                 <Plus size={14}/>Adicionar anexo
               </Button>
@@ -878,5 +900,181 @@ export default function AdminPGR() {
         </DialogContent>
       </Dialog>
     </AppLayout>
+  );
+}
+
+// Bruno R5 #9/#12 — Panel oficial: checkbox auto-gera PDF + suporte a UPLOAD próprio.
+function AnexosOficiaisPanel({ pgrId, cycles, existing, onChange }: { pgrId: number; cycles: any[]; existing: any[]; onChange: () => void }) {
+  const OFICIAIS = [
+    { tipo: "Relatório Psicossocial",           needsCycle: true,  hint: "Anexa o laudo de um ciclo psicossocial (PDF gerado automaticamente)" },
+    { tipo: "AEP",                              needsCycle: true,  hint: "Anexa a Análise Ergonômica Preliminar de um ciclo (PDF auto)" },
+    { tipo: "Conformidade NR-01",               needsCycle: false, hint: "Anexa o relatório de Fiscalização NR-01 (PDF gerado da Central de Conformidade)" },
+    { tipo: "Conformidade Metodológica",        needsCycle: false, hint: "Anexa o relatório de Legitimidade Metodológica (PDF auto)" },
+    { tipo: "Legitimidade do Canal de Denúncias", needsCycle: false, hint: "Anexa o relatório de Legitimidade do Canal de Denúncias (PDF auto)" },
+    { tipo: "Relatório da CIPA",                 needsCycle: false, hint: "Anexa o relatório da CIPA: governança/mandato, reuniões, SIPAT e cursos NR-05 (PDF auto)" },
+  ];
+  // Bruno R5 #9 — Após criar registro do anexo, dispara geração do PDF oficial.
+  const genPdfMut = trpc.pgr.generateOfficialAttachmentPdf.useMutation({
+    onSuccess: () => { onChange(); toast.success("Anexo PDF gerado e vinculado."); },
+    onError: (e: any) => toast.error(`PDF do anexo: ${e?.message ?? "erro"}`),
+  });
+  const upsertMut = trpc.pgr.upsertAttachment.useMutation({
+    onSuccess: (r: any) => {
+      if (r?.id) genPdfMut.mutate({ attachmentId: Number(r.id) });
+      else onChange();
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Erro"),
+  });
+  const uploadMut = trpc.pgr.upsertAttachment.useMutation({
+    onSuccess: () => { onChange(); toast.success("Arquivo enviado e anexado ao PGR."); },
+    onError: (e: any) => toast.error(e?.message ?? "Erro no upload"),
+  });
+  const removeMut = trpc.pgr.removeAttachment.useMutation({
+    onSuccess: () => { onChange(); toast.success("Anexo removido."); },
+  });
+
+  async function handleFileUpload(tipo: string, file: File, attId?: number) {
+    if (file.size > 25 * 1024 * 1024) { toast.error("Arquivo muito grande (limite 25 MB)."); return; }
+    const buf = await file.arrayBuffer();
+    let bin = "";
+    const u8 = new Uint8Array(buf);
+    const CHUNK = 32768;
+    for (let i = 0; i < u8.length; i += CHUNK) bin += String.fromCharCode(...u8.subarray(i, i + CHUNK));
+    const b64 = `data:${file.type || "application/octet-stream"};base64,${btoa(bin)}`;
+    uploadMut.mutate({
+      id: attId,
+      pgrId,
+      tipo,
+      titulo: tipo,
+      descricao: `Arquivo personalizado: ${file.name}`,
+      fileBase64: b64,
+      fileName: file.name,
+      mimeType: file.type || "application/octet-stream",
+      fileSize: file.size,
+    });
+  }
+
+  return (
+    <div className="space-y-2">
+      {OFICIAIS.map(o => {
+        const existing0 = existing.find((a: any) => a.tipo === o.tipo);
+        return (
+          <div key={o.tipo} className="border rounded-md p-3 bg-slate-50/40">
+            <div className="flex items-start gap-2 flex-wrap">
+              <input
+                type="checkbox"
+                checked={!!existing0}
+                onChange={(e) => {
+                  if (e.target.checked) {
+                    const sel = (document.getElementById(`cycle-${o.tipo}`) as HTMLSelectElement | null)?.value;
+                    // Bruno R5-P4 #3 — separador em-dash (—) virava "?" no PDF.
+                    // Trocado por hífen ASCII com espaços (seguro em qualquer encoding).
+                    const titulo = o.needsCycle && sel ? `${o.tipo} - Ciclo #${sel}` : o.tipo;
+                    upsertMut.mutate({
+                      pgrId,
+                      tipo: o.tipo,
+                      titulo,
+                      numeroDoc: o.needsCycle && sel ? sel : undefined,
+                      descricao: o.hint,
+                    });
+                  } else if (existing0) {
+                    removeMut.mutate({ id: existing0.id });
+                  }
+                }}
+                className="mt-0.5"
+              />
+              <div className="flex-1 min-w-0">
+                <div className="font-medium text-sm">{o.tipo}</div>
+                <div className="text-xs text-muted-foreground">{o.hint}</div>
+                {o.needsCycle && (
+                  <select id={`cycle-${o.tipo}`} className="mt-2 border rounded px-2 py-1 text-xs"
+                    defaultValue={existing0?.numeroDoc ?? cycles[0]?.id ?? ""}>
+                    {cycles.length === 0 && <option value="">Nenhum ciclo disponível — crie em Análise de Risco</option>}
+                    {cycles.map((c: any) => (
+                      <option key={c.id} value={c.id}>{c.cycle_name ?? c.cycleName ?? `Ciclo ${c.id}`}</option>
+                    ))}
+                  </select>
+                )}
+                {/* Bruno R5 #12 — Upload manual substitui o PDF auto-gerado */}
+                <div className="mt-2 flex items-center gap-2">
+                  <label className="text-[11px] inline-flex items-center gap-1.5 px-2 py-1 border border-slate-300 rounded cursor-pointer hover:bg-slate-100">
+                    <span>📎 {existing0?.fileName ? "Substituir" : "Subir arquivo próprio"}</span>
+                    <input type="file" className="hidden" accept="application/pdf,image/*"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0]; if (!file) return;
+                        await handleFileUpload(o.tipo, file, existing0?.id);
+                        e.currentTarget.value = "";
+                      }} />
+                  </label>
+                  {existing0?.fileName && (
+                    <span className="text-[10px] text-slate-600 truncate">📄 {existing0.fileName}</span>
+                  )}
+                </div>
+              </div>
+              {existing0 && existing0.fileUrl && <span className="text-[10px] bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">✓ PDF anexado</span>}
+              {existing0 && !existing0.fileUrl && <span className="text-[10px] bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">⏳ Gerando PDF…</span>}
+            </div>
+          </div>
+        );
+      })}
+
+      {/* Bruno R5 #12 — Anexos extras com upload livre (categoria "Outros") */}
+      <AnexosExtrasUpload pgrId={pgrId} existing={existing} onChange={onChange} />
+    </div>
+  );
+}
+
+// Bruno R5 #12 — Lista anexos "Outros" + permite upload de novos arquivos.
+function AnexosExtrasUpload({ pgrId, existing, onChange }: { pgrId: number; existing: any[]; onChange: () => void }) {
+  const extras = existing.filter((a: any) => !["Relatório Psicossocial","AEP","Conformidade NR-01","Conformidade Metodológica","Legitimidade do Canal de Denúncias"].includes(String(a.tipo)));
+  const uploadMut = trpc.pgr.upsertAttachment.useMutation({
+    onSuccess: () => { onChange(); toast.success("Arquivo anexado ao PGR."); },
+    onError: (e: any) => toast.error(e?.message ?? "Erro no upload"),
+  });
+  const removeMut = trpc.pgr.removeAttachment.useMutation({
+    onSuccess: () => { onChange(); toast.success("Anexo removido."); },
+  });
+
+  async function onPick(file: File) {
+    if (file.size > 25 * 1024 * 1024) { toast.error("Arquivo muito grande (limite 25 MB)."); return; }
+    const buf = await file.arrayBuffer();
+    let bin = ""; const u8 = new Uint8Array(buf);
+    for (let i = 0; i < u8.length; i += 32768) bin += String.fromCharCode(...u8.subarray(i, i + 32768));
+    const b64 = `data:${file.type || "application/octet-stream"};base64,${btoa(bin)}`;
+    uploadMut.mutate({
+      pgrId,
+      tipo: "Outros",
+      titulo: file.name.replace(/\.[^.]+$/, ""),
+      fileBase64: b64,
+      fileName: file.name,
+      mimeType: file.type || "application/octet-stream",
+      fileSize: file.size,
+    });
+  }
+
+  return (
+    <div className="mt-3 border-t pt-3">
+      <div className="text-xs font-medium text-slate-700 mb-2">Outros documentos (upload livre)</div>
+      <label className="inline-flex items-center gap-2 px-3 py-1.5 text-xs bg-primary text-primary-foreground rounded cursor-pointer hover:opacity-90">
+        <span>📎 Adicionar arquivo (PDF / imagem)</span>
+        <input type="file" className="hidden" accept="application/pdf,image/*"
+          onChange={async (e) => { const f = e.target.files?.[0]; if (!f) return; await onPick(f); e.currentTarget.value = ""; }} />
+      </label>
+      {extras.length > 0 && (
+        <ul className="mt-2 space-y-1.5">
+          {extras.map((a: any) => (
+            <li key={a.id} className="flex items-center justify-between text-xs bg-white border rounded px-2 py-1.5">
+              <a href={a.fileUrl} target="_blank" rel="noopener noreferrer" className="text-sky-700 hover:underline truncate flex-1">
+                📄 {a.titulo} {a.fileName ? `(${a.fileName})` : ""}
+              </a>
+              <button type="button" className="ml-2 text-rose-600 hover:underline"
+                onClick={() => { if (confirm(`Remover anexo "${a.titulo}"?`)) removeMut.mutate({ id: a.id }); }}>
+                remover
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }

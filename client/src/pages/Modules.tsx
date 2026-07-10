@@ -102,12 +102,20 @@ function catConfig(title: string) {
 
 export default function Modules() {
   const programsQ = trpc.trainingPrograms.listForEmployee.useQuery();
+  // Bruno R5-P7 #5 — FONTE ÚNICA: 13 Fatores NR-01.
+  // Programas legacy (prioritarios/obrigatorios do trainingPrograms) ficam só como dado de progresso.
+  // O QUE APARECE como Prioritário/Importante/Complementar agora vem de coursesPlanoAcao.
+  const planoQ = trpc.riskCorrelation.coursesPlanoAcao.useQuery();
   const [expandedPrograms, setExpandedPrograms] = useState<Set<number>>(new Set());
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState("Todos");
 
   const data = programsQ.data;
-  const prioritarios = data?.prioritarios ?? [];
+  // Legacy: ainda usado pra mostrar progresso geral.
+  const prioritarios = (planoQ.data as any)?.prioritarios ?? [];
+  const importantes  = (planoQ.data as any)?.importantes ?? [];
+  const complementares = (planoQ.data as any)?.complementares ?? [];
+  const cycleInfo = (planoQ.data as any)?.cycleInfo;
   const obrigatorios = data?.obrigatorios ?? [];
   const allComps = data?.modules ?? [];
 
@@ -169,57 +177,64 @@ export default function Modules() {
             </div>
           )}
 
-          {/* ─── Prioritários ─────────────────────────────────────────── */}
+          {/* Bruno R5-P7 #5 — PRIORITÁRIOS (fonte ÚNICA: 13 Fatores NR-01 + último ciclo psicossocial) */}
           {prioritarios.length > 0 && (
             <div className="mc-section">
               <div className="mc-section-head">
                 <div className="mc-section-icon" style={{ background: "#DC2626" }} />
-                <span className="mc-section-title">Programas Prioritários para Você</span>
-                <span className="mc-section-badge" style={{ background: "rgba(220,38,38,.1)", color: "#DC2626" }}>Prioritário</span>
+                <span className="mc-section-title">Cursos Prioritários</span>
+                <span className="mc-section-badge" style={{ background: "rgba(220,38,38,.1)", color: "#DC2626" }}>Plano de Ação</span>
               </div>
               <div className="mc-section-desc">
-                Trilhas vinculadas aos fatores com risco identificado no seu setor — siga primeiro.
+                Obrigatórios decorrentes do ciclo psicossocial <b>{cycleInfo?.name || "(último)"}</b>.
+                Cada curso traz o risco que originou a obrigatoriedade, a criticidade e o prazo do cronograma.
               </div>
-              <div className="mc-prog-list">
-                {prioritarios.map((p: any, i: number) => (
-                  <ProgramRow
-                    key={p.id}
-                    p={p}
-                    index={i + 1}
-                    color="#DC2626"
-                    fillColor="#DC2626"
-                    isSequential={true}
-                    expanded={expandedPrograms.has(p.id)}
-                    onToggle={() => toggleProgram(p.id)}
-                  />
+              <div className="space-y-2">
+                {prioritarios.map((c: any) => (
+                  <a key={c.moduleId} href={`/cursos/${c.moduleId}`}
+                    className="block border-2 rounded-lg p-3 bg-white hover:shadow-md transition-all"
+                    style={{ borderColor: "#DC2626" + "55" }}>
+                    <div className="flex items-start gap-3">
+                      <span className="text-2xl">📘</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold text-sm" style={{ color: "#7F1D1D" }}>{c.moduleTitle}</div>
+                        <div className="text-xs text-slate-600 mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+                          <span>🎯 Risco: <b>{c.factorName}</b></span>
+                          <span>Criticidade: <b>{String(c.criticidadeConfigurada).toUpperCase()}</b></span>
+                          <span>Ciclo: <b>{c.cycleName}</b></span>
+                        </div>
+                        {c.deadline && (
+                          <div className="text-xs mt-1">
+                            Prazo: <b>{new Date(c.deadline).toLocaleDateString("pt-BR")}</b> ·
+                            <span className={c.isOverdue ? "text-rose-700 font-bold" : c.daysLeft <= 15 ? "text-amber-700 font-bold" : "text-emerald-700 font-bold"}>
+                              {c.isOverdue ? ` ${Math.abs(c.daysLeft)} dia(s) vencido` : ` ${c.daysLeft} dia(s) restante(s)`}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                      <span className="text-xs font-bold px-2 py-1 rounded-full self-center" style={{ background: "#FEE2E2", color: "#991B1B" }}>OBRIG.</span>
+                    </div>
+                  </a>
                 ))}
               </div>
             </div>
           )}
 
-          {/* ─── Obrigatórios ─────────────────────────────────────────── */}
-          {obrigatorios.length > 0 && (
+          {/* Bruno R5-P7 #5 — IMPORTANTES (NR-01 Psicossocial mas não obrigatórios pro seu setor) */}
+          {importantes.length > 0 && (
             <div className="mc-section">
               <div className="mc-section-head">
                 <div className="mc-section-icon" style={{ background: "#2563EB" }} />
-                <span className="mc-section-title">Programas Obrigatórios</span>
-                <span className="mc-section-badge" style={{ background: "rgba(37,99,235,.1)", color: "#2563EB" }}>Obrigatório</span>
+                <span className="mc-section-title">Cursos Importantes</span>
+                <span className="mc-section-badge" style={{ background: "rgba(37,99,235,.1)", color: "#2563EB" }}>Recomendados</span>
               </div>
-              <div className="mc-section-desc">
-                Demais trilhas da NR-01 que todo colaborador deve concluir. Módulos em sequência.
-              </div>
-              <div className="mc-prog-list">
-                {obrigatorios.map((p: any, i: number) => (
-                  <ProgramRow
-                    key={p.id}
-                    p={p}
-                    index={i + 1}
-                    color="#2563EB"
-                    fillColor="#2563EB"
-                    isSequential={true}
-                    expanded={expandedPrograms.has(p.id)}
-                    onToggle={() => toggleProgram(p.id)}
-                  />
+              <div className="mc-section-desc">Cursos NR-01 Psicossocial — não obrigatórios para o seu setor, mas recomendados.</div>
+              <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-2">
+                {importantes.slice(0, 30).map((c: any) => (
+                  <a key={c.moduleId} href={`/cursos/${c.moduleId}`} className="block border rounded-lg p-3 bg-white hover:shadow-md text-sm">
+                    <div className="font-medium text-slate-800">{c.moduleTitle}</div>
+                    <div className="text-[10px] uppercase tracking-wider text-blue-700 mt-1">{c.templateCategory || "NR-01"}</div>
+                  </a>
                 ))}
               </div>
             </div>

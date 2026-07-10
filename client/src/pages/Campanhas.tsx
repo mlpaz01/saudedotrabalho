@@ -223,6 +223,41 @@ export function CampanhaDetail() {
           <p className="text-sm text-slate-500">A campanha está ativa, mas ainda sem materiais cadastrados. Volte em breve.</p>
         )}
 
+        {/* Bruno R5-P5/Fase3 #5 — Trilha movida pra cima E destacada com cor da campanha.
+            Antes ficava embaixo dos PDFs e Bruno achou que a campanha "só tinha PDF". */}
+        {links.length > 0 && (
+          <section className="bg-white rounded-2xl border-2 p-5 shadow-sm" style={{ borderColor: campColor }}>
+            <h2 className="font-bold text-xl mb-1 flex items-center gap-2" style={{ color: campColor }}>
+              <BookOpen size={22} /> Trilha de Conteúdo
+            </h2>
+            <p className="text-xs text-slate-500 mb-4">Cursos e pesquisas oficiais desta campanha — clique para participar.</p>
+            <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
+              {links.map((l) => {
+                const href = linkHref(l.link_type, l.ref_id);
+                const Icon = l.link_type === "survey" ? ClipboardList : (l.link_type === "course" || l.link_type === "module") ? BookOpen : ExternalLink;
+                const tipoLabel = l.link_type === "survey" ? "Pesquisa" : (l.link_type === "course" || l.link_type === "module") ? "Curso" : "Link";
+                return (
+                  <a key={l.id} href={href} className="border-2 rounded-xl p-4 hover:shadow-lg transition-all bg-white block group" style={{ borderColor: campColor + "33" }}>
+                    <div className="flex items-start gap-3">
+                      <div className="w-12 h-12 rounded-xl flex items-center justify-center shrink-0 transition-all group-hover:scale-110" style={{ background: campColor + "20" }}>
+                        <Icon size={22} style={{ color: campColor }} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[10px] uppercase tracking-widest font-bold mb-1" style={{ color: campColor }}>{tipoLabel}</div>
+                        <div className="font-semibold text-sm leading-snug">{l.title || `${l.link_type} #${l.ref_id}`}</div>
+                        {l.notes && <p className="text-xs mt-1 text-slate-600 line-clamp-2">{l.notes}</p>}
+                        <div className="mt-2 inline-flex items-center gap-1 text-xs font-semibold" style={{ color: campColor }}>
+                          Acessar →
+                        </div>
+                      </div>
+                    </div>
+                  </a>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
         {restMaterials.length > 0 && (
           <section>
             <h2 className="font-semibold text-lg mb-3">Materiais educativos</h2>
@@ -254,31 +289,7 @@ export function CampanhaDetail() {
           </section>
         )}
 
-        {links.length > 0 && (
-          <section>
-            <h2 className="font-semibold text-lg mb-3">Conteúdo interativo da plataforma</h2>
-            <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
-              {links.map((l) => {
-                const href = linkHref(l.link_type, l.ref_id);
-                const Icon = l.link_type === "survey" ? ClipboardList : l.link_type === "course" || l.link_type === "module" ? BookOpen : ExternalLink;
-                return (
-                  <a key={l.id} href={href} className="border rounded-xl p-4 hover:border-blue-300 hover:shadow-md transition-all bg-white block">
-                    <div className="flex items-start gap-2">
-                      <div className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 bg-blue-50">
-                        <Icon size={16} className="text-blue-600" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="font-medium text-sm">{l.title || `${l.link_type} #${l.ref_id}`}</div>
-                        {l.notes && <p className="text-xs mt-0.5 text-slate-600 line-clamp-2">{l.notes}</p>}
-                        <div className="text-[10px] uppercase tracking-wider text-slate-400 mt-1">{l.link_type}</div>
-                      </div>
-                    </div>
-                  </a>
-                );
-              })}
-            </div>
-          </section>
-        )}
+        {/* Bruno R5-P5/Fase3 #5 — bloco duplicado removido (Trilha já renderiza acima com destaque) */}
       </div>
     </AppLayout>
   );

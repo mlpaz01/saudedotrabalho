@@ -1,12 +1,13 @@
 import { useState, useMemo, useEffect } from "react";
 import AppLayout from "@/components/AppLayout";
 import { trpc } from "@/lib/trpc";
+import { useAuth } from "@/_core/hooks/useAuth";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   Mail, Plus, BookOpen, ClipboardList, Send, ChevronRight, ChevronLeft,
-  Users, Calendar, Eye, FileText, X, CheckCircle2, AlertCircle, Sparkles,
+  Users, Calendar, Eye, FileText, X, CheckCircle2, AlertCircle, Sparkles, ListChecks,
 } from "lucide-react";
 
 type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7;
@@ -122,7 +123,7 @@ function CampaignList({ campaigns, loading, onOpen }: any) {
 function CampaignWizard({ onDone }: { onDone: () => void }) {
   const [step, setStep] = useState<Step>(1);
   const [companyId, setCompanyId] = useState<number | null>(null);
-  const [campaignType, setCampaignType] = useState<"course_pending" | "survey_pending" | "custom">("course_pending");
+  const [campaignType, setCampaignType] = useState<"course_pending" | "survey_pending" | "course_pending_personalized" | "custom">("course_pending");
   const [targetModuleId, setTargetModuleId] = useState<number | null>(null);
   const [targetSurveyId, setTargetSurveyId] = useState<number | null>(null);
   const [branchId, setBranchId] = useState<number | null>(null);
@@ -138,6 +139,19 @@ function CampaignWizard({ onDone }: { onDone: () => void }) {
   const [scheduledAt, setScheduledAt] = useState<string>("");
 
   const tree = trpc.lessons.hierarchyTree.useQuery();
+
+  // VÍDEO V3 — chefia dispara campanha TRAVADA na própria filial+setor.
+  const { user } = useAuth();
+  const isChefia = (user as any)?.role === "chefia";
+  const lockedBranch = (user as any)?.branchId ?? null;
+  const lockedSector = (user as any)?.sectorId ?? null;
+  useEffect(() => {
+    if (isChefia) {
+      setBranchId(lockedBranch);
+      setSectorId(lockedSector);
+      setTargetRole("colaborador");
+    }
+  }, [isChefia, lockedBranch, lockedSector]);
 
   // Companies the current user can act on. RH sees only their own (1); Admin Global sees many.
   const companies = useMemo(
@@ -175,7 +189,7 @@ function CampaignWizard({ onDone }: { onDone: () => void }) {
 
   const previewQuery = trpc.emailCampaigns.previewRecipients.useQuery(
     {
-      campaignType: campaignType as "course_pending" | "survey_pending",
+      campaignType: campaignType as "course_pending" | "survey_pending" | "course_pending_personalized",
       companyId: companyId ?? undefined,
       targetModuleId: targetModuleId ?? undefined,
       targetSurveyId: targetSurveyId ?? undefined,
@@ -184,7 +198,12 @@ function CampaignWizard({ onDone }: { onDone: () => void }) {
       maxCompletionPercent,
       targetRole,
     },
-    { enabled: step >= 4 && campaignType !== "custom" && (targetModuleId !== null || targetSurveyId !== null) }
+    {
+      enabled: step >= 4 && (
+        campaignType === "course_pending_personalized"
+        || (campaignType !== "custom" && (targetModuleId !== null || targetSurveyId !== null))
+      ),
+    }
   );
 
   const createMut = trpc.emailCampaigns.create.useMutation();
@@ -234,10 +253,11 @@ function CampaignWizard({ onDone }: { onDone: () => void }) {
       toast.success(`Campanha criada com ${r.recipientCount} destinatário(s)`);
       if (scheduleType === "now") {
         const sendR = await sendMut.mutateAsync({ campaignId: r.id });
+        const skippedSuffix = sendR.skipped ? `, Sem pendências (não enviado): ${sendR.skipped}` : "";
         if (sendR.preview) {
-          toast.info(`Modo PREVIEW: ${sendR.sent} email(s) registrados em log (SMTP não configurado).`);
+          toast.info(`Modo PREVIEW: ${sendR.sent} email(s) registrados em log (SMTP não configurado).${skippedSuffix}`);
         } else {
-          toast.success(`Enviadas: ${sendR.sent}, Falhas: ${sendR.failed}`);
+          toast.success(`Enviadas: ${sendR.sent}, Falhas: ${sendR.failed}${skippedSuffix}`);
         }
       } else {
         toast.info(`Campanha agendada (envio manual ou cron pendente).`);
@@ -269,8 +289,8 @@ function CampaignWizard({ onDone }: { onDone: () => void }) {
                     setCompanyId(e.target.value ? Number(e.target.value) : null);
                     setTargetModuleId(null);
                     setTargetSurveyId(null);
-                    setBranchId(null);
-                    setSectorId(null);
+                    // VÍDEO V3 — chefia mantém filial/setor travados
+                    if (!isChefia) { setBranchId(null); setSectorId(null); }
                   }}
                 >
                   <option value="">Selecione uma empresa...</option>
@@ -279,13 +299,20 @@ function CampaignWizard({ onDone }: { onDone: () => void }) {
               </div>
             )}
             <h2 className="text-lg font-semibold text-foreground">Que tipo de campanha você quer enviar?</h2>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <TypeCard
                 icon={<BookOpen size={28} />}
                 title="Cobrar curso pendente"
-                desc="Lembre colaboradores que ainda não concluíram um curso obrigatório."
+                desc="Lembre colaboradores que ainda não concluíram UM curso específico."
                 active={campaignType === "course_pending"}
                 onClick={() => setCampaignType("course_pending")}
+              />
+              <TypeCard
+                icon={<ListChecks size={28} />}
+                title="Cursos pendentes (personalizado)"
+                desc="Um e-mail por colaborador, com a lista real dos SEUS cursos prioritários e prazos — calculado a partir do Plano de Ação."
+                active={campaignType === "course_pending_personalized"}
+                onClick={() => setCampaignType("course_pending_personalized")}
               />
               <TypeCard
                 icon={<ClipboardList size={28} />}
@@ -337,36 +364,62 @@ function CampaignWizard({ onDone }: { onDone: () => void }) {
             {campaignType === "custom" && (
               <p className="text-sm text-muted-foreground">Esta campanha será enviada para todos os colaboradores que passarem nos filtros do próximo passo.</p>
             )}
+            {campaignType === "course_pending_personalized" && (
+              <p className="text-sm text-muted-foreground">
+                Sem curso único — cada colaborador recebe a lista dos SEUS próprios cursos prioritários pendentes
+                (calculada pelo mesmo motor da tela "Meus Cursos": fator de risco do setor → curso vinculado → prazo do Plano de Ação).
+                Quem não tem nada pendente simplesmente não recebe o e-mail.
+              </p>
+            )}
           </div>
         )}
 
         {step === 3 && (
           <div className="space-y-4">
             <h2 className="text-lg font-semibold text-foreground">Filtros de público</h2>
+            {/* VÍDEO V3 — chefia: público travado na própria filial+setor (não pode escolher "Todos") */}
+            {isChefia && (
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                Como gestor(a) de setor, sua campanha alcança <b>automaticamente apenas os colaboradores do seu setor</b>.
+              </div>
+            )}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
               <div>
                 <label className="text-xs font-medium text-muted-foreground">Filial</label>
-                <select
-                  className="w-full border border-border rounded-md px-3 py-2 text-sm mt-1"
-                  value={branchId ?? ""}
-                  onChange={(e) => { setBranchId(e.target.value ? Number(e.target.value) : null); setSectorId(null); }}
-                >
-                  <option value="">Todas</option>
-                  {allBranches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-                </select>
+                {isChefia ? (
+                  <div className="w-full border border-border rounded-md px-3 py-2 text-sm mt-1 bg-muted/40 text-foreground">
+                    {allBranches.find((b) => b.id === lockedBranch)?.name ?? "Sua filial"}
+                  </div>
+                ) : (
+                  <select
+                    className="w-full border border-border rounded-md px-3 py-2 text-sm mt-1"
+                    value={branchId ?? ""}
+                    onChange={(e) => { setBranchId(e.target.value ? Number(e.target.value) : null); setSectorId(null); }}
+                  >
+                    <option value="">Todas</option>
+                    {allBranches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+                  </select>
+                )}
               </div>
               <div>
                 <label className="text-xs font-medium text-muted-foreground">Setor</label>
-                <select
-                  className="w-full border border-border rounded-md px-3 py-2 text-sm mt-1"
-                  value={sectorId ?? ""}
-                  onChange={(e) => setSectorId(e.target.value ? Number(e.target.value) : null)}
-                >
-                  <option value="">Todos</option>
-                  {sectorsForBranch.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                </select>
+                {isChefia ? (
+                  <div className="w-full border border-border rounded-md px-3 py-2 text-sm mt-1 bg-muted/40 text-foreground">
+                    {allSectors.find((s) => s.id === lockedSector)?.name ?? "Seu setor"}
+                  </div>
+                ) : (
+                  <select
+                    className="w-full border border-border rounded-md px-3 py-2 text-sm mt-1"
+                    value={sectorId ?? ""}
+                    onChange={(e) => setSectorId(e.target.value ? Number(e.target.value) : null)}
+                  >
+                    <option value="">Todos</option>
+                    {sectorsForBranch.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                )}
               </div>
-              {/* Bruno round 3: filtro Perfil — essencial pra AEP (chefias) e similares */}
+              {/* Bruno round 3: filtro Perfil — essencial pra AEP (chefias) e similares. Chefia não escolhe (sempre colaboradores do setor). */}
+              {!isChefia && (
               <div>
                 <label className="text-xs font-medium text-muted-foreground">Perfil</label>
                 <select
@@ -385,6 +438,7 @@ function CampaignWizard({ onDone }: { onDone: () => void }) {
                   Use <b>Chefia / Liderança</b> para enviar pesquisas como AEP só pra lideranças.
                 </p>
               </div>
+              )}
               {campaignType === "course_pending" && (
                 <div>
                   <label className="text-xs font-medium text-muted-foreground">% máx. já assistido</label>
@@ -423,7 +477,14 @@ function CampaignWizard({ onDone }: { onDone: () => void }) {
                       <tr>
                         <th className="text-left px-3 py-2">Nome</th>
                         <th className="text-left px-3 py-2">Email</th>
-                        <th className="text-right px-3 py-2">% assistido</th>
+                        {campaignType === "course_pending_personalized" ? (
+                          <>
+                            <th className="text-right px-3 py-2">Cursos pendentes</th>
+                            <th className="text-right px-3 py-2">Próximo prazo</th>
+                          </>
+                        ) : (
+                          <th className="text-right px-3 py-2">% assistido</th>
+                        )}
                       </tr>
                     </thead>
                     <tbody>
@@ -431,7 +492,14 @@ function CampaignWizard({ onDone }: { onDone: () => void }) {
                         <tr key={r.userId} className="border-t border-border">
                           <td className="px-3 py-1.5">{r.name || "—"}</td>
                           <td className="px-3 py-1.5 text-muted-foreground">{r.email}</td>
-                          <td className="px-3 py-1.5 text-right">{r.percentWatched != null ? Math.round(r.percentWatched) + "%" : "—"}</td>
+                          {campaignType === "course_pending_personalized" ? (
+                            <>
+                              <td className="px-3 py-1.5 text-right">{r.pendingCount}</td>
+                              <td className="px-3 py-1.5 text-right">{r.nextDeadline ? new Date(r.nextDeadline).toLocaleDateString("pt-BR") : "—"}</td>
+                            </>
+                          ) : (
+                            <td className="px-3 py-1.5 text-right">{r.percentWatched != null ? Math.round(r.percentWatched) + "%" : "—"}</td>
+                          )}
                         </tr>
                       ))}
                     </tbody>
@@ -477,6 +545,7 @@ function CampaignWizard({ onDone }: { onDone: () => void }) {
               />
               <p className="text-xs text-muted-foreground mt-1">
                 Variáveis disponíveis: <code>{"{{name}}"}</code>, <code>{"{{course_title}}"}</code>, <code>{"{{survey_title}}"}</code>, <code>{"{{link}}"}</code>
+                {campaignType === "course_pending_personalized" && <> , <code>{"{{courses_list}}"}</code> (lista com todos os cursos pendentes do colaborador, um por linha)</>}
               </p>
             </div>
           </div>
@@ -622,10 +691,11 @@ function CampaignDetail({ campaignId, onRefetch }: { campaignId: number; onRefet
   async function handleSendAgain() {
     try {
       const r = await sendMut.mutateAsync({ campaignId });
+      const skippedSuffix = r.skipped ? `, Sem pendências (não enviado): ${r.skipped}` : "";
       if (r.preview) {
-        toast.info(`Modo PREVIEW: ${r.sent} email(s) registrados em log.`);
+        toast.info(`Modo PREVIEW: ${r.sent} email(s) registrados em log.${skippedSuffix}`);
       } else {
-        toast.success(`Enviadas: ${r.sent}, Falhas: ${r.failed}`);
+        toast.success(`Enviadas: ${r.sent}, Falhas: ${r.failed}${skippedSuffix}`);
       }
       q.refetch();
       onRefetch();
@@ -720,6 +790,7 @@ function StatusBadge({ status, small = false }: { status: string; small?: boolea
     failed: { color: "bg-rose-100 text-rose-700", label: "Falhou" },
     pending: { color: "bg-slate-100 text-slate-700", label: "Pendente" },
     preview_sent: { color: "bg-amber-100 text-amber-700", label: "Preview" },
+    skipped: { color: "bg-sky-100 text-sky-700", label: "Sem pendências" },
   };
   const c = cfg[status] ?? { color: "bg-slate-100 text-slate-700", label: status };
   return <span className={`inline-flex items-center px-2 py-0.5 rounded ${small ? "text-[10px]" : "text-xs"} font-medium ${c.color}`}>{c.label}</span>;
@@ -727,6 +798,7 @@ function StatusBadge({ status, small = false }: { status: string; small?: boolea
 
 function labelType(t: string) {
   if (t === "course_pending") return "Cobrança de curso";
+  if (t === "course_pending_personalized") return "Cursos pendentes (personalizado)";
   if (t === "survey_pending") return "Cobrança de pesquisa";
   if (t === "custom") return "Personalizada";
   return t;

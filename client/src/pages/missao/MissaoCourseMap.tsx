@@ -33,6 +33,22 @@ export default function MissaoCourseMap() {
   const flatLessons = (data.units ?? []).flatMap(u => u.lessons.map(l => ({ ...l, unitTitle: u.title })));
   const currentIdx = flatLessons.findIndex(l => l.progress?.status !== "completed");
 
+  // R5-P11 #6/#7 — curso seedado sem aulas: tela "em branco". Mostrar mensagem clara.
+  if (flatLessons.length === 0) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4 px-6 text-center bg-gradient-to-b from-sky-50 to-white">
+        <BookOpen className="w-12 h-12 text-muted-foreground/40" />
+        <h2 className="text-lg font-bold text-foreground">{data.module.title}</h2>
+        <p className="font-semibold text-foreground">Conteúdo em preparação</p>
+        <p className="text-sm text-muted-foreground max-w-md">
+          Este curso faz parte do seu Plano de Ação, mas as aulas ainda não foram publicadas pelo seu RH/SESMT.
+          Volte em breve — você será notificado quando estiverem disponíveis.
+        </p>
+        <Link href="/inicio"><Button variant="outline">Voltar ao início</Button></Link>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-sky-50 to-white">
       {/* Modo prévia banner */}
