@@ -1875,14 +1875,14 @@ async function loadAssessmentForPDF(db: any, assessmentId: number, companyId: nu
     FROM risk_inventory_items ii
     INNER JOIN psychosocial_factors f ON f.id = ii.factor_id
     WHERE ii.assessment_id=${assessmentId} ORDER BY f.axis_order`);
-  const inv = (ir as any)[0] ?? [];
+  const inv = dedupeRiskRows(((ir as any)[0] ?? []) as any[], "inventory");
 
   const ar: any = await db.execute(drzSql`
     SELECT ap.*, f.code AS factor_code, f.name AS factor_name
     FROM risk_action_plan_items ap
     INNER JOIN psychosocial_factors f ON f.id = ap.factor_id
     WHERE ap.assessment_id=${assessmentId} ORDER BY f.axis_order`);
-  const act = (ar as any)[0] ?? [];
+  const act = dedupeRiskRows(((ar as any)[0] ?? []) as any[], "action");
 
   // Count submissions (one row per response). DRPS/AEP are anonymous → user_id is NULL,
   // so COUNT(DISTINCT user_id) would always be 0. Each survey_responses row is one respondent.
@@ -2317,6 +2317,87 @@ async function execP(db: any, text: string, params: any[] = []): Promise<[any[],
   return [data, []];
 }
 
+const ACTIVE_EMPLOYEE_ROLES = ["user", "chefia", "cipa", "sesmt", "admin", "company_admin"] as const;
+
+function activeEmployeeWhere(alias = "u"): string {
+  return `${alias}.is_active=1 AND ${alias}.role IN (${ACTIVE_EMPLOYEE_ROLES.map((r) => `'${r}'`).join(",")})`;
+}
+
+function normalizeTextKey(value: unknown): string {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/\s+-\s+.*$/g, " ")
+    .replace(/\brelacionamentos\b/g, "relacionamento")
+    .replace(/\brelacoes\b/g, "relacao")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function canonicalRiskFactorKey(name: unknown, code?: unknown): string {
+  const norm = normalizeTextKey(name);
+  if (norm.includes("trabalho remoto") && norm.includes("isolado")) return "trabalho remoto e isolado";
+  if (norm.includes("maus relacionamento") && norm.includes("local de trabalho")) return "maus relacionamento no local de trabalho";
+  return norm || normalizeTextKey(code);
+}
+
+function canonicalRiskFactorName(name: unknown): string {
+  const raw = String(name ?? "").trim();
+  const clean = raw
+    .replace(/\s*\([^)]*\)\s*/g, " ")
+    .replace(/\s+-\s+.*$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return clean || raw;
+}
+
+function riskRank(level: unknown): number {
+  const v = String(level ?? "").toLowerCase();
+  if (v.includes("crit")) return 4;
+  if (v.includes("alt")) return 3;
+  if (v.includes("med")) return 2;
+  if (v.includes("baix")) return 1;
+  return 0;
+}
+
+function dedupeRiskRows<T extends Record<string, any>>(rows: T[], kind: "inventory" | "action" = "inventory"): T[] {
+  const byKey = new Map<string, T>();
+  for (const row of rows ?? []) {
+    const sector = row.sector_id ?? row.sectorId ?? "__all";
+    const key = [
+      row.assessment_id ?? row.assessmentId ?? "",
+      sector,
+      canonicalRiskFactorKey(row.factor_name ?? row.factorName, row.factor_code ?? row.factorCode),
+    ].join(":");
+    const candidate = { ...row } as T;
+    const normalizedName = canonicalRiskFactorName(candidate.factor_name ?? candidate.factorName);
+    if ("factor_name" in candidate) (candidate as any).factor_name = normalizedName;
+    if ("factorName" in candidate) (candidate as any).factorName = normalizedName;
+
+    const current = byKey.get(key);
+    if (!current) {
+      byKey.set(key, candidate);
+      continue;
+    }
+
+    const currentRank = kind === "action"
+      ? riskRank(current.priority)
+      : Math.max(riskRank(current.risco_final), riskRank(current.riscoFinal));
+    const candidateRank = kind === "action"
+      ? riskRank(candidate.priority)
+      : Math.max(riskRank(candidate.risco_final), riskRank(candidate.riscoFinal));
+    const currentDate = current.end_date ?? current.endDate ?? "9999-12-31";
+    const candidateDate = candidate.end_date ?? candidate.endDate ?? "9999-12-31";
+    if (candidateRank > currentRank || (candidateRank === currentRank && String(candidateDate) < String(currentDate))) {
+      byKey.set(key, candidate);
+    }
+  }
+  return Array.from(byKey.values());
+}
+
 // P17 #6 — Bruno: filtro de participação pro disparo da Biblioteca Preventiva
 // (já existia só na "Cobrança de pesquisa" separada — ver P15 #1). Considera TODO
 // o conteúdo vinculado à campanha (pesquisas + cursos): concluiu = terminou tudo,
@@ -2368,12 +2449,17 @@ function participationStatus(done: number, total: number): "nao_respondeu" | "em
 // → prazo do Plano de Ação) pra um helper reaproveitável por qualquer setor, sem
 // depender do usuário logado — usado tanto pela query do colaborador quanto pelo
 // motor de campanha (que roda no contexto do RH/Admin, iterando vários usuários).
-async function computePrioritariosForSector(db: any, cid: number, targetSectorIds: number[]) {
-  const [[lastCycle]]: any = await execP(db, `
-    SELECT id, cycle_name, drps_survey_id, status, end_date, start_date
-    FROM risk_assessments
-    WHERE company_id=? AND status IN ('analyzing','review','closed','active','completed')
-    ORDER BY COALESCE(end_date, start_date) DESC, id DESC LIMIT 1`, [cid]);
+async function computePrioritariosForSector(db: any, cid: number, targetSectorIds: number[], assessmentId?: number) {
+  const [[lastCycle]]: any = assessmentId
+    ? await execP(db, `
+        SELECT id, cycle_name, drps_survey_id, status, end_date, start_date
+        FROM risk_assessments
+        WHERE company_id=? AND id=? LIMIT 1`, [cid, assessmentId])
+    : await execP(db, `
+        SELECT id, cycle_name, drps_survey_id, status, end_date, start_date
+        FROM risk_assessments
+        WHERE company_id=? AND status IN ('analyzing','review','closed','active','completed')
+        ORDER BY COALESCE(end_date, start_date) DESC, id DESC LIMIT 1`, [cid]);
 
   let inventory: any[] = [];
   if (lastCycle?.id) {
@@ -2382,7 +2468,7 @@ async function computePrioritariosForSector(db: any, cid: number, targetSectorId
       FROM risk_inventory_items ri
       INNER JOIN psychosocial_factors pf ON pf.id = ri.factor_id
       WHERE ri.assessment_id=?`, [lastCycle.id]);
-    inventory = rows as any[];
+    inventory = dedupeRiskRows(rows as any[], "inventory");
   }
 
   const [linksRows]: any = await execP(db, `
@@ -2445,7 +2531,7 @@ async function computePrioritariosForSector(db: any, cid: number, targetSectorId
       });
     }
   }
-  const apModuleIds = [...new Set(actionPlanDeadlines.map((a: any) => Number(a.preventive_program_module_id)).filter(Boolean))];
+  const apModuleIds = Array.from(new Set(actionPlanDeadlines.map((a: any) => Number(a.preventive_program_module_id)).filter(Boolean)));
   const missingApModuleIds = apModuleIds.filter(id => !prioritarios.some(p => Number(p.moduleId) === id));
   if (missingApModuleIds.length) {
     const idsIn = missingApModuleIds.map(() => "?").join(",");
@@ -2522,7 +2608,7 @@ async function buildCipaReportSections(db: any, cid: number, escHtml: (s: unknow
     SELECT id, title FROM modules
     WHERE publish_status='published'
       AND (title LIKE '%CIPA%' OR title LIKE '%NR-05%' OR title LIKE '%NR05%' OR template_category LIKE '%cipa%' OR template_category LIKE '%nr05%')`, []).catch(() => [[]]);
-  const [[activeUsersCount]]: any = await execP(db, `SELECT COUNT(*) AS c FROM users WHERE company_id=? AND is_active=1 AND role NOT IN ('admin','admin_global','super_admin','rh','psicologo')`, [cid]).catch(() => [[{ c: 0 }]]);
+  const [[activeUsersCount]]: any = await execP(db, `SELECT COUNT(*) AS c FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]).catch(() => [[{ c: 0 }]]);
   const totalUsers = Number(activeUsersCount?.c ?? 0);
   let completionPct: number | null = null;
   if ((nr05Modules as any[]).length > 0 && totalUsers > 0) {
@@ -2531,7 +2617,7 @@ async function buildCipaReportSections(db: any, cid: number, escHtml: (s: unknow
       const [[c]]: any = await execP(db, `
         SELECT COUNT(*) AS c FROM user_progress up
         INNER JOIN users u ON u.id=up.userId
-        WHERE up.moduleId=? AND u.company_id=? AND u.is_active=1 AND up.isCompleted=1`, [m.id, cid]).catch(() => [[{ c: 0 }]]);
+        WHERE up.moduleId=? AND u.company_id=? AND ${activeEmployeeWhere("u")} AND up.isCompleted=1`, [m.id, cid]).catch(() => [[{ c: 0 }]]);
       completedPairs += Number(c?.c ?? 0);
     }
     completionPct = Math.round((completedPairs / (totalUsers * (nr05Modules as any[]).length)) * 1000) / 10;
@@ -2605,7 +2691,7 @@ async function notifyCipaStatusChange(db: any, cid: number, electionId: number, 
   };
   const copy = STATUS_COPY[newStatus];
   if (!copy) return;
-  const [users]: any = await execP(db, `SELECT name, email FROM users WHERE company_id=? AND is_active=1 AND email IS NOT NULL AND email <> ''`, [cid]);
+  const [users]: any = await execP(db, `SELECT name, email FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")} AND u.email IS NOT NULL AND u.email <> ''`, [cid]);
   const link = "https://saudedotrabalho.com/plataforma/cipa";
   for (const u of (users as any[])) {
     const html = plainToHtml(`Olá ${u.name || ""},\n\n${copy.body}\n\nAcessar: ${link}\n\nEquipe Saúde do Trabalho`);
@@ -5641,8 +5727,8 @@ export const appRouter = router({
       // administrativa/técnica (admin, admin_global, super_admin, RH, psicólogo). A tela
       // "Colaboradores" (lista de gestão) continua mostrando TODAS as contas, propositalmente —
       // é um diretório de usuários pra administração, não um indicador de headcount.
-      const [uRows] = await execP(db2, `SELECT COUNT(*) as c FROM users WHERE company_id = ? AND is_active = 1 AND role NOT IN ('admin','admin_global','super_admin','rh','psicologo')`, [cid]);
-      const [certRows] = await execP(db2, `SELECT COUNT(*) as c FROM certificates WHERE userId IN (SELECT id FROM users WHERE company_id = ?)`, [cid]);
+      const [uRows] = await execP(db2, `SELECT COUNT(*) as c FROM users u WHERE u.company_id = ? AND ${activeEmployeeWhere("u")}`, [cid]);
+      const [certRows] = await execP(db2, `SELECT COUNT(*) as c FROM certificates c INNER JOIN users u ON u.id=c.userId WHERE u.company_id = ? AND ${activeEmployeeWhere("u")}`, [cid]);
       const uCount = (uRows[0] ?? {}) as any; const certCount = (certRows[0] ?? {}) as any;
       return { totalUsers: Number(uCount.c) || 0, activeUsers: Number(uCount.c) || 0, completionRate: 0, totalCertificates: Number(certCount.c) || 0, completedModules: 0 };
     }),
@@ -14879,7 +14965,7 @@ export const appRouter = router({
       // P17 #2 — DRPS grava user_id=NULL (anônimo LGPD). COUNT(DISTINCT user_id) ignorava
       // NULLs e reduzia respondentes só ao AEP. Somamos identificados + anônimas com cap.
       const [[survRow]] = await execP(db, `SELECT COUNT(DISTINCT sr.user_id) AS identificados, SUM(CASE WHEN sr.user_id IS NULL THEN 1 ELSE 0 END) AS anonimas FROM survey_responses sr JOIN surveys s ON s.id=sr.survey_id WHERE s.company_id=? AND (sr.status IS NULL OR sr.status <> 'invalid')`, [cid]) as any;
-      const [[empRow]] = await execP(db, `SELECT COUNT(*) AS cnt FROM users WHERE company_id=? AND role NOT IN ('admin','admin_global','super_admin','rh','psicologo') AND is_active=1`, [cid]) as any;
+      const [[empRow]] = await execP(db, `SELECT COUNT(*) AS cnt FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]) as any;
       const totalEmp = Math.max(1, Number((empRow as any).cnt));
       const respondentes = Math.min(totalEmp, Number((survRow as any).identificados) + Number((survRow as any).anonimas ?? 0));
       const partRate = Math.min(100, Math.round((respondentes / totalEmp) * 100));
@@ -14942,7 +15028,7 @@ export const appRouter = router({
       else push("ok", { eixo: "Plano de Ação", check: "Plano de ação em dia", detail: `${pCnt} ação(ões), nenhuma vencida` });
       // P17 #2 — identificados + anônimos (DRPS grava NULL por LGPD).
       const [[sR]] = await execP(db, `SELECT COUNT(DISTINCT sr.user_id) AS identificados, SUM(CASE WHEN sr.user_id IS NULL THEN 1 ELSE 0 END) AS anonimas FROM survey_responses sr JOIN surveys s ON s.id=sr.survey_id WHERE s.company_id=? AND (sr.status IS NULL OR sr.status <> 'invalid')`, [cid]) as any;
-      const [[eR]] = await execP(db, `SELECT COUNT(*) AS cnt FROM users WHERE company_id=? AND role NOT IN ('admin','admin_global','super_admin','rh','psicologo') AND is_active=1`, [cid]) as any;
+      const [[eR]] = await execP(db, `SELECT COUNT(*) AS cnt FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]) as any;
       const resp2 = Number((sR as any).identificados) + Number((sR as any).anonimas ?? 0); const emp2 = Math.max(1, Number((eR as any).cnt)); const pct2 = Math.min(100, Math.round((resp2 / emp2) * 100));
       if (pct2 >= 70) push("ok", { eixo: "Participação", check: "Boa adesão às pesquisas", detail: `${pct2}% dos colaboradores responderam (${resp2}/${emp2})` });
       else if (pct2 >= 30) push("warn", { eixo: "Participação", check: "Participação abaixo do esperado", detail: `${pct2}% de adesão`, acao: "Reforçar comunicação e acesso às pesquisas" });
@@ -15016,7 +15102,7 @@ export const appRouter = router({
       // P17 #2 — DRPS grava user_id=NULL (anônimo LGPD). COUNT(DISTINCT user_id) ignorava
       // NULLs e reduzia respondentes só ao AEP. Somamos identificados + anônimas com cap.
       const [[survRow]] = await execP(db, `SELECT COUNT(DISTINCT sr.user_id) AS identificados, SUM(CASE WHEN sr.user_id IS NULL THEN 1 ELSE 0 END) AS anonimas FROM survey_responses sr JOIN surveys s ON s.id=sr.survey_id WHERE s.company_id=? AND (sr.status IS NULL OR sr.status <> 'invalid')`, [cid]) as any;
-      const [[empRow]] = await execP(db, `SELECT COUNT(*) AS cnt FROM users WHERE company_id=? AND role NOT IN ('admin','admin_global','super_admin','rh','psicologo') AND is_active=1`, [cid]) as any;
+      const [[empRow]] = await execP(db, `SELECT COUNT(*) AS cnt FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]) as any;
       const totalEmp = Math.max(1, Number((empRow as any).cnt));
       const respondentes = Math.min(totalEmp, Number((survRow as any).identificados) + Number((survRow as any).anonimas ?? 0));
       const partRate = Math.min(100, Math.round((respondentes / totalEmp) * 100));
@@ -15091,7 +15177,7 @@ export const appRouter = router({
       const [[co]] = await execP(db, `SELECT id, name FROM companies WHERE id=?`, [cid]) as any;
 
       // Pesquisas — mesmo critério do P17 #2 (identificados + anônimas, capado na população).
-      const [[empRow]] = await execP(db, `SELECT COUNT(*) AS cnt FROM users WHERE company_id=? AND is_active=1 AND role NOT IN ('admin','admin_global','super_admin','rh','psicologo')`, [cid]) as any;
+      const [[empRow]] = await execP(db, `SELECT COUNT(*) AS cnt FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]) as any;
       const totalEmp = Math.max(1, Number(empRow?.cnt ?? 0));
       const [[survRow]] = await execP(db, `SELECT COUNT(DISTINCT sr.user_id) AS identificados, SUM(CASE WHEN sr.user_id IS NULL THEN 1 ELSE 0 END) AS anonimas FROM survey_responses sr JOIN surveys s ON s.id=sr.survey_id WHERE s.company_id=? AND (sr.status IS NULL OR sr.status <> 'invalid')`, [cid]) as any;
       const respondentes = Math.min(totalEmp, Number(survRow?.identificados ?? 0) + Number(survRow?.anonimas ?? 0));
@@ -15520,7 +15606,7 @@ export const appRouter = router({
       if (!cid) return null;
       const db = await getDb();
       const [[co]] = await execP(db, `SELECT id, name, cnpj, address FROM companies WHERE id=?`, [cid]) as any;
-      const [[u]] = await execP(db, `SELECT COUNT(*) AS cnt FROM users WHERE company_id=? AND is_active=1 AND role NOT IN ('admin','admin_global','super_admin','rh','psicologo')`, [cid]) as any;
+      const [[u]] = await execP(db, `SELECT COUNT(*) AS cnt FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]) as any;
       // Canal de Denúncias
       let denuncias = { total: 0, ativas: 0, anonimas: 0 };
       try {
@@ -15555,7 +15641,7 @@ export const appRouter = router({
       const company = compRow as any;
       const [respRows] = await execP(db, `SELECT name, profession AS council, registration AS council_number, profession AS role FROM responsible_technicians WHERE company_id=? LIMIT 1`, [cid]) as any;
       const respTec = (respRows as any[])[0] ?? null;
-      const [[empRow]] = await execP(db, `SELECT COUNT(*) AS cnt FROM users WHERE company_id=? AND role NOT IN ('admin','admin_global','super_admin','rh','psicologo') AND is_active=1`, [cid]) as any;
+      const [[empRow]] = await execP(db, `SELECT COUNT(*) AS cnt FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]) as any;
       const totalEmp = Number((empRow as any).cnt);
       // P17 #2 — identificados + anônimos (DRPS grava NULL por LGPD).
       const [[survRow]] = await execP(db, `SELECT COUNT(DISTINCT sr.user_id) AS identificados, SUM(CASE WHEN sr.user_id IS NULL THEN 1 ELSE 0 END) AS anonimas, COUNT(DISTINCT s.id) AS surveys FROM survey_responses sr JOIN surveys s ON s.id=sr.survey_id WHERE s.company_id=? AND (sr.status IS NULL OR sr.status <> 'invalid')`, [cid]) as any;
@@ -16246,8 +16332,8 @@ export const appRouter = router({
       // Team size — P18 #23: ampliado pra bater com riskCorrelation.sectorCollaboratorDetails
       // (mesmo setor, mesma pergunta "quantas pessoas"). Antes só 'user' contava; agora
       // qualquer não-administrativo (chefia, cipa, user) conta, igual à outra tela.
-      const tr: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM users WHERE company_id=${cid} AND sector_id=${sectorId} AND role NOT IN ('admin','admin_global','super_admin','rh','psicologo')`);
-      const teamSize = Number((tr as any)[0]?.[0]?.c ?? 0);
+      const [[tr]]: any = await execP(db, `SELECT COUNT(*) AS c FROM users u WHERE u.company_id=? AND u.sector_id=? AND ${activeEmployeeWhere("u")}`, [cid, sectorId]);
+      const teamSize = Number(tr?.c ?? 0);
       
       // Action plan items for this sector
       const apr: any = await db.execute(drzSql`
@@ -16285,15 +16371,15 @@ export const appRouter = router({
       // referenciava a tabela "user_completions" que não existe no schema (sempre deu erro 500
       // pra qualquer chefia real). Corrigido pra usar user_progress.isCompleted=1, mesmo padrão
       // usado em compliance.maturityIndex/nr01Status (>= 1 curso concluído).
-      const certR: any = await db.execute(drzSql`
+      const [[certR]]: any = await execP(db, `
         SELECT
           COUNT(DISTINCT uc.userId) AS completers,
           COUNT(DISTINCT u.id) AS total
         FROM users u
         LEFT JOIN user_progress uc ON uc.userId = u.id AND uc.isCompleted = 1
-        WHERE u.company_id=${cid} AND u.sector_id=${sectorId} AND u.role NOT IN ('admin','admin_global','super_admin','rh','psicologo')`);
-      const completers = Number((certR as any)[0]?.[0]?.completers ?? 0);
-      const total = Number((certR as any)[0]?.[0]?.total ?? 0);
+        WHERE u.company_id=? AND u.sector_id=? AND ${activeEmployeeWhere("u")}`, [cid, sectorId]);
+      const completers = Number(certR?.completers ?? 0);
+      const total = Number(certR?.total ?? 0);
       const trainingRate = total > 0 ? Math.round((completers / total) * 100) : 0;
       
       return { sectorName, teamSize, actionPlanItems, riskSummary, trainingRate };
@@ -18614,17 +18700,17 @@ Return only the JSON content object (no wrapper). Format per type:
         const idCsv = ids.join(",");
 
         const invRaw: any = await db.execute(drzSql.raw(`
-          SELECT ii.id, ii.assessment_id AS assessmentId, ii.gravidade, ii.probabilidade,
+          SELECT ii.id, ii.assessment_id AS assessmentId, ii.sector_id, ii.gravidade, ii.probabilidade,
                  ii.risco_final, ii.fontes_geradoras, ii.medidas_existentes,
                  f.code AS factor_code, f.name AS factor_name, f.axis_order
           FROM risk_inventory_items ii
           INNER JOIN psychosocial_factors f ON f.id = ii.factor_id
           WHERE ii.assessment_id IN (${idCsv})
           ORDER BY f.axis_order`));
-        const invRows = unpack(invRaw);
+        const invRows = dedupeRiskRows(unpack(invRaw), "inventory");
 
         const planRaw: any = await db.execute(drzSql.raw(`
-          SELECT ap.id, ap.assessment_id AS assessmentId, ap.action_description,
+          SELECT ap.id, ap.assessment_id AS assessmentId, ap.sector_id, ap.action_description,
                  ap.responsible_party, ap.priority, ap.status,
                  ap.start_date, ap.end_date,
                  f.code AS factor_code, f.name AS factor_name
@@ -18632,7 +18718,7 @@ Return only the JSON content object (no wrapper). Format per type:
           INNER JOIN psychosocial_factors f ON f.id = ap.factor_id
           WHERE ap.assessment_id IN (${idCsv})
           ORDER BY ap.priority DESC, f.axis_order`));
-        const planRows = unpack(planRaw);
+        const planRows = dedupeRiskRows(unpack(planRaw), "action");
 
         const invByAssessment = new Map<number, any[]>();
         for (const it of invRows) {
@@ -18707,7 +18793,7 @@ Return only the JSON content object (no wrapper). Format per type:
           LEFT JOIN sectors sec ON sec.id = ii.sector_id
           WHERE ii.assessment_id=${input.id}
           ORDER BY sec.name, f.axis_order`);
-        const inventory = (ir as any)[0] ?? [];
+        const inventory = dedupeRiskRows(((ir as any)[0] ?? []) as any[], "inventory");
 
         const ar: any = await db.execute(drzSql`
           SELECT ap.*, f.code AS factor_code, f.name AS factor_name, m.title AS program_title,
@@ -18718,7 +18804,7 @@ Return only the JSON content object (no wrapper). Format per type:
           LEFT JOIN sectors sec ON sec.id = ap.sector_id
           WHERE ap.assessment_id=${input.id}
           ORDER BY sec.name, ap.priority DESC, f.axis_order`);
-        const actionPlan = (ar as any)[0] ?? [];
+        const actionPlan = dedupeRiskRows(((ar as any)[0] ?? []) as any[], "action");
 
         const drpsCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${assessment.drps_survey_id} AND (status IS NULL OR status <> 'invalid')`);
         const aepCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${assessment.aep_survey_id} AND (status IS NULL OR status <> 'invalid')`);
@@ -19029,12 +19115,12 @@ Return only the JSON content object (no wrapper). Format per type:
         if (a.company_id !== cid) throw new TRPCError({ code: "FORBIDDEN" });
 
         const ir: any = await db.execute(drzSql`
-          SELECT ii.*, f.code, f.preventive_program_module_id AS programId, f.default_action AS defaultAction
+          SELECT ii.*, f.code, f.name AS factor_name, f.preventive_program_module_id AS programId, f.default_action AS defaultAction
           FROM risk_inventory_items ii
           INNER JOIN psychosocial_factors f ON f.id = ii.factor_id
           WHERE ii.assessment_id=${input.assessmentId}
           ORDER BY f.axis_order`);
-        const items = (ir as any)[0] ?? [];
+        const items = dedupeRiskRows(((ir as any)[0] ?? []) as any[], "inventory");
 
         // Remove existing plan items
         await db.execute(drzSql`DELETE FROM risk_action_plan_items WHERE assessment_id=${input.assessmentId}`);
@@ -21322,7 +21408,7 @@ Return only the JSON content object (no wrapper). Format per type:
         const sections = tipo === "Relatório da CIPA"
           ? await buildCipaReportSections(db, cid, escHtml, today)
           : await (async () => {
-        const [[uCnt]]: any = await execP(db, `SELECT COUNT(*) AS cnt FROM users WHERE company_id=? AND is_active=1 AND role NOT IN ('admin','admin_global','super_admin','rh','psicologo')`, [cid]).catch(() => [[{ cnt: 0 }]]);
+        const [[uCnt]]: any = await execP(db, `SELECT COUNT(*) AS cnt FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]).catch(() => [[{ cnt: 0 }]]);
         const [[dCnt]]: any = await execP(db, `SELECT COUNT(*) AS cnt FROM denuncias WHERE company_id=?`, [cid]).catch(() => [[{ cnt: 0 }]]);
         const [[cCnt]]: any = await execP(db, `SELECT COUNT(DISTINCT m.id) AS cnt FROM modules m INNER JOIN users u ON u.company_id=m.company_id WHERE m.company_id=?`, [cid]).catch(() => [[{ cnt: 0 }]]);
 
@@ -22756,7 +22842,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
             INNER JOIN users u ON u.id = wi.user_id
             WHERE u.company_id = ${cid} AND wi.snapshot_month = DATE_FORMAT(CURDATE(), '%Y-%m-01')`);
         } catch (e) { console.warn("[recomputeWellbeing] cleanup falhou:", (e as any)?.message); }
-        const [rows] = await execP(db, `SELECT id FROM users WHERE company_id=? AND is_active=1`, [cid]);
+        const [rows] = await execP(db, `SELECT id FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]);
         let n = 0;
         for (const u of (rows as any[])) {
           try { await computeWellbeingIndex(Number(u.id), cid); n++; } catch (_) { /* segue */ }
@@ -22776,7 +22862,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         if (!db) return { bands: { sem_risco: 0, sinal_precoce: 0, risco_moderado: 0, risco_elevado: 0 }, total: 0, evolution: [], bySector: [], topRisk: [] };
         const bId = input?.branchId ?? null, sId = input?.sectorId ?? null;
         const band = (sc: number) => sc >= 80 ? "sem_risco" : sc >= 60 ? "sinal_precoce" : sc >= 40 ? "risco_moderado" : "risco_elevado";
-        let where = "WHERE u.company_id=? AND u.is_active=1";
+        let where = `WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`;
         const params: any[] = [cid];
         if (bId) { where += " AND u.branch_id=?"; params.push(bId); }
         if (sId) { where += " AND u.sector_id=?"; params.push(sId); }
@@ -22840,11 +22926,11 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
 
         // P18 #23 (cont.) — "colaboradores ativos" padronizado com o painel de Conformidade:
         // is_active=1 e exclui cargos administrativos/técnicos (admin/RH/SESMT/psicólogo).
-        const STAFF_EXCL = `u.role NOT IN ('admin','admin_global','super_admin','rh','psicologo') AND u.is_active=1`;
+        const STAFF_EXCL = activeEmployeeWhere("u");
         const totalUsersR: any = await db.execute(drzSql.raw(`SELECT COUNT(*) AS c FROM users u WHERE ${STAFF_EXCL} ${companyFilter} ${branchFilter} ${sectorFilter}`));
-        const activeUsersR: any = await db.execute(drzSql.raw(`SELECT COUNT(*) AS c FROM users u WHERE u.lastSignedIn >= DATE_SUB(NOW(), INTERVAL 30 DAY) ${companyFilter} ${branchFilter} ${sectorFilter}`));
-        const modulesCompletedR: any = await db.execute(drzSql.raw(`SELECT COUNT(*) AS c FROM user_progress p INNER JOIN users u ON u.id=p.userId WHERE p.isCompleted=1 ${companyFilter} ${branchFilter} ${sectorFilter}`));
-        const certsR: any = await db.execute(drzSql.raw(`SELECT COUNT(*) AS c FROM certificates c2 INNER JOIN users u ON u.id=c2.userId WHERE 1=1 ${companyFilter} ${branchFilter} ${sectorFilter}`));
+        const activeUsersR: any = await db.execute(drzSql.raw(`SELECT COUNT(*) AS c FROM users u WHERE ${STAFF_EXCL} AND u.lastSignedIn >= DATE_SUB(NOW(), INTERVAL 30 DAY) ${companyFilter} ${branchFilter} ${sectorFilter}`));
+        const modulesCompletedR: any = await db.execute(drzSql.raw(`SELECT COUNT(*) AS c FROM user_progress p INNER JOIN users u ON u.id=p.userId WHERE ${STAFF_EXCL} AND p.isCompleted=1 ${companyFilter} ${branchFilter} ${sectorFilter}`));
+        const certsR: any = await db.execute(drzSql.raw(`SELECT COUNT(*) AS c FROM certificates c2 INNER JOIN users u ON u.id=c2.userId WHERE ${STAFF_EXCL} ${companyFilter} ${branchFilter} ${sectorFilter}`));
 
         // P18 #23 (cont.) — taxa de resposta unificada com a fórmula do Conformidade:
         // % de colaboradores ativos que responderam PELO MENOS UMA pesquisa (identificados
@@ -22869,7 +22955,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         const totalEmpForRate = Math.max(1, totalUsers);
         const respondentesUnicos = Math.min(totalEmpForRate, Number(survRespRow.identificados ?? 0) + Number(survRespRow.anonimas ?? 0));
         const surveyResponseRate = Math.round((respondentesUnicos / totalEmpForRate) * 100);
-        const avgEngagementR: any = await db.execute(drzSql.raw(`SELECT ROUND(AVG(COALESCE(p.percentWatched,0)),1) AS avg_percent FROM user_progress p INNER JOIN users u ON u.id=p.userId WHERE 1=1 ${companyFilter} ${branchFilter} ${sectorFilter}`));
+        const avgEngagementR: any = await db.execute(drzSql.raw(`SELECT ROUND(AVG(COALESCE(p.percentWatched,0)),1) AS avg_percent FROM user_progress p INNER JOIN users u ON u.id=p.userId WHERE ${STAFF_EXCL} ${companyFilter} ${branchFilter} ${sectorFilter}`));
         const avgEngagement = Number(avgEngagementR[0]?.[0]?.avg_percent ?? avgEngagementR?.[0]?.avg_percent ?? 0);
 
         // Risk overview
@@ -23057,7 +23143,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           LEFT JOIN user_progress p ON p.userId = u.id
           LEFT JOIN sectors s ON s.id = u.sector_id
           LEFT JOIN branches b ON b.id = u.branch_id
-          WHERE u.role NOT IN ('admin','admin_global','super_admin','rh','psicologo') AND u.is_active=1 ${isGlobal ? '' : `AND u.company_id = ${cid}`}${input?.branchId ? ` AND u.branch_id = ${Number(input.branchId)}` : ''}${input?.sectorId ? ` AND u.sector_id = ${Number(input.sectorId)}` : ''}
+          WHERE ${activeEmployeeWhere("u")} ${isGlobal ? '' : `AND u.company_id = ${cid}`}${input?.branchId ? ` AND u.branch_id = ${Number(input.branchId)}` : ''}${input?.sectorId ? ` AND u.sector_id = ${Number(input.sectorId)}` : ''}
           GROUP BY u.id, u.name, u.email, s.name, b.name
           HAVING modulesCompleted > 0
           ORDER BY modulesCompleted DESC, avgPercent DESC
@@ -23089,7 +23175,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           LEFT JOIN user_progress p ON p.userId = u.id
           LEFT JOIN sectors s ON s.id = u.sector_id
           LEFT JOIN branches b ON b.id = u.branch_id
-          WHERE u.role NOT IN ('admin','admin_global','super_admin','rh','psicologo') AND u.is_active=1 ${isGlobal ? '' : `AND u.company_id = ${cid}`}${input?.branchId ? ` AND u.branch_id = ${Number(input.branchId)}` : ''}${input?.sectorId ? ` AND u.sector_id = ${Number(input.sectorId)}` : ''}
+          WHERE ${activeEmployeeWhere("u")} ${isGlobal ? '' : `AND u.company_id = ${cid}`}${input?.branchId ? ` AND u.branch_id = ${Number(input.branchId)}` : ''}${input?.sectorId ? ` AND u.sector_id = ${Number(input.sectorId)}` : ''}
           GROUP BY u.id, u.name, u.email, s.name, b.name
           ORDER BY avgPercent ASC, modulesCompleted ASC
           LIMIT ${lim}
@@ -23113,7 +23199,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
       const r: any = await db.execute(drzSql.raw(`
         SELECT s.id, s.title, s.category, s.status,
           COUNT(DISTINCT CASE WHEN r.status IS NULL OR r.status <> 'invalid' THEN r.id END) AS responses,
-          (SELECT COUNT(*) FROM users u WHERE u.role NOT IN ('admin','admin_global','super_admin','rh','psicologo') AND u.is_active=1 ${isGlobal ? '' : `AND u.company_id = ${cid}`}) AS eligibleUsers
+          (SELECT COUNT(*) FROM users u WHERE ${activeEmployeeWhere("u")} ${isGlobal ? '' : `AND u.company_id = ${cid}`}) AS eligibleUsers
         FROM surveys s
         LEFT JOIN survey_responses r ON r.survey_id = s.id
         WHERE 1=1 ${isGlobal ? '' : `AND (s.company_id = ${cid} OR s.is_template = 1)`}
@@ -23257,7 +23343,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           FROM users u
           LEFT JOIN user_progress p ON p.userId = u.id
           LEFT JOIN sectors s ON s.id = u.sector_id
-          WHERE u.role NOT IN ('admin','admin_global','super_admin','rh','psicologo') AND u.is_active=1 ${isGlobal ? '' : `AND u.company_id = ${cid}`}${input?.branchId ? ` AND u.branch_id = ${Number(input.branchId)}` : ''}${input?.sectorId ? ` AND u.sector_id = ${Number(input.sectorId)}` : ''}
+          WHERE ${activeEmployeeWhere("u")} ${isGlobal ? '' : `AND u.company_id = ${cid}`}${input?.branchId ? ` AND u.branch_id = ${Number(input.branchId)}` : ''}${input?.sectorId ? ` AND u.sector_id = ${Number(input.sectorId)}` : ''}
           GROUP BY u.id, u.name, u.email, s.name
           ORDER BY engagementScore DESC
           LIMIT ${lim}
@@ -23922,7 +24008,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
       const cid = (ctx.user as any).companyId;
       if (!cid) return [];
       const db = await getDb();
-      const [rows] = await execP(db, `SELECT id, name, email FROM users WHERE company_id=? AND role NOT IN ('admin','admin_global','super_admin','rh','psicologo') AND is_active=1 ORDER BY name ASC LIMIT 200`, [cid]) as any;
+      const [rows] = await execP(db, `SELECT id, name, email FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")} ORDER BY u.name ASC LIMIT 200`, [cid]) as any;
       return (rows as any[]).map((r: any) => ({ id: r.id, name: r.name ?? r.email, email: r.email }));
     }),
 
@@ -25076,7 +25162,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           ORDER BY COALESCE(end_date, start_date) DESC, id DESC LIMIT 1`, [cid]);
         if (!lastCycle) return { sectorId: u.sector_id, sectorName: s?.name ?? null, alerts: [], cycle: null };
         const [rows]: any = await execP(db, `
-          SELECT pf.name AS factor_name, ri.risco_final, ri.factor_id
+          SELECT pf.name AS factor_name, pf.code AS factor_code, ri.risco_final, ri.factor_id, ri.sector_id
           FROM risk_inventory_items ri
           INNER JOIN psychosocial_factors pf ON pf.id = ri.factor_id
           WHERE ri.assessment_id=? AND ri.sector_id=? AND ri.risco_final IN ('alta','alto','critica','critico')
@@ -25085,7 +25171,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           sectorId: u.sector_id,
           sectorName: s?.name ?? null,
           cycle: { id: lastCycle.id, name: lastCycle.cycle_name, startDate: lastCycle.start_date },
-          alerts: (rows as any[]).map((r: any) => ({
+          alerts: dedupeRiskRows(rows as any[], "inventory").map((r: any) => ({
             factorId: Number(r.factor_id), factorName: r.factor_name, riskLevel: r.risco_final,
           })),
         };
@@ -25109,14 +25195,14 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
 
         // Inventário do ciclo
         const [invRows]: any = await execP(db, `
-          SELECT ri.factor_id, ri.sector_id, ri.risco_final, pf.name AS factor_name,
+          SELECT ri.factor_id, ri.sector_id, ri.risco_final, pf.name AS factor_name, pf.code AS factor_code,
                  s.name AS sector_name, b.id AS branch_id, b.name AS branch_name
           FROM risk_inventory_items ri
           INNER JOIN psychosocial_factors pf ON pf.id = ri.factor_id
           LEFT JOIN sectors s ON s.id = ri.sector_id
           LEFT JOIN branches b ON b.id = s.branch_id
           WHERE ri.assessment_id=?`, [cycleId]);
-        const inv = invRows as any[];
+        const inv = dedupeRiskRows(invRows as any[], "inventory");
 
         // Distribuição global
         const distribuicao = { baixo: 0, medio: 0, alto: 0, critico: 0 };
@@ -25144,7 +25230,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           else if (lvl.includes("med")) b.medio++;
           else b.baixo++;
         }
-        const rankingFiliais = [...branchMap.values()].map((b: any) => ({
+        const rankingFiliais = Array.from(branchMap.values()).map((b: any) => ({
           ...b,
           healthPercent: b.total > 0 ? Math.round(((b.baixo + b.medio) / b.total) * 100) : 0,
         })).sort((a, b) => b.healthPercent - a.healthPercent);
@@ -25163,21 +25249,21 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           else if (lvl.includes("med")) s.medio++;
           else s.baixo++;
         }
-        const rankingSetores = [...sectorMap.values()].map((s: any) => ({
+        const rankingSetores = Array.from(sectorMap.values()).map((s: any) => ({
           ...s,
           healthPercent: s.total > 0 ? Math.round(((s.baixo + s.medio) / s.total) * 100) : 0,
         })).sort((a, b) => a.healthPercent - b.healthPercent); // pior primeiro
 
         // Top riscos (factor agregado, contando alto+critico)
-        const factorMap = new Map<number, { factorId: number; factorName: string; total: number; altoCritico: number }>();
+        const factorMap = new Map<string, { factorId: number; factorName: string; total: number; altoCritico: number }>();
         for (const i of inv) {
-          const k = Number(i.factor_id);
-          if (!factorMap.has(k)) factorMap.set(k, { factorId: k, factorName: i.factor_name, total: 0, altoCritico: 0 });
+          const k = canonicalRiskFactorKey(i.factor_name, i.factor_code);
+          if (!factorMap.has(k)) factorMap.set(k, { factorId: Number(i.factor_id), factorName: i.factor_name, total: 0, altoCritico: 0 });
           const f = factorMap.get(k)!; f.total++;
           const lvl = String(i.risco_final || "").toLowerCase();
           if (lvl.includes("alt") || lvl.includes("crit")) f.altoCritico++;
         }
-        const topRiscos = [...factorMap.values()].sort((a, b) => b.altoCritico - a.altoCritico).slice(0, 8);
+        const topRiscos = Array.from(factorMap.values()).sort((a, b) => b.altoCritico - a.altoCritico).slice(0, 8);
 
         return { cycle, cycles, healthPercent, distribuicao, rankingFiliais, rankingSetores, topRiscos };
       }),
@@ -25190,30 +25276,30 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         const db = await getDb(); if (!db || !cid) return { fatores: [], healthDelta: 0 };
         const fetchInv = async (id: number) => {
           const [r]: any = await execP(db, `
-            SELECT ri.factor_id, ri.risco_final, pf.name AS factor_name
+            SELECT ri.factor_id, ri.sector_id, ri.risco_final, pf.name AS factor_name, pf.code AS factor_code
             FROM risk_inventory_items ri
             INNER JOIN psychosocial_factors pf ON pf.id = ri.factor_id
             INNER JOIN risk_assessments ra ON ra.id = ri.assessment_id AND ra.company_id=?
             WHERE ri.assessment_id=?`, [cid, id]);
-          return r as any[];
+          return dedupeRiskRows(r as any[], "inventory");
         };
         const SEV: Record<string, number> = { baixo:1, baixa:1, medio:2, media:2, alto:3, alta:3, critico:4, critica:4 };
         const aInv = await fetchInv(input.aId);
         const bInv = await fetchInv(input.bId);
-        const aMap = new Map<number, { name: string; severities: number[] }>();
-        const bMap = new Map<number, { name: string; severities: number[] }>();
+        const aMap = new Map<string, { id: number; name: string; severities: number[] }>();
+        const bMap = new Map<string, { id: number; name: string; severities: number[] }>();
         for (const i of aInv) {
-          const k = Number(i.factor_id);
-          if (!aMap.has(k)) aMap.set(k, { name: i.factor_name, severities: [] });
+          const k = canonicalRiskFactorKey(i.factor_name, i.factor_code);
+          if (!aMap.has(k)) aMap.set(k, { id: Number(i.factor_id), name: i.factor_name, severities: [] });
           aMap.get(k)!.severities.push(SEV[String(i.risco_final||"").toLowerCase()] ?? 0);
         }
         for (const i of bInv) {
-          const k = Number(i.factor_id);
-          if (!bMap.has(k)) bMap.set(k, { name: i.factor_name, severities: [] });
+          const k = canonicalRiskFactorKey(i.factor_name, i.factor_code);
+          if (!bMap.has(k)) bMap.set(k, { id: Number(i.factor_id), name: i.factor_name, severities: [] });
           bMap.get(k)!.severities.push(SEV[String(i.risco_final||"").toLowerCase()] ?? 0);
         }
         const avg = (arr: number[]) => arr.length ? arr.reduce((s,n)=>s+n,0)/arr.length : 0;
-        const factorIds = new Set([...aMap.keys(), ...bMap.keys()]);
+        const factorIds = Array.from(new Set(Array.from(aMap.keys()).concat(Array.from(bMap.keys()))));
         const fatores: any[] = [];
         for (const fid of factorIds) {
           const a = aMap.get(fid); const b = bMap.get(fid);
@@ -25221,7 +25307,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           const bAvg = b ? avg(b.severities) : 0;
           const delta = bAvg - aAvg; // > 0 = piorou; < 0 = melhorou
           fatores.push({
-            factorId: fid,
+            factorId: a?.id ?? b?.id ?? null,
             factorName: a?.name || b?.name || `Fator ${fid}`,
             avgA: Math.round(aAvg * 10) / 10,
             avgB: Math.round(bAvg * 10) / 10,
@@ -25245,9 +25331,8 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
 
         // P18 #23 — corrigido typo "psicolog" (faltava o "o"): sem isso, psicólogo
         // não era excluído aqui e contava como "colaborador do setor" só nesta tela.
-        const EXCL = "'admin','admin_global','super_admin','rh','psicologo'";
         const [usersRows]: any = await execP(db,
-          `SELECT id, name, email FROM users WHERE sector_id=? AND company_id=? AND role NOT IN (${EXCL})`,
+          `SELECT id, name, email FROM users u WHERE u.sector_id=? AND u.company_id=? AND ${activeEmployeeWhere("u")}`,
           [input.sectorId, cid]);
         const users = usersRows as any[];
         if (!users.length) return { collaborators: [], priorityCount: 0 };
@@ -25261,14 +25346,8 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           cycleId = cr?.id ? Number(cr.id) : undefined;
         }
 
-        let priorityModuleIds: number[] = [];
-        if (cycleId) {
-          const [linkRows]: any = await execP(db, `
-            SELECT DISTINCT rcl.module_id FROM risk_course_links rcl
-            INNER JOIN risk_inventory_items rii ON rii.factor_id=rcl.factor_id
-            WHERE rii.assessment_id=? AND rii.sector_id=?`, [cycleId, input.sectorId]);
-          priorityModuleIds = (linkRows as any[]).map((r: any) => Number(r.module_id));
-        }
+        const { prioritarios } = await computePrioritariosForSector(db, cid, [input.sectorId], cycleId);
+        const priorityModuleIds = Array.from(new Set(prioritarios.map((p: any) => Number(p.moduleId)).filter(Boolean)));
 
         const completionMap: Record<number, number> = {};
         if (priorityModuleIds.length && userIds.length) {
@@ -25308,6 +25387,18 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
       .query(async ({ ctx, input }) => {
         const db2 = await getDb();
         if (!db2) throw new Error("DB unavailable");
+        const cid = (ctx.user as any).companyId;
+        if (!cid) return [];
+        const { prioritarios } = await computePrioritariosForSector(db2, cid, [], input.assessmentId);
+        return prioritarios.map((p: any) => ({
+          factorId: Number(p.factorId ?? 0),
+          factorName: String(p.factorName ?? ""),
+          riskLevel: String(p.riscoFinal ?? ""),
+          moduleId: Number(p.moduleId),
+          moduleTitle: String(p.moduleTitle ?? ""),
+          source: p.viaPlanoDeAcaoDireto ? "plano_de_acao" as const : "risco_prioritario" as const,
+        }));
+        /*
         // Get high/critical factors from this assessment inventory
         const rows = await db2.execute(drzSql`
           SELECT ri.factor_id, ri.risco_final, pf.name as factor_name,
@@ -25365,6 +25456,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         }
 
         return Array.from(byModule.values());
+        */
       }),
   }),
 
@@ -27077,7 +27169,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
     raffleParticipants: adminOrRhProcedure.input(z.object({ editionId: z.number() })).query(async ({ ctx, input }) => {
       const cid = (ctx.user as any).companyId;
       const db = await getDb(); if (!db || !cid) return { participants: [], winners: [] };
-      const [parts]: any = await execP(db, `SELECT id, name, email, position FROM users WHERE company_id=? AND is_active=1 AND role NOT IN ('admin','admin_global','super_admin') ORDER BY name`, [cid]);
+      const [parts]: any = await execP(db, `SELECT id, name, email, position FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")} ORDER BY u.name`, [cid]);
       const wr: any = await db.execute(drzSql`SELECT prize, winner_name, winner_email, drawn_at, drawn_by_name FROM sipat_raffles WHERE edition_id=${input.editionId} AND winner_user_id IS NOT NULL ORDER BY drawn_at DESC`);
       return { participants: Array.isArray(parts) ? parts : [], winners: ((wr as any)[0] ?? []) };
     }),
@@ -27100,7 +27192,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         }
         const notIn = excludeIds.length ? ` AND id NOT IN (${excludeIds.map(() => "?").join(",")})` : "";
         const params = [cid, ...excludeIds];
-        const [users]: any = await execP(db, `SELECT id, name, email FROM users WHERE company_id=? AND is_active=1 AND role NOT IN ('admin','admin_global','super_admin')${notIn} ORDER BY RAND() LIMIT 1`, params);
+        const [users]: any = await execP(db, `SELECT id, name, email FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}${notIn} ORDER BY RAND() LIMIT 1`, params);
         const winner = (users as any[])[0];
         if (!winner) throw new TRPCError({ code: "BAD_REQUEST", message: "Nenhum colaborador elegível encontrado (todos já foram sorteados nesta edição?)." });
         const drawnBy = (ctx.user as any).name || (ctx.user as any).email || "—";
@@ -27114,7 +27206,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
         const [[ed]]: any = await execP(db, `SELECT * FROM sipat_editions WHERE id=? AND company_id=?`, [input.editionId, cid]);
         if (!ed) throw new TRPCError({ code: "NOT_FOUND" });
-        const [users]: any = await execP(db, `SELECT id, name, email FROM users WHERE company_id=? AND is_active=1`, [cid]);
+        const [users]: any = await execP(db, `SELECT id, name, email FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]);
         let notified = 0, emailsSent = 0;
         const base = process.env.PUBLIC_EMAIL_BASE_URL || "https://saudedotrabalho.com";
         const subject = `SIPAT ${ed.year} — ${ed.theme || "Semana de Prevenção"}`;
@@ -27236,7 +27328,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           const [users]: any = await execP(db, `
             SELECT u.id, u.name, u.email, s.name AS sector_name
             FROM users u LEFT JOIN sectors s ON s.id = u.sector_id
-            WHERE u.company_id=? AND u.is_active=1 ORDER BY u.name`, [cid]);
+            WHERE u.company_id=? AND ${activeEmployeeWhere("u")} ORDER BY u.name`, [cid]);
 
           const [accessRows]: any = await execP(db, `
             SELECT user_id, COUNT(*) AS cnt, MIN(created_at) AS first_access, MAX(created_at) AS last_access
@@ -27291,7 +27383,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           const [[ed]]: any = await execP(db, `SELECT * FROM sipat_editions WHERE id=? AND company_id=?`, [input.editionId, cid]);
           if (!ed) throw new TRPCError({ code: "NOT_FOUND" });
 
-          const [[invitedRow]]: any = await execP(db, `SELECT COUNT(*) AS c FROM users WHERE company_id=? AND is_active=1 AND role NOT IN ('admin','admin_global','super_admin','rh','psicologo')`, [cid]);
+          const [[invitedRow]]: any = await execP(db, `SELECT COUNT(*) AS c FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]);
           const totalInvited = Number(invitedRow?.c ?? 0);
 
           const [[participRow]]: any = await execP(db, `SELECT COUNT(DISTINCT user_id) AS c FROM sipat_access_events WHERE edition_id=?`, [input.editionId]);
@@ -27504,7 +27596,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         const db = await getDb(); if (!db || !cid) return null;
         const [[el]]: any = await execP(db, `SELECT id, status, name FROM cipa_elections WHERE id=? AND company_id=?`, [input.electionId, cid]);
         if (!el) return null;
-        const [[elegiveis]]: any = await execP(db, `SELECT COUNT(*) AS c FROM users WHERE company_id=? AND is_active=1 AND role NOT IN ('admin','admin_global','super_admin','rh','psicologo')`, [cid]);
+        const [[elegiveis]]: any = await execP(db, `SELECT COUNT(*) AS c FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]);
         const [[votaram]]: any = await execP(db, `SELECT COUNT(*) AS c FROM cipa_voters WHERE election_id=?`, [input.electionId]);
         const total = Number(elegiveis?.c ?? 0), done = Number(votaram?.c ?? 0);
         return { status: el.status, totalElegiveis: total, totalVotaram: done, pct: total > 0 ? Math.round((done / total) * 1000) / 10 : 0 };

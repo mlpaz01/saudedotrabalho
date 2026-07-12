@@ -106,7 +106,6 @@ import AdminPlanoAcaoPrazos from "@/pages/admin/AdminPlanoAcaoPrazos";
 import ChefiaDashboard from "@/pages/admin/ChefiaDashboard";
 import AdminClientPlans from "@/pages/admin/AdminClientPlans";
 import AdminHRImports from "@/pages/admin/AdminHRImports";
-import AdminRiskConsolidated from "@/pages/admin/AdminRiskConsolidated";
 import Suporte from "@/pages/Suporte";
 import AdminSuporte from "@/pages/admin/AdminSuporte";
 import SurveyBuilder from "@/pages/admin/SurveyBuilder";
@@ -288,7 +287,7 @@ function Router() {
       <Route path="/admin/chefia-dashboard" component={() => <ProtectedRoute component={ChefiaDashboard} adminOnly />} />
       <Route path="/admin/planos-clientes" component={() => <ProtectedRoute component={AdminClientPlans} adminOnly />} />
       <Route path="/admin/importar-rh" component={() => <ProtectedRoute component={AdminHRImports} adminOnly />} />
-      <Route path="/admin/risco-consolidado" component={() => <ProtectedRoute component={AdminRiskConsolidated} adminOnly />} />
+      <Route path="/admin/risco-consolidado" component={() => <Redirect to="/admin/risk-assessments" />} />
       <Route path="/admin/descompressao/estudio" component={() => <ProtectedRoute component={DecompressionStudio} adminOnly />} />
       <Route path="/admin/pesquisas/:id/editar" component={() => <ProtectedRoute component={SurveyBuilder} adminOnly />} />
       <Route path="/admin/pesquisas/:id/resultados" component={() => <ProtectedRoute component={SurveyResults} adminOnly />} />
@@ -342,5 +341,4 @@ function App() {
 }
 
 export default App;
-
 
