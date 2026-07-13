@@ -287,7 +287,7 @@ function Router() {
       <Route path="/admin/chefia-dashboard" component={() => <ProtectedRoute component={ChefiaDashboard} adminOnly />} />
       <Route path="/admin/planos-clientes" component={() => <ProtectedRoute component={AdminClientPlans} adminOnly />} />
       <Route path="/admin/importar-rh" component={() => <ProtectedRoute component={AdminHRImports} adminOnly />} />
-      <Route path="/admin/risco-consolidado" component={() => <Redirect to="/admin/risk-assessments" />} />
+      <Route path="/admin/risco-consolidado" component={() => <Redirect to="/admin/analise-risco" />} />
       <Route path="/admin/descompressao/estudio" component={() => <ProtectedRoute component={DecompressionStudio} adminOnly />} />
       <Route path="/admin/pesquisas/:id/editar" component={() => <ProtectedRoute component={SurveyBuilder} adminOnly />} />
       <Route path="/admin/pesquisas/:id/resultados" component={() => <ProtectedRoute component={SurveyResults} adminOnly />} />
@@ -341,4 +341,3 @@ function App() {
 }
 
 export default App;
-

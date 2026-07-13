@@ -2337,11 +2337,49 @@ function normalizeTextKey(value: unknown): string {
     .replace(/\s+/g, " ");
 }
 
+const PSYCHOSOCIAL_FACTOR_ORDER = [
+  "assedio",
+  "suporte",
+  "mudancas",
+  "clareza",
+  "reconhecimento",
+  "autonomia",
+  "justica",
+  "trauma",
+  "subcarga",
+  "sobrecarga",
+  "relacionamentos",
+  "comunicacao",
+  "remoto",
+];
+
+function normalizeFactorCode(value: unknown): string {
+  return normalizeTextKey(value).replace(/\s+/g, "_");
+}
+
 function canonicalRiskFactorKey(name: unknown, code?: unknown): string {
+  const codeNorm = normalizeFactorCode(code);
+  if (["relacionamento", "relacionamentos"].includes(codeNorm)) return "relacionamentos";
+  if (["comunicacao", "comunicacao_dificil"].includes(codeNorm)) return "comunicacao";
+  if (["isolamento", "remoto"].includes(codeNorm)) return "remoto";
+  if (["eventos_criticos", "eventos_violentos", "trauma"].includes(codeNorm)) return "trauma";
+  if (PSYCHOSOCIAL_FACTOR_ORDER.includes(codeNorm)) return codeNorm;
+
   const norm = normalizeTextKey(name);
-  if (norm.includes("trabalho remoto") && norm.includes("isolado")) return "trabalho remoto e isolado";
-  if (norm.includes("maus relacionamento") && norm.includes("local de trabalho")) return "maus relacionamento no local de trabalho";
-  return norm || normalizeTextKey(code);
+  if (norm.includes("evento") && (norm.includes("violent") || norm.includes("traumatic"))) return "trauma";
+  if (norm.includes("trabalho remoto") || norm.includes("isolado") || norm.includes("isolamento")) return "remoto";
+  if (norm.includes("dificil comunicacao") || norm.includes("comunicacao dificil")) return "comunicacao";
+  if (norm.includes("maus relacionamento") || norm.includes("relacionamento no local de trabalho")) return "relacionamentos";
+  if (norm.includes("excesso de demanda") || norm.includes("sobrecarga")) return "sobrecarga";
+  if (norm.includes("baixa demanda") || norm.includes("subcarga")) return "subcarga";
+  if (norm.includes("baixa justica") || norm.includes("justica organizacional")) return "justica";
+  if (norm.includes("baixo controle") || norm.includes("falta de autonomia")) return "autonomia";
+  if (norm.includes("reconhecimento") || norm.includes("recompensa")) return "reconhecimento";
+  if (norm.includes("clareza") || norm.includes("papel")) return "clareza";
+  if (norm.includes("mudanca")) return "mudancas";
+  if (norm.includes("suporte") || norm.includes("apoio")) return "suporte";
+  if (norm.includes("assedio")) return "assedio";
+  return norm || codeNorm;
 }
 
 function canonicalRiskFactorName(name: unknown): string {
@@ -2352,6 +2390,47 @@ function canonicalRiskFactorName(name: unknown): string {
     .replace(/\s+/g, " ")
     .trim();
   return clean || raw;
+}
+
+function officialRiskFactorOrder(key: string): number {
+  const idx = PSYCHOSOCIAL_FACTOR_ORDER.indexOf(key);
+  return idx >= 0 ? idx + 1 : 999;
+}
+
+function dedupePsychosocialFactorRows<T extends Record<string, any>>(rows: T[]): T[] {
+  const byKey = new Map<string, T>();
+  for (const row of rows ?? []) {
+    const key = canonicalRiskFactorKey(row.name ?? row.factor_name ?? row.factorName, row.code ?? row.factor_code ?? row.factorCode);
+    const candidate = { ...row } as T;
+    const normalizedName = canonicalRiskFactorName(candidate.name ?? candidate.factor_name ?? candidate.factorName);
+    if ("name" in candidate) (candidate as any).name = normalizedName;
+    if ("factor_name" in candidate) (candidate as any).factor_name = normalizedName;
+    if ("factorName" in candidate) (candidate as any).factorName = normalizedName;
+
+    const current = byKey.get(key);
+    if (!current) {
+      byKey.set(key, candidate);
+      continue;
+    }
+
+    const cCode = normalizeFactorCode(candidate.code ?? candidate.factor_code ?? candidate.factorCode);
+    const rCode = normalizeFactorCode(current.code ?? current.factor_code ?? current.factorCode);
+    const cOfficial = cCode === key ? 1 : 0;
+    const rOfficial = rCode === key ? 1 : 0;
+    const cOrder = Number(candidate.axis_order ?? candidate.axisOrder ?? officialRiskFactorOrder(key));
+    const rOrder = Number(current.axis_order ?? current.axisOrder ?? officialRiskFactorOrder(key));
+    const cId = Number(candidate.id ?? candidate.factor_id ?? candidate.factorId ?? Number.MAX_SAFE_INTEGER);
+    const rId = Number(current.id ?? current.factor_id ?? current.factorId ?? Number.MAX_SAFE_INTEGER);
+    if (cOfficial > rOfficial || (cOfficial === rOfficial && (cOrder < rOrder || (cOrder === rOrder && cId < rId)))) {
+      byKey.set(key, candidate);
+    }
+  }
+  return Array.from(byKey.values())
+    .sort((a: any, b: any) => {
+      const ak = canonicalRiskFactorKey(a.name ?? a.factor_name ?? a.factorName, a.code ?? a.factor_code ?? a.factorCode);
+      const bk = canonicalRiskFactorKey(b.name ?? b.factor_name ?? b.factorName, b.code ?? b.factor_code ?? b.factorCode);
+      return officialRiskFactorOrder(ak) - officialRiskFactorOrder(bk);
+    });
 }
 
 function riskRank(level: unknown): number {
@@ -2472,41 +2551,60 @@ async function computePrioritariosForSector(db: any, cid: number, targetSectorId
   }
 
   const [linksRows]: any = await execP(db, `
-    SELECT rcl.factor_id, rcl.module_id, rcl.criticality, m.title AS module_title, m.template_category, m.is_mandatory
+    SELECT rcl.factor_id, rcl.module_id, rcl.criticality, m.title AS module_title, m.template_category, m.is_mandatory,
+           pf.name AS factor_name, pf.code AS factor_code
     FROM risk_course_links rcl
+    INNER JOIN psychosocial_factors pf ON pf.id = rcl.factor_id
     INNER JOIN modules m ON m.id = rcl.module_id
     WHERE m.publish_status='published'
       AND (SELECT COUNT(*) FROM lessons l WHERE l.moduleId = m.id) > 0`, []);
-  const links = linksRows as any[];
 
   let actionPlanDeadlines: any[] = [];
   if (lastCycle?.id) {
     const [apRows]: any = await execP(db, `
-      SELECT factor_id, sector_id, end_date, preventive_program_module_id FROM risk_action_plan_items
-      WHERE assessment_id=? AND end_date IS NOT NULL`, [lastCycle.id]);
-    actionPlanDeadlines = apRows as any[];
+      SELECT ap.factor_id, ap.sector_id, ap.end_date, ap.preventive_program_module_id,
+             pf.name AS factor_name, pf.code AS factor_code
+      FROM risk_action_plan_items ap
+      INNER JOIN psychosocial_factors pf ON pf.id = ap.factor_id
+      WHERE ap.assessment_id=? AND ap.end_date IS NOT NULL`, [lastCycle.id]);
+    actionPlanDeadlines = (apRows as any[]).map((a: any) => ({
+      ...a,
+      factorKey: canonicalRiskFactorKey(a.factor_name, a.factor_code),
+    }));
   }
 
   const SEV: Record<string, number> = { baixa: 1, baixo: 1, media: 2, medio: 2, alta: 3, alto: 3, critica: 4, critico: 4 };
   const sevOf = (s: any) => SEV[String(s || "").toLowerCase()] ?? 0;
+  const linksByFactorModule = new Map<string, any>();
+  for (const row of linksRows as any[]) {
+    const factorKey = canonicalRiskFactorKey(row.factor_name, row.factor_code);
+    const k = `${factorKey}:${Number(row.module_id)}`;
+    const candidate = { ...row, factorKey };
+    const current = linksByFactorModule.get(k);
+    if (!current || sevOf(candidate.criticality) < sevOf(current.criticality)) {
+      linksByFactorModule.set(k, candidate);
+    }
+  }
+  const links = Array.from(linksByFactorModule.values());
 
   const prioritarios: any[] = [];
   for (const link of links) {
     const linkSev = sevOf(link.criticality);
+    const linkFactorKey = link.factorKey;
     const matched = inventory.find((it: any) =>
-      Number(it.factor_id) === Number(link.factor_id)
+      canonicalRiskFactorKey(it.factor_name, it.factor_code) === linkFactorKey
       && (targetSectorIds.length === 0 || targetSectorIds.includes(Number(it.sector_id)))
       && (
         sevOf(it.risco_final) >= linkSev
         || actionPlanDeadlines.some((a: any) =>
              Number(a.preventive_program_module_id) === Number(link.module_id)
-             && Number(a.factor_id) === Number(link.factor_id)
+             && a.factorKey === linkFactorKey
              && Number(a.sector_id) === Number(it.sector_id))
       )
     );
     if (matched) {
       const apItem = actionPlanDeadlines.find((a: any) =>
-        Number(a.factor_id) === Number(link.factor_id) && Number(a.sector_id) === Number(matched.sector_id)
+        a.factorKey === linkFactorKey && Number(a.sector_id) === Number(matched.sector_id)
       );
       const deadlineDate = apItem?.end_date
         ? new Date(apItem.end_date)
@@ -2544,7 +2642,7 @@ async function computePrioritariosForSector(db: any, cid: number, targetSectorId
       if (!apItem) continue;
       const deadline = apItem.end_date ? new Date(apItem.end_date) : null;
       const daysLeft = deadline ? Math.ceil((deadline.getTime() - Date.now()) / (1000*60*60*24)) : null;
-      const invMatch = inventory.find((it: any) => Number(it.factor_id) === Number(apItem.factor_id) && Number(it.sector_id) === Number(apItem.sector_id));
+      const invMatch = inventory.find((it: any) => canonicalRiskFactorKey(it.factor_name, it.factor_code) === apItem.factorKey && Number(it.sector_id) === Number(apItem.sector_id));
       prioritarios.push({
         moduleId: Number(m.id),
         moduleTitle: m.title,
@@ -18650,7 +18748,7 @@ Return only the JSON content object (no wrapper). Format per type:
         FROM psychosocial_factors f
         LEFT JOIN modules m ON m.id = f.preventive_program_module_id
         ORDER BY f.axis_order`);
-      return (r as any)[0] ?? [];
+      return dedupePsychosocialFactorRows(((r as any)[0] ?? []) as any[]);
     }),
 
     listAssessments: adminOrRhProcedure.query(async ({ ctx }) => {
@@ -18886,8 +18984,8 @@ Return only the JSON content object (no wrapper). Format per type:
         const idr: any = await db.execute(drzSql`SELECT LAST_INSERT_ID() AS id`);
         const assessmentId = Number((idr as any)[0]?.[0]?.id ?? 0);
 
-        const factors: any = await db.execute(drzSql`SELECT id FROM psychosocial_factors ORDER BY axis_order`);
-        const factorRows = (factors as any)[0] ?? [];
+        const factors: any = await db.execute(drzSql`SELECT id, code, name, axis_order FROM psychosocial_factors ORDER BY axis_order, id`);
+        const factorRows = dedupePsychosocialFactorRows(((factors as any)[0] ?? []) as any[]);
         for (const f of factorRows) {
           await db.execute(drzSql`
             INSERT INTO risk_inventory_items (assessment_id, factor_id, gravidade, probabilidade, risco_final)
@@ -18921,10 +19019,10 @@ Return only the JSON content object (no wrapper). Format per type:
         for (let i = 19; i <= 21; i++) orderToFactor[i] = "justica";
         for (let i = 22; i <= 24; i++) orderToFactor[i] = "sobrecarga";
         for (let i = 25; i <= 27; i++) orderToFactor[i] = "subcarga";
-        for (let i = 28; i <= 30; i++) orderToFactor[i] = "relacionamento";
-        for (let i = 31; i <= 33; i++) orderToFactor[i] = "comunicacao_dificil";
-        for (let i = 34; i <= 36; i++) orderToFactor[i] = "isolamento";
-        for (let i = 37; i <= 40; i++) orderToFactor[i] = "eventos_criticos";
+        for (let i = 28; i <= 30; i++) orderToFactor[i] = "relacionamentos";
+        for (let i = 31; i <= 33; i++) orderToFactor[i] = "comunicacao";
+        for (let i = 34; i <= 36; i++) orderToFactor[i] = "remoto";
+        for (let i = 37; i <= 40; i++) orderToFactor[i] = "trauma";
 
         // Reverse-scored question order_indexes (positive phrasing where higher likert = LOWER risk)
         const reverseSet = new Set([3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 29, 30, 31, 32, 33, 35, 39, 40]);
@@ -19005,8 +19103,8 @@ Return only the JSON content object (no wrapper). Format per type:
         }
 
         // Catálogo de fatores (id + code)
-        const fr: any = await db.execute(drzSql`SELECT id, code FROM psychosocial_factors ORDER BY axis_order`);
-        const factorRows = (fr as any)[0] ?? [];
+        const fr: any = await db.execute(drzSql`SELECT id, code, name, axis_order FROM psychosocial_factors ORDER BY axis_order, id`);
+        const factorRows = dedupePsychosocialFactorRows(((fr as any)[0] ?? []) as any[]);
 
         const sectorKeys = Object.keys(aggBySector);
         // Modo POR SETOR quando a avaliação é da empresa/filial (sem setor fixo) e há
@@ -24970,25 +25068,34 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         LEFT JOIN modules m ON m.id = f.preventive_program_module_id
         ORDER BY f.axis_order
       `);
-      const frows = Array.isArray((fr as any)[0]) ? (fr as any)[0] : Array.isArray(fr) ? fr : [];
+      const frowsRaw = Array.isArray((fr as any)[0]) ? (fr as any)[0] : Array.isArray(fr) ? fr : [];
+      const frows = dedupePsychosocialFactorRows(frowsRaw as any[]);
       const lr: any = await db.execute(drzSql`
         SELECT rcl.factor_id, rcl.module_id, rcl.criticality, rcl.is_auto_linked,
-               m.title AS moduleTitle, m.template_category AS moduleCategory
+               m.title AS moduleTitle, m.template_category AS moduleCategory,
+               pf.name AS factorName, pf.code AS factorCode
         FROM risk_course_links rcl
+        JOIN psychosocial_factors pf ON pf.id = rcl.factor_id
         JOIN modules m ON m.id = rcl.module_id
       `);
       const lrows = Array.isArray((lr as any)[0]) ? (lr as any)[0] : Array.isArray(lr) ? lr : [];
-      const linksByFactor = new Map<number, any[]>();
+      const linksByFactor = new Map<string, Map<number, any>>();
+      const sevWeight = (v: any) => riskRank(v) || 0;
       for (const l of lrows) {
-        const fid = Number(l.factor_id);
-        if (!linksByFactor.has(fid)) linksByFactor.set(fid, []);
-        linksByFactor.get(fid)!.push({
+        const fKey = canonicalRiskFactorKey(l.factorName, l.factorCode);
+        if (!linksByFactor.has(fKey)) linksByFactor.set(fKey, new Map<number, any>());
+        const moduleId = Number(l.module_id);
+        const link = {
           module_id: Number(l.module_id),
           moduleTitle: String(l.moduleTitle ?? ""),
           moduleCategory: l.moduleCategory ? String(l.moduleCategory) : null,
           criticality: String(l.criticality ?? "media"),
           is_auto_linked: Boolean(l.is_auto_linked),
-        });
+        };
+        const existing = linksByFactor.get(fKey)!.get(moduleId);
+        if (!existing || sevWeight(link.criticality) < sevWeight(existing.criticality)) {
+          linksByFactor.get(fKey)!.set(moduleId, link);
+        }
       }
       return frows.map((f: any) => ({
         id: Number(f.id),
@@ -24997,7 +25104,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         description: f.description ? String(f.description) : null,
         axisOrder: Number(f.axisOrder ?? 0),
         programTitle: f.programTitle ? String(f.programTitle) : null,
-        linkedCourses: linksByFactor.get(Number(f.id)) ?? [],
+        linkedCourses: Array.from((linksByFactor.get(canonicalRiskFactorKey(f.name, f.code)) ?? new Map()).values()),
       }));
     }),
 
@@ -25542,17 +25649,18 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         const factorR: any = await db.execute(drzSql`
           SELECT id, code, name FROM psychosocial_factors ORDER BY axis_order, id
         `);
-        const factors = (Array.isArray((factorR as any)[0]) ? (factorR as any)[0] : [])
+        const factors = dedupePsychosocialFactorRows((Array.isArray((factorR as any)[0]) ? (factorR as any)[0] : []) as any[])
           .map((r: any) => ({ id: Number(r.id), code: String(r.code ?? ""), name: String(r.name ?? "") }));
         const heatRows: any = await db.execute(drzSql`
           SELECT ra.id as assessment_id, ra.cycle_name,
                  COALESCE(s.name, 'Geral') as sector_name,
                  COALESCE(b.name, '') as branch_name,
-                 ri.factor_id, ri.risco_final
+                 ri.factor_id, ri.risco_final, pf.code AS factor_code, pf.name AS factor_name
           FROM risk_assessments ra
           LEFT JOIN sectors s ON s.id = ra.sector_id
           LEFT JOIN branches b ON b.id = ra.branch_id
           LEFT JOIN risk_inventory_items ri ON ri.assessment_id = ra.id
+          LEFT JOIN psychosocial_factors pf ON pf.id = ri.factor_id
           WHERE ra.company_id=${cid}
           ORDER BY ra.id, ri.factor_id
         `);
@@ -25566,11 +25674,11 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
               cycleName: String(r.cycle_name ?? ""),
               sectorName: String(r.sector_name ?? "Geral"),
               branchName: String(r.branch_name ?? ""),
-              cells: new Map<number, string>(),
+              cells: new Map<string, string>(),
             });
           }
           if (r.factor_id && r.risco_final) {
-            assessMap.get(aid)!.cells.set(Number(r.factor_id), String(r.risco_final));
+            assessMap.get(aid)!.cells.set(canonicalRiskFactorKey(r.factor_name, r.factor_code), String(r.risco_final));
           }
         }
         const resultRows = Array.from(assessMap.values()).map((a: any) => ({
@@ -25580,7 +25688,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           branchName: a.branchName,
           cells: factors.map((f: any) => ({
             factorId: f.id,
-            risco: a.cells.get(f.id) ?? null,
+            risco: a.cells.get(canonicalRiskFactorKey(f.name, f.code)) ?? null,
           })),
         }));
         return { factors, rows: resultRows };
