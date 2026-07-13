@@ -2532,6 +2532,35 @@ function participationStatus(done: number, total: number): "nao_respondeu" | "em
 // → prazo do Plano de Ação) pra um helper reaproveitável por qualquer setor, sem
 // depender do usuário logado — usado tanto pela query do colaborador quanto pelo
 // motor de campanha (que roda no contexto do RH/Admin, iterando vários usuários).
+async function loadRiskCourseLinks(db: any) {
+  const [linksRows]: any = await execP(db, `
+    SELECT rcl.factor_id, rcl.module_id, rcl.criticality, m.title AS module_title, m.template_category, m.is_mandatory,
+           pf.name AS factor_name, pf.code AS factor_code
+    FROM risk_course_links rcl
+    INNER JOIN psychosocial_factors pf ON pf.id = rcl.factor_id
+    INNER JOIN modules m ON m.id = rcl.module_id
+    WHERE m.publish_status='published'
+      AND (SELECT COUNT(*) FROM lessons l WHERE l.moduleId = m.id) > 0
+    ORDER BY pf.axis_order, FIELD(rcl.criticality,'baixa','baixo','media','medio','alta','alto','critica','critico'), m.title`, []);
+
+  const linksByFactorModuleCriticality = new Map<string, any>();
+  for (const row of linksRows as any[]) {
+    const factorKey = canonicalRiskFactorKey(row.factor_name, row.factor_code);
+    const criticalityRank = riskRank(row.criticality);
+    const k = `${factorKey}:${Number(row.module_id)}:${criticalityRank}`;
+    const candidate = { ...row, factorKey, criticalityRank };
+    if (!linksByFactorModuleCriticality.has(k)) linksByFactorModuleCriticality.set(k, candidate);
+  }
+  return Array.from(linksByFactorModuleCriticality.values());
+}
+
+function exactRiskCourseLinks(links: any[], factorName: unknown, factorCode: unknown, riscoFinal: unknown) {
+  const factorKey = canonicalRiskFactorKey(factorName, factorCode);
+  const risk = riskRank(riscoFinal);
+  if (!factorKey || risk <= 0) return [];
+  return links.filter((link: any) => link.factorKey === factorKey && Number(link.criticalityRank) === risk);
+}
+
 async function computePrioritariosForSector(db: any, cid: number, targetSectorIds: number[], assessmentId?: number) {
   const [[lastCycle]]: any = assessmentId
     ? await execP(db, `
@@ -2554,14 +2583,7 @@ async function computePrioritariosForSector(db: any, cid: number, targetSectorId
     inventory = dedupeRiskRows(rows as any[], "inventory");
   }
 
-  const [linksRows]: any = await execP(db, `
-    SELECT rcl.factor_id, rcl.module_id, rcl.criticality, m.title AS module_title, m.template_category, m.is_mandatory,
-           pf.name AS factor_name, pf.code AS factor_code
-    FROM risk_course_links rcl
-    INNER JOIN psychosocial_factors pf ON pf.id = rcl.factor_id
-    INNER JOIN modules m ON m.id = rcl.module_id
-    WHERE m.publish_status='published'
-      AND (SELECT COUNT(*) FROM lessons l WHERE l.moduleId = m.id) > 0`, []);
+  const links = await loadRiskCourseLinks(db);
 
   let actionPlanDeadlines: any[] = [];
   if (lastCycle?.id) {
@@ -2577,36 +2599,12 @@ async function computePrioritariosForSector(db: any, cid: number, targetSectorId
     }));
   }
 
-  const SEV: Record<string, number> = { baixa: 1, baixo: 1, media: 2, medio: 2, alta: 3, alto: 3, critica: 4, critico: 4 };
-  const sevOf = (s: any) => SEV[String(s || "").toLowerCase()] ?? 0;
-  const linksByFactorModule = new Map<string, any>();
-  for (const row of linksRows as any[]) {
-    const factorKey = canonicalRiskFactorKey(row.factor_name, row.factor_code);
-    const k = `${factorKey}:${Number(row.module_id)}`;
-    const candidate = { ...row, factorKey };
-    const current = linksByFactorModule.get(k);
-    if (!current || sevOf(candidate.criticality) < sevOf(current.criticality)) {
-      linksByFactorModule.set(k, candidate);
-    }
-  }
-  const links = Array.from(linksByFactorModule.values());
-
   const prioritarios: any[] = [];
-  for (const link of links) {
-    const linkSev = sevOf(link.criticality);
-    const linkFactorKey = link.factorKey;
-    const matched = inventory.find((it: any) =>
-      canonicalRiskFactorKey(it.factor_name, it.factor_code) === linkFactorKey
-      && (targetSectorIds.length === 0 || targetSectorIds.includes(Number(it.sector_id)))
-      && (
-        sevOf(it.risco_final) >= linkSev
-        || actionPlanDeadlines.some((a: any) =>
-             Number(a.preventive_program_module_id) === Number(link.module_id)
-             && a.factorKey === linkFactorKey
-             && Number(a.sector_id) === Number(it.sector_id))
-      )
-    );
-    if (matched) {
+  for (const matched of inventory) {
+    if (targetSectorIds.length > 0 && !targetSectorIds.includes(Number(matched.sector_id))) continue;
+    const exactLinks = exactRiskCourseLinks(links, matched.factor_name, matched.factor_code, matched.risco_final);
+    for (const link of exactLinks) {
+      const linkFactorKey = link.factorKey;
       const apItem = actionPlanDeadlines.find((a: any) =>
         a.factorKey === linkFactorKey && Number(a.sector_id) === Number(matched.sector_id)
       );
@@ -2630,38 +2628,6 @@ async function computePrioritariosForSector(db: any, cid: number, targetSectorId
         daysLeft,
         isOverdue: daysLeft !== null && daysLeft < 0,
         isMandatory: !!link.is_mandatory,
-      });
-    }
-  }
-  const apModuleIds = Array.from(new Set(actionPlanDeadlines.map((a: any) => Number(a.preventive_program_module_id)).filter(Boolean)));
-  const missingApModuleIds = apModuleIds.filter(id => !prioritarios.some(p => Number(p.moduleId) === id));
-  if (missingApModuleIds.length) {
-    const idsIn = missingApModuleIds.map(() => "?").join(",");
-    const [missingMods]: any = await execP(db, `
-      SELECT id, title FROM modules
-      WHERE id IN (${idsIn}) AND publish_status='published'
-        AND (SELECT COUNT(*) FROM lessons l WHERE l.moduleId = modules.id) > 0`, missingApModuleIds);
-    for (const m of missingMods as any[]) {
-      const apItem = actionPlanDeadlines.find((a: any) => Number(a.preventive_program_module_id) === Number(m.id));
-      if (!apItem) continue;
-      const deadline = apItem.end_date ? new Date(apItem.end_date) : null;
-      const daysLeft = deadline ? Math.ceil((deadline.getTime() - Date.now()) / (1000*60*60*24)) : null;
-      const invMatch = inventory.find((it: any) => canonicalRiskFactorKey(it.factor_name, it.factor_code) === apItem.factorKey && Number(it.sector_id) === Number(apItem.sector_id));
-      prioritarios.push({
-        moduleId: Number(m.id),
-        moduleTitle: m.title,
-        factorId: Number(apItem.factor_id),
-        factorName: invMatch?.factor_name ?? null,
-        riscoFinal: invMatch?.risco_final ?? null,
-        criticidadeConfigurada: null,
-        cycleId: lastCycle?.id ?? null,
-        cycleName: lastCycle?.cycle_name ?? null,
-        sectorId: Number(apItem.sector_id) || null,
-        deadline: deadline?.toISOString().slice(0,10) ?? null,
-        daysLeft,
-        isOverdue: daysLeft !== null && daysLeft < 0,
-        isMandatory: true,
-        viaPlanoDeAcaoDireto: true,
       });
     }
   }
@@ -2897,6 +2863,45 @@ async function buildFirstAidKitReportSections(db: any, cid: number, escHtml: (s:
     ])) },
     { n: 6, t: "Conclusao", c: `O controle dos kits deve ser mantido por inspeções periodicas, reposicao de itens faltantes, retirada de materiais vencidos e acompanhamento dos alertas de estoque minimo. Este relatorio pode ser usado como evidencia no PGR, Central de Conformidade e auditorias internas.` },
   ];
+}
+
+async function generateFirstAidKitReportPdf(db: any, cid: number) {
+  const puppeteer = (await import("puppeteer")).default;
+  const fs = await import("fs/promises");
+  const path = await import("path");
+  const escHtml = (s: unknown) => String(s ?? "").replace(/[<>&"]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;","\"":"&quot;"}[c] as string));
+  const [[co]]: any = await execP(db, `SELECT name, cnpj FROM companies WHERE id=?`, [cid]).catch(() => [[{ name: "", cnpj: "" }]]);
+  const today = new Date().toLocaleDateString("pt-BR", { day: "2-digit", month: "long", year: "numeric" });
+  const sections = await buildFirstAidKitReportSections(db, cid, escHtml, today);
+  const sectionsHtml = sections.map(s => `<h2>${s.n}. ${s.t}</h2><div>${s.c}</div>`).join("\n");
+  const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
+    @page { size: A4; margin: 18mm; }
+    body { font-family: 'Segoe UI', Arial, sans-serif; color:#0f172a; }
+    h1 { font-size: 22pt; margin: 0 0 6px; color:#7f1d1d; }
+    h2 { font-size: 13pt; margin: 18px 0 8px; color:#0f172a; border-bottom:1px solid #e2e8f0; padding-bottom:4px; }
+    .meta { color:#64748b; font-size:9pt; margin-bottom:18px; }
+    table { font-size:8.5pt; }
+    th { background:#f8fafc; }
+    .footer { position: fixed; bottom: 8mm; left: 18mm; right: 18mm; font-size:8pt; color:#94a3b8; border-top:1px solid #e2e8f0; padding-top:4px; }
+  </style></head><body>
+    <h1>Relatório do Kit de Primeiros Socorros</h1>
+    <div class="meta">Empresa: <b>${escHtml(co?.name || "")}</b> · CNPJ: ${escHtml(co?.cnpj || "-")} · Emissão: ${today}</div>
+    ${sectionsHtml}
+    <div class="footer">Plataforma Saúde do Trabalho · Relatório gerado automaticamente · ${today}</div>
+  </body></html>`;
+  const outDir = "/var/www/saudedotrabalho/uploads/firstaid_reports";
+  await fs.mkdir(outDir, { recursive: true });
+  const fileName = `kit_primeiros_socorros_${cid}_${Date.now()}.pdf`;
+  const outPath = path.join(outDir, fileName);
+  const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: "networkidle0" });
+    await page.pdf({ path: outPath, format: "A4", printBackground: true });
+  } finally {
+    await browser.close();
+  }
+  return `/uploads/firstaid_reports/${fileName}`;
 }
 
 // P18 GRANDE — Módulo CIPA eleitoral: dispara e-mail pra todos os colaboradores
@@ -19354,6 +19359,7 @@ Return only the JSON content object (no wrapper). Format per type:
           WHERE ii.assessment_id=${input.assessmentId}
           ORDER BY f.axis_order`);
         const items = dedupeRiskRows(((ir as any)[0] ?? []) as any[], "inventory");
+        const courseLinks = await loadRiskCourseLinks(db);
 
         // Remove existing plan items
         await db.execute(drzSql`DELETE FROM risk_action_plan_items WHERE assessment_id=${input.assessmentId}`);
@@ -19379,11 +19385,13 @@ Return only the JSON content object (no wrapper). Format per type:
           const endIdx = months[months.length - 1];
           const sD = new Date(startD.getFullYear(), startD.getMonth() + startIdx, 1);
           const eD = new Date(startD.getFullYear(), startD.getMonth() + endIdx + 1, 0);
+          const selectedCourse = exactRiskCourseLinks(courseLinks, it.factor_name, it.code, it.risco_final)[0];
+          const moduleId = selectedCourse?.module_id ? Number(selectedCourse.module_id) : null;
 
           await db.execute(drzSql`
             INSERT INTO risk_action_plan_items
               (assessment_id, factor_id, sector_id, branch_id, preventive_program_module_id, action_description, responsible_party, priority, start_date, end_date, status, monthly_progress)
-            VALUES (${input.assessmentId}, ${it.factor_id}, ${it.sector_id ?? null}, ${it.branch_id ?? null}, ${it.programId ?? null}, ${it.defaultAction ?? "Ação a definir"},
+            VALUES (${input.assessmentId}, ${it.factor_id}, ${it.sector_id ?? null}, ${it.branch_id ?? null}, ${moduleId}, ${it.defaultAction ?? "Ação a definir"},
                     'Consultoria Saúde do Trabalho', ${priority},
                     ${sD.toISOString().slice(0, 10)}, ${eD.toISOString().slice(0, 10)},
                     'programado', ${JSON.stringify(progress)})`);
@@ -25385,7 +25393,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
     // (tabela risk_course_links: factor_id + module_id + criticality).
     //
     // Para CADA setor que aparece no inventário do ÚLTIMO ciclo psicossocial:
-    //   - encontra os fatores com riscoFinal >= criticidade configurada no link
+    //   - encontra os fatores com riscoFinal igual à criticidade configurada no link
     //   - retorna os módulos correspondentes
     //
     // Resposta agrupada por colaborador → usada pela tela "Meus Cursos",
@@ -25700,7 +25708,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           riskLevel: String(p.riscoFinal ?? ""),
           moduleId: Number(p.moduleId),
           moduleTitle: String(p.moduleTitle ?? ""),
-          source: p.viaPlanoDeAcaoDireto ? "plano_de_acao" as const : "risco_prioritario" as const,
+          source: "risco_prioritario" as const,
         }));
         /*
         // Get high/critical factors from this assessment inventory
@@ -27772,17 +27780,93 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         await db.execute(drzSql`CREATE TABLE IF NOT EXISTS cipa_meetings (
           id INT AUTO_INCREMENT PRIMARY KEY, company_id INT NOT NULL,
           meeting_date DATE NOT NULL, title VARCHAR(255) NOT NULL,
-          participants_text TEXT, pauta TEXT, ata_text TEXT,
+          participants_text TEXT, pauta TEXT, ata_text TEXT, action_plan_text TEXT,
           related_sipat_edition_id INT NULL,
           created_by_user_id INT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           INDEX idx_company (company_id, meeting_date)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+        await db.execute(drzSql`CREATE TABLE IF NOT EXISTS cipa_meeting_attachments (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          meeting_id INT NOT NULL,
+          company_id INT NOT NULL,
+          kind VARCHAR(40) NOT NULL DEFAULT 'documento',
+          title VARCHAR(255) NULL,
+          file_url VARCHAR(500) NOT NULL,
+          file_name VARCHAR(255) NULL,
+          mime_type VARCHAR(120) NULL,
+          file_size INT NULL,
+          uploaded_by_user_id INT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_meeting (meeting_id),
+          INDEX idx_company (company_id, kind)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
         // P18 GRANDE — cartão de candidato completo (cargo/chapa) + comprovante de voto.
         try { await db.execute(drzSql`ALTER TABLE cipa_candidates ADD COLUMN cargo VARCHAR(160) NULL`); } catch (_) {}
         try { await db.execute(drzSql`ALTER TABLE cipa_candidates ADD COLUMN chapa VARCHAR(30) NULL`); } catch (_) {}
         try { await db.execute(drzSql`ALTER TABLE cipa_voters ADD COLUMN receipt_code VARCHAR(24) NULL`); } catch (_) {}
+        try { await db.execute(drzSql`ALTER TABLE cipa_meetings ADD COLUMN action_plan_text TEXT NULL`); } catch (_) {}
         _cipaDdlDone = true;
       } catch (e) { console.warn("[cipa] DDL:", (e as any)?.message); }
+    }
+    function assertCanManageCipaMeeting(ctx: any) {
+      const role = (ctx.user as any).role;
+      if (!["cipa", "admin", "rh", "admin_global", "company_admin", "super_admin", "sesmt"].includes(role)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Apenas integrantes da CIPA e RH/SESMT registram reuniões." });
+      }
+    }
+    async function generateCipaMeetingPdf(db: any, cid: number, meetingId: number) {
+      const puppeteer = (await import("puppeteer")).default;
+      const fs = await import("fs/promises");
+      const path = await import("path");
+      const escHtml = (s: unknown) => String(s ?? "").replace(/[<>&"]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;","\"":"&quot;"}[c] as string));
+      const [[meeting]]: any = await execP(db, `SELECT * FROM cipa_meetings WHERE id=? AND company_id=?`, [meetingId, cid]);
+      if (!meeting) throw new TRPCError({ code: "NOT_FOUND", message: "Reunião não encontrada." });
+      const [[co]]: any = await execP(db, `SELECT name, cnpj FROM companies WHERE id=?`, [cid]).catch(() => [[{ name: "", cnpj: "" }]]);
+      const [attachments]: any = await execP(db, `SELECT * FROM cipa_meeting_attachments WHERE meeting_id=? AND company_id=? ORDER BY kind, created_at`, [meetingId, cid]);
+      const today = new Date().toLocaleDateString("pt-BR", { day: "2-digit", month: "long", year: "numeric" });
+      const meetingDate = meeting.meeting_date ? new Date(meeting.meeting_date).toLocaleDateString("pt-BR") : "-";
+      const pre = (v: any) => escHtml(v || "-").replace(/\n/g, "<br>");
+      const attachmentRows = (attachments ?? []).map((a: any) => `<tr><td>${escHtml(a.kind)}</td><td>${escHtml(a.title || a.file_name || "-")}</td><td>${escHtml(a.mime_type || "-")}</td><td>${Number(a.file_size || 0).toLocaleString("pt-BR")} bytes</td></tr>`).join("");
+      const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
+        @page { size: A4; margin: 18mm; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; color:#0f172a; }
+        h1 { font-size: 22pt; margin:0 0 4px; color:#065f46; }
+        h2 { font-size: 13pt; margin:18px 0 8px; color:#0f172a; border-bottom:1px solid #d1fae5; padding-bottom:4px; }
+        .meta { color:#64748b; font-size:9pt; margin-bottom:18px; }
+        .box { border:1px solid #e2e8f0; border-radius:8px; padding:10px 12px; margin-bottom:10px; }
+        table { width:100%; border-collapse:collapse; font-size:9pt; }
+        th, td { border:1px solid #e2e8f0; padding:6px; vertical-align:top; }
+        th { background:#f0fdf4; text-align:left; }
+        .footer { position: fixed; bottom: 8mm; left: 18mm; right: 18mm; font-size:8pt; color:#94a3b8; border-top:1px solid #e2e8f0; padding-top:4px; }
+      </style></head><body>
+        <h1>Documento Técnico de Reunião da CIPA</h1>
+        <div class="meta">Empresa: <b>${escHtml(co?.name || "")}</b> · CNPJ: ${escHtml(co?.cnpj || "-")} · Emissão: ${today}</div>
+        <div class="box"><b>Título:</b> ${escHtml(meeting.title)}<br><b>Data:</b> ${meetingDate}<br><b>Participantes:</b><br>${pre(meeting.participants_text)}</div>
+        <h2>1. Pauta</h2><div>${pre(meeting.pauta)}</div>
+        <h2>2. Ata e Deliberações</h2><div>${pre(meeting.ata_text)}</div>
+        <h2>3. Plano de Ação</h2><div>${pre(meeting.action_plan_text)}</div>
+        <h2>4. Evidências e Anexos</h2>
+        <table><thead><tr><th>Tipo</th><th>Documento</th><th>MIME</th><th>Tamanho</th></tr></thead><tbody>${attachmentRows || `<tr><td colspan="4">Nenhum anexo registrado.</td></tr>`}</tbody></table>
+        <h2>5. Rastreabilidade</h2><div>Registro mantido na Plataforma Saúde do Trabalho para consulta, auditoria e evidência documental da CIPA.</div>
+        <div class="footer">Plataforma Saúde do Trabalho · Documento gerado automaticamente · ${today}</div>
+      </body></html>`;
+      const outDir = "/var/www/saudedotrabalho/uploads/cipa_meetings";
+      await fs.mkdir(outDir, { recursive: true });
+      const fileName = `cipa_reuniao_${meetingId}_${Date.now()}.pdf`;
+      const outPath = path.join(outDir, fileName);
+      const browser = await puppeteer.launch({
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium-browser",
+        headless: true,
+        args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      });
+      try {
+        const page = await browser.newPage();
+        await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 15000 });
+        await page.pdf({ path: outPath, format: "A4", printBackground: true });
+      } finally {
+        await browser.close();
+      }
+      return `/uploads/cipa_meetings/${fileName}`;
     }
     return router({
       listElections: adminOrRhProcedure.query(async ({ ctx }) => {
@@ -28009,12 +28093,22 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         const db = await getDb(); if (!db || !cid) return [];
         await ensureCipaTables(db);
         const [rows]: any = await execP(db, `SELECT * FROM cipa_meetings WHERE company_id=? ORDER BY meeting_date DESC`, [cid]);
-        return rows ?? [];
+        const ids = (rows ?? []).map((r: any) => Number(r.id)).filter(Boolean);
+        if (!ids.length) return rows ?? [];
+        const placeholders = ids.map(() => "?").join(",");
+        const [atts]: any = await execP(db, `SELECT * FROM cipa_meeting_attachments WHERE company_id=? AND meeting_id IN (${placeholders}) ORDER BY created_at DESC`, [cid, ...ids]);
+        const byMeeting = new Map<number, any[]>();
+        for (const a of atts ?? []) {
+          const arr = byMeeting.get(Number(a.meeting_id)) ?? [];
+          arr.push(a);
+          byMeeting.set(Number(a.meeting_id), arr);
+        }
+        return (rows ?? []).map((r: any) => ({ ...r, attachments: byMeeting.get(Number(r.id)) ?? [] }));
       }),
       upsertMeeting: protectedProcedure
         .input(z.object({
           id: z.number().optional(), meetingDate: z.string(), title: z.string().min(1),
-          participantsText: z.string().optional(), pauta: z.string().optional(), ataText: z.string().optional(),
+          participantsText: z.string().optional(), pauta: z.string().optional(), ataText: z.string().optional(), actionPlanText: z.string().optional(),
           relatedSipatEditionId: z.number().int().optional(),
         }))
         .mutation(async ({ ctx, input }) => {
@@ -28024,14 +28118,71 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           }
           const cid = (ctx.user as any).companyId;
           const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+          await ensureCipaTables(db);
           if (input.id) {
-            await execP(db, `UPDATE cipa_meetings SET meeting_date=?, title=?, participants_text=?, pauta=?, ata_text=?, related_sipat_edition_id=? WHERE id=? AND company_id=?`,
-              [input.meetingDate, input.title, input.participantsText || null, input.pauta || null, input.ataText || null, input.relatedSipatEditionId ?? null, input.id, cid]);
+            await execP(db, `UPDATE cipa_meetings SET meeting_date=?, title=?, participants_text=?, pauta=?, ata_text=?, action_plan_text=?, related_sipat_edition_id=? WHERE id=? AND company_id=?`,
+              [input.meetingDate, input.title, input.participantsText || null, input.pauta || null, input.ataText || null, input.actionPlanText || null, input.relatedSipatEditionId ?? null, input.id, cid]);
             return { ok: true, id: input.id };
           }
-          const [res]: any = await execP(db, `INSERT INTO cipa_meetings (company_id, meeting_date, title, participants_text, pauta, ata_text, related_sipat_edition_id, created_by_user_id) VALUES (?,?,?,?,?,?,?,?)`,
-            [cid, input.meetingDate, input.title, input.participantsText || null, input.pauta || null, input.ataText || null, input.relatedSipatEditionId ?? null, ctx.user.id]);
+          const [res]: any = await execP(db, `INSERT INTO cipa_meetings (company_id, meeting_date, title, participants_text, pauta, ata_text, action_plan_text, related_sipat_edition_id, created_by_user_id) VALUES (?,?,?,?,?,?,?,?,?)`,
+            [cid, input.meetingDate, input.title, input.participantsText || null, input.pauta || null, input.ataText || null, input.actionPlanText || null, input.relatedSipatEditionId ?? null, ctx.user.id]);
           return { ok: true, id: Number((res as any).insertId ?? 0) };
+        }),
+      removeMeeting: protectedProcedure
+        .input(z.object({ id: z.number().int() }))
+        .mutation(async ({ ctx, input }) => {
+          assertCanManageCipaMeeting(ctx);
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+          await ensureCipaTables(db);
+          await execP(db, `DELETE FROM cipa_meeting_attachments WHERE meeting_id=? AND company_id=?`, [input.id, cid]);
+          await execP(db, `DELETE FROM cipa_meetings WHERE id=? AND company_id=?`, [input.id, cid]);
+          return { ok: true };
+        }),
+      addMeetingAttachment: protectedProcedure
+        .input(z.object({
+          meetingId: z.number().int(),
+          kind: z.enum(["lista_presenca", "fotografia", "evidencia", "plano_acao", "documento"]).default("documento"),
+          title: z.string().optional(),
+          fileName: z.string().optional(),
+          mimeType: z.string().optional(),
+          fileBase64: z.string().max(12_000_000),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          assertCanManageCipaMeeting(ctx);
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+          await ensureCipaTables(db);
+          const [[meeting]]: any = await execP(db, `SELECT id FROM cipa_meetings WHERE id=? AND company_id=?`, [input.meetingId, cid]);
+          if (!meeting) throw new TRPCError({ code: "NOT_FOUND", message: "Reunião não encontrada." });
+          const fs = await import("fs/promises");
+          const path = await import("path");
+          const crypto = await import("crypto");
+          const m = input.fileBase64.match(/^data:([^;]+);base64,(.*)$/);
+          const mime = input.mimeType || m?.[1] || "application/octet-stream";
+          const b64 = m ? m[2] : input.fileBase64;
+          const buf = Buffer.from(b64, "base64");
+          if (!buf.length || buf.length > 8_000_000) throw new TRPCError({ code: "BAD_REQUEST", message: "Arquivo inválido ou maior que 8MB." });
+          const safeOriginal = (input.fileName || "anexo").replace(/[^\w.\-]+/g, "_").slice(0, 120);
+          const ext = path.extname(safeOriginal) || (mime.includes("pdf") ? ".pdf" : mime.includes("png") ? ".png" : mime.includes("jpeg") ? ".jpg" : ".bin");
+          const finalName = `cipa_${input.meetingId}_${Date.now()}_${crypto.randomBytes(4).toString("hex")}${ext}`;
+          const outDir = "/var/www/saudedotrabalho/uploads/cipa_meetings";
+          await fs.mkdir(outDir, { recursive: true });
+          await fs.writeFile(path.join(outDir, finalName), buf);
+          const url = `/uploads/cipa_meetings/${finalName}`;
+          const [res]: any = await execP(db, `INSERT INTO cipa_meeting_attachments (meeting_id, company_id, kind, title, file_url, file_name, mime_type, file_size, uploaded_by_user_id) VALUES (?,?,?,?,?,?,?,?,?)`,
+            [input.meetingId, cid, input.kind, input.title || safeOriginal, url, safeOriginal, mime, buf.length, ctx.user.id]);
+          return { ok: true, id: Number((res as any).insertId ?? 0), url };
+        }),
+      generateMeetingPdf: protectedProcedure
+        .input(z.object({ id: z.number().int() }))
+        .mutation(async ({ ctx, input }) => {
+          assertCanManageCipaMeeting(ctx);
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+          await ensureCipaTables(db);
+          const url = await generateCipaMeetingPdf(db, cid, input.id);
+          return { ok: true, url };
         }),
 
       dashboard: protectedProcedure.query(async ({ ctx }) => {
@@ -28586,6 +28737,14 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         const db = await getDb(); if (!db || !cid) return { summary: { kits: 0, items: 0, expired: 0, soon30: 0, missing: 0, critical: 0, kitsWithoutItems: 0 }, rows: [], byLocation: [] };
         await ensureFaTables(db);
         return loadFirstAidKitReport(db, cid);
+      }),
+
+      generateReportPdf: adminOrRhProcedure.mutation(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+        await ensureFaTables(db);
+        const url = await generateFirstAidKitReportPdf(db, cid);
+        return { ok: true, url };
       }),
 
       dashboard: protectedProcedure.query(async ({ ctx }) => {

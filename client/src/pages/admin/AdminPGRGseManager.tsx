@@ -476,7 +476,7 @@ function GseEditorDialog({
               })}
             </div>
 
-            <div className="flex-1 overflow-y-auto px-6 py-4 bg-slate-50/30">
+            <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-4 pb-28 sm:pb-4 bg-slate-50/30">
               <div className="max-w-6xl mx-auto">
                 {tab === "cargos" && <CargosTab cargos={cargos} setCargos={setCargos} />}
                 {tab === "setores" && <SetoresTab setores={setores} setSetores={setSetores} allSectors={allSectors} />}
@@ -489,9 +489,9 @@ function GseEditorDialog({
               </div>
             </div>
 
-            <DialogFooter className="border-t bg-white px-6 py-3 shrink-0">
-              <Button variant="outline" onClick={onClose}>Fechar sem salvar</Button>
-              <Button onClick={saveAll} disabled={allPending} className="gap-1">
+            <DialogFooter className="border-t bg-white px-4 sm:px-6 py-3 shrink-0 sticky bottom-0 z-20 flex-col sm:flex-row gap-2">
+              <Button variant="outline" onClick={onClose} className="w-full sm:w-auto">Fechar sem salvar</Button>
+              <Button onClick={saveAll} disabled={allPending} className="gap-1 w-full sm:w-auto">
                 {allPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
                 Salvar tudo
               </Button>
@@ -645,7 +645,15 @@ function RiscosTab({ riscos, setRiscos, gseId }: { riscos: any[]; setRiscos: (v:
         </div>
       ))}
       {riscos.length === 0 && <div className="text-xs text-slate-400 text-center py-4">Nenhum risco. Clique "Adicionar risco".</div>}
-      {detalhandoRiscoId && <DetalhamentoTecnicoDialog riscoId={detalhandoRiscoId} gseId={gseId} onClose={() => setDetalhandoRiscoId(null)} />}
+      {detalhandoRiscoId && (
+        <DetalhamentoTecnicoDialog
+          riscoId={detalhandoRiscoId}
+          gseId={gseId}
+          riskIds={riscos.map((r) => Number(r.id)).filter(Boolean)}
+          onMoveToRisk={(id) => setDetalhandoRiscoId(id)}
+          onClose={() => setDetalhandoRiscoId(null)}
+        />
+      )}
     </div>
   );
 }
@@ -871,7 +879,19 @@ function TreinamentosTab({ items, setItems }: { items: any[]; setItems: (v: any[
 // P16 — Dialog de Detalhamento Técnico do Risco. Carrega o risco, opcionalmente
 // chama IA (Groq NHO/NR-15/ACGIH) para autopreencher, permite anexar laudos,
 // salva no BD via pgr.gse.setDetalhamento e será incorporado ao PDF do PGR.
-function DetalhamentoTecnicoDialog({ riscoId, gseId, onClose }: { riscoId: number; gseId: number; onClose: () => void }) {
+function DetalhamentoTecnicoDialog({
+  riscoId,
+  gseId,
+  riskIds,
+  onMoveToRisk,
+  onClose,
+}: {
+  riscoId: number;
+  gseId: number;
+  riskIds: number[];
+  onMoveToRisk: (id: number) => void;
+  onClose: () => void;
+}) {
   const detQ = (trpc.pgr.gse as any).getDetalhamento.useQuery({ riscoId });
   const laudosQ = (trpc.pgr.gse as any).listLaudosDoRisco.useQuery({ riscoId });
   const utils = trpc.useUtils();
@@ -891,9 +911,16 @@ function DetalhamentoTecnicoDialog({ riscoId, gseId, onClose }: { riscoId: numbe
   });
 
   const [f, setF] = useState<any>({});
+  const nextRiskId = (() => {
+    const idx = riskIds.findIndex((id) => Number(id) === Number(riscoId));
+    return idx >= 0 && idx < riskIds.length - 1 ? riskIds[idx + 1] : null;
+  })();
 
   useEffect(() => {
-    if (!detQ.data) return;
+    if (!detQ.data) {
+      setF({});
+      return;
+    }
     const d: any = detQ.data;
     setF({
       intensidade: d.intensidade ?? "", concentracao: d.concentracao ?? "", unidade: d.unidade ?? "",
@@ -943,8 +970,15 @@ function DetalhamentoTecnicoDialog({ riscoId, gseId, onClose }: { riscoId: numbe
     toast.success(`Detalhamento reaproveitado de "${d.gseName}" — revise e clique em Salvar.`);
   }
 
-  function salvar() {
-    saveMut.mutate({ riscoId, ...f });
+  async function salvar(closeAfter = false) {
+    await saveMut.mutateAsync({ riscoId, ...f });
+    if (closeAfter) onClose();
+  }
+
+  async function salvarESeguir() {
+    await saveMut.mutateAsync({ riscoId, ...f });
+    if (nextRiskId) onMoveToRisk(nextRiskId);
+    else onClose();
   }
 
   async function anexarLaudo(file: File) {
@@ -967,7 +1001,7 @@ function DetalhamentoTecnicoDialog({ riscoId, gseId, onClose }: { riscoId: numbe
             Informações técnicas complementares para o Inventário de Riscos. Podem ser autopreenchidas pela IA e serão incorporadas ao PDF do PGR.
           </DialogDescription>
         </DialogHeader>
-        <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+        <div className="flex-1 overflow-y-auto space-y-3 pr-1 pb-24 sm:pb-2">
           {similarQ.data && !dismissedSimilar && (
             <div className="flex items-center justify-between gap-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-sm">
               <span className="text-amber-800">
@@ -1043,9 +1077,14 @@ function DetalhamentoTecnicoDialog({ riscoId, gseId, onClose }: { riscoId: numbe
             </label>
           </div>
         </div>
-        <DialogFooter className="border-t pt-3 sticky bottom-0 bg-white z-10 flex-col sm:flex-row">
-          <Button variant="outline" onClick={onClose}>Cancelar</Button>
-          <Button onClick={salvar} disabled={saveMut.isPending} className="gap-1">
+        <DialogFooter className="border-t pt-3 sticky bottom-0 bg-white z-10 flex-col sm:flex-row gap-2">
+          <Button variant="outline" onClick={onClose} className="w-full sm:w-auto">Cancelar</Button>
+          {nextRiskId && (
+            <Button variant="outline" onClick={salvarESeguir} disabled={saveMut.isPending} className="gap-1 w-full sm:w-auto">
+              {saveMut.isPending ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />} Salvar e seguir
+            </Button>
+          )}
+          <Button onClick={() => salvar(false)} disabled={saveMut.isPending} className="gap-1 w-full sm:w-auto">
             {saveMut.isPending ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />} Salvar detalhamento
           </Button>
         </DialogFooter>

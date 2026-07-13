@@ -11,7 +11,7 @@ import {
   ExternalLink, ShieldAlert, ListChecks, ScrollText, GraduationCap,
 } from "lucide-react";
 
-type TabId = "overview" | "fiscalizacao" | "evidencias" | "dossie" | "documentos" | "maturidade";
+type TabId = "overview" | "fiscalizacao" | "evidencias" | "dossie" | "documentos" | "maturidade" | "primeiros_socorros";
 
 const AXIS_ICONS: Record<string, any> = {
   ciclo: ShieldCheck,
@@ -66,6 +66,71 @@ function ComplianceSeal({ score }: { score: number }) {
   );
 }
 
+function FirstAidCompliancePanel() {
+  const reportQ = (trpc.firstaid as any).report.useQuery();
+  const pdfMut = (trpc.firstaid as any).generateReportPdf.useMutation({
+    onSuccess: (r: any) => {
+      if (r?.url) window.open(r.url, "_blank");
+      toast.success("PDF de Primeiros Socorros gerado.");
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao gerar PDF."),
+  });
+  const d = reportQ.data as any;
+  const cards = [
+    ["Kits ativos", d?.summary?.kits ?? 0],
+    ["Itens cadastrados", d?.summary?.items ?? 0],
+    ["Vencidos", d?.summary?.expired ?? 0],
+    ["Vence em 30 dias", d?.summary?.soon30 ?? 0],
+    ["Faltantes", d?.summary?.missing ?? 0],
+    ["Estoque crítico", d?.summary?.critical ?? 0],
+  ];
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-xl border p-5 flex items-start justify-between gap-4">
+        <div>
+          <h2 className="font-semibold text-lg mb-1">Relatório de Primeiros Socorros</h2>
+          <p className="text-sm text-slate-500">Evidência de kits, validade, itens faltantes, estoque e distribuição por filial/setor.</p>
+        </div>
+        <Button onClick={() => pdfMut.mutate()} disabled={pdfMut.isPending} className="gap-2">
+          {pdfMut.isPending ? <Loader2 size={14} className="animate-spin" /> : <Printer size={14} />} Gerar PDF
+        </Button>
+      </div>
+      {reportQ.isLoading ? (
+        <div className="flex justify-center py-8"><Loader2 className="animate-spin text-slate-400" /></div>
+      ) : (
+        <>
+          <div className="grid sm:grid-cols-2 lg:grid-cols-6 gap-3">
+            {cards.map(([label, value]) => (
+              <div key={label} className="bg-white rounded-xl border p-4">
+                <div className="text-xs uppercase tracking-wide text-slate-400 font-semibold">{label}</div>
+                <div className="text-2xl font-bold text-slate-900 mt-1">{value}</div>
+              </div>
+            ))}
+          </div>
+          <div className="bg-white rounded-xl border overflow-hidden">
+            <div className="px-5 py-3 border-b bg-slate-50 font-semibold text-sm">Visão por filial e setor</div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="bg-slate-50 text-slate-500">
+                  <tr><th className="text-left p-2">Filial</th><th className="text-left p-2">Setor</th><th className="p-2">Kits</th><th className="p-2">Itens</th><th className="p-2">Vencidos</th><th className="p-2">30 dias</th><th className="p-2">Faltantes</th><th className="p-2">Críticos</th></tr>
+                </thead>
+                <tbody>
+                  {(d?.byLocation ?? []).map((r: any, i: number) => (
+                    <tr key={`${r.branchName}-${r.sectorName}-${i}`} className="border-t">
+                      <td className="p-2">{r.branchName}</td><td className="p-2">{r.sectorName}</td><td className="p-2 text-center">{r.kits}</td><td className="p-2 text-center">{r.items}</td><td className="p-2 text-center">{r.expired}</td><td className="p-2 text-center">{r.soon30}</td><td className="p-2 text-center">{r.missing}</td><td className="p-2 text-center">{r.critical}</td>
+                    </tr>
+                  ))}
+                  {!(d?.byLocation ?? []).length && <tr><td colSpan={8} className="p-5 text-center text-slate-400">Nenhum kit cadastrado.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function ComplianceHub() {
   const [tab, setTab] = useState<TabId>("overview");
   const [simRunning, setSimRunning] = useState(false);
@@ -92,6 +157,7 @@ export default function ComplianceHub() {
     { id: "maturidade",   label: "Maturidade",           icon: ShieldAlert },
     { id: "fiscalizacao", label: "Simular Fiscalização", icon: ClipboardCheck },
     { id: "evidencias",   label: "Evidências",           icon: FileSearch },
+    { id: "primeiros_socorros", label: "Primeiros Socorros", icon: FileText },
     { id: "dossie",       label: "Dossiê Individual",    icon: Users },
     { id: "documentos",   label: "Documentos Oficiais",  icon: Download },
   ];
@@ -399,6 +465,9 @@ export default function ComplianceHub() {
             )}
           </div>
         )}
+
+        {/* ── PRIMEIROS SOCORROS ───────────────────────────────────────────── */}
+        {tab === "primeiros_socorros" && <FirstAidCompliancePanel />}
 
         {/* ── DOSSIÊ INDIVIDUAL ─────────────────────────────────────────────── */}
         {tab === "dossie" && (

@@ -2,7 +2,7 @@ import { useState } from "react";
 import AppLayout from "@/components/AppLayout";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
-import { Heart, Package, AlertTriangle, TrendingUp, Plus, Save, Trash2, ArrowUpDown, X, ClipboardCheck, Map, BookOpen, Video, Link2, FileText, Award } from "lucide-react";
+import { Heart, Package, AlertTriangle, TrendingUp, Plus, Save, Trash2, ArrowUpDown, X, ClipboardCheck, Map, BookOpen, Video, Link2, FileText, Award, Loader2 } from "lucide-react";
 
 /**
  * P15 #5 — Módulo Kit de Primeiros Socorros (NR-07 item 7.5.1).
@@ -38,6 +38,13 @@ export default function AdminFirstAid() {
 
 function ReportTab() {
   const q = (trpc.firstaid as any).report.useQuery();
+  const pdfMut = (trpc.firstaid as any).generateReportPdf.useMutation({
+    onSuccess: (r: any) => {
+      if (r?.url) window.open(r.url, "_blank");
+      toast.success("PDF do relatório gerado.");
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao gerar PDF."),
+  });
   const d = q.data as any;
   if (!d) return <p className="text-sm text-slate-400 mt-4">Carregando…</p>;
   const cards = [
@@ -66,6 +73,11 @@ function ReportTab() {
   const fmtDate = (d0: any) => d0 ? new Date(d0).toLocaleDateString("pt-BR") : "—";
   return (
     <div className="mt-4 space-y-4">
+      <div className="flex justify-end">
+        <button onClick={() => pdfMut.mutate()} disabled={pdfMut.isPending} className="px-3 py-1.5 border rounded text-sm font-semibold flex items-center gap-1.5 bg-white hover:bg-slate-50 disabled:opacity-60">
+          {pdfMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <FileText size={13} />} Imprimir PDF
+        </button>
+      </div>
       <div className="grid sm:grid-cols-2 lg:grid-cols-6 gap-3">
         {cards.map(c => (
           <div key={c.label} className={`border rounded-xl p-4 ${c.c}`}>

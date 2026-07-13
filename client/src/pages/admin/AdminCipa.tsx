@@ -3,7 +3,7 @@ import AppLayout from "@/components/AppLayout";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { Users, Vote, Calendar, Plus, Save, Trash2, Loader2, ShieldCheck, BarChart3, User as UserIcon, Camera, Radio } from "lucide-react";
+import { Users, Vote, Calendar, Plus, Save, Trash2, Loader2, ShieldCheck, BarChart3, User as UserIcon, Camera, Radio, FileText, Upload, Pencil } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from "recharts";
 
 /**
@@ -314,6 +314,136 @@ function MembersTab() {
 }
 
 function MeetingsTab() {
+  const q = (trpc.cipa as any).listMeetings.useQuery();
+  const meetings = (q.data ?? []) as any[];
+  const emptyForm = { id: undefined as number | undefined, meetingDate: "", title: "", participantsText: "", pauta: "", ataText: "", actionPlanText: "" };
+  const [form, setForm] = useState(emptyForm);
+  const [attachKind, setAttachKind] = useState<Record<number, string>>({});
+  const upMut = (trpc.cipa as any).upsertMeeting.useMutation({
+    onSuccess: () => {
+      q.refetch();
+      toast.success(form.id ? "Reunião atualizada." : "Reunião registrada.");
+      setForm(emptyForm);
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao salvar reunião."),
+  });
+  const delMut = (trpc.cipa as any).removeMeeting.useMutation({
+    onSuccess: () => { q.refetch(); toast.success("Reunião excluída."); },
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao excluir reunião."),
+  });
+  const pdfMut = (trpc.cipa as any).generateMeetingPdf.useMutation({
+    onSuccess: (r: any) => {
+      if (r?.url) window.open(r.url, "_blank");
+      toast.success("PDF da reunião gerado.");
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao gerar PDF."),
+  });
+  const attachMut = (trpc.cipa as any).addMeetingAttachment.useMutation({
+    onSuccess: () => { q.refetch(); toast.success("Anexo registrado."); },
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao anexar arquivo."),
+  });
+
+  function loadMeeting(m: any) {
+    setForm({
+      id: m.id,
+      meetingDate: m.meeting_date?.slice(0, 10) ?? "",
+      title: m.title ?? "",
+      participantsText: m.participants_text ?? "",
+      pauta: m.pauta ?? "",
+      ataText: m.ata_text ?? "",
+      actionPlanText: m.action_plan_text ?? "",
+    });
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function readFile(file: File, cb: (dataUrl: string) => void) {
+    const reader = new FileReader();
+    reader.onload = () => cb(reader.result as string);
+    reader.readAsDataURL(file);
+  }
+
+  return (
+    <div className="mt-4 space-y-4">
+      <div className="bg-white border rounded-xl p-5 space-y-2">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="font-bold mb-1">{form.id ? "Editar reunião" : "Nova reunião"}</h3>
+          {form.id && <button onClick={() => setForm(emptyForm)} className="text-xs text-slate-500 hover:text-slate-700">Cancelar edição</button>}
+        </div>
+        <div className="grid sm:grid-cols-2 gap-2 text-sm">
+          <L l="Data"><input type="date" value={form.meetingDate} onChange={e => setForm({ ...form, meetingDate: e.target.value })} className="w-full border rounded px-2 py-1.5" /></L>
+          <L l="Título"><input value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} className="w-full border rounded px-2 py-1.5" /></L>
+          <L l="Participantes"><input value={form.participantsText} onChange={e => setForm({ ...form, participantsText: e.target.value })} className="w-full border rounded px-2 py-1.5" /></L>
+          <L l="Pauta"><input value={form.pauta} onChange={e => setForm({ ...form, pauta: e.target.value })} className="w-full border rounded px-2 py-1.5" /></L>
+        </div>
+        <L l="Ata e deliberações"><textarea value={form.ataText} onChange={e => setForm({ ...form, ataText: e.target.value })} rows={4} className="w-full border rounded px-2 py-1.5" /></L>
+        <L l="Plano de ação da reunião"><textarea value={form.actionPlanText} onChange={e => setForm({ ...form, actionPlanText: e.target.value })} rows={3} className="w-full border rounded px-2 py-1.5" /></L>
+        <div className="flex justify-end">
+          <button onClick={() => { if (!form.meetingDate || !form.title) return toast.error("Data e título obrigatórios"); upMut.mutate(form); }} disabled={upMut.isPending} className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white rounded text-sm font-semibold flex items-center gap-1">
+            {upMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />} {form.id ? "Salvar alterações" : "Registrar reunião"}
+          </button>
+        </div>
+      </div>
+      <div className="space-y-3">
+        {meetings.map((m: any) => {
+          const attachments = (m.attachments ?? []) as any[];
+          return (
+            <div key={m.id} className="bg-white border rounded-lg p-4 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                <div>
+                  <b className="text-sm">{m.title}</b>
+                  <p className="text-xs text-slate-500">{m.meeting_date?.slice(0, 10)} · {attachments.length} anexo(s)</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={() => loadMeeting(m)} className="px-2.5 py-1 border rounded text-xs font-semibold flex items-center gap-1 hover:bg-slate-50"><Pencil size={12} /> Editar</button>
+                  <button onClick={() => pdfMut.mutate({ id: m.id })} disabled={pdfMut.isPending} className="px-2.5 py-1 border rounded text-xs font-semibold flex items-center gap-1 hover:bg-slate-50"><FileText size={12} /> PDF</button>
+                  <button onClick={() => { if (confirm("Excluir esta reunião e seus anexos?")) delMut.mutate({ id: m.id }); }} disabled={delMut.isPending} className="px-2.5 py-1 border border-rose-200 text-rose-600 rounded text-xs font-semibold flex items-center gap-1 hover:bg-rose-50"><Trash2 size={12} /> Excluir</button>
+                </div>
+              </div>
+              {m.pauta && <p className="text-xs text-slate-500"><b>Pauta:</b> {m.pauta}</p>}
+              {m.ata_text && <p className="text-xs text-slate-600 whitespace-pre-wrap">{m.ata_text}</p>}
+              {m.action_plan_text && <p className="text-xs text-emerald-700 whitespace-pre-wrap"><b>Plano de ação:</b> {m.action_plan_text}</p>}
+              <div className="border-t pt-3 space-y-2">
+                <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+                  <select value={attachKind[m.id] ?? "documento"} onChange={e => setAttachKind(prev => ({ ...prev, [m.id]: e.target.value }))} className="border rounded px-2 py-1.5 text-xs bg-white">
+                    <option value="lista_presenca">Lista de presença</option>
+                    <option value="fotografia">Fotografia</option>
+                    <option value="evidencia">Evidência</option>
+                    <option value="plano_acao">Plano de ação</option>
+                    <option value="documento">Documento</option>
+                  </select>
+                  <label className="px-2.5 py-1.5 border rounded text-xs font-semibold flex items-center gap-1 cursor-pointer hover:bg-slate-50 w-fit">
+                    {attachMut.isPending ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />} Anexar arquivo
+                    <input type="file" className="hidden" onChange={e => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      if (file.size > 8_000_000) return toast.error("Arquivo maior que 8MB.");
+                      readFile(file, fileBase64 => attachMut.mutate({ meetingId: m.id, kind: attachKind[m.id] ?? "documento", title: file.name, fileName: file.name, mimeType: file.type, fileBase64 }));
+                      e.currentTarget.value = "";
+                    }} />
+                  </label>
+                </div>
+                {attachments.length > 0 && (
+                  <div className="grid sm:grid-cols-2 gap-2">
+                    {attachments.map((a: any) => (
+                      <a key={a.id} href={a.file_url} target="_blank" rel="noreferrer" className="text-xs border rounded px-2 py-1.5 hover:bg-slate-50 flex items-center gap-2 min-w-0">
+                        <FileText size={12} className="shrink-0 text-emerald-600" />
+                        <span className="truncate">{a.title || a.file_name || a.kind}</span>
+                        <span className="text-[10px] text-slate-400 ml-auto">{a.kind}</span>
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        {meetings.length === 0 && <p className="text-sm text-slate-400 text-center py-4">Nenhuma reunião registrada.</p>}
+      </div>
+    </div>
+  );
+}
+
+function LegacyMeetingsTab() {
   const q = (trpc.cipa as any).listMeetings.useQuery();
   const meetings = (q.data ?? []) as any[];
   const upMut = (trpc.cipa as any).upsertMeeting.useMutation({ onSuccess: () => { q.refetch(); toast.success("Reunião registrada."); setForm({ meetingDate: "", title: "", participantsText: "", pauta: "", ataText: "" }); } });

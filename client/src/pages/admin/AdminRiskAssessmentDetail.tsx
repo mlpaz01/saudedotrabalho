@@ -726,8 +726,8 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
         {tab === "cursos" && (
             <div className="space-y-4">
               <p className="text-sm text-slate-600">
-                Cursos preventivos prioritários: fatores avaliados como alto ou crítico, e cursos já
-                cronogramados no Plano de Ação (independente do nível de risco).
+                Cursos preventivos prioritários: fatores do inventário vinculados na aba 13 Fatores NR-01
+                com a mesma criticidade do risco final do ciclo.
               </p>
               {coursesQ.isLoading && (
                 <div className="flex justify-center py-8">
@@ -737,9 +737,9 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
               {!coursesQ.isLoading && coursesQ.data && coursesQ.data.length === 0 && (
                 <div className="bg-white rounded-xl border p-8 text-center">
                   <BookOpen className="w-10 h-10 mx-auto mb-3 text-slate-300" />
-                  <p className="font-medium text-slate-600">Nenhum curso prioritário (nem por risco alto/crítico, nem no Plano de Ação).</p>
+                  <p className="font-medium text-slate-600">Nenhum curso prioritário encontrado para a criticidade atual do ciclo.</p>
                   <p className="text-xs mt-2 text-slate-400">
-                    Configure vínculos em <strong>Análise de Risco → Correlação Risco-Ação</strong>, ou associe um curso a uma ação do Plano de Ação.
+                    Configure vínculos em <strong>Análise de Risco → Correlação Risco-Ação</strong> para o fator e nível correspondente.
                   </p>
                 </div>
               )}
@@ -774,7 +774,7 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
                             {row.source === "plano_de_acao" ? (
                               <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200">Plano de Ação</span>
                             ) : (
-                              <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200">Risco alto/crítico</span>
+                              <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200">13 Fatores NR-01</span>
                             )}
                           </td>
                         </tr>
@@ -1046,4 +1046,3 @@ function ImportResponsesDialog({
     </Dialog>
   );
 }
-
