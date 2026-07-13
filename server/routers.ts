@@ -1889,6 +1889,8 @@ async function loadAssessmentForPDF(db: any, assessmentId: number, companyId: nu
   // Ajuste (sincronização Laudo AEP × Gestão da AEP): exclui respostas invalidadas (status='invalid').
   const drpsCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${ra.drps_survey_id} AND (status IS NULL OR status <> 'invalid')`);
   const aepCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${ra.aep_survey_id} AND (status IS NULL OR status <> 'invalid')`);
+  const drpsInvalidCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${ra.drps_survey_id} AND status='invalid'`);
+  const aepInvalidCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${ra.aep_survey_id} AND status='invalid'`);
 
   // Fallback de Responsável Técnico: quando o campo livre ra.responsible_technician
   // está vazio, busca o RT marcado como default na tabela responsible_technicians
@@ -2006,6 +2008,8 @@ async function loadAssessmentForPDF(db: any, assessmentId: number, companyId: nu
       sectorName: ra.sector_name,
       drpsResponses: Number((drpsCount as any)[0]?.[0]?.c ?? 0),
       aepResponses: Number((aepCount as any)[0]?.[0]?.c ?? 0),
+      drpsInvalidResponses: Number((drpsInvalidCount as any)[0]?.[0]?.c ?? 0),
+      aepInvalidResponses: Number((aepInvalidCount as any)[0]?.[0]?.c ?? 0),
     },
     inventory: inv.map((it: any) => ({
       factorCode: it.factor_code,
@@ -2762,6 +2766,136 @@ async function buildCipaReportSections(db: any, cid: number, escHtml: (s: unknow
       ` },
     { n: 6, t: "Últimas Reuniões Registradas", c: meetingsHtml },
     { n: 7, t: "Conclusão", c: `Com base nos registros consolidados, a CIPA opera com ${membersCount?.c ?? 0} integrante(s) ativo(s) e ${meetingsCount?.c ?? 0} reunião(ões) registrada(s), em conformidade com a NR-05 e a Lei nº 14.457/2022.` },
+  ];
+}
+
+async function loadFirstAidKitReport(db: any, cid: number) {
+  const [rawRows]: any = await execP(db, `
+    SELECT
+      k.id AS kit_id,
+      k.name AS kit_name,
+      k.location,
+      k.responsible_name,
+      k.last_inspected_date,
+      COALESCE(b.name, 'Sem filial definida') AS branch_name,
+      COALESCE(s.name, 'Sem setor definido') AS sector_name,
+      i.id AS item_id,
+      i.name AS item_name,
+      i.category,
+      i.quantity,
+      i.min_quantity,
+      i.unit,
+      i.expiry_date,
+      i.lot
+    FROM firstaid_kits k
+    LEFT JOIN branches b ON b.id = k.branch_id
+    LEFT JOIN sectors s ON s.id = k.sector_id
+    LEFT JOIN firstaid_items i ON i.kit_id = k.id
+    WHERE k.company_id=? AND k.is_active=1
+    ORDER BY branch_name, sector_name, k.name, i.name`, [cid]).catch(() => [[]]);
+
+  const now = new Date();
+  const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const soon30 = today0 + 30 * 86400000;
+  const rows = ((rawRows ?? []) as any[]).map((r) => {
+    const qty = Number(r.quantity ?? 0);
+    const minQty = Number(r.min_quantity ?? 0);
+    const expiryTime = r.expiry_date ? new Date(r.expiry_date).getTime() : null;
+    let status = "ok";
+    if (!r.item_id) status = "sem_itens";
+    else if (expiryTime != null && expiryTime < today0) status = "vencido";
+    else if (qty <= 0) status = "faltante";
+    else if (minQty > 0 && qty <= minQty) status = "estoque_critico";
+    else if (expiryTime != null && expiryTime <= soon30) status = "vence_30d";
+    return {
+      kitId: Number(r.kit_id),
+      kitName: r.kit_name,
+      location: r.location,
+      responsibleName: r.responsible_name,
+      lastInspectedDate: r.last_inspected_date,
+      branchName: r.branch_name,
+      sectorName: r.sector_name,
+      itemId: r.item_id ? Number(r.item_id) : null,
+      itemName: r.item_name,
+      category: r.category,
+      quantity: qty,
+      minQuantity: minQty,
+      unit: r.unit ?? "un",
+      expiryDate: r.expiry_date,
+      lot: r.lot,
+      status,
+    };
+  });
+
+  const kitIds = new Set(rows.map((r) => r.kitId));
+  const itemRows = rows.filter((r) => r.itemId);
+  const summary = {
+    kits: kitIds.size,
+    items: itemRows.length,
+    expired: itemRows.filter((r) => r.status === "vencido").length,
+    soon30: itemRows.filter((r) => r.status === "vence_30d").length,
+    missing: itemRows.filter((r) => r.status === "faltante").length,
+    critical: itemRows.filter((r) => r.status === "estoque_critico").length,
+    kitsWithoutItems: rows.filter((r) => r.status === "sem_itens").length,
+  };
+
+  const byLocationMap = new Map<string, any>();
+  for (const r of rows) {
+    const key = `${r.branchName}||${r.sectorName}`;
+    if (!byLocationMap.has(key)) {
+      byLocationMap.set(key, { branchName: r.branchName, sectorName: r.sectorName, kits: new Set<number>(), items: 0, expired: 0, soon30: 0, missing: 0, critical: 0 });
+    }
+    const loc = byLocationMap.get(key);
+    loc.kits.add(r.kitId);
+    if (r.itemId) loc.items += 1;
+    if (r.status === "vencido") loc.expired += 1;
+    if (r.status === "vence_30d") loc.soon30 += 1;
+    if (r.status === "faltante") loc.missing += 1;
+    if (r.status === "estoque_critico") loc.critical += 1;
+  }
+  const byLocation = Array.from(byLocationMap.values()).map((r) => ({ ...r, kits: r.kits.size }));
+  return { summary, rows, byLocation };
+}
+
+async function buildFirstAidKitReportSections(db: any, cid: number, escHtml: (s: unknown) => string, today: string) {
+  const report = await loadFirstAidKitReport(db, cid);
+  const statusLabel: Record<string, string> = {
+    ok: "Regular",
+    vencido: "Vencido",
+    vence_30d: "Vence em ate 30 dias",
+    faltante: "Faltante",
+    estoque_critico: "Estoque critico",
+    sem_itens: "Kit sem itens",
+  };
+  const table = (headers: string[], rows: string[][]) => rows.length === 0
+    ? `<p><i>Nenhum registro encontrado.</i></p>`
+    : `<table style="width:100%; border-collapse:collapse;">
+        <tr>${headers.map(h => `<th style="text-align:left; padding:6px; border-bottom:2px solid #cbd5e1;">${escHtml(h)}</th>`).join("")}</tr>
+        ${rows.map(cols => `<tr>${cols.map(c => `<td style="padding:6px; border-bottom:1px solid #e2e8f0;">${c}</td>`).join("")}</tr>`).join("")}
+      </table>`;
+  const fmtDate = (d: any) => d ? new Date(d).toLocaleDateString("pt-BR") : "-";
+  const itemRows = report.rows.filter((r: any) => r.itemId);
+  const problemRows = report.rows.filter((r: any) => ["vencido", "vence_30d", "faltante", "estoque_critico", "sem_itens"].includes(r.status));
+  return [
+    { n: 1, t: "Introducao", c: `Este relatorio consolida os Kits de Primeiros Socorros cadastrados na Plataforma Saude do Trabalho em ${today}, incluindo filial, setor, estoque, validade, itens faltantes e alertas operacionais.` },
+    { n: 2, t: "Resumo Executivo", c: `<table style="width:100%; border-collapse:collapse;">
+        <tr><td style="padding:6px; border-bottom:1px solid #e2e8f0;"><b>Kits ativos</b></td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${report.summary.kits}</td></tr>
+        <tr><td style="padding:6px; border-bottom:1px solid #e2e8f0;"><b>Itens cadastrados</b></td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${report.summary.items}</td></tr>
+        <tr><td style="padding:6px; border-bottom:1px solid #e2e8f0;"><b>Itens vencidos</b></td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${report.summary.expired}</td></tr>
+        <tr><td style="padding:6px; border-bottom:1px solid #e2e8f0;"><b>Vencimento em ate 30 dias</b></td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${report.summary.soon30}</td></tr>
+        <tr><td style="padding:6px; border-bottom:1px solid #e2e8f0;"><b>Itens faltantes</b></td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${report.summary.missing}</td></tr>
+        <tr><td style="padding:6px; border-bottom:1px solid #e2e8f0;"><b>Estoque critico</b></td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${report.summary.critical}</td></tr>
+      </table>` },
+    { n: 3, t: "Visao por Filial e Setor", c: table(["Filial", "Setor", "Kits", "Itens", "Vencidos", "30 dias", "Faltantes", "Criticos"], report.byLocation.map((r: any) => [
+      escHtml(r.branchName), escHtml(r.sectorName), String(r.kits), String(r.items), String(r.expired), String(r.soon30), String(r.missing), String(r.critical)
+    ])) },
+    { n: 4, t: "Itens com Pendencia", c: table(["Kit", "Filial", "Setor", "Item", "Qtd", "Min.", "Validade", "Status"], problemRows.map((r: any) => [
+      escHtml(r.kitName), escHtml(r.branchName), escHtml(r.sectorName), r.itemName ? escHtml(r.itemName) : "-", String(r.quantity), String(r.minQuantity), fmtDate(r.expiryDate), escHtml(statusLabel[r.status] ?? r.status)
+    ])) },
+    { n: 5, t: "Inventario Completo", c: table(["Kit", "Local", "Filial", "Setor", "Item", "Categoria", "Qtd", "Min.", "Validade", "Status"], itemRows.map((r: any) => [
+      escHtml(r.kitName), escHtml(r.location ?? "-"), escHtml(r.branchName), escHtml(r.sectorName), escHtml(r.itemName), escHtml(r.category ?? "-"), `${r.quantity} ${escHtml(r.unit)}`, String(r.minQuantity), fmtDate(r.expiryDate), escHtml(statusLabel[r.status] ?? r.status)
+    ])) },
+    { n: 6, t: "Conclusao", c: `O controle dos kits deve ser mantido por inspeções periodicas, reposicao de itens faltantes, retirada de materiais vencidos e acompanhamento dos alertas de estoque minimo. Este relatorio pode ser usado como evidencia no PGR, Central de Conformidade e auditorias internas.` },
   ];
 }
 
@@ -19046,7 +19180,8 @@ Return only the JSON content object (no wrapper). Format per type:
           SELECT sa.question_id, sa.answer_value, sr.id AS response_id, sr.sector_id, sr.branch_id
           FROM survey_answers sa
           INNER JOIN survey_responses sr ON sr.id = sa.response_id
-          WHERE sr.survey_id = ${a.drps_survey_id}`);
+          WHERE sr.survey_id = ${a.drps_survey_id}
+            AND (sr.status IS NULL OR sr.status <> 'invalid')`);
         const answers = (ansR as any)[0] ?? [];
 
         type Agg = Record<string, { sum: number; n: number; resp: Set<number> }>;
@@ -21505,7 +21640,9 @@ Return only the JSON content object (no wrapper). Format per type:
         // (reuniões, SIPAT, cursos NR-05), NÃO o boilerplate genérico de conformidade.
         const sections = tipo === "Relatório da CIPA"
           ? await buildCipaReportSections(db, cid, escHtml, today)
-          : await (async () => {
+          : tipo === "Kit Primeiros Socorros"
+            ? await buildFirstAidKitReportSections(db, cid, escHtml, today)
+            : await (async () => {
         const [[uCnt]]: any = await execP(db, `SELECT COUNT(*) AS cnt FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]).catch(() => [[{ cnt: 0 }]]);
         const [[dCnt]]: any = await execP(db, `SELECT COUNT(*) AS cnt FROM denuncias WHERE company_id=?`, [cid]).catch(() => [[{ cnt: 0 }]]);
         const [[cCnt]]: any = await execP(db, `SELECT COUNT(DISTINCT m.id) AS cnt FROM modules m INNER JOIN users u ON u.company_id=m.company_id WHERE m.company_id=?`, [cid]).catch(() => [[{ cnt: 0 }]]);
@@ -22648,12 +22785,72 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
           }
 
           const arr = (v: any) => (Array.isArray(v) ? v : []);
+          const norm = (v: any) => String(v ?? "")
+            .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+            .toLowerCase().trim();
+          const tipoFrom = (r: any) => {
+            const src = norm(`${r.tipo ?? ""} ${r.agente ?? ""} ${r.fonteGeradora ?? ""}`);
+            if (/quim|poeira|fumaca|fumo|vapor|gas|solvente|silica|cimento|substancia/.test(src)) return "quimico";
+            if (/biolog|virus|bacteria|fungo|parasita|sangue|secrecao|microrganismo/.test(src)) return "biologico";
+            if (/ergonom|postura|repetitiv|levantamento|mobiliario|digitacao|computador/.test(src)) return "ergonomico";
+            if (/acidente|queda|corte|choque|incendio|explosao|prensagem|maquina|altura|atropel/.test(src)) return "acidente";
+            if (/psicossocial|assedio|estresse|stress|burnout|violencia|isolamento|relacionamento/.test(src)) return "psicossocial";
+            return "fisico";
+          };
+          const nivel = (v: any, fallback = "media") => {
+            const s = norm(v);
+            if (/critic|gravissim|intoler/.test(s)) return "critica";
+            if (/alt|grave|substancial|frequente/.test(s)) return "alta";
+            if (/med|moderad|possivel|toleravel/.test(s)) return "media";
+            if (/baix|leve|trivial|improvavel/.test(s)) return "baixa";
+            return fallback;
+          };
+          const finalRisk = (v: any, fallback = "medio") => {
+            const s = norm(v);
+            if (/critic|intoler/.test(s)) return "critico";
+            if (/alt|substancial/.test(s)) return "alto";
+            if (/med|moderad|toleravel/.test(s)) return "medio";
+            if (/baix|trivial/.test(s)) return "baixo";
+            return fallback;
+          };
+          const riscos = arr(parsed.riscos).slice(0, 12).map((r: any) => ({
+            tipo: tipoFrom(r),
+            agente: String(r.agente ?? "").slice(0, 255),
+            fonteGeradora: r.fonteGeradora ?? r.fonte_geradora ?? "",
+            possivelDano: r.possivelDano ?? r.possivel_dano ?? "",
+            tipoExposicao: r.tipoExposicao ?? r.tipo_exposicao ?? "",
+            severidade: nivel(r.severidade, "media"),
+            probabilidade: nivel(r.probabilidade, "media"),
+            riscoFinal: finalRisk(r.riscoFinal ?? r.risco_final, "medio"),
+            notes: r.notes ?? r.observacoes ?? "",
+          })).filter((r: any) => r.agente.trim());
+          const maiorRisco = riscos.some((r: any) => r.riscoFinal === "critico") ? "critica"
+            : riscos.some((r: any) => r.riscoFinal === "alto") ? "alta"
+            : riscos.some((r: any) => r.riscoFinal === "medio") ? "media" : "baixa";
+          const acoes = arr(parsed.acoes).slice(0, 8).map((a: any) => ({
+            what: String(a.what ?? a.acao ?? a.titulo ?? "").slice(0, 1000),
+            why: a.why ?? a.porque ?? "",
+            where: a.where ?? a.onde ?? "",
+            whenStart: a.whenStart ?? a.when_start ?? null,
+            whenEnd: a.whenEnd ?? a.when_end ?? null,
+            who: a.who ?? a.responsavel ?? "",
+            how: a.how ?? a.como ?? "",
+            howMuch: a.howMuch ?? a.how_much ?? "",
+            priority: nivel(a.priority ?? a.prioridade, maiorRisco),
+            status: "programado",
+          })).filter((a: any) => a.what.trim());
+          const treinamentos = arr(parsed.treinamentos).slice(0, 8).map((t: any) => ({
+            nrCode: String(t.nrCode ?? t.nr_code ?? t.nr ?? "").slice(0, 30),
+            nome: String(t.nome ?? t.titulo ?? t.treinamento ?? "").slice(0, 255),
+            cargaHoraria: Number.parseInt(String(t.cargaHoraria ?? t.carga_horaria ?? "").replace(/\D+/g, ""), 10) || null,
+            obrigatorio: true,
+          })).filter((t: any) => t.nome.trim());
           return {
-            riscos: arr(parsed.riscos).slice(0, 12),
+            riscos,
             epc: arr(parsed.epc).slice(0, 8),
             epi: arr(parsed.epi).slice(0, 10),
-            acoes: arr(parsed.acoes).slice(0, 8),
-            treinamentos: arr(parsed.treinamentos).slice(0, 8),
+            acoes,
+            treinamentos,
             cargos,
             setoresUsados: setores,
           };
@@ -28382,6 +28579,13 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           vencidos: vencidos ?? [], d7: d7 ?? [], d15: d15 ?? [], d30: d30 ?? [], d60: d60 ?? [],
           proximos, criticos: criticos ?? [],
         };
+      }),
+
+      report: protectedProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) return { summary: { kits: 0, items: 0, expired: 0, soon30: 0, missing: 0, critical: 0, kitsWithoutItems: 0 }, rows: [], byLocation: [] };
+        await ensureFaTables(db);
+        return loadFirstAidKitReport(db, cid);
       }),
 
       dashboard: protectedProcedure.query(async ({ ctx }) => {

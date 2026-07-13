@@ -219,6 +219,7 @@ export default function AdminPGR() {
     "LGPD",
     "Lei 14.457/2022",
     "Relatório da CIPA",
+    "Kit Primeiros Socorros",
   ];
   const [statusNotes, setStatusNotes] = useState("");
   const historyQ = trpc.pgr.getHistory.useQuery(
@@ -912,6 +913,7 @@ function AnexosOficiaisPanel({ pgrId, cycles, existing, onChange }: { pgrId: num
     { tipo: "Conformidade Metodológica",        needsCycle: false, hint: "Anexa o relatório de Legitimidade Metodológica (PDF auto)" },
     { tipo: "Legitimidade do Canal de Denúncias", needsCycle: false, hint: "Anexa o relatório de Legitimidade do Canal de Denúncias (PDF auto)" },
     { tipo: "Relatório da CIPA",                 needsCycle: false, hint: "Anexa o relatório da CIPA: governança/mandato, reuniões, SIPAT e cursos NR-05 (PDF auto)" },
+    { tipo: "Kit Primeiros Socorros",             needsCycle: false, hint: "Anexa o relatório de kits, itens, estoques, vencimentos e pendências por filial/setor (PDF auto)" },
   ];
   // Bruno R5 #9 — Após criar registro do anexo, dispara geração do PDF oficial.
   const genPdfMut = trpc.pgr.generateOfficialAttachmentPdf.useMutation({
@@ -1026,7 +1028,18 @@ function AnexosOficiaisPanel({ pgrId, cycles, existing, onChange }: { pgrId: num
 
 // Bruno R5 #12 — Lista anexos "Outros" + permite upload de novos arquivos.
 function AnexosExtrasUpload({ pgrId, existing, onChange }: { pgrId: number; existing: any[]; onChange: () => void }) {
-  const extras = existing.filter((a: any) => !["Relatório Psicossocial","AEP","Conformidade NR-01","Conformidade Metodológica","Legitimidade do Canal de Denúncias"].includes(String(a.tipo)));
+  const officialTypes = [
+    "Relatório Psicossocial",
+    "AEP",
+    "Conformidade NR-01",
+    "Conformidade Metodológica",
+    "Legitimidade do Canal de Denúncias",
+    "Relatório da CIPA",
+    "Kit Primeiros Socorros",
+    "LGPD",
+    "Lei 14.457/2022",
+  ];
+  const extras = existing.filter((a: any) => !officialTypes.includes(String(a.tipo)));
   const uploadMut = trpc.pgr.upsertAttachment.useMutation({
     onSuccess: () => { onChange(); toast.success("Arquivo anexado ao PGR."); },
     onError: (e: any) => toast.error(e?.message ?? "Erro no upload"),

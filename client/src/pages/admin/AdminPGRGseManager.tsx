@@ -47,6 +47,19 @@ const RISCO_FINAIS = [
   { v: "critico", label: "Crítico" },
 ];
 
+function inferRiskType(text: string, fallback = "fisico") {
+  const s = String(text || "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+  if (/(poeira|fumaca|fumo|vapor|gas|solvente|tinta|cimento|silica|produto quim|quimic|substancia|nevoa|aerodispers)/.test(s)) return "quimico";
+  if (/(virus|bacteria|fungo|parasita|sangue|secrecao|material biolog|residuo biolog|microrganismo)/.test(s)) return "biologico";
+  if (/(postura|ergonom|repetitiv|levantamento de peso|sobrecarga muscular|movimento repetitivo|mobiliario|computador|digitacao)/.test(s)) return "ergonomico";
+  if (/(maquina sem protecao|queda|corte|choque eletrico|atropel|incendio|explosao|prensagem|esmagamento|escorreg|altura|acidente)/.test(s)) return "acidente";
+  if (/(assedio|estresse|stress|sobrecarga mental|psicossocial|violencia|relacionamento|isolamento|burnout)/.test(s)) return "psicossocial";
+  if (/(ruido|calor|frio|vibracao|radiacao|umidade|pressao|iluminacao|lux)/.test(s)) return "fisico";
+  return fallback || "fisico";
+}
+
 export default function AdminPGRGseManager({ pgrId, companyId }: { pgrId: number; companyId: number | null }) {
   const utils = trpc.useUtils();
   const listQ = trpc.pgr.gse.list.useQuery({ pgrId }, { enabled: pgrId > 0 });
@@ -257,6 +270,7 @@ function GseEditorDialog({
     setCargos((d.cargos ?? []).map((c: any) => c.cargo));
     setSetores((d.setores ?? []).map((s: any) => s.sectorId));
     setRiscos((d.riscos ?? []).map((r: any) => ({
+      id: r.id,
       tipo: r.tipo, agente: r.agente, fonteGeradora: r.fonte_geradora, possivelDano: r.possivel_dano,
       tipoExposicao: r.tipo_exposicao, severidade: r.severidade, probabilidade: r.probabilidade,
       riscoFinal: r.risco_final, notes: r.notes,
@@ -294,7 +308,10 @@ function GseEditorDialog({
   // (apenas APPEND nos arrays existentes — nada é apagado). Usuário revisa e Salva tudo.
   const aiMut = trpc.pgr.gse.aiSuggest.useMutation({
     onSuccess: (data: any) => {
-      setRiscos(prev => [...prev, ...(data.riscos ?? [])]);
+      setRiscos(prev => [...prev, ...(data.riscos ?? []).map((r: any) => ({
+        ...r,
+        tipo: inferRiskType(`${r.agente ?? ""} ${r.fonteGeradora ?? ""}`, r.tipo),
+      }))]);
       setEpc(prev => [...prev, ...(data.epc ?? [])]);
       setEpi(prev => [...prev, ...(data.epi ?? [])]);
       setAcoes(prev => [...prev, ...(data.acoes ?? [])]);
@@ -568,13 +585,19 @@ function RiscosTab({ riscos, setRiscos, gseId }: { riscos: any[]; setRiscos: (v:
             </div>
             <div className="md:col-span-2">
               <Label className="text-xs">Agente *</Label>
-              <Input value={r.agente} onChange={e => patch(i, { agente: e.target.value })} placeholder="Ruído / Postura / Sobrecarga..." />
+              <Input value={r.agente} onChange={e => {
+                const agente = e.target.value;
+                patch(i, { agente, tipo: inferRiskType(`${agente} ${r.fonteGeradora ?? ""}`, r.tipo) });
+              }} placeholder="Ruído / Postura / Sobrecarga..." />
             </div>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
             <div>
               <Label className="text-xs">Fonte geradora</Label>
-              <Textarea rows={2} value={r.fonteGeradora ?? ""} onChange={e => patch(i, { fonteGeradora: e.target.value })} />
+              <Textarea rows={2} value={r.fonteGeradora ?? ""} onChange={e => {
+                const fonteGeradora = e.target.value;
+                patch(i, { fonteGeradora, tipo: inferRiskType(`${r.agente ?? ""} ${fonteGeradora}`, r.tipo) });
+              }} />
             </div>
             <div>
               <Label className="text-xs">Possível dano</Label>
@@ -937,7 +960,7 @@ function DetalhamentoTecnicoDialog({ riscoId, gseId, onClose }: { riscoId: numbe
 
   return (
     <Dialog open onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-w-4xl max-h-[92vh] overflow-hidden flex flex-col">
+      <DialogContent className="w-[calc(100vw-1rem)] sm:max-w-4xl max-h-[92vh] overflow-hidden flex flex-col">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2"><Cog size={16} className="text-blue-600" /> Detalhamento Técnico do Risco</DialogTitle>
           <DialogDescription>
@@ -1020,7 +1043,7 @@ function DetalhamentoTecnicoDialog({ riscoId, gseId, onClose }: { riscoId: numbe
             </label>
           </div>
         </div>
-        <DialogFooter className="border-t pt-3">
+        <DialogFooter className="border-t pt-3 sticky bottom-0 bg-white z-10 flex-col sm:flex-row">
           <Button variant="outline" onClick={onClose}>Cancelar</Button>
           <Button onClick={salvar} disabled={saveMut.isPending} className="gap-1">
             {saveMut.isPending ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />} Salvar detalhamento

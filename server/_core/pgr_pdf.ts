@@ -1146,6 +1146,7 @@ const ANEXOS_OFICIAIS_ORDEM = [
   "LGPD",
   "Lei 14.457/2022",
   "Relatório da CIPA",
+  "Kit Primeiros Socorros",
 ];
 
 export async function appendPdfAttachments(

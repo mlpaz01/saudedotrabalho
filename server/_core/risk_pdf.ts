@@ -113,6 +113,8 @@ export type AssessmentData = {
   sectorName?: string | null;
   drpsResponses: number;
   aepResponses: number;
+  drpsInvalidResponses?: number;
+  aepInvalidResponses?: number;
 };
 
 export type InventoryRow = {
@@ -329,6 +331,23 @@ export async function generateRiskLaudoPDF(
   <p>Foram coletadas <b>${a.aepResponses} resposta(s)</b> ao instrumento AEP.</p>
 
   <!-- R5-P12 #11 — metodologia canônica de coleta/processamento (mesma do PGR e relatórios) -->
+  <h2>4.1 Memoria de Calculo Psicossocial</h2>
+  <p>A memoria de calculo abaixo documenta a regra aplicada pela plataforma para preservar a rastreabilidade
+  tecnica do ciclo. Apenas respostas validas entram nos indicadores, graficos, inventario, matriz e plano
+  de acao. Respostas desconsideradas pela Gestao da AEP ou por auditoria ficam registradas, mas nao
+  participam das medias nem das classificacoes finais.</p>
+  <table>
+    <tr><th>Indicador</th><th>Criterio / Formula</th><th>Resultado do ciclo</th></tr>
+    <tr><td>Respondentes DRPS validos</td><td>COUNT(survey_responses) com status diferente de invalid</td><td>${a.drpsResponses}</td></tr>
+    <tr><td>Respondentes AEP validos</td><td>COUNT(survey_responses) com status diferente de invalid</td><td>${a.aepResponses}</td></tr>
+    <tr><td>DRPS desconsiderados</td><td>COUNT(survey_responses) com status = invalid</td><td>${a.drpsInvalidResponses ?? 0}</td></tr>
+    <tr><td>AEP desconsideradas</td><td>COUNT(survey_responses) com status = invalid</td><td>${a.aepInvalidResponses ?? 0}</td></tr>
+    <tr><td>Escala objetiva</td><td>Likert normalizada de 0 a 4; questoes reversas sao convertidas por 4 - resposta</td><td>0 a 4</td></tr>
+    <tr><td>Media por fator</td><td>Soma das respostas validas do fator / quantidade de respostas validas do fator</td><td>Armazenada em drps_score_avg</td></tr>
+    <tr><td>Gravidade</td><td>Baixa &lt; 1,0; Media &lt; 2,0; Alta &lt; 3,0; Critica &gt;= 3,0</td><td>Calculada por fator/setor</td></tr>
+    <tr><td>Risco final</td><td>Cruzamento entre gravidade calculada e probabilidade definida na matriz</td><td>Baixo, Medio, Alto ou Critico</td></tr>
+  </table>
+
   ${metodologiaPsicossocialHtml({ headingTag: "h2", subTag: "h3" })}
 
   <h2>5. Critérios Técnicos de Avaliação</h2>
@@ -901,4 +920,3 @@ export async function generateAEPLaudoPDF(
   await renderPDF(html, outPath);
   return `/uploads/risk_pdfs/laudo_aep_${a.id}.pdf`;
 }
-

@@ -10,7 +10,7 @@ import { Heart, Package, AlertTriangle, TrendingUp, Plus, Save, Trash2, ArrowUpD
  * alertas de validade e estoque mínimo, indicadores.
  */
 export default function AdminFirstAid() {
-  const [tab, setTab] = useState<"kits" | "alertas" | "movimentos" | "dashboard" | "aprendizagem">("dashboard");
+  const [tab, setTab] = useState<"kits" | "alertas" | "movimentos" | "dashboard" | "aprendizagem" | "relatorio">("dashboard");
   return (
     <AppLayout>
       <div className="max-w-6xl mx-auto p-6 space-y-4">
@@ -19,7 +19,7 @@ export default function AdminFirstAid() {
           <p className="text-sm text-muted-foreground mt-1">Controle de estoque, validade e movimentação dos materiais obrigatórios.</p>
         </header>
         <div className="flex gap-1 border-b">
-          {([["dashboard", "Painel", TrendingUp], ["aprendizagem", "Aprendizagem", BookOpen], ["kits", "Kits & Itens", Package], ["alertas", "Alertas", AlertTriangle], ["movimentos", "Movimentações", ArrowUpDown]] as const).map(([k, label, Icon]) => (
+          {([["dashboard", "Painel", TrendingUp], ["aprendizagem", "Aprendizagem", BookOpen], ["relatorio", "Relatório", FileText], ["kits", "Kits & Itens", Package], ["alertas", "Alertas", AlertTriangle], ["movimentos", "Movimentações", ArrowUpDown]] as const).map(([k, label, Icon]) => (
             <button key={k} onClick={() => setTab(k as any)} className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px ${tab === k ? "border-primary text-primary" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
               <span className="inline-flex items-center gap-1.5"><Icon size={14} /> {label}</span>
             </button>
@@ -27,11 +27,96 @@ export default function AdminFirstAid() {
         </div>
         {tab === "dashboard" && <DashboardTab />}
         {tab === "aprendizagem" && <LearningTab />}
+        {tab === "relatorio" && <ReportTab />}
         {tab === "kits" && <KitsTab />}
         {tab === "alertas" && <AlertsTab />}
         {tab === "movimentos" && <MovementsTab />}
       </div>
     </AppLayout>
+  );
+}
+
+function ReportTab() {
+  const q = (trpc.firstaid as any).report.useQuery();
+  const d = q.data as any;
+  if (!d) return <p className="text-sm text-slate-400 mt-4">Carregando…</p>;
+  const cards = [
+    { label: "Kits ativos", value: d.summary?.kits ?? 0, c: "bg-blue-50 text-blue-800 border-blue-200" },
+    { label: "Itens", value: d.summary?.items ?? 0, c: "bg-slate-50 text-slate-800 border-slate-200" },
+    { label: "Vencidos", value: d.summary?.expired ?? 0, c: "bg-rose-50 text-rose-800 border-rose-200" },
+    { label: "Vence em 30 dias", value: d.summary?.soon30 ?? 0, c: "bg-amber-50 text-amber-800 border-amber-200" },
+    { label: "Faltantes", value: d.summary?.missing ?? 0, c: "bg-orange-50 text-orange-800 border-orange-200" },
+    { label: "Estoque crítico", value: d.summary?.critical ?? 0, c: "bg-red-50 text-red-800 border-red-200" },
+  ];
+  const rows = (d.rows ?? []) as any[];
+  const statusLabel: Record<string, string> = {
+    ok: "Regular",
+    vencido: "Vencido",
+    vence_30d: "Vence em 30 dias",
+    faltante: "Faltante",
+    estoque_critico: "Estoque crítico",
+    sem_itens: "Kit sem itens",
+  };
+  const statusClass = (status: string) => {
+    if (status === "vencido" || status === "faltante") return "bg-rose-50 text-rose-700 border-rose-200";
+    if (status === "vence_30d" || status === "estoque_critico") return "bg-amber-50 text-amber-700 border-amber-200";
+    if (status === "sem_itens") return "bg-slate-50 text-slate-600 border-slate-200";
+    return "bg-emerald-50 text-emerald-700 border-emerald-200";
+  };
+  const fmtDate = (d0: any) => d0 ? new Date(d0).toLocaleDateString("pt-BR") : "—";
+  return (
+    <div className="mt-4 space-y-4">
+      <div className="grid sm:grid-cols-2 lg:grid-cols-6 gap-3">
+        {cards.map(c => (
+          <div key={c.label} className={`border rounded-xl p-4 ${c.c}`}>
+            <div className="text-xs uppercase tracking-wide font-semibold opacity-80">{c.label}</div>
+            <div className="text-2xl font-bold mt-1">{c.value}</div>
+          </div>
+        ))}
+      </div>
+      {(d.byLocation ?? []).length > 0 && (
+        <div className="bg-white border rounded-xl p-4">
+          <p className="text-sm font-semibold mb-3 flex items-center gap-1.5"><Map size={14} /> Visão por filial e setor</p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="bg-slate-50 text-slate-500"><tr><th className="text-left p-2">Filial</th><th className="text-left p-2">Setor</th><th className="p-2">Kits</th><th className="p-2">Itens</th><th className="p-2">Vencidos</th><th className="p-2">30 dias</th><th className="p-2">Faltantes</th><th className="p-2">Críticos</th></tr></thead>
+              <tbody>
+                {(d.byLocation ?? []).map((r: any, i: number) => (
+                  <tr key={`${r.branchName}-${r.sectorName}-${i}`} className="border-t">
+                    <td className="p-2">{r.branchName}</td><td className="p-2">{r.sectorName}</td><td className="p-2 text-center">{r.kits}</td><td className="p-2 text-center">{r.items}</td><td className="p-2 text-center">{r.expired}</td><td className="p-2 text-center">{r.soon30}</td><td className="p-2 text-center">{r.missing}</td><td className="p-2 text-center">{r.critical}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      <div className="bg-white border rounded-xl overflow-hidden">
+        <div className="p-4 border-b">
+          <p className="text-sm font-semibold">Inventário completo dos kits</p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="bg-slate-50 text-slate-500"><tr><th className="text-left p-2">Kit</th><th className="text-left p-2">Filial</th><th className="text-left p-2">Setor</th><th className="text-left p-2">Item</th><th className="p-2">Qtd</th><th className="p-2">Mín.</th><th className="p-2">Validade</th><th className="p-2">Status</th></tr></thead>
+            <tbody>
+              {rows.map((r: any, i: number) => (
+                <tr key={`${r.kitId}-${r.itemId ?? "kit"}-${i}`} className="border-t">
+                  <td className="p-2">{r.kitName}</td>
+                  <td className="p-2">{r.branchName}</td>
+                  <td className="p-2">{r.sectorName}</td>
+                  <td className="p-2">{r.itemName ?? "—"}</td>
+                  <td className="p-2 text-center">{r.itemId ? `${r.quantity} ${r.unit ?? "un"}` : "—"}</td>
+                  <td className="p-2 text-center">{r.itemId ? r.minQuantity : "—"}</td>
+                  <td className="p-2 text-center">{fmtDate(r.expiryDate)}</td>
+                  <td className="p-2 text-center"><span className={`inline-flex rounded-full border px-2 py-0.5 ${statusClass(r.status)}`}>{statusLabel[r.status] ?? r.status}</span></td>
+                </tr>
+              ))}
+              {rows.length === 0 && <tr><td colSpan={8} className="p-6 text-center text-sm text-slate-400">Nenhum kit cadastrado.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   );
 }
 
