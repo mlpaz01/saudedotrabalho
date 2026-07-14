@@ -11,11 +11,48 @@ interface CertificateData {
   certBody?: string | null;     // custom body text (shown below module name)
   certSignerName?: string | null;
   certSignerRole?: string | null;
+  durationMinutes?: number | null;
+  // Bruno R5-P5/Fase3 #4 — Logo institucional em destaque no topo + nome da empresa.
+  companyLogoUrl?: string | null;
+  companyName?: string | null;
+}
+
+/**
+ * Substitui variáveis do modelo de certificado no texto (título/corpo).
+ * Aceita `{{var}}` e `{var}`, com espaços internos, e vários apelidos por campo.
+ */
+function applyCertVars(text: string | null | undefined, vars: Record<string, string>): string {
+  if (!text) return text ?? "";
+  let out = text;
+  for (const [k, v] of Object.entries(vars)) {
+    // {{ chave }} ou { chave } (case-insensitive)
+    const re = new RegExp(`\\{\\{?\\s*${k}\\s*\\}?\\}`, "gi");
+    out = out.replace(re, v ?? "");
+  }
+  return out;
 }
 
 export async function generateCertificatePDF(data: CertificateData): Promise<Buffer> {
   const width = 1200;
   const height = 850;
+
+  // Valores para interpolar no título/corpo do certificado.
+  const _fmtData = (d: Date) => d.toLocaleDateString("pt-BR", { day: "2-digit", month: "long", year: "numeric" });
+  const _dataConclusao = _fmtData(data.completedAt);
+  const _dataEmissao = _fmtData(data.completedAt);
+  const _duracao = data.durationMinutes != null && data.durationMinutes > 0 ? String(data.durationMinutes) : "";
+  const certVars: Record<string, string> = {
+    // ordem: chaves mais longas antes das curtas (titulo_curso antes de curso)
+    nome_curso: data.moduleName, titulo_curso: data.moduleName, nome_do_curso: data.moduleName,
+    curso: data.moduleName, modulo: data.moduleName, treinamento: data.moduleName,
+    nome_participante: data.userName, nome_aluno: data.userName,
+    participante: data.userName, colaborador: data.userName, aluno: data.userName, nome: data.userName,
+    carga_horaria: _duracao, duracao: _duracao, minutos: _duracao,
+    data_conclusao: _dataConclusao, data_de_conclusao: _dataConclusao, conclusao: _dataConclusao,
+    data_emissao: _dataEmissao, data_de_emissao: _dataEmissao, emissao: _dataEmissao, data: _dataConclusao,
+    codigo_verificacao: data.certificateCode, codigo_de_verificacao: data.certificateCode, codigo: data.certificateCode,
+    empresa: data.companyName ?? "", organizacao: data.companyName ?? "",
+  };
 
   const canvas = createCanvas(width, height);
   const ctx = canvas.getContext("2d");
@@ -62,26 +99,52 @@ export async function generateCertificatePDF(data: CertificateData): Promise<Buf
     ctx.stroke();
   });
 
-  // Header — company name
+  // Bruno R5-P5/Fase3 #4 — LOGO INSTITUCIONAL em destaque no topo.
+  // Antes era só texto pequeno "SAÚDE DO TRABALHO". Agora carrega a logo da empresa
+  // se disponível; cai pra logo da plataforma; fallback final = texto.
+  // 130px (era 180) para o cabeçalho não encavalar no título "CERTIFICADO DE CONCLUSÃO".
+  const logoBoxSize = 120;
+  const logoY = 45;
+  let logoDrawn = false;
+  const tryUrls: string[] = [];
+  if (data.companyLogoUrl) tryUrls.push(data.companyLogoUrl);
+  tryUrls.push(
+    "https://saudedotrabalho.com/logo.png",
+    "https://saudedotrabalho.com/plataforma/logo.png",
+    "https://dev.saudedotrabalho.com/plataforma/logo.png"
+  );
+  for (const u of tryUrls) {
+    try {
+      const logoImg = await loadImage(u);
+      const ratio = logoImg.width / logoImg.height;
+      const w = ratio >= 1 ? logoBoxSize : logoBoxSize * ratio;
+      const h = ratio >= 1 ? logoBoxSize / ratio : logoBoxSize;
+      ctx.drawImage(logoImg, width / 2 - w / 2, logoY, w, h);
+      logoDrawn = true;
+      break;
+    } catch { /* tenta próxima url */ }
+  }
+  // Header — empresa (abaixo da logo)
+  const headerY = logoDrawn ? logoY + logoBoxSize + 22 : 140;
   ctx.fillStyle = "#1e3a5f";
-  ctx.font = "bold 30px serif";
+  ctx.font = logoDrawn ? "bold 22px serif" : "bold 30px serif";
   ctx.textAlign = "center";
-  ctx.fillText("SAÚDE DO TRABALHO", width / 2, 140);
+  ctx.fillText((data.companyName || "SAÚDE DO TRABALHO").toUpperCase(), width / 2, headerY);
 
   ctx.fillStyle = "#2d7a5f";
-  ctx.font = "16px sans-serif";
-  ctx.fillText("Plataforma de Saúde Mental e Bem-Estar Corporativo", width / 2, 170);
+  ctx.font = "14px sans-serif";
+  ctx.fillText("Plataforma de Saúde Mental e Bem-Estar Corporativo", width / 2, headerY + 24);
 
   // Divider line
   ctx.strokeStyle = "#1e3a5f";
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(120, 192);
-  ctx.lineTo(width - 120, 192);
+  ctx.moveTo(120, headerY + 46);
+  ctx.lineTo(width - 120, headerY + 46);
   ctx.stroke();
 
   // Certificate title (customizable, default gender-neutral)
-  const certTitle = data.certTitle?.trim() || "CERTIFICADO DE CONCLUSÃO";
+  const certTitle = applyCertVars(data.certTitle, certVars).trim() || "CERTIFICADO DE CONCLUSÃO";
   ctx.fillStyle = "#1e3a5f";
   ctx.font = "bold 52px serif";
   ctx.fillText(certTitle, width / 2, 278);
@@ -130,14 +193,27 @@ export async function generateCertificatePDF(data: CertificateData): Promise<Buf
   }
   ctx.fillText(line.trim(), width / 2, y);
 
-  // Custom body text (optional extra note from module config)
-  if (data.certBody?.trim()) {
+  // Custom body text (optional extra note from module config) — com variáveis interpoladas.
+  // Faz quebra de linha (word-wrap) para não estourar a largura quando o texto é longo.
+  const certBodyText = applyCertVars(data.certBody, certVars).trim();
+  if (certBodyText) {
     ctx.fillStyle = "#555";
     ctx.font = "italic 17px sans-serif";
-    const bodyLines = data.certBody.trim().split("\n");
-    for (const bl of bodyLines) {
-      y += 38;
-      ctx.fillText(bl.trim(), width / 2, y);
+    const bodyMaxWidth = width - 240;
+    for (const paragraph of certBodyText.split("\n")) {
+      const bodyWords = paragraph.trim().split(/\s+/);
+      let bl = "";
+      for (const word of bodyWords) {
+        const test = bl ? bl + " " + word : word;
+        if (ctx.measureText(test).width > bodyMaxWidth && bl) {
+          y += 28;
+          ctx.fillText(bl, width / 2, y);
+          bl = word;
+        } else {
+          bl = test;
+        }
+      }
+      if (bl) { y += 28; ctx.fillText(bl, width / 2, y); }
     }
   }
 

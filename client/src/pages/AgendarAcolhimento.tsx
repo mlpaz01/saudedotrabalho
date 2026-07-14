@@ -27,8 +27,13 @@ export default function AgendarAcolhimento() {
     { enabled: !!profId }
   );
   const bookMut = trpc.scheduling.bookAppointment.useMutation({
-    onSuccess: () => {
-      toast.success("Conversa agendada com sucesso. Você receberá uma notificação com a confirmação.");
+    onSuccess: (r: any) => {
+      // R5-P12 #1 — confirma e informa o link imediatamente (ou avisa que vem no dia).
+      if (r?.meetingUrl) {
+        toast.success("Conversa agendada! O link de acesso já está disponível no seu início e no e-mail de confirmação.");
+      } else {
+        toast.success("Conversa agendada! O link de acesso será enviado ao seu e-mail no dia da consulta.");
+      }
       setProfId(null); setDate(""); setTime(""); setNotes("");
     },
     onError: (e) => toast.error(e.message),

@@ -61,6 +61,74 @@ function DonutStatus({ active, pending, inactive }: { active: number; pending: n
   );
 }
 
+// ── R5-P9 #5: Efetividade das Campanhas (substituiu a tabela mockada de exames ASO) ──
+function CampaignEffectivenessCard({ CARD, CARD_PAD, GREEN }: { CARD: React.CSSProperties; CARD_PAD: React.CSSProperties; GREEN: string }) {
+  const { data, isLoading } = trpc.admin.campaignEffectiveness.useQuery();
+  const d = (data ?? {}) as any;
+  const total = Number(d.totalCampaigns ?? 0);
+  const recipients = Number(d.totalRecipients ?? 0);
+  const sent = Number(d.sentCount ?? 0);
+  const failed = Number(d.failedCount ?? 0);
+  const participation = recipients > 0 ? Math.round((sent / recipients) * 100) : 0;
+  const top = (d.topCampaigns ?? []) as Array<{ name: string; sent: number; recipients: number; rate: number }>;
+
+  return (
+    <div style={CARD}>
+      <div style={{ ...CARD_PAD, borderBottom: "1px solid #E9EDF2" }}>
+        <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#1E293B" }}>Efetividade das Campanhas</h3>
+        <p style={{ margin: "2px 0 0", fontSize: 12, color: "#94A3B8" }}>Dados consolidados de envio e participação</p>
+      </div>
+      <div style={{ padding: "16px 24px" }}>
+        {isLoading ? (
+          <div style={{ height: 130, background: "#F4F6F9", borderRadius: 8 }} />
+        ) : total === 0 ? (
+          <p style={{ fontSize: 13, color: "#94A3B8", margin: "20px 0", textAlign: "center" }}>
+            Nenhuma campanha disparada ainda. Crie sua primeira em Campanhas → Nova.
+          </p>
+        ) : (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 16 }}>
+              <div>
+                <div style={{ fontSize: 11, color: "#94A3B8", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em" }}>Campanhas</div>
+                <div style={{ fontSize: 22, fontWeight: 800, color: "#1E293B", marginTop: 4 }}>{total}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: "#94A3B8", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em" }}>Destinatários</div>
+                <div style={{ fontSize: 22, fontWeight: 800, color: "#1E293B", marginTop: 4 }}>{recipients}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: "#94A3B8", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em" }}>Entregues</div>
+                <div style={{ fontSize: 22, fontWeight: 800, color: GREEN, marginTop: 4 }}>{sent}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: "#94A3B8", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em" }}>Participação</div>
+                <div style={{ fontSize: 22, fontWeight: 800, color: participation >= 70 ? GREEN : participation >= 40 ? "#F59E0B" : "#EF4444", marginTop: 4 }}>{participation}%</div>
+              </div>
+            </div>
+            {failed > 0 && (
+              <div style={{ fontSize: 12, color: "#EF4444", marginBottom: 12 }}>
+                ⚠ {failed} falha{failed > 1 ? "s" : ""} de envio
+              </div>
+            )}
+            {top.length > 0 && (
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 8 }}>Top engajamento</div>
+                {top.slice(0, 3).map((c, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0", borderBottom: i < 2 ? "1px solid #F1F5F9" : "none" }}>
+                    <span style={{ fontSize: 13, color: "#1E293B", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{c.name}</span>
+                    <span style={{ fontSize: 12, color: "#94A3B8", marginLeft: 12 }}>{c.sent}/{c.recipients}</span>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: c.rate >= 70 ? GREEN : c.rate >= 40 ? "#F59E0B" : "#EF4444", marginLeft: 12, minWidth: 36, textAlign: "right" }}>{c.rate}%</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function AdminDashboard() {
@@ -414,56 +482,9 @@ export default function AdminDashboard() {
               gap: 16,
             }}
           >
-            {/* Próximos Exames ASO */}
-            <div style={CARD}>
-              <div style={{ ...CARD_PAD, borderBottom: "1px solid #E9EDF2" }}>
-                <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#1E293B" }}>Próximos Exames ASO</h3>
-                <p style={{ margin: "2px 0 0", fontSize: 12, color: "#94A3B8" }}>Agenda dos próximos 60 dias</p>
-              </div>
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                  <thead>
-                    <tr style={{ borderBottom: "1px solid #E9EDF2" }}>
-                      <th style={{ padding: "10px 24px", textAlign: "left", fontSize: 11, fontWeight: 700, color: "#94A3B8", textTransform: "uppercase", letterSpacing: "0.06em" }}>Colaborador</th>
-                      <th style={{ padding: "10px 16px", textAlign: "left", fontSize: 11, fontWeight: 700, color: "#94A3B8", textTransform: "uppercase", letterSpacing: "0.06em" }}>Tipo</th>
-                      <th style={{ padding: "10px 16px", textAlign: "left", fontSize: 11, fontWeight: 700, color: "#94A3B8", textTransform: "uppercase", letterSpacing: "0.06em" }}>Data</th>
-                      <th style={{ padding: "10px 16px", textAlign: "left", fontSize: 11, fontWeight: 700, color: "#94A3B8", textTransform: "uppercase", letterSpacing: "0.06em" }}>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[
-                      { name: "Ana Souza", type: "Periódico", date: "10/07/2025", status: "Agendado", statusColor: "#3B82F6" },
-                      { name: "Carlos Lima", type: "Admissional", date: "15/07/2025", status: "Pendente", statusColor: "#F59E0B" },
-                      { name: "Maria Fernanda", type: "Retorno", date: "22/07/2025", status: "Agendado", statusColor: "#3B82F6" },
-                    ].map((row, i) => (
-                      <tr key={i} style={{ borderBottom: "1px solid #F1F5F9" }}>
-                        <td style={{ padding: "12px 24px", fontWeight: 600, color: "#1E293B" }}>{row.name}</td>
-                        <td style={{ padding: "12px 16px", color: "#64748B" }}>{row.type}</td>
-                        <td style={{ padding: "12px 16px", color: "#64748B" }}>{row.date}</td>
-                        <td style={{ padding: "12px 16px" }}>
-                          <span style={{
-                            display: "inline-block",
-                            padding: "2px 10px",
-                            borderRadius: 99,
-                            fontSize: 11,
-                            fontWeight: 700,
-                            background: `${row.statusColor}18`,
-                            color: row.statusColor,
-                          }}>
-                            {row.status}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                    <tr>
-                      <td colSpan={4} style={{ padding: "14px 24px", textAlign: "center", color: "#94A3B8", fontSize: 12 }}>
-                        Nenhum outro exame agendado nos próximos 60 dias
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
+            {/* R5-P9 #4: removido tabela "Próximos Exames ASO" mockada (Ana Souza etc),
+                 substituída por card "Efetividade das Campanhas" (#5) com dados reais. */}
+            <CampaignEffectivenessCard CARD={CARD} CARD_PAD={CARD_PAD} GREEN={GREEN} />
 
             {/* IA: insight preventivo */}
             <div style={{ ...CARD, background: "linear-gradient(160deg, #f0fdf6 0%, #fff 60%)" }}>

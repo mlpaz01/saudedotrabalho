@@ -212,12 +212,17 @@ export default function ModulePlayer() {
     onError: (e) => toast.error(e.message),
   });
 
-  // Set first lesson as default
+  // R5-P9 #10: ao navegar de módulo A→B sem remontar o componente, currentLessonId
+  // permanecia com o ID da lição antiga (não pertence ao novo módulo) → currentLesson=null → tela em branco.
+  // Resetar sempre que moduleId muda, e setar primeira lição quando os dados chegam.
+  useEffect(() => {
+    setCurrentLessonId(null);
+  }, [moduleId]);
   useEffect(() => {
     if (lessonsQuery.data && lessonsQuery.data.length > 0 && currentLessonId === null) {
       setCurrentLessonId(lessonsQuery.data[0].id);
     }
-  }, [lessonsQuery.data]);
+  }, [lessonsQuery.data, currentLessonId]);
 
   // Check cert
   const isModuleCompleted = moduleProgressQuery.data?.isCompleted ?? false;
@@ -414,9 +419,24 @@ export default function ModulePlayer() {
                   />
                 )
               ) : (
-                <div className="flex flex-col items-center justify-center h-64 gap-3 text-muted-foreground">
-                  <BookOpen size={40} className="opacity-30" />
-                  <p>Selecione uma aula na lista para começar</p>
+                <div className="flex flex-col items-center justify-center h-64 gap-3 text-center px-6">
+                  <BookOpen size={40} className="opacity-30 text-muted-foreground" />
+                  {/* R5-P11 #6/#7 — distinguir "selecione uma aula" (tem aulas, escolha) de
+                      "conteúdo ainda não publicado" (0 aulas). Antes ambos mostravam o
+                      mesmo texto e o colaborador interpretava como "tela em branco". */}
+                  {lessons.length === 0 ? (
+                    <>
+                      <p className="font-semibold text-foreground">Conteúdo em preparação</p>
+                      <p className="text-xs text-muted-foreground max-w-md">
+                        Este curso faz parte do seu Plano de Ação, mas as aulas ainda não foram
+                        publicadas pelo seu RH/SESMT. Volte em breve — você será notificado quando
+                        estiverem disponíveis.
+                      </p>
+                      <Link href={backUrl}><Button variant="outline" size="sm" className="mt-2">Voltar aos cursos</Button></Link>
+                    </>
+                  ) : (
+                    <p className="text-muted-foreground">Selecione uma aula na lista para começar</p>
+                  )}
                 </div>
               )}
             </div>

@@ -648,14 +648,17 @@ function EngagementTab({ filters, drill, setDrill }: { filters: any; drill: Dril
     <div className="space-y-6">
       <SectionCard title="Heatmap Setor × Curso" subtitle="% médio assistido · clique em uma célula para drill setor">
         {hm && hm.sectors.length > 0 && hm.modules.length > 0 ? (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto" style={{ paddingTop: 100 }}>
             <table className="text-xs">
               <thead>
-                <tr>
-                  <th className="text-left p-2 sticky left-0 bg-white">Setor / Curso</th>
+                <tr style={{ height: 100 }}>
+                  <th className="text-left p-2 sticky left-0 bg-white align-bottom" style={{ verticalAlign: "bottom" }}>Setor / Curso</th>
+                  {/* Bruno R5-P6 #8 — Headers rotacionados a 60° (mais legíveis) + largura maior + sem truncar título */}
                   {hm.modules.map(m => (
-                    <th key={m.id} className="p-1 min-w-[60px] text-[10px] text-muted-foreground" title={m.title}>
-                      <div className="rotate-[-30deg] origin-left h-12 truncate" style={{ width: 60 }}>{m.title.length > 12 ? m.title.slice(0,12)+'…' : m.title}</div>
+                    <th key={m.id} className="p-1 align-bottom text-[11px] text-slate-700 font-medium" style={{ width: 36, minWidth: 36, height: 100, verticalAlign: "bottom" }} title={m.title}>
+                      <div style={{ transform: "rotate(-60deg)", transformOrigin: "left bottom", width: 130, marginLeft: 18, marginBottom: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {m.title}
+                      </div>
                     </th>
                   ))}
                 </tr>

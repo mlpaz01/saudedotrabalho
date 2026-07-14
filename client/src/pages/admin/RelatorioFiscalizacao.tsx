@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { trpc } from "@/lib/trpc";
 import { Loader2 } from "lucide-react";
+import { metodologiaPsicossocialHtml } from "@shared/const";
 
 function BarH({ value }: { value: number }) {
   const c = value >= 70 ? "#059669" : value >= 40 ? "#D97706" : "#DC2626";
@@ -281,6 +282,9 @@ export default function RelatorioFiscalizacao() {
             </table>
           )}
         </div>
+
+        {/* R5-P12 #11 — metodologia canônica (mesma fonte do PGR, Laudos e relatórios) */}
+        <div className="section" style={{ marginTop: 24 }} dangerouslySetInnerHTML={{ __html: metodologiaPsicossocialHtml({ headingTag: "h2", subTag: "h3" }) }} />
 
         {/* Assinatura */}
         <div className="section" style={{ marginTop: 48, borderTop: "2px solid #e2e8f0", paddingTop: 24 }}>

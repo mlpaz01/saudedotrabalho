@@ -33,9 +33,33 @@ export default function Activate() {
     onError: (e) => toast.error(e.message),
   });
 
+  // R5-P10 #12 — redirecionamento automático pra /login em três casos:
+  //   1) token DEMO_TOKEN_PREVIEW (e-mail de demonstração)
+  //   2) conta já ativada (hasSetPassword=1 → backend devolve alreadyActive)
+  //   3) sem token
+  // Antes mostrava telas intermediárias que confundiam o usuário.
   useEffect(() => {
-    if (!token) toast.error("Link de ativação inválido.");
-  }, [token]);
+    if (!token) {
+      toast.error("Link de ativação inválido.");
+      navigate("/login");
+      return;
+    }
+    if (token === "DEMO_TOKEN_PREVIEW") {
+      navigate("/login?demo=1");
+      return;
+    }
+    if (validate.data && (validate.data as any).alreadyActive) {
+      toast.success("Sua conta já está ativa. Faça login normalmente.");
+      navigate("/login");
+      return;
+    }
+    // VÍDEO V6 — token inexistente/expirado/inválido NÃO pode virar beco sem saída
+    // ("Link inválido"). Redireciona pro login com aviso leve.
+    if (validate.isError || (validate.data && (validate.data as any).valid === false && !(validate.data as any).alreadyActive)) {
+      toast.error("Seu link de ativação expirou ou é inválido. Faça login ou peça um novo ao RH.");
+      navigate("/login");
+    }
+  }, [token, validate.data, validate.isError, navigate]);
 
   const rules = [
     { label: "Mínimo 8 caracteres", ok: password.length >= 8 },
@@ -55,6 +79,36 @@ export default function Activate() {
           <Button onClick={() => navigate("/login")} className="bg-primary text-primary-foreground w-full">
             Ir para o Login
           </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // Bruno R5-P7 #9 — Antes mostrava "Link inválido" durante o loading da validação,
+  // gerando flash visual que o usuário interpretava como erro. Agora espera resposta.
+  if (validate.isLoading || (token && !validate.data && !validate.isError)) {
+    return (
+      <div className="min-h-screen brand-gradient flex items-center justify-center p-4">
+        <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-xl border border-white/60 p-8 w-full max-w-md text-center">
+          <div className="w-12 h-12 border-4 border-primary/20 border-t-primary rounded-full animate-spin mx-auto mb-4"/>
+          <p className="text-sm text-muted-foreground">Validando seu link de ativação...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Bruno R5-P7 #9 — token DEMO_TOKEN_PREVIEW é só pra prévia visual do e-mail;
+  // mostrar mensagem específica ao invés do alerta vermelho de "inválido".
+  if (token === "DEMO_TOKEN_PREVIEW") {
+    return (
+      <div className="min-h-screen brand-gradient flex items-center justify-center p-4">
+        <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-xl border border-white/60 p-8 w-full max-w-md text-center">
+          <div className="w-16 h-16 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <AlertCircle size={32} className="text-amber-600"/>
+          </div>
+          <h2 className="text-xl font-bold text-primary mb-2" style={{ fontFamily: "'Playfair Display', serif" }}>E-mail de demonstração</h2>
+          <p className="text-muted-foreground text-sm mb-6">Este link veio de um e-mail de DEMO. Para ativar uma conta real, use o link enviado pelo RH com o token gerado pela plataforma.</p>
+          <Button onClick={() => navigate("/login")} className="bg-primary text-primary-foreground w-full">Ir para o Login</Button>
         </div>
       </div>
     );

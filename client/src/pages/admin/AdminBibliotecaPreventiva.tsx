@@ -326,6 +326,16 @@ function BlastDialog({ campaign, loading, onClose, onConfirm }: any) {
   const [method, setMethod] = useState<"notification" | "email" | "whatsapp" | "both" | "all">("notification");
   const [customMessage, setCustomMessage] = useState("");
   const [whatsappTemplate, setWhatsappTemplate] = useState("campanha_saude_v1");
+  // P17 #6 — Bruno: filtro por quem já respondeu/concluiu o conteúdo vinculado à campanha
+  const [participationFilter, setParticipationFilter] = useState<"todos" | "nao_respondeu" | "em_andamento" | "concluiu">("todos");
+  // P18 #16 — alternativa numérica ("% máximo assistido"), mesmo padrão já usado no filtro de cursos.
+  const [useMaxPercent, setUseMaxPercent] = useState(false);
+  const [maxCompletionPercent, setMaxCompletionPercent] = useState(20);
+  const previewQ = trpc.preventiveLibrary.previewParticipation.useQuery({
+    campaignId: campaign.id, audience,
+    maxCompletionPercent: useMaxPercent ? maxCompletionPercent : undefined,
+  });
+  const preview = previewQ.data;
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-white rounded-lg shadow-xl max-w-lg w-full p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
@@ -348,6 +358,45 @@ function BlastDialog({ campaign, loading, onClose, onConfirm }: any) {
             <option value="sesmt">Só SESMT</option>
             <option value="admin">Só Administradores</option>
           </select>
+        </div>
+
+        <div>
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-semibold text-slate-700">Participação (opcional)</label>
+            <label className="text-[11px] flex items-center gap-1.5 text-slate-500 cursor-pointer">
+              <input type="checkbox" checked={useMaxPercent} onChange={(e) => setUseMaxPercent(e.target.checked)} />
+              Usar % máximo assistido
+            </label>
+          </div>
+          {useMaxPercent ? (
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-xs text-slate-500">Concluíram menos de</span>
+              <input type="number" min={0} max={100} value={maxCompletionPercent}
+                onChange={(e) => setMaxCompletionPercent(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
+                className="w-16 border rounded-md px-2 py-1 text-sm" />
+              <span className="text-xs text-slate-500">% do conteúdo</span>
+            </div>
+          ) : (
+            <select className="w-full mt-1 border rounded-md px-2 py-1.5 text-sm" value={participationFilter} onChange={(e) => setParticipationFilter(e.target.value as any)}>
+              <option value="todos">Todos, independente de participação</option>
+              <option value="nao_respondeu">Só quem não respondeu/concluiu nada</option>
+              <option value="em_andamento">Só quem está em andamento</option>
+              <option value="concluiu">Só quem já concluiu</option>
+            </select>
+          )}
+          {preview && (
+            preview.totalItems === 0 ? (
+              <p className="text-[10px] text-amber-600 mt-1">Esta campanha não tem pesquisa/curso vinculado — o filtro de participação não terá efeito.</p>
+            ) : useMaxPercent ? (
+              <p className="text-[10px] text-slate-500 mt-1">
+                Dessa audiência ({preview.totalRecipients}): {preview.abaixoDoLimite} concluíram menos de {maxCompletionPercent}%.
+              </p>
+            ) : (
+              <p className="text-[10px] text-slate-500 mt-1">
+                Dessa audiência ({preview.totalRecipients}): {preview.naoRespondeu} não respondeu/concluiu · {preview.emAndamento} em andamento · {preview.concluiu} concluiu.
+              </p>
+            )
+          )}
         </div>
 
         <div>
@@ -391,7 +440,7 @@ function BlastDialog({ campaign, loading, onClose, onConfirm }: any) {
         <div className="flex justify-end gap-2 pt-2 border-t">
           <button onClick={onClose} disabled={loading} className="px-3 py-1.5 text-sm border rounded-md hover:bg-slate-50">Cancelar</button>
           <button
-            onClick={() => onConfirm({ audience, method, customMessage: customMessage.trim() || undefined, whatsappTemplate: (method === "whatsapp" || method === "all") ? whatsappTemplate.trim() : undefined })}
+            onClick={() => onConfirm({ audience, method, participationFilter: useMaxPercent ? "todos" : participationFilter, maxCompletionPercent: useMaxPercent ? maxCompletionPercent : undefined, customMessage: customMessage.trim() || undefined, whatsappTemplate: (method === "whatsapp" || method === "all") ? whatsappTemplate.trim() : undefined })}
             disabled={loading}
             className="px-4 py-1.5 text-sm bg-emerald-600 text-white rounded-md hover:bg-emerald-700 flex items-center gap-1 disabled:opacity-60"
           >

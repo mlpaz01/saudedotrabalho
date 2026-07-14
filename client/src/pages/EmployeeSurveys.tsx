@@ -42,6 +42,14 @@ const UCG_STYLES = `@import url('https://fonts.googleapis.com/css2?family=Lora:w
 .ucg-fp:hover{background:#123451}
 .ucg-status-badge{position:absolute;top:9px;right:9px;font-size:9.5px;font-weight:700;padding:3px 8px;border-radius:6px}
 .ucg-sb-anon{background:rgba(124,58,237,.85);color:#fff}
+.ucg-sb-prio{background:#DC2626;color:#fff;top:9px;left:9px;right:auto}
+.ucg-section-title{font-family:'Lora',Georgia,serif;font-size:18px;font-weight:700;letter-spacing:-.01em;margin:24px 0 10px;display:flex;align-items:center;gap:8px}
+.ucg-section-prio{color:#B91C1C}
+.ucg-section-prio:before{content:"⚠";font-size:18px}
+.ucg-section-comp{color:#475569;margin-top:32px}
+.ucg-cycle-line{font-size:11px;color:#1D4ED8;font-weight:600;margin-top:2px}
+.ucg-card-prio{border-color:#FCA5A5;background:linear-gradient(180deg,#FEF2F2 0%,#fff 60%)}
+.ucg-card-prio .ucg-card-title{color:#7F1D1D}
 .ucg-empty{grid-column:1/-1;text-align:center;padding:56px 20px;color:#92A0AC}
 .ucg-empty svg{width:36px;height:36px;margin:0 auto 10px;display:block;opacity:.28;stroke:currentColor;fill:none;stroke-width:1.5}
 .ucg-empty p{font-size:14px;font-weight:600;color:#62707D}`;
@@ -87,6 +95,64 @@ export default function EmployeeSurveys() {
     });
   }, [list, search, filter]);
 
+  // Bruno R5-P2 #16 — Separa prioritárias (ciclo aberto + DRPS/AEP) das complementares.
+  const prioritarias = filtered.filter((s: any) => s.isPriority);
+  const complementares = filtered.filter((s: any) => !s.isPriority);
+
+  function fmtCycle(s: any): string {
+    if (!s.cycleName) return "";
+    const parts: string[] = [`Ciclo: ${s.cycleName}`];
+    if (s.cycleStartDate) {
+      try {
+        const d = new Date(s.cycleStartDate);
+        const mes = d.toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+        parts.push(mes.charAt(0).toUpperCase() + mes.slice(1));
+      } catch {}
+    }
+    if (s.cycleStatus) {
+      const map: Record<string,string> = { open:"aberto", active:"ativo", collecting:"coletando", analyzing:"em análise", review:"revisão", archived:"arquivado" };
+      parts.push(map[String(s.cycleStatus).toLowerCase()] || String(s.cycleStatus));
+    }
+    return parts.join(" · ");
+  }
+
+  function renderCard(s: any) {
+    const cat = surveyCategory(s.category);
+    const qCount = Array.isArray(s.questions) ? s.questions.length : (typeof s.questionCount === 'number' ? s.questionCount : null);
+    const cycleLine = fmtCycle(s);
+    return (
+      <Link key={s.id} href={`/pesquisas/${s.id}/responder`} className={`ucg-card ${s.isPriority ? 'ucg-card-prio' : ''}`}>
+        <div className="ucg-thumb" style={{ background: cat.grad }}>
+          <div className="ucg-thumb-icon">
+            <svg viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1" /><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" /><path d="M9 12h6M9 16h6" /></svg>
+          </div>
+          {s.isAnonymous && <span className="ucg-status-badge ucg-sb-anon">ANÔNIMA</span>}
+          {s.isPriority && <span className="ucg-status-badge ucg-sb-prio">OBRIGATÓRIA</span>}
+        </div>
+        <div className="ucg-body">
+          <span className="ucg-cat" style={{ background: cat.bg, color: cat.color }}>{cat.label}</span>
+          <div className="ucg-card-title">{s.title}</div>
+          {cycleLine && <div className="ucg-cycle-line">{cycleLine}</div>}
+          {s.description && <div className="ucg-card-desc">{s.description}</div>}
+          {qCount !== null && (
+            <div className="ucg-meta">
+              <span className="ucg-meta-item">
+                <svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></svg>
+                {qCount} {qCount === 1 ? 'pergunta' : 'perguntas'}
+              </span>
+            </div>
+          )}
+          <div className="ucg-footer">
+            <button className="ucg-fb ucg-fp" type="button">
+              Responder
+              <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+            </button>
+          </div>
+        </div>
+      </Link>
+    );
+  }
+
   return (
     <>
       <style dangerouslySetInnerHTML={{ __html: UCG_STYLES }} />
@@ -112,48 +178,25 @@ export default function EmployeeSurveys() {
             </div>
           </div>
 
-          <div className="ucg-grid">
-            {isLoading && <div className="ucg-empty"><p>Carregando...</p></div>}
-            {!isLoading && filtered.length === 0 && (
-              <div className="ucg-empty">
-                <svg viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1" /><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" /></svg>
-                <p>Nenhuma pesquisa pendente no momento</p>
-              </div>
-            )}
-            {!isLoading && filtered.map((s) => {
-              const cat = surveyCategory(s.category);
-              const qCount = Array.isArray(s.questions) ? s.questions.length : (typeof s.questionCount === 'number' ? s.questionCount : null);
-              return (
-                <Link key={s.id} href={`/pesquisas/${s.id}/responder`} className="ucg-card">
-                  <div className="ucg-thumb" style={{ background: cat.grad }}>
-                    <div className="ucg-thumb-icon">
-                      <svg viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1" /><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" /><path d="M9 12h6M9 16h6" /></svg>
-                    </div>
-                    {s.isAnonymous && <span className="ucg-status-badge ucg-sb-anon">ANÔNIMA</span>}
-                  </div>
-                  <div className="ucg-body">
-                    <span className="ucg-cat" style={{ background: cat.bg, color: cat.color }}>{cat.label}</span>
-                    <div className="ucg-card-title">{s.title}</div>
-                    {s.description && <div className="ucg-card-desc">{s.description}</div>}
-                    {qCount !== null && (
-                      <div className="ucg-meta">
-                        <span className="ucg-meta-item">
-                          <svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></svg>
-                          {qCount} {qCount === 1 ? 'pergunta' : 'perguntas'}
-                        </span>
-                      </div>
-                    )}
-                    <div className="ucg-footer">
-                      <button className="ucg-fb ucg-fp" type="button">
-                        Responder
-                        <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
-                      </button>
-                    </div>
-                  </div>
-                </Link>
-              );
-            })}
-          </div>
+          {isLoading && <div className="ucg-empty"><p>Carregando...</p></div>}
+          {!isLoading && filtered.length === 0 && (
+            <div className="ucg-grid"><div className="ucg-empty">
+              <svg viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1" /><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" /></svg>
+              <p>Nenhuma pesquisa pendente no momento</p>
+            </div></div>
+          )}
+          {!isLoading && prioritarias.length > 0 && (
+            <>
+              <h2 className="ucg-section-title ucg-section-prio">Pesquisas Prioritárias <span style={{ fontSize: 12, fontWeight: 600, color: '#92A0AC' }}>({prioritarias.length})</span></h2>
+              <div className="ucg-grid">{prioritarias.map(renderCard)}</div>
+            </>
+          )}
+          {!isLoading && complementares.length > 0 && (
+            <>
+              <h2 className="ucg-section-title ucg-section-comp">Pesquisas Complementares <span style={{ fontSize: 12, fontWeight: 600, color: '#92A0AC' }}>({complementares.length})</span></h2>
+              <div className="ucg-grid">{complementares.map(renderCard)}</div>
+            </>
+          )}
         </div>
       </div>
     </>

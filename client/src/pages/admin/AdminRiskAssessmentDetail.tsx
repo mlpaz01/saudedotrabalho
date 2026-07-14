@@ -25,6 +25,17 @@ import {
 
 type TabId = "overview" | "matrix" | "plan" | "schedule" | "reports" | "cursos";
 
+// R5-P12 #10 — rótulos de status do lote impresso (espelha OCR_STATUS do upload)
+const OCR_STATUS_LABEL: Record<string, string> = {
+  aguardando: "Aguardando leitura",
+  pending: "Aguardando leitura",
+  em_processamento: "Em processamento",
+  processado_sucesso: "Processado com sucesso",
+  processado_parcial: "Processado parcialmente",
+  processado_inconsistencias: "Processado com inconsistências",
+  erro: "Erro no processamento",
+};
+
 const RISK_COLORS: Record<string, string> = {
   baixo:   "bg-emerald-100 text-emerald-700 border-emerald-400",
   medio:   "bg-amber-100 text-amber-800 border-amber-500",
@@ -72,6 +83,9 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
   const [showImport, setShowImport] = useState(false);
 
   const detailQ = trpc.riskAssessment.getAssessment.useQuery({ id });
+  // R5-P12 #10 — lotes de questionários IMPRESSOS que alimentaram este ciclo.
+  const printedBatchesQ = (trpc.compliance as any).listPrintedBatches.useQuery({ cycleId: id });
+  const printedBatches = (printedBatchesQ.data ?? []) as any[];
   const [coursesEnabled, setCoursesEnabled] = useState(false);
   useEffect(() => {
     if (tab === "cursos" && !coursesEnabled) setCoursesEnabled(true);
@@ -270,6 +284,40 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
                 <Button size="sm" className="gap-2" onClick={() => setShowImport(true)}><Upload size={14} /> Importar respostas (planilha)</Button>
               </div>
             </div>
+
+            {/* R5-P12 #10 — origem dos dados: questionários impressos deste ciclo (rastreabilidade p/ auditoria) */}
+            {printedBatches.length > 0 && (
+              <div className="bg-white border rounded-xl p-4 md:col-span-3">
+                <div className="text-sm font-semibold text-slate-800 mb-1 flex items-center gap-2">
+                  <Upload size={15} className="text-sky-600" /> Origem dos dados — Questionários impressos
+                </div>
+                <p className="text-xs text-slate-500 mb-3">Este ciclo recebeu respostas provenientes de questionários em papel digitalizados. Rastreabilidade mantida para auditorias.</p>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-left text-slate-500 border-b">
+                        <th className="py-1.5 pr-3">Nº do lote</th>
+                        <th className="py-1.5 pr-3">Origem</th>
+                        <th className="py-1.5 pr-3">Data do processamento</th>
+                        <th className="py-1.5 pr-3">Questionários</th>
+                        <th className="py-1.5 pr-3">Situação</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {printedBatches.map((b: any) => (
+                        <tr key={b.id} className="border-b last:border-0">
+                          <td className="py-1.5 pr-3 font-mono">{b.code}</td>
+                          <td className="py-1.5 pr-3">Questionário impresso{b.sectorName ? ` · ${b.sectorName}` : ""}{b.unit ? ` · ${b.unit}` : ""}</td>
+                          <td className="py-1.5 pr-3">{b.createdAt ? new Date(b.createdAt).toLocaleString("pt-BR") : "—"}</td>
+                          <td className="py-1.5 pr-3">{b.quantity} enviados / {b.ocrResponsesCount ?? 0} lidos</td>
+                          <td className="py-1.5 pr-3">{OCR_STATUS_LABEL[b.ocrStatus] ?? "Aguardando leitura"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -678,7 +726,8 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
         {tab === "cursos" && (
             <div className="space-y-4">
               <p className="text-sm text-slate-600">
-                Cursos preventivos recomendados com base nos fatores de risco avaliados como alto ou crítico.
+                Cursos preventivos prioritários: fatores do inventário vinculados na aba 13 Fatores NR-01
+                com a mesma criticidade do risco final do ciclo.
               </p>
               {coursesQ.isLoading && (
                 <div className="flex justify-center py-8">
@@ -688,9 +737,9 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
               {!coursesQ.isLoading && coursesQ.data && coursesQ.data.length === 0 && (
                 <div className="bg-white rounded-xl border p-8 text-center">
                   <BookOpen className="w-10 h-10 mx-auto mb-3 text-slate-300" />
-                  <p className="font-medium text-slate-600">Nenhum curso vinculado a fatores de risco críticos ou altos.</p>
+                  <p className="font-medium text-slate-600">Nenhum curso prioritário encontrado para a criticidade atual do ciclo.</p>
                   <p className="text-xs mt-2 text-slate-400">
-                    Configure vínculos em <strong>Análise de Risco → Correlação Risco-Ação</strong>.
+                    Configure vínculos em <strong>Análise de Risco → Correlação Risco-Ação</strong> para o fator e nível correspondente.
                   </p>
                 </div>
               )}
@@ -702,6 +751,7 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
                         <th className="text-left px-4 py-3 font-semibold text-slate-600">Fator de Risco</th>
                         <th className="text-left px-4 py-3 font-semibold text-slate-600">Nível</th>
                         <th className="text-left px-4 py-3 font-semibold text-slate-600">Curso Recomendado</th>
+                        <th className="text-left px-4 py-3 font-semibold text-slate-600">Origem</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -719,6 +769,13 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
                               <BookOpen size={13} />
                               {row.moduleTitle}
                             </a>
+                          </td>
+                          <td className="px-4 py-3">
+                            {row.source === "plano_de_acao" ? (
+                              <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200">Plano de Ação</span>
+                            ) : (
+                              <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200">13 Fatores NR-01</span>
+                            )}
                           </td>
                         </tr>
                       ))}
@@ -989,4 +1046,3 @@ function ImportResponsesDialog({
     </Dialog>
   );
 }
-

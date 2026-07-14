@@ -32,6 +32,21 @@ Acessar curso: {{link}}
 Atenciosamente,
 Equipe Saúde do Trabalho`,
   },
+  course_pending_personalized: {
+    label: "Cursos pendentes (personalizado)",
+    subject: "Você tem {{course_title}} e outros cursos pendentes",
+    body: `Olá {{name}},
+
+Verificamos que você ainda tem cursos prioritários pendentes de conclusão:
+
+{{courses_list}}
+
+Esses cursos foram identificados como prioritários pela avaliação de riscos da sua empresa. Por favor, conclua o quanto antes para manter sua formação em dia.
+
+Acessar meus cursos: {{link}}
+
+Equipe Saúde do Trabalho`,
+  },
   survey_friendly: {
     label: "Lembrete amigável - pesquisa",
     subject: "Sua opinião importa: {{survey_title}}",

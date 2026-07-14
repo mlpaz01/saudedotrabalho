@@ -25,8 +25,16 @@ function StatusBadge({ status }: { status: string }) {
 
 export default function ManagerDashboard() {
   const { data, isLoading } = trpc.dashboard.managerOverview.useQuery();
-
-  const compliance = data?.mandatoryComplianceRate ?? 0;
+  // Bruno R5-P5 final — usa MESMA fonte da Central de Conformidade NR-01
+  // (`compliance.nr01Status` retorna `score`). `compliance.score` antigo dava
+  // número diferente (média de completion_percent) e gerava o "10% vs 69%".
+  const { data: nr01StatusQ } = trpc.compliance.nr01Status.useQuery();
+  const compliance = typeof (nr01StatusQ as any)?.score === "number"
+    ? Math.round((nr01StatusQ as any).score)
+    : (data?.mandatoryComplianceRate ?? 0);
+  // Bruno R5-P5 #4 — Pesquisas em campo eram HARDCODED em 0. Agora vem do overview real.
+  const { data: overviewQ } = trpc.analytics.overview.useQuery();
+  const surveysCount = Number((overviewQ as any)?.activeSurveys ?? 0);
   const expiring = data?.certsExpiring30d ?? 0;
   const expired = data?.certsExpired ?? 0;
   const totalEmp = data?.totalEmployees ?? 0;
@@ -74,7 +82,9 @@ export default function ManagerDashboard() {
               <ShieldCheck className="w-12 h-12 opacity-80" />
             </div>
             <Progress value={compliance} className="h-3 bg-white/30 mb-3" />
-            <Link href="/admin/modulos">
+            {/* R5-P9 #2: rota correta é /admin/compliance (App.tsx:206 = ComplianceHub).
+                 /admin/conformidade não existe → caía em fallback errado. */}
+            <Link href="/admin/compliance">
               <Button variant="secondary" className="gap-2 font-bold">
                 Continuar implementação <ArrowRight className="w-4 h-4" />
               </Button>
@@ -106,7 +116,7 @@ export default function ManagerDashboard() {
             <CardContent className="pt-5">
               <div className="flex items-center justify-between mb-2">
                 <BarChart3 className="w-6 h-6 text-blue-600" />
-                <p className="text-3xl font-bold">0</p>
+                <p className="text-3xl font-bold">{surveysCount}</p>
               </div>
               <p className="text-xs text-muted-foreground">Pesquisas em campo</p>
             </CardContent>
@@ -122,99 +132,41 @@ export default function ManagerDashboard() {
           </Card>
         </div>
 
-        {/* Quick actions */}
+        {/* R5-P10 #1 — Ações rápidas: atalho de ciclo aponta pra criação real;
+            removidos "Agendar psicólogo" (não é da rotina RH) e "Solicitações de colaboradores"
+            (exclusivo do Super Admin). */}
         <div>
           <h2 className="text-lg font-bold mb-3">Ações rápidas</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <Card className="hover:shadow-lg transition-shadow cursor-pointer border-yellow-200 bg-gradient-to-br from-yellow-50 to-amber-100">
-              <CardContent className="p-5">
-                <div className="flex items-center justify-between mb-3">
-                  <Sparkles className="w-8 h-8 text-amber-600" />
-                  <Badge className="bg-amber-200 text-amber-900 text-xs">Em breve</Badge>
-                </div>
-                <h3 className="font-bold mb-1">🤖 Criar curso com IA</h3>
-                <p className="text-xs text-muted-foreground">Gere cursos personalizados em minutos</p>
-              </CardContent>
-            </Card>
-            <Card className="hover:shadow-lg transition-shadow cursor-pointer bg-gradient-to-br from-blue-50 to-cyan-100">
-              <CardContent className="p-5">
-                <ClipboardList className="w-8 h-8 text-blue-600 mb-3" />
-                <h3 className="font-bold mb-1">📊 Lançar pesquisa de clima</h3>
-                <p className="text-xs text-muted-foreground">Avalie engajamento dos colaboradores</p>
-              </CardContent>
-            </Card>
-            <Card className="hover:shadow-lg transition-shadow cursor-pointer bg-gradient-to-br from-green-50 to-emerald-100">
-              <CardContent className="p-5">
-                <FileText className="w-8 h-8 text-green-600 mb-3" />
-                <h3 className="font-bold mb-1">📋 Gerar relatório PGR</h3>
-                <p className="text-xs text-muted-foreground">Programa de Gerenciamento de Riscos</p>
-              </CardContent>
-            </Card>
-            <Link href="/admin/usuarios">
-              <Card className="hover:shadow-lg transition-shadow cursor-pointer bg-gradient-to-br from-violet-50 to-purple-100">
-                <CardContent className="p-5">
-                  <UserPlus className="w-8 h-8 text-violet-600 mb-3" />
-                  <h3 className="font-bold mb-1">👥 Convidar colaboradores</h3>
-                  <p className="text-xs text-muted-foreground">Adicionar novos usuários à plataforma</p>
-                </CardContent>
-              </Card>
-            </Link>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+            {[
+              { href: "/admin/analise-risco", icon: "🧠", title: "Novo ciclo psicossocial", color: "from-purple-50 to-violet-100" },
+              { href: "/admin/usuarios", icon: "👥", title: "Gerenciar colaboradores", color: "from-violet-50 to-purple-100" },
+              { href: "/admin/usuarios?new=1", icon: "➕", title: "Cadastrar colaborador", color: "from-pink-50 to-rose-100" },
+              { href: "/admin/campanhas", icon: "📨", title: "Enviar campanhas", color: "from-blue-50 to-cyan-100" },
+              { href: "/admin/pesquisas", icon: "📋", title: "Pesquisas psicossociais", color: "from-cyan-50 to-sky-100" },
+              { href: "/admin/pesquisas/upload-impresso", icon: "📨", title: "Upload de questionários impressos", color: "from-sky-50 to-blue-100" },
+              { href: "/admin/sipat", icon: "🏆", title: "Gerenciar SIPAT", color: "from-amber-50 to-yellow-100" },
+              { href: "/admin/visao-360", icon: "📊", title: "Indicadores da empresa", color: "from-green-50 to-emerald-100" },
+              { href: "/admin/plano-acao-prazos", icon: "🎯", title: "Plano de ação", color: "from-emerald-50 to-teal-100" },
+              { href: "/admin/biblioteca-preventiva", icon: "🛡️", title: "Campanhas preventivas", color: "from-teal-50 to-cyan-100" },
+              { href: "/admin/vencimentos", icon: "⏰", title: "Pendências e vencimentos", color: "from-orange-50 to-red-100" },
+              { href: "/admin/compliance", icon: "✅", title: "Relatórios gerenciais", color: "from-indigo-50 to-blue-100" },
+              { href: "/admin/analises", icon: "📈", title: "Análises detalhadas", color: "from-fuchsia-50 to-pink-100" },
+            ].map((a) => (
+              <Link key={a.href} href={a.href}>
+                <Card className={`hover:shadow-md hover:-translate-y-0.5 transition-all cursor-pointer bg-gradient-to-br ${a.color} border-0`}>
+                  <CardContent className="p-4">
+                    <div className="text-2xl mb-1.5">{a.icon}</div>
+                    <h3 className="font-semibold text-sm leading-tight">{a.title}</h3>
+                  </CardContent>
+                </Card>
+              </Link>
+            ))}
           </div>
         </div>
 
-        {/* Upcoming expirations table */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Clock className="w-5 h-5 text-primary" />
-              Próximos vencimentos
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {upcoming.length === 0 ? (
-              <p className="text-sm text-muted-foreground py-6 text-center">
-                {isLoading ? "Carregando..." : "Nenhum vencimento próximo."}
-              </p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b text-left text-xs text-muted-foreground uppercase">
-                      <th className="py-2 px-2">Colaborador</th>
-                      <th className="py-2 px-2">Item</th>
-                      <th className="py-2 px-2">Vence em</th>
-                      <th className="py-2 px-2">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {upcoming.map((row: any) => {
-                      const d = daysUntil(row.expiresAt);
-                      return (
-                        <tr key={row.certId} className="border-b last:border-0">
-                          <td className="py-2 px-2">{row.userName ?? row.userEmail}</td>
-                          <td className="py-2 px-2">{row.moduleTitle}</td>
-                          <td className="py-2 px-2">
-                            {row.expiresAt
-                              ? (d < 0 ? `Há ${Math.abs(d)} dias` : `${d} dias`)
-                              : "—"}
-                          </td>
-                          <td className="py-2 px-2"><StatusBadge status={row.status} /></td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            <div className="mt-3 text-right">
-              <Link href="/admin/vencimentos">
-                <Button variant="ghost" size="sm" className="gap-1">
-                  Ver todos <ArrowRight className="w-4 h-4" />
-                </Button>
-              </Link>
-            </div>
-          </CardContent>
-        </Card>
+        {/* R5-P10 #2 — Card "Próximos vencimentos" removido (Bruno: não agrega ao Dashboard RH;
+            quem precisa olhar vencimento usa o atalho rápido ou /admin/vencimentos). */}
       </div>
     </AppLayout>
   );

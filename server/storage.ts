@@ -3,6 +3,8 @@
 // Downloads return /manus-storage/{key} paths served via 307 redirect.
 
 import { ENV } from "./_core/env";
+import fs from "fs";
+import path from "path";
 
 function getForgeConfig() {
   const forgeUrl = ENV.forgeApiUrl;
@@ -15,6 +17,22 @@ function getForgeConfig() {
   }
 
   return { forgeUrl: forgeUrl.replace(/\/+$/, ""), forgeKey };
+}
+
+function forgeConfigured(): boolean {
+  return Boolean(ENV.forgeApiUrl && ENV.forgeApiKey);
+}
+
+// Diretório local servido estaticamente em /uploads (ver server/_core/index.ts).
+// Usado como fallback quando o Forge/S3 não está configurado (ex.: ambiente dev),
+// para que a emissão de certificados e outros uploads nunca quebrem por falta de storage.
+const LOCAL_UPLOAD_DIR = path.join(process.cwd(), "uploads");
+
+function localPut(key: string, data: Buffer | Uint8Array | string): { key: string; url: string } {
+  const dest = path.join(LOCAL_UPLOAD_DIR, key);
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.writeFileSync(dest, typeof data === "string" ? Buffer.from(data) : Buffer.from(data as any));
+  return { key, url: `/uploads/${key}` };
 }
 
 function normalizeKey(relKey: string): string {
@@ -33,8 +51,15 @@ export async function storagePut(
   data: Buffer | Uint8Array | string,
   contentType = "application/octet-stream",
 ): Promise<{ key: string; url: string }> {
-  const { forgeUrl, forgeKey } = getForgeConfig();
   const key = appendHashSuffix(normalizeKey(relKey));
+
+  // Fallback local: sem Forge/S3 configurado, grava em disco (servido em /uploads).
+  // Garante que certificados e uploads funcionem mesmo sem storage externo.
+  if (!forgeConfigured()) {
+    return localPut(key, data);
+  }
+
+  const { forgeUrl, forgeKey } = getForgeConfig();
 
   // 1. Get presigned PUT URL from Forge
   const presignUrl = new URL("v1/storage/presign/put", forgeUrl + "/");
@@ -77,8 +102,14 @@ export async function storageGet(relKey: string): Promise<{ key: string; url: st
 }
 
 export async function storageGetSignedUrl(relKey: string): Promise<string> {
-  const { forgeUrl, forgeKey } = getForgeConfig();
   const key = normalizeKey(relKey);
+
+  // Sem Forge: o arquivo foi gravado localmente; serve direto via /uploads.
+  if (!forgeConfigured()) {
+    return `/uploads/${key}`;
+  }
+
+  const { forgeUrl, forgeKey } = getForgeConfig();
 
   const getUrl = new URL("v1/storage/presign/get", forgeUrl + "/");
   getUrl.searchParams.set("path", key);

@@ -199,6 +199,9 @@ function CalcMemorySection({ cm }: { cm: any }) {
 export default function AdminColaborador360({ id }: { id: number }) {
   const [, setLocation] = useLocation();
   const q = trpc.lessons.collaborator360.useQuery({ userId: id }, { enabled: !!id });
+  // Bruno R5-P6 #2 — Aviso de riscos do setor + direitos automáticos.
+  const sectorRisksQ = trpc.riskCorrelation.sectorRisksForUser.useQuery({ userId: id }, { enabled: !!id });
+  const planAcaoQ = trpc.riskCorrelation.coursesPlanoAcao.useQuery({ userId: id }, { enabled: !!id });
   const utils = trpc.useUtils();
 
   const [showIntervention, setShowIntervention] = useState(false);
@@ -248,9 +251,81 @@ export default function AdminColaborador360({ id }: { id: number }) {
     d.alert?.level === "critico" ? SEV.critico :
     d.alert?.level === "alto" ? SEV.alto : SEV.moderado;
 
+  // Bruno R5-P6 #2 — Banner de aviso quando setor do colaborador tem risco alto/crítico no último ciclo
+  const sectorRisks = (sectorRisksQ.data as any);
+  const planAcao = (planAcaoQ.data as any);
+  const hasHighRisks = sectorRisks?.alerts?.length > 0;
+  const prioritarios = (planAcao?.prioritarios ?? []) as any[];
+
   return (
     <AppLayout>
       <div className="max-w-6xl mx-auto px-4 py-6 space-y-6">
+        {/* Bruno R5-P6/P7 #2 — Aviso AUTOMÁTICO de exposição elevada (libera psicólogo + cursos prioritários) */}
+        {hasHighRisks && (
+          <div className="bg-gradient-to-r from-rose-50 to-amber-50 border-2 border-rose-300 rounded-xl p-4 shadow-sm">
+            <div className="flex items-start gap-3">
+              <div className="text-3xl">⚠️</div>
+              <div className="flex-1">
+                <h3 className="font-bold text-rose-900 text-base">
+                  Setor com exposição elevada — Direitos do Plano de Ação ativados
+                </h3>
+                <p className="text-sm text-rose-800 mt-1">
+                  O setor <b>{sectorRisks.sectorName}</b> apresentou exposição elevada aos seguintes riscos no ciclo psicossocial <b>{sectorRisks.cycle?.name}</b>:
+                </p>
+                <ul className="text-sm text-rose-900 mt-2 space-y-0.5">
+                  {(sectorRisks.alerts || []).map((a: any, i: number) => (
+                    <li key={i} className="flex items-center gap-2">
+                      <span className="inline-block w-2 h-2 rounded-full bg-rose-500"/>
+                      <span><b>{a.factorName}</b> — {String(a.riskLevel).toUpperCase()}</span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-xs text-rose-700 mt-3 italic">
+                  Em razão dessa condição, o colaborador possui <b>direito ao atendimento psicológico</b> e deverá concluir os <b>cursos obrigatórios</b> definidos no Plano de Ação.
+                </p>
+
+                {/* Bruno R5-P7 #2 — Bloco DIRETO de atendimento psicológico */}
+                <div className="mt-3 bg-white rounded-lg p-3 border-2 border-emerald-300">
+                  <div className="flex items-start gap-2">
+                    <span className="text-2xl">💚</span>
+                    <div className="flex-1">
+                      <div className="text-sm font-bold text-emerald-900">Atendimento Psicológico Disponível</div>
+                      <div className="text-xs text-emerald-800 mt-1">
+                        Liberado em razão do ciclo <b>{sectorRisks.cycle?.name}</b>. O agendamento é sigiloso e ocorre durante o expediente.
+                        A chefia é notificada apenas com data/hora/profissional — nenhum conteúdo da conversa.
+                      </div>
+                      <button onClick={() => setShowSchedule(true)}
+                        className="mt-2 inline-flex items-center gap-1.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded">
+                        📅 Agendar atendimento psicológico
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {prioritarios.length > 0 && (
+                  <div className="mt-3 bg-white rounded p-3 border border-rose-200">
+                    <div className="text-xs font-semibold uppercase tracking-wider text-rose-800 mb-2">Cursos Prioritários ({prioritarios.length})</div>
+                    <div className="space-y-1.5 text-sm">
+                      {prioritarios.slice(0, 6).map((c: any) => (
+                        <div key={c.moduleId} className="flex items-center gap-2">
+                          <span className="text-rose-600">📘</span>
+                          <span className="flex-1">{c.moduleTitle}</span>
+                          <span className="text-xs text-slate-600">{c.factorName} ({c.criticidadeConfigurada})</span>
+                          {c.daysLeft !== null && (
+                            <span className={`text-xs font-bold px-2 py-0.5 rounded ${c.isOverdue ? "bg-rose-200 text-rose-900" : c.daysLeft <= 15 ? "bg-amber-200 text-amber-900" : "bg-emerald-200 text-emerald-900"}`}>
+                              {c.isOverdue ? `${Math.abs(c.daysLeft)}d vencido` : `${c.daysLeft}d restantes`}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Back */}
         <button
           onClick={() => setLocation("/admin/usuarios")}

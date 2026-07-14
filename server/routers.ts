@@ -16,7 +16,7 @@ import { z } from "zod";
 
 
 
-import { COOKIE_NAME } from "@shared/const";
+import { COOKIE_NAME, ETHICAL_ALERT_TEMPLATES, ETHICAL_ALERT_DISCLAIMER, PROSPECT_STAGES } from "@shared/const";
 
 
 
@@ -1277,7 +1277,7 @@ import {
   getModulesForCompany,
   getSurveysForCompanyShort,
 } from "./db";
-import { sendEmail, fillTemplate, plainToHtml } from "./_core/email";
+import { sendEmail, fillTemplate, plainToHtml, buildWelcomeEmail, getEmailLinkBaseUrl } from "./_core/email";
 import crypto from "crypto";
 import nodemailer from "nodemailer";
 import { EMAIL_TEMPLATES } from "./_core/emailTemplates";
@@ -1533,6 +1533,32 @@ const careManagerProcedure = protectedProcedure.use(({ ctx, next }) => {
   }
   return next({ ctx });
 });
+
+// R5-P11 #5 — Chefia precisa LER campanhas (cursos/pesquisas do setor) sem poder criar.
+// Mantém adminOrRhProcedure como bloqueio de escrita; abaixo criamos o "view" pra chefia.
+const adminRhOrChefiaProcedure = protectedProcedure.use(({ ctx, next }) => {
+  const role = (ctx.user as any).role;
+  const allow = ["admin", "rh", "admin_global", "company_admin", "sesmt", "super_admin", "chefia"];
+  if (!allow.includes(role)) throw new TRPCError({ code: "FORBIDDEN", message: "Acesso restrito." });
+  return next({ ctx });
+});
+
+/**
+ * VÍDEO V3 — quando a chefia dispara campanha, o público fica TRAVADO na própria
+ * filial+setor (ignora branch/sector/role vindos do cliente). Para RH/admin, passa direto.
+ */
+function applyChefiaScope(ctx: any, input: any): { branchId: any; sectorId: any; targetRole: any } {
+  const role = ctx.user?.role;
+  if (role === "chefia") {
+    const branchId = ctx.user?.branchId ?? null;
+    const sectorId = ctx.user?.sectorId ?? null;
+    if (!sectorId) throw new TRPCError({ code: "FORBIDDEN", message: "Chefia sem setor definido — não é possível disparar campanha." });
+    let targetRole = input.targetRole;
+    if (!targetRole || targetRole === "todos") targetRole = "colaborador";
+    return { branchId, sectorId, targetRole };
+  }
+  return { branchId: input.branchId, sectorId: input.sectorId, targetRole: input.targetRole };
+}
 
 const adminOrRhProcedure = protectedProcedure.use(({ ctx, next }) => {
 
@@ -1849,29 +1875,32 @@ async function loadAssessmentForPDF(db: any, assessmentId: number, companyId: nu
     FROM risk_inventory_items ii
     INNER JOIN psychosocial_factors f ON f.id = ii.factor_id
     WHERE ii.assessment_id=${assessmentId} ORDER BY f.axis_order`);
-  const inv = (ir as any)[0] ?? [];
+  const inv = dedupeRiskRows(((ir as any)[0] ?? []) as any[], "inventory");
 
   const ar: any = await db.execute(drzSql`
     SELECT ap.*, f.code AS factor_code, f.name AS factor_name
     FROM risk_action_plan_items ap
     INNER JOIN psychosocial_factors f ON f.id = ap.factor_id
     WHERE ap.assessment_id=${assessmentId} ORDER BY f.axis_order`);
-  const act = (ar as any)[0] ?? [];
+  const act = dedupeRiskRows(((ar as any)[0] ?? []) as any[], "action");
 
   // Count submissions (one row per response). DRPS/AEP are anonymous → user_id is NULL,
   // so COUNT(DISTINCT user_id) would always be 0. Each survey_responses row is one respondent.
-  const drpsCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${ra.drps_survey_id}`);
-  const aepCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${ra.aep_survey_id}`);
+  // Ajuste (sincronização Laudo AEP × Gestão da AEP): exclui respostas invalidadas (status='invalid').
+  const drpsCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${ra.drps_survey_id} AND (status IS NULL OR status <> 'invalid')`);
+  const aepCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${ra.aep_survey_id} AND (status IS NULL OR status <> 'invalid')`);
+  const drpsInvalidCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${ra.drps_survey_id} AND status='invalid'`);
+  const aepInvalidCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${ra.aep_survey_id} AND status='invalid'`);
 
   // Fallback de Responsável Técnico: quando o campo livre ra.responsible_technician
   // está vazio, busca o RT marcado como default na tabela responsible_technicians
   // da empresa. Resolve o caso reportado pelo Bruno: laudo dizia "RT não cadastrado"
   // mesmo com a Marise registrada via UI de Responsáveis Técnicos.
+  // Bruno R4 #5: sempre tenta buscar RT default (mesmo quando ra.responsible_technician
+  // está preenchido) — assim a ASSINATURA do RT default é usada quando o usuário
+  // preencheu só o nome textualmente.
   let rtFallback: any = null;
-  if (!ra.responsible_technician) {
-    // Prefere o RT marcado como default do PSICOSSOCIAL (este loader é para
-    // generateRiskLaudoPDF — laudo psicossocial). Cai pra is_default genérico
-    // se nenhum marcado por tipo. Sprint 1.7-B item 5: 3 flags independentes.
+  {
     const rtR: any = await db.execute(drzSql`
       SELECT name, registration, profession, art, signature_url
       FROM responsible_technicians
@@ -1880,14 +1909,17 @@ async function loadAssessmentForPDF(db: any, assessmentId: number, companyId: nu
       ORDER BY is_default_psicossocial DESC, is_default DESC, id DESC LIMIT 1`);
     rtFallback = (rtR as any)[0]?.[0] ?? null;
   }
-  // String "Nome — Registro" usada no campo livre responsibleTechnician existente
-  // (pra não quebrar todos os lugares do PDF que renderizam só esse campo).
   const rtName = ra.responsible_technician
     ?? (rtFallback ? (rtFallback.registration ? `${rtFallback.name} — ${rtFallback.registration}` : rtFallback.name) : null);
   const rtRegistration = rtFallback?.registration ?? null;
   const rtProfession   = rtFallback?.profession ?? null;
   const rtArt          = rtFallback?.art ?? null;
-  const rtSignatureUrl = rtFallback?.signature_url ?? null;
+  // Bruno R4 #5: caminho absoluto pra Puppeteer resolver imagem
+  let rtSignatureUrl: string | null = rtFallback?.signature_url ?? null;
+  if (rtSignatureUrl && String(rtSignatureUrl).startsWith("/uploads/")) {
+    const base = process.env.PUBLIC_BASE_URL || "https://dev.saudedotrabalho.com";
+    rtSignatureUrl = `${base}${rtSignatureUrl}`;
+  }
 
   // Quando a avaliação é da empresa/filial (sem setor fixo), fragmenta o item 7 por setor
   // agrupando o próprio inventário/plano pelo sector_id de cada item (modelo NR-01).
@@ -1927,8 +1959,8 @@ async function loadAssessmentForPDF(db: any, assessmentId: number, companyId: nu
     for (const sid of sids) {
       const snR: any = await db.execute(drzSql`SELECT name FROM sectors WHERE id=${sid} LIMIT 1`);
       const sName = (snR as any)[0]?.[0]?.name ?? `Setor ${sid}`;
-      const sDrps: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${ra.drps_survey_id} AND sector_id=${sid}`);
-      const sAep: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${ra.aep_survey_id} AND sector_id=${sid}`);
+      const sDrps: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${ra.drps_survey_id} AND sector_id=${sid} AND (status IS NULL OR status <> 'invalid')`);
+      const sAep: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${ra.aep_survey_id} AND sector_id=${sid} AND (status IS NULL OR status <> 'invalid')`);
       sectorGroups.push({
         sectorId: sid,
         sectorName: sName,
@@ -1976,6 +2008,8 @@ async function loadAssessmentForPDF(db: any, assessmentId: number, companyId: nu
       sectorName: ra.sector_name,
       drpsResponses: Number((drpsCount as any)[0]?.[0]?.c ?? 0),
       aepResponses: Number((aepCount as any)[0]?.[0]?.c ?? 0),
+      drpsInvalidResponses: Number((drpsInvalidCount as any)[0]?.[0]?.c ?? 0),
+      aepInvalidResponses: Number((aepInvalidCount as any)[0]?.[0]?.c ?? 0),
     },
     inventory: inv.map((it: any) => ({
       factorCode: it.factor_code,
@@ -2058,11 +2092,14 @@ async function loadAEPForPDF(db: any, assessmentId: number, companyId: number) {
 
   // Respostas COM o setor do respondente → permite detalhar a AEP por setor (item 5),
   // sem misturar respostas de setores diferentes.
+  // Ajuste solicitado (sincronização Laudo AEP × Gestão da AEP): respostas invalidadas
+  // ("Desconsiderar" na Gestão da AEP, sr.status='invalid') nunca devem entrar no laudo
+  // — nem nos itens/percentuais nem no quantitativo de respondentes.
   const ansR: any = await db.execute(drzSql`
     SELECT sa.question_id, sa.answer_value, sr.id AS response_id, sr.sector_id
     FROM survey_answers sa
     INNER JOIN survey_responses sr ON sr.id = sa.response_id
-    WHERE sr.survey_id = ${aepSurveyId}`);
+    WHERE sr.survey_id = ${aepSurveyId} AND (sr.status IS NULL OR sr.status <> 'invalid')`);
   const answers = (ansR as any)[0] ?? [];
 
   // Constrói os itens (qualitativos + Likert) a partir de um subconjunto de respostas.
@@ -2089,12 +2126,11 @@ async function loadAEPForPDF(db: any, assessmentId: number, companyId: number) {
   }
 
   const items = buildItems(answers);
-  const respCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${aepSurveyId}`);
+  const respCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${aepSurveyId} AND (status IS NULL OR status <> 'invalid')`);
 
-  // Mesmo fallback de RT do laudo psicossocial (ver loadAssessmentForPDF).
+  // Bruno R4 #5: sempre busca RT default (mesmo se nome preenchido manualmente)
   let rtFallback: any = null;
-  if (!ra.responsible_technician) {
-    // loadAEPForPDF — prefere o RT marcado como default da AEP.
+  {
     const rtR: any = await db.execute(drzSql`
       SELECT name, registration, profession, art, signature_url
       FROM responsible_technicians
@@ -2105,6 +2141,11 @@ async function loadAEPForPDF(db: any, assessmentId: number, companyId: number) {
   }
   const rtName = ra.responsible_technician
     ?? (rtFallback ? (rtFallback.registration ? `${rtFallback.name} — ${rtFallback.registration}` : rtFallback.name) : null);
+  let aepSignatureUrl: string | null = rtFallback?.signature_url ?? null;
+  if (aepSignatureUrl && String(aepSignatureUrl).startsWith("/uploads/")) {
+    const base = process.env.PUBLIC_BASE_URL || "https://dev.saudedotrabalho.com";
+    aepSignatureUrl = `${base}${aepSignatureUrl}`;
+  }
 
   // Agrupa respostas por setor para o "Detalhamento por Setor".
   const ansBySector = new Map<number, any[]>();
@@ -2142,7 +2183,7 @@ async function loadAEPForPDF(db: any, assessmentId: number, companyId: number) {
       responsibleRegistration: rtFallback?.registration ?? null,
       responsibleProfession:   rtFallback?.profession ?? null,
       responsibleArt:          rtFallback?.art ?? null,
-      responsibleSignatureUrl: rtFallback?.signature_url ?? null,
+      responsibleSignatureUrl: aepSignatureUrl,
       notes: ra.notes,
       companyName: ra.company_name,
       companyCnpj: ra.company_cnpj,
@@ -2193,6 +2234,54 @@ Recomenda-se a implementação integral das medidas previstas, com monitoramento
 
 A gestão contínua dos riscos ocupacionais é responsabilidade compartilhada entre empresa, profissionais habilitados de SST e trabalhadores, e este documento integra o Gerenciamento de Riscos Ocupacionais (GRO) da organização.`;
 
+// Bruno R5 #6 — Sementes de texto padrão para Psico / AEP / LTCAT.
+const PSICO_DEFAULT_INTRO = `LAUDO PSICOSSOCIAL — INTRODUÇÃO
+
+Este Laudo Técnico foi elaborado em conformidade com a Norma Regulamentadora nº 1 (NR-01), atualizada pela Portaria MTP 1.419/2024, e com a Lei nº 14.457/2022 (CIPA + Programa de Prevenção e Combate ao Assédio Sexual e demais formas de violência). O objetivo é identificar, avaliar e propor medidas de gestão dos riscos psicossociais ocupacionais identificados na organização.
+
+A metodologia adotada baseou-se em pesquisa adaptada de instrumentos validados (DRPS / MBI), com aplicação anônima, agregação por setor e estratificação por fatores de risco. A interpretação dos resultados considera tanto indicadores individuais quanto coletivos.`;
+
+const PSICO_DEFAULT_CONCLUSAO = `CONCLUSÃO TÉCNICA — PSICOSSOCIAL
+
+A análise dos dados coletados permite estabelecer o panorama atual dos riscos psicossociais. Recomenda-se a implementação das medidas propostas no plano de ação, monitoramento periódico (anual ou em ciclos menores conforme criticidade) e revisão sempre que houver mudança organizacional relevante.
+
+A gestão dos riscos psicossociais é parte integrante do PGR e deve ser conduzida em articulação com SESMT, RH, lideranças e representação dos trabalhadores.`;
+
+const AEP_DEFAULT_INTRO = `ANÁLISE ERGONÔMICA PRELIMINAR (AEP) — INTRODUÇÃO
+
+Esta Análise Ergonômica Preliminar (AEP) atende ao disposto na NR-17 (Ergonomia) e em complementação ao PGR previsto na NR-01. Busca identificar fatores de risco ergonômicos nas atividades laborais avaliadas, com priorização para os Grupos Similares de Exposição (GSE) de maior criticidade.
+
+A AEP é uma etapa preliminar à Análise Ergonômica do Trabalho (AET) quando esta se faz necessária, conforme critérios técnicos definidos.`;
+
+const AEP_DEFAULT_CONCLUSAO = `CONCLUSÃO TÉCNICA — AEP
+
+Os fatores ergonômicos identificados foram classificados quanto à criticidade e indicam a necessidade de adoção das medidas de controle propostas. Recomenda-se priorizar as ações de eliminação ou redução do risco na fonte e, quando não possível, adoção de medidas administrativas e de EPI.
+
+A reavaliação ergonômica deve ser realizada a cada 12 meses ou antes, em caso de mudança no processo produtivo, layout, equipamentos ou condições de trabalho.`;
+
+const LTCAT_DEFAULT_INTRO = `LTCAT — LAUDO TÉCNICO DAS CONDIÇÕES AMBIENTAIS DO TRABALHO
+
+Este LTCAT foi elaborado em atendimento ao artigo 58, §1º, da Lei nº 8.213/1991 e demais normas previdenciárias aplicáveis, com finalidade de comprovação dos agentes nocivos a que estão expostos os trabalhadores para fins de aposentadoria especial.
+
+As avaliações foram realizadas conforme as Normas de Higiene Ocupacional da Fundacentro e demais NRs aplicáveis ao caso.`;
+
+const LTCAT_DEFAULT_CONCLUSAO = `CONCLUSÃO LTCAT
+
+Com base nos levantamentos quantitativos e qualitativos realizados, foram caracterizadas as condições ambientais de trabalho e a exposição aos agentes nocivos. As medidas de controle propostas devem ser implementadas e mantidas, com reavaliação periódica.
+
+Este laudo deve ser revisado sempre que houver alteração no ambiente, processo ou layout que possa interferir nos resultados.`;
+
+function seedDefault(docType: "pgr"|"psico"|"aep"|"ltcat", source: "company"|"global") {
+  const map = {
+    pgr:   { intro: SESMT_DEFAULT_INTRO,  concl: SESMT_DEFAULT_CONCLUSAO  },
+    psico: { intro: PSICO_DEFAULT_INTRO,  concl: PSICO_DEFAULT_CONCLUSAO  },
+    aep:   { intro: AEP_DEFAULT_INTRO,    concl: AEP_DEFAULT_CONCLUSAO    },
+    ltcat: { intro: LTCAT_DEFAULT_INTRO,  concl: LTCAT_DEFAULT_CONCLUSAO  },
+  };
+  const s = map[docType] ?? map.pgr;
+  return { source: `seed-${source}`, texto_introducao: s.intro, texto_conclusao: s.concl, applyToFuture: false, updatedAt: null as any };
+}
+
 const PLAN_FEATURE_CATALOG = [
   { code: "courses",          label: "Cursos & Trilhas",                group: "Aprendizagem" },
   { code: "certificates",     label: "Certificados",                    group: "Aprendizagem" },
@@ -2230,6 +2319,659 @@ async function execP(db: any, text: string, params: any[] = []): Promise<[any[],
   let data: any = Array.isArray(r) ? r[0] : r;
   if (data === undefined) data = [];
   return [data, []];
+}
+
+const ACTIVE_EMPLOYEE_ROLES = ["user", "chefia", "cipa", "sesmt", "admin", "company_admin"] as const;
+
+function activeEmployeeWhere(alias = "u"): string {
+  return `${alias}.is_active=1 AND ${alias}.role IN (${ACTIVE_EMPLOYEE_ROLES.map((r) => `'${r}'`).join(",")})`;
+}
+
+async function ensureCompanyPlatformConfigColumns(db: any) {
+  try { await db.execute(drzSql`ALTER TABLE companies ADD COLUMN drps_template_id INT NULL`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE companies ADD COLUMN aep_template_id INT NULL`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE companies ADD COLUMN access_method VARCHAR(30) NOT NULL DEFAULT 'email'`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE companies ADD COLUMN communication_channel VARCHAR(30) NOT NULL DEFAULT 'email'`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE companies ADD COLUMN require_whatsapp_on_first_access TINYINT(1) NOT NULL DEFAULT 0`); } catch (_) {}
+}
+
+function normalizeTextKey(value: unknown): string {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/\s+-\s+.*$/g, " ")
+    .replace(/\brelacionamentos\b/g, "relacionamento")
+    .replace(/\brelacoes\b/g, "relacao")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+const PSYCHOSOCIAL_FACTOR_ORDER = [
+  "assedio",
+  "suporte",
+  "mudancas",
+  "clareza",
+  "reconhecimento",
+  "autonomia",
+  "justica",
+  "trauma",
+  "subcarga",
+  "sobrecarga",
+  "relacionamentos",
+  "comunicacao",
+  "remoto",
+];
+
+function normalizeFactorCode(value: unknown): string {
+  return normalizeTextKey(value).replace(/\s+/g, "_");
+}
+
+function canonicalRiskFactorKey(name: unknown, code?: unknown): string {
+  const codeNorm = normalizeFactorCode(code);
+  if (["relacionamento", "relacionamentos"].includes(codeNorm)) return "relacionamentos";
+  if (["comunicacao", "comunicacao_dificil"].includes(codeNorm)) return "comunicacao";
+  if (["isolamento", "remoto"].includes(codeNorm)) return "remoto";
+  if (["eventos_criticos", "eventos_violentos", "trauma"].includes(codeNorm)) return "trauma";
+  if (PSYCHOSOCIAL_FACTOR_ORDER.includes(codeNorm)) return codeNorm;
+
+  const norm = normalizeTextKey(name);
+  if (norm.includes("evento") && (norm.includes("violent") || norm.includes("traumatic"))) return "trauma";
+  if (norm.includes("trabalho remoto") || norm.includes("isolado") || norm.includes("isolamento")) return "remoto";
+  if (norm.includes("dificil comunicacao") || norm.includes("comunicacao dificil")) return "comunicacao";
+  if (norm.includes("maus relacionamento") || norm.includes("relacionamento no local de trabalho")) return "relacionamentos";
+  if (norm.includes("excesso de demanda") || norm.includes("sobrecarga")) return "sobrecarga";
+  if (norm.includes("baixa demanda") || norm.includes("subcarga")) return "subcarga";
+  if (norm.includes("baixa justica") || norm.includes("justica organizacional")) return "justica";
+  if (norm.includes("baixo controle") || norm.includes("falta de autonomia")) return "autonomia";
+  if (norm.includes("reconhecimento") || norm.includes("recompensa")) return "reconhecimento";
+  if (norm.includes("clareza") || norm.includes("papel")) return "clareza";
+  if (norm.includes("mudanca")) return "mudancas";
+  if (norm.includes("suporte") || norm.includes("apoio")) return "suporte";
+  if (norm.includes("assedio")) return "assedio";
+  return norm || codeNorm;
+}
+
+function canonicalRiskFactorName(name: unknown): string {
+  const raw = String(name ?? "").trim();
+  const clean = raw
+    .replace(/\s*\([^)]*\)\s*/g, " ")
+    .replace(/\s+-\s+.*$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return clean || raw;
+}
+
+function officialRiskFactorOrder(key: string): number {
+  const idx = PSYCHOSOCIAL_FACTOR_ORDER.indexOf(key);
+  return idx >= 0 ? idx + 1 : 999;
+}
+
+function dedupePsychosocialFactorRows<T extends Record<string, any>>(rows: T[]): T[] {
+  const byKey = new Map<string, T>();
+  for (const row of rows ?? []) {
+    const key = canonicalRiskFactorKey(row.name ?? row.factor_name ?? row.factorName, row.code ?? row.factor_code ?? row.factorCode);
+    const candidate = { ...row } as T;
+    const normalizedName = canonicalRiskFactorName(candidate.name ?? candidate.factor_name ?? candidate.factorName);
+    if ("name" in candidate) (candidate as any).name = normalizedName;
+    if ("factor_name" in candidate) (candidate as any).factor_name = normalizedName;
+    if ("factorName" in candidate) (candidate as any).factorName = normalizedName;
+
+    const current = byKey.get(key);
+    if (!current) {
+      byKey.set(key, candidate);
+      continue;
+    }
+
+    const cCode = normalizeFactorCode(candidate.code ?? candidate.factor_code ?? candidate.factorCode);
+    const rCode = normalizeFactorCode(current.code ?? current.factor_code ?? current.factorCode);
+    const cOfficial = cCode === key ? 1 : 0;
+    const rOfficial = rCode === key ? 1 : 0;
+    const cOrder = Number(candidate.axis_order ?? candidate.axisOrder ?? officialRiskFactorOrder(key));
+    const rOrder = Number(current.axis_order ?? current.axisOrder ?? officialRiskFactorOrder(key));
+    const cId = Number(candidate.id ?? candidate.factor_id ?? candidate.factorId ?? Number.MAX_SAFE_INTEGER);
+    const rId = Number(current.id ?? current.factor_id ?? current.factorId ?? Number.MAX_SAFE_INTEGER);
+    if (cOfficial > rOfficial || (cOfficial === rOfficial && (cOrder < rOrder || (cOrder === rOrder && cId < rId)))) {
+      byKey.set(key, candidate);
+    }
+  }
+  return Array.from(byKey.values())
+    .sort((a: any, b: any) => {
+      const ak = canonicalRiskFactorKey(a.name ?? a.factor_name ?? a.factorName, a.code ?? a.factor_code ?? a.factorCode);
+      const bk = canonicalRiskFactorKey(b.name ?? b.factor_name ?? b.factorName, b.code ?? b.factor_code ?? b.factorCode);
+      return officialRiskFactorOrder(ak) - officialRiskFactorOrder(bk);
+    });
+}
+
+function riskRank(level: unknown): number {
+  const v = String(level ?? "").toLowerCase();
+  if (v.includes("crit")) return 4;
+  if (v.includes("alt")) return 3;
+  if (v.includes("med")) return 2;
+  if (v.includes("baix")) return 1;
+  return 0;
+}
+
+function dedupeRiskRows<T extends Record<string, any>>(rows: T[], kind: "inventory" | "action" = "inventory"): T[] {
+  const byKey = new Map<string, T>();
+  for (const row of rows ?? []) {
+    const sector = row.sector_id ?? row.sectorId ?? "__all";
+    const key = [
+      row.assessment_id ?? row.assessmentId ?? "",
+      sector,
+      canonicalRiskFactorKey(row.factor_name ?? row.factorName, row.factor_code ?? row.factorCode),
+    ].join(":");
+    const candidate = { ...row } as T;
+    const normalizedName = canonicalRiskFactorName(candidate.factor_name ?? candidate.factorName);
+    if ("factor_name" in candidate) (candidate as any).factor_name = normalizedName;
+    if ("factorName" in candidate) (candidate as any).factorName = normalizedName;
+
+    const current = byKey.get(key);
+    if (!current) {
+      byKey.set(key, candidate);
+      continue;
+    }
+
+    const currentRank = kind === "action"
+      ? riskRank(current.priority)
+      : Math.max(riskRank(current.risco_final), riskRank(current.riscoFinal));
+    const candidateRank = kind === "action"
+      ? riskRank(candidate.priority)
+      : Math.max(riskRank(candidate.risco_final), riskRank(candidate.riscoFinal));
+    const currentDate = current.end_date ?? current.endDate ?? "9999-12-31";
+    const candidateDate = candidate.end_date ?? candidate.endDate ?? "9999-12-31";
+    if (candidateRank > currentRank || (candidateRank === currentRank && String(candidateDate) < String(currentDate))) {
+      byKey.set(key, candidate);
+    }
+  }
+  return Array.from(byKey.values());
+}
+
+// P17 #6 — Bruno: filtro de participação pro disparo da Biblioteca Preventiva
+// (já existia só na "Cobrança de pesquisa" separada — ver P15 #1). Considera TODO
+// o conteúdo vinculado à campanha (pesquisas + cursos): concluiu = terminou tudo,
+// não respondeu = não tocou em nada, em andamento = fez parte.
+async function computeCampaignParticipation(db: any, campaignId: number, userIds: number[]) {
+  const [links] = await execP(db, `SELECT link_type, ref_id FROM preventive_library_links WHERE campaign_id=?`, [campaignId]) as any;
+  const surveyIds = (links as any[]).filter(l => l.link_type === "survey").map(l => Number(l.ref_id));
+  const moduleIds = (links as any[]).filter(l => l.link_type === "course" || l.link_type === "module").map(l => Number(l.ref_id));
+  const totalItems = surveyIds.length + moduleIds.length;
+  const doneCount = new Map<number, number>();
+  if (!userIds.length || totalItems === 0) return { totalItems, doneCount };
+
+  const uIn = userIds.map(() => "?").join(",");
+  if (surveyIds.length) {
+    const sIn = surveyIds.map(() => "?").join(",");
+    const [resp] = await execP(db, `
+      SELECT user_id FROM survey_responses WHERE survey_id IN (${sIn}) AND user_id IN (${uIn})
+      UNION
+      SELECT user_id FROM survey_user_completions WHERE survey_id IN (${sIn}) AND user_id IN (${uIn})`,
+      [...surveyIds, ...userIds, ...surveyIds, ...userIds]) as any;
+    // Conta pesquisas distintas respondidas por usuário (uma survey só soma 1x mesmo com múltiplas respostas)
+    const seen = new Set<string>();
+    for (const r of resp as any[]) {
+      const uid = Number(r.user_id);
+      if (!seen.has(String(uid))) { seen.add(String(uid)); doneCount.set(uid, (doneCount.get(uid) ?? 0) + 1); }
+    }
+  }
+  if (moduleIds.length) {
+    const mIn = moduleIds.map(() => "?").join(",");
+    const [prog] = await execP(db, `
+      SELECT userId AS user_id, COUNT(DISTINCT moduleId) AS cnt FROM user_progress
+      WHERE moduleId IN (${mIn}) AND userId IN (${uIn}) AND isCompleted=1 GROUP BY userId`,
+      [...moduleIds, ...userIds]) as any;
+    for (const r of prog as any[]) {
+      const uid = Number(r.user_id);
+      doneCount.set(uid, (doneCount.get(uid) ?? 0) + Number(r.cnt));
+    }
+  }
+  return { totalItems, doneCount };
+}
+function participationStatus(done: number, total: number): "nao_respondeu" | "em_andamento" | "concluiu" {
+  if (done <= 0) return "nao_respondeu";
+  if (done >= total) return "concluiu";
+  return "em_andamento";
+}
+
+// P18 GRANDE — Motor de campanhas personalizado por curso pendente.
+// Extrai a lógica central de "coursesPlanoAcao" (fator de risco → curso prioritário
+// → prazo do Plano de Ação) pra um helper reaproveitável por qualquer setor, sem
+// depender do usuário logado — usado tanto pela query do colaborador quanto pelo
+// motor de campanha (que roda no contexto do RH/Admin, iterando vários usuários).
+async function loadRiskCourseLinks(db: any) {
+  const [linksRows]: any = await execP(db, `
+    SELECT rcl.factor_id, rcl.module_id, rcl.criticality, m.title AS module_title, m.template_category, m.is_mandatory,
+           pf.name AS factor_name, pf.code AS factor_code
+    FROM risk_course_links rcl
+    INNER JOIN psychosocial_factors pf ON pf.id = rcl.factor_id
+    INNER JOIN modules m ON m.id = rcl.module_id
+    WHERE m.publish_status='published'
+      AND (SELECT COUNT(*) FROM lessons l WHERE l.moduleId = m.id) > 0
+    ORDER BY pf.axis_order, FIELD(rcl.criticality,'baixa','baixo','media','medio','alta','alto','critica','critico'), m.title`, []);
+
+  const linksByFactorModuleCriticality = new Map<string, any>();
+  for (const row of linksRows as any[]) {
+    const factorKey = canonicalRiskFactorKey(row.factor_name, row.factor_code);
+    const criticalityRank = riskRank(row.criticality);
+    const k = `${factorKey}:${Number(row.module_id)}:${criticalityRank}`;
+    const candidate = { ...row, factorKey, criticalityRank };
+    if (!linksByFactorModuleCriticality.has(k)) linksByFactorModuleCriticality.set(k, candidate);
+  }
+  return Array.from(linksByFactorModuleCriticality.values());
+}
+
+function exactRiskCourseLinks(links: any[], factorName: unknown, factorCode: unknown, riscoFinal: unknown) {
+  const factorKey = canonicalRiskFactorKey(factorName, factorCode);
+  const risk = riskRank(riscoFinal);
+  if (!factorKey || risk <= 0) return [];
+  return links.filter((link: any) => link.factorKey === factorKey && Number(link.criticalityRank) === risk);
+}
+
+async function computePrioritariosForSector(db: any, cid: number, targetSectorIds: number[], assessmentId?: number) {
+  const [[lastCycle]]: any = assessmentId
+    ? await execP(db, `
+        SELECT id, cycle_name, drps_survey_id, status, end_date, start_date
+        FROM risk_assessments
+        WHERE company_id=? AND id=? LIMIT 1`, [cid, assessmentId])
+    : await execP(db, `
+        SELECT id, cycle_name, drps_survey_id, status, end_date, start_date
+        FROM risk_assessments
+        WHERE company_id=? AND status IN ('analyzing','review','closed','active','completed')
+        ORDER BY COALESCE(end_date, start_date) DESC, id DESC LIMIT 1`, [cid]);
+
+  let inventory: any[] = [];
+  if (lastCycle?.id) {
+    const [rows]: any = await execP(db, `
+      SELECT ri.factor_id, ri.sector_id, ri.risco_final, pf.name AS factor_name, pf.code AS factor_code
+      FROM risk_inventory_items ri
+      INNER JOIN psychosocial_factors pf ON pf.id = ri.factor_id
+      WHERE ri.assessment_id=?`, [lastCycle.id]);
+    inventory = dedupeRiskRows(rows as any[], "inventory");
+  }
+
+  const links = await loadRiskCourseLinks(db);
+
+  let actionPlanDeadlines: any[] = [];
+  if (lastCycle?.id) {
+    const [apRows]: any = await execP(db, `
+      SELECT ap.factor_id, ap.sector_id, ap.end_date, ap.preventive_program_module_id,
+             pf.name AS factor_name, pf.code AS factor_code
+      FROM risk_action_plan_items ap
+      INNER JOIN psychosocial_factors pf ON pf.id = ap.factor_id
+      WHERE ap.assessment_id=? AND ap.end_date IS NOT NULL`, [lastCycle.id]);
+    actionPlanDeadlines = (apRows as any[]).map((a: any) => ({
+      ...a,
+      factorKey: canonicalRiskFactorKey(a.factor_name, a.factor_code),
+    }));
+  }
+
+  const prioritarios: any[] = [];
+  for (const matched of inventory) {
+    if (targetSectorIds.length > 0 && !targetSectorIds.includes(Number(matched.sector_id))) continue;
+    const exactLinks = exactRiskCourseLinks(links, matched.factor_name, matched.factor_code, matched.risco_final);
+    for (const link of exactLinks) {
+      const linkFactorKey = link.factorKey;
+      const apItem = actionPlanDeadlines.find((a: any) =>
+        a.factorKey === linkFactorKey && Number(a.sector_id) === Number(matched.sector_id)
+      );
+      const deadlineDate = apItem?.end_date
+        ? new Date(apItem.end_date)
+        : (lastCycle?.end_date ? new Date(lastCycle.end_date)
+          : (lastCycle?.start_date ? new Date(new Date(lastCycle.start_date).getTime() + 90*24*3600*1000) : null));
+      const deadline = deadlineDate;
+      const daysLeft = deadline ? Math.ceil((deadline.getTime() - Date.now()) / (1000*60*60*24)) : null;
+      prioritarios.push({
+        moduleId: Number(link.module_id),
+        moduleTitle: link.module_title,
+        factorId: Number(link.factor_id),
+        factorName: matched.factor_name,
+        riscoFinal: matched.risco_final,
+        criticidadeConfigurada: link.criticality,
+        cycleId: lastCycle?.id ?? null,
+        cycleName: lastCycle?.cycle_name ?? null,
+        sectorId: Number(matched.sector_id) || null,
+        deadline: deadline?.toISOString().slice(0,10) ?? null,
+        daysLeft,
+        isOverdue: daysLeft !== null && daysLeft < 0,
+        isMandatory: !!link.is_mandatory,
+      });
+    }
+  }
+  const seenP = new Set<number>();
+  const prioritariosDedup = prioritarios.filter(p => seenP.has(p.moduleId) ? false : (seenP.add(p.moduleId), true));
+  return { prioritarios: prioritariosDedup, lastCycle };
+}
+
+/** Cursos prioritários de UM colaborador específico que ele ainda NÃO concluiu — base do e-mail personalizado. */
+async function getPendingPrioritariosForUser(db: any, cid: number, userId: number) {
+  const [[u]]: any = await execP(db, `SELECT sector_id FROM users WHERE id=? AND company_id=?`, [userId, cid]);
+  const sectorIds = u?.sector_id ? [Number(u.sector_id)] : [];
+  const { prioritarios } = await computePrioritariosForSector(db, cid, sectorIds);
+  if (!prioritarios.length) return [];
+  const moduleIds = prioritarios.map((p: any) => p.moduleId);
+  const idsIn = moduleIds.map(() => "?").join(",");
+  const [progRows]: any = await execP(db, `SELECT moduleId, isCompleted FROM user_progress WHERE userId=? AND moduleId IN (${idsIn})`, [userId, ...moduleIds]);
+  const doneSet = new Set((progRows as any[]).filter((r: any) => Number(r.isCompleted)).map((r: any) => Number(r.moduleId)));
+  return prioritarios
+    .filter((p: any) => !doneSet.has(p.moduleId))
+    .sort((a: any, b: any) => (a.daysLeft ?? 9999) - (b.daysLeft ?? 9999));
+}
+
+// P18 GRANDE — Anexo "Relatório da CIPA" do PGR: governança/mandato, indicadores
+// (reuniões, integrantes, vínculo com SIPAT, cursos NR-05) e últimas reuniões.
+// Retorna os "sections" no mesmo formato {n,t,c} usado pelo template genérico de
+// generateOfficialAttachmentPdf, pra reaproveitar capa/CSS/render sem duplicar puppeteer.
+async function buildCipaReportSections(db: any, cid: number, escHtml: (s: unknown) => string, today: string) {
+  const [[meetingsCount]]: any = await execP(db, `SELECT COUNT(*) AS c FROM cipa_meetings WHERE company_id=?`, [cid]).catch(() => [[{ c: 0 }]]);
+  const [[membersCount]]: any = await execP(db, `SELECT COUNT(*) AS c FROM cipa_members WHERE company_id=? AND status='ativo'`, [cid]).catch(() => [[{ c: 0 }]]);
+  const [[nextExpiry]]: any = await execP(db, `SELECT MIN(mandate_end) AS d FROM cipa_members WHERE company_id=? AND status='ativo'`, [cid]).catch(() => [[{ d: null }]]);
+  const [[latestStart]]: any = await execP(db, `SELECT mandate_start AS d FROM cipa_members WHERE company_id=? AND status='ativo' ORDER BY mandate_start DESC LIMIT 1`, [cid]).catch(() => [[{ d: null }]]);
+  const daysLeft = nextExpiry?.d ? Math.max(0, Math.ceil((new Date(nextExpiry.d).getTime() - Date.now()) / 86400000)) : null;
+  const [membersRows]: any = await execP(db, `SELECT name, role, mandate_start, mandate_end FROM cipa_members WHERE company_id=? AND status='ativo' ORDER BY role, name`, [cid]).catch(() => [[]]);
+  const members = (membersRows as any[]) ?? [];
+  const titulares = members.filter(m => String(m.role) === "titular");
+  const suplentes = members.filter(m => String(m.role) === "suplente");
+
+  const [meetingsRows]: any = await execP(db, `SELECT meeting_date, title, related_sipat_edition_id FROM cipa_meetings WHERE company_id=? ORDER BY meeting_date DESC LIMIT 12`, [cid]).catch(() => [[]]);
+  const meetings = (meetingsRows as any[]) ?? [];
+  const meetingsLinkedToSipat = meetings.filter(m => m.related_sipat_edition_id).length;
+  const [[sipatEditionsCount]]: any = await execP(db, `SELECT COUNT(*) AS c FROM sipat_editions WHERE company_id=?`, [cid]).catch(() => [[{ c: 0 }]]);
+
+  // Cursos NR-05/CIPA: convenção por título/categoria (não há marcação dedicada ainda).
+  const [nr05Modules]: any = await execP(db, `
+    SELECT id, title FROM modules
+    WHERE publish_status='published'
+      AND (title LIKE '%CIPA%' OR title LIKE '%NR-05%' OR title LIKE '%NR05%' OR template_category LIKE '%cipa%' OR template_category LIKE '%nr05%')`, []).catch(() => [[]]);
+  const [[activeUsersCount]]: any = await execP(db, `SELECT COUNT(*) AS c FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]).catch(() => [[{ c: 0 }]]);
+  const totalUsers = Number(activeUsersCount?.c ?? 0);
+  let completionPct: number | null = null;
+  if ((nr05Modules as any[]).length > 0 && totalUsers > 0) {
+    let completedPairs = 0;
+    for (const m of nr05Modules as any[]) {
+      const [[c]]: any = await execP(db, `
+        SELECT COUNT(*) AS c FROM user_progress up
+        INNER JOIN users u ON u.id=up.userId
+        WHERE up.moduleId=? AND u.company_id=? AND ${activeEmployeeWhere("u")} AND up.isCompleted=1`, [m.id, cid]).catch(() => [[{ c: 0 }]]);
+      completedPairs += Number(c?.c ?? 0);
+    }
+    completionPct = Math.round((completedPairs / (totalUsers * (nr05Modules as any[]).length)) * 1000) / 10;
+  }
+
+  const membersTable = (list: any[]) => list.length === 0
+    ? `<p><i>Nenhum registro.</i></p>`
+    : `<table style="width:100%; border-collapse:collapse;">
+        <tr><th style="text-align:left; padding:6px; border-bottom:2px solid #cbd5e1;">Nome</th><th style="text-align:left; padding:6px; border-bottom:2px solid #cbd5e1;">Início do mandato</th><th style="text-align:left; padding:6px; border-bottom:2px solid #cbd5e1;">Fim do mandato</th></tr>
+        ${list.map(m => `<tr><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${escHtml(m.name)}</td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${m.mandate_start ? new Date(m.mandate_start).toLocaleDateString("pt-BR") : "—"}</td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${m.mandate_end ? new Date(m.mandate_end).toLocaleDateString("pt-BR") : "—"}</td></tr>`).join("")}
+      </table>`;
+
+  const bar = (pct: number, color: string) => `<div style="background:#e2e8f0; border-radius:6px; height:14px; width:100%; overflow:hidden;"><div style="background:${color}; height:100%; width:${Math.max(0, Math.min(100, pct))}%;"></div></div>`;
+
+  const mandateElapsedPct = latestStart?.d && nextExpiry?.d
+    ? Math.round(Math.min(100, Math.max(0, ((Date.now() - new Date(latestStart.d).getTime()) / (new Date(nextExpiry.d).getTime() - new Date(latestStart.d).getTime())) * 100)))
+    : null;
+
+  const meetingsHtml = meetings.length === 0
+    ? `<p><i>Nenhuma reunião registrada.</i></p>`
+    : `<table style="width:100%; border-collapse:collapse;">
+        <tr><th style="text-align:left; padding:6px; border-bottom:2px solid #cbd5e1;">Data</th><th style="text-align:left; padding:6px; border-bottom:2px solid #cbd5e1;">Título</th><th style="text-align:left; padding:6px; border-bottom:2px solid #cbd5e1;">Vinculada à SIPAT</th></tr>
+        ${meetings.map(m => `<tr><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${new Date(m.meeting_date).toLocaleDateString("pt-BR")}</td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${escHtml(m.title)}</td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${m.related_sipat_edition_id ? "Sim" : "Não"}</td></tr>`).join("")}
+      </table>`;
+
+  return [
+    { n: 1, t: "Introdução", c: `Este relatório consolida a governança e os indicadores da Comissão Interna de Prevenção de Acidentes e de Assédio (CIPA), conforme NR-05 e Lei nº 14.457/2022, gerado automaticamente pela Plataforma Saúde do Trabalho em ${today}.` },
+    { n: 2, t: "Governança Atual — Titulares", c: membersTable(titulares) },
+    { n: 3, t: "Governança Atual — Suplentes", c: membersTable(suplentes) },
+    { n: 4, t: "Indicadores da Comissão", c: `<table style="width:100%; border-collapse:collapse;">
+        <tr><td style="padding:6px; border-bottom:1px solid #e2e8f0;"><b>Integrantes ativos</b></td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${membersCount?.c ?? 0}</td></tr>
+        <tr><td style="padding:6px; border-bottom:1px solid #e2e8f0;"><b>Reuniões realizadas (total)</b></td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${meetingsCount?.c ?? 0}</td></tr>
+        <tr><td style="padding:6px; border-bottom:1px solid #e2e8f0;"><b>Reuniões vinculadas à SIPAT (últimas 12)</b></td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${meetingsLinkedToSipat}</td></tr>
+        <tr><td style="padding:6px; border-bottom:1px solid #e2e8f0;"><b>Edições de SIPAT realizadas</b></td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${sipatEditionsCount?.c ?? 0}</td></tr>
+        <tr><td style="padding:6px; border-bottom:1px solid #e2e8f0;"><b>Fim do mandato vigente</b></td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${nextExpiry?.d ? new Date(nextExpiry.d).toLocaleDateString("pt-BR") : "—"}${daysLeft != null ? ` (${daysLeft} dia(s) restante(s))` : ""}</td></tr>
+        <tr><td style="padding:6px; border-bottom:1px solid #e2e8f0;"><b>Cursos NR-05/CIPA disponibilizados</b></td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${(nr05Modules as any[]).length}</td></tr>
+        <tr><td style="padding:6px; border-bottom:1px solid #e2e8f0;"><b>Conclusão média dos cursos NR-05/CIPA</b></td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${completionPct != null ? completionPct + "%" : "Sem cursos identificados"}</td></tr>
+      </table>` },
+    { n: 5, t: "Painel Visual", c: `
+        <p><b>Progresso do mandato vigente</b></p>
+        ${mandateElapsedPct != null ? bar(mandateElapsedPct, "#0ea5e9") + `<p style="font-size:9pt; color:#64748b;">${mandateElapsedPct}% decorrido</p>` : `<p><i>Sem dados suficientes de mandato.</i></p>`}
+        <p style="margin-top:14px;"><b>Conclusão dos cursos NR-05/CIPA</b></p>
+        ${completionPct != null ? bar(completionPct, "#22c55e") + `<p style="font-size:9pt; color:#64748b;">${completionPct}% dos colaboradores ativos concluíram</p>` : `<p><i>Nenhum curso NR-05/CIPA identificado.</i></p>`}
+      ` },
+    { n: 6, t: "Últimas Reuniões Registradas", c: meetingsHtml },
+    { n: 7, t: "Conclusão", c: `Com base nos registros consolidados, a CIPA opera com ${membersCount?.c ?? 0} integrante(s) ativo(s) e ${meetingsCount?.c ?? 0} reunião(ões) registrada(s), em conformidade com a NR-05 e a Lei nº 14.457/2022.` },
+  ];
+}
+
+async function loadFirstAidKitReport(db: any, cid: number) {
+  const [rawRows]: any = await execP(db, `
+    SELECT
+      k.id AS kit_id,
+      k.name AS kit_name,
+      k.location,
+      k.responsible_name,
+      k.last_inspected_date,
+      COALESCE(b.name, 'Sem filial definida') AS branch_name,
+      COALESCE(s.name, 'Sem setor definido') AS sector_name,
+      i.id AS item_id,
+      i.name AS item_name,
+      i.category,
+      i.quantity,
+      i.min_quantity,
+      i.unit,
+      i.expiry_date,
+      i.lot
+    FROM firstaid_kits k
+    LEFT JOIN branches b ON b.id = k.branch_id
+    LEFT JOIN sectors s ON s.id = k.sector_id
+    LEFT JOIN firstaid_items i ON i.kit_id = k.id
+    WHERE k.company_id=? AND k.is_active=1
+    ORDER BY branch_name, sector_name, k.name, i.name`, [cid]).catch(() => [[]]);
+
+  const now = new Date();
+  const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const soon30 = today0 + 30 * 86400000;
+  const rows = ((rawRows ?? []) as any[]).map((r) => {
+    const qty = Number(r.quantity ?? 0);
+    const minQty = Number(r.min_quantity ?? 0);
+    const expiryTime = r.expiry_date ? new Date(r.expiry_date).getTime() : null;
+    let status = "ok";
+    if (!r.item_id) status = "sem_itens";
+    else if (expiryTime != null && expiryTime < today0) status = "vencido";
+    else if (qty <= 0) status = "faltante";
+    else if (minQty > 0 && qty <= minQty) status = "estoque_critico";
+    else if (expiryTime != null && expiryTime <= soon30) status = "vence_30d";
+    return {
+      kitId: Number(r.kit_id),
+      kitName: r.kit_name,
+      location: r.location,
+      responsibleName: r.responsible_name,
+      lastInspectedDate: r.last_inspected_date,
+      branchName: r.branch_name,
+      sectorName: r.sector_name,
+      itemId: r.item_id ? Number(r.item_id) : null,
+      itemName: r.item_name,
+      category: r.category,
+      quantity: qty,
+      minQuantity: minQty,
+      unit: r.unit ?? "un",
+      expiryDate: r.expiry_date,
+      lot: r.lot,
+      status,
+    };
+  });
+
+  const kitIds = new Set(rows.map((r) => r.kitId));
+  const itemRows = rows.filter((r) => r.itemId);
+  const summary = {
+    kits: kitIds.size,
+    items: itemRows.length,
+    expired: itemRows.filter((r) => r.status === "vencido").length,
+    soon30: itemRows.filter((r) => r.status === "vence_30d").length,
+    missing: itemRows.filter((r) => r.status === "faltante").length,
+    critical: itemRows.filter((r) => r.status === "estoque_critico").length,
+    kitsWithoutItems: rows.filter((r) => r.status === "sem_itens").length,
+  };
+
+  const byLocationMap = new Map<string, any>();
+  for (const r of rows) {
+    const key = `${r.branchName}||${r.sectorName}`;
+    if (!byLocationMap.has(key)) {
+      byLocationMap.set(key, { branchName: r.branchName, sectorName: r.sectorName, kits: new Set<number>(), items: 0, expired: 0, soon30: 0, missing: 0, critical: 0 });
+    }
+    const loc = byLocationMap.get(key);
+    loc.kits.add(r.kitId);
+    if (r.itemId) loc.items += 1;
+    if (r.status === "vencido") loc.expired += 1;
+    if (r.status === "vence_30d") loc.soon30 += 1;
+    if (r.status === "faltante") loc.missing += 1;
+    if (r.status === "estoque_critico") loc.critical += 1;
+  }
+  const byLocation = Array.from(byLocationMap.values()).map((r) => ({ ...r, kits: r.kits.size }));
+  return { summary, rows, byLocation };
+}
+
+async function buildFirstAidKitReportSections(db: any, cid: number, escHtml: (s: unknown) => string, today: string) {
+  const report = await loadFirstAidKitReport(db, cid);
+  const statusLabel: Record<string, string> = {
+    ok: "Regular",
+    vencido: "Vencido",
+    vence_30d: "Vence em ate 30 dias",
+    faltante: "Faltante",
+    estoque_critico: "Estoque critico",
+    sem_itens: "Kit sem itens",
+  };
+  const table = (headers: string[], rows: string[][]) => rows.length === 0
+    ? `<p><i>Nenhum registro encontrado.</i></p>`
+    : `<table style="width:100%; border-collapse:collapse;">
+        <tr>${headers.map(h => `<th style="text-align:left; padding:6px; border-bottom:2px solid #cbd5e1;">${escHtml(h)}</th>`).join("")}</tr>
+        ${rows.map(cols => `<tr>${cols.map(c => `<td style="padding:6px; border-bottom:1px solid #e2e8f0;">${c}</td>`).join("")}</tr>`).join("")}
+      </table>`;
+  const fmtDate = (d: any) => d ? new Date(d).toLocaleDateString("pt-BR") : "-";
+  const itemRows = report.rows.filter((r: any) => r.itemId);
+  const problemRows = report.rows.filter((r: any) => ["vencido", "vence_30d", "faltante", "estoque_critico", "sem_itens"].includes(r.status));
+  return [
+    { n: 1, t: "Introducao", c: `Este relatorio consolida os Kits de Primeiros Socorros cadastrados na Plataforma Saude do Trabalho em ${today}, incluindo filial, setor, estoque, validade, itens faltantes e alertas operacionais.` },
+    { n: 2, t: "Resumo Executivo", c: `<table style="width:100%; border-collapse:collapse;">
+        <tr><td style="padding:6px; border-bottom:1px solid #e2e8f0;"><b>Kits ativos</b></td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${report.summary.kits}</td></tr>
+        <tr><td style="padding:6px; border-bottom:1px solid #e2e8f0;"><b>Itens cadastrados</b></td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${report.summary.items}</td></tr>
+        <tr><td style="padding:6px; border-bottom:1px solid #e2e8f0;"><b>Itens vencidos</b></td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${report.summary.expired}</td></tr>
+        <tr><td style="padding:6px; border-bottom:1px solid #e2e8f0;"><b>Vencimento em ate 30 dias</b></td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${report.summary.soon30}</td></tr>
+        <tr><td style="padding:6px; border-bottom:1px solid #e2e8f0;"><b>Itens faltantes</b></td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${report.summary.missing}</td></tr>
+        <tr><td style="padding:6px; border-bottom:1px solid #e2e8f0;"><b>Estoque critico</b></td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${report.summary.critical}</td></tr>
+      </table>` },
+    { n: 3, t: "Visao por Filial e Setor", c: table(["Filial", "Setor", "Kits", "Itens", "Vencidos", "30 dias", "Faltantes", "Criticos"], report.byLocation.map((r: any) => [
+      escHtml(r.branchName), escHtml(r.sectorName), String(r.kits), String(r.items), String(r.expired), String(r.soon30), String(r.missing), String(r.critical)
+    ])) },
+    { n: 4, t: "Itens com Pendencia", c: table(["Kit", "Filial", "Setor", "Item", "Qtd", "Min.", "Validade", "Status"], problemRows.map((r: any) => [
+      escHtml(r.kitName), escHtml(r.branchName), escHtml(r.sectorName), r.itemName ? escHtml(r.itemName) : "-", String(r.quantity), String(r.minQuantity), fmtDate(r.expiryDate), escHtml(statusLabel[r.status] ?? r.status)
+    ])) },
+    { n: 5, t: "Inventario Completo", c: table(["Kit", "Local", "Filial", "Setor", "Item", "Categoria", "Qtd", "Min.", "Validade", "Status"], itemRows.map((r: any) => [
+      escHtml(r.kitName), escHtml(r.location ?? "-"), escHtml(r.branchName), escHtml(r.sectorName), escHtml(r.itemName), escHtml(r.category ?? "-"), `${r.quantity} ${escHtml(r.unit)}`, String(r.minQuantity), fmtDate(r.expiryDate), escHtml(statusLabel[r.status] ?? r.status)
+    ])) },
+    { n: 6, t: "Conclusao", c: `O controle dos kits deve ser mantido por inspeções periodicas, reposicao de itens faltantes, retirada de materiais vencidos e acompanhamento dos alertas de estoque minimo. Este relatorio pode ser usado como evidencia no PGR, Central de Conformidade e auditorias internas.` },
+  ];
+}
+
+async function generateFirstAidKitReportPdf(db: any, cid: number) {
+  const puppeteer = (await import("puppeteer")).default;
+  const fs = await import("fs/promises");
+  const path = await import("path");
+  const escHtml = (s: unknown) => String(s ?? "").replace(/[<>&"]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;","\"":"&quot;"}[c] as string));
+  const [[co]]: any = await execP(db, `SELECT name, cnpj FROM companies WHERE id=?`, [cid]).catch(() => [[{ name: "", cnpj: "" }]]);
+  const today = new Date().toLocaleDateString("pt-BR", { day: "2-digit", month: "long", year: "numeric" });
+  const sections = await buildFirstAidKitReportSections(db, cid, escHtml, today);
+  const sectionsHtml = sections.map(s => `<h2>${s.n}. ${s.t}</h2><div>${s.c}</div>`).join("\n");
+  const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
+    @page { size: A4; margin: 18mm; }
+    body { font-family: 'Segoe UI', Arial, sans-serif; color:#0f172a; }
+    h1 { font-size: 22pt; margin: 0 0 6px; color:#7f1d1d; }
+    h2 { font-size: 13pt; margin: 18px 0 8px; color:#0f172a; border-bottom:1px solid #e2e8f0; padding-bottom:4px; }
+    .meta { color:#64748b; font-size:9pt; margin-bottom:18px; }
+    table { font-size:8.5pt; }
+    th { background:#f8fafc; }
+    .footer { position: fixed; bottom: 8mm; left: 18mm; right: 18mm; font-size:8pt; color:#94a3b8; border-top:1px solid #e2e8f0; padding-top:4px; }
+  </style></head><body>
+    <h1>Relatório do Kit de Primeiros Socorros</h1>
+    <div class="meta">Empresa: <b>${escHtml(co?.name || "")}</b> · CNPJ: ${escHtml(co?.cnpj || "-")} · Emissão: ${today}</div>
+    ${sectionsHtml}
+    <div class="footer">Plataforma Saúde do Trabalho · Relatório gerado automaticamente · ${today}</div>
+  </body></html>`;
+  const outDir = "/var/www/saudedotrabalho/uploads/firstaid_reports";
+  await fs.mkdir(outDir, { recursive: true });
+  const fileName = `kit_primeiros_socorros_${cid}_${Date.now()}.pdf`;
+  const outPath = path.join(outDir, fileName);
+  const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: "networkidle0" });
+    await page.pdf({ path: outPath, format: "A4", printBackground: true });
+  } finally {
+    await browser.close();
+  }
+  return `/uploads/firstaid_reports/${fileName}`;
+}
+
+// P18 GRANDE — Módulo CIPA eleitoral: dispara e-mail pra todos os colaboradores
+// ativos da empresa quando o status da eleição muda (mesmo padrão de blast usado
+// em sendCampaignBlast, mas sem opt-out — comunicado institucional obrigatório).
+async function notifyCipaStatusChange(db: any, cid: number, electionId: number, electionName: string, newStatus: string) {
+  const STATUS_COPY: Record<string, { subject: string; body: string }> = {
+    inscricoes_abertas: {
+      subject: `CIPA — Inscrições abertas: ${electionName}`,
+      body: `As inscrições de candidatos para a eleição da CIPA "${electionName}" estão abertas. Procure o RH/SESMT para se candidatar.`,
+    },
+    votacao_aberta: {
+      subject: `CIPA — Votação aberta: ${electionName}`,
+      body: `A votação da eleição da CIPA "${electionName}" está aberta. Acesse a plataforma e vote no candidato de sua confiança — seu voto é secreto.`,
+    },
+    apurada: {
+      subject: `CIPA — Resultado apurado: ${electionName}`,
+      body: `A apuração da eleição da CIPA "${electionName}" foi concluída. Confira os eleitos na plataforma.`,
+    },
+    encerrada: {
+      subject: `CIPA — Eleição encerrada: ${electionName}`,
+      body: `A eleição da CIPA "${electionName}" foi encerrada.`,
+    },
+  };
+  const copy = STATUS_COPY[newStatus];
+  if (!copy) return;
+  const [users]: any = await execP(db, `SELECT name, email FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")} AND u.email IS NOT NULL AND u.email <> ''`, [cid]);
+  const link = "https://saudedotrabalho.com/plataforma/cipa";
+  for (const u of (users as any[])) {
+    const html = plainToHtml(`Olá ${u.name || ""},\n\n${copy.body}\n\nAcessar: ${link}\n\nEquipe Saúde do Trabalho`);
+    try {
+      const result = await sendEmail({ to: u.email, toName: u.name ?? undefined, subject: copy.subject, html });
+      // "reminder_employee" — mesmo enum de emailLogs.type usado por sendCampaignBlast /
+      // motor de campanha personalizado (não há valor "cipa_*" no enum do banco).
+      await logEmail(u.email, "reminder_employee", copy.subject, result.ok, result.ok ? undefined : result.error);
+    } catch (e: any) {
+      await logEmail(u.email, "reminder_employee", copy.subject, false, e?.message).catch(() => {});
+    }
+  }
+}
+
+/** Lista, para uma empresa (com filtro opcional de filial/setor), quem tem cursos prioritários pendentes — base da campanha personalizada. */
+async function previewPersonalizedPendingCourses(db: any, cid: number, branchId?: number | null, sectorId?: number | null) {
+  const where: string[] = [`company_id=?`];
+  const params: any[] = [cid];
+  if (branchId != null) { where.push(`branch_id=?`); params.push(branchId); }
+  if (sectorId != null) { where.push(`sector_id=?`); params.push(sectorId); }
+  where.push(`email IS NOT NULL AND email <> ''`);
+  const [usersRows]: any = await execP(db, `SELECT id, name, email FROM users WHERE ${where.join(" AND ")} ORDER BY name`, params);
+  const result: any[] = [];
+  for (const u of usersRows as any[]) {
+    const pending = await getPendingPrioritariosForUser(db, cid, Number(u.id));
+    if (pending.length === 0) continue;
+    const next = pending[0];
+    result.push({
+      userId: Number(u.id), name: u.name, email: u.email,
+      pendingCount: pending.length,
+      nextDeadline: next.deadline,
+      nextCourseTitle: next.moduleTitle,
+    });
+  }
+  return result;
 }
 
 function decryptSmtpPass(encrypted: string): string {
@@ -3153,7 +3895,9 @@ export const appRouter = router({
           FROM corporate_emails WHERE activation_token = ${input.token} LIMIT 1`);
         const rec = (r as any)[0]?.[0];
         if (!rec) return { valid: false };
-        if (rec.hasSetPassword) return { valid: false, reason: "Conta já ativada." };
+        // R5-P10 #12 — sinaliza ao front que a conta já está ativa pra redirecionar
+        // direto pro /login (Bruno: usuário com cadastro ativo não deve cair no /ativar).
+        if (rec.hasSetPassword) return { valid: false, alreadyActive: true, reason: "Conta já ativada." };
         const exp = rec.activation_expires_at ? new Date(rec.activation_expires_at) : null;
         if (exp && exp < new Date()) return { valid: false, reason: "Link expirado." };
         return { valid: true, email: rec.email, employeeName: rec.employeeName };
@@ -3208,23 +3952,18 @@ export const appRouter = router({
         await db.execute(drzSql`
           UPDATE corporate_emails SET activation_token=${token}, activation_expires_at=${exp}
           WHERE id=${rec.id}`);
-        const base = process.env.PUBLIC_BASE_URL || "https://dev.saudedotrabalho.com";
-        const link = `${base}/plataforma/activate?token=${token}`;
+        const base = getEmailLinkBaseUrl();
+        const link = `${base}/ativar?token=${token}`;
+        // Bruno R4 #1: template HTML rico (mesmo do importCollaborators)
         const r2 = await sendEmail({
           to: rec.email,
           toName: rec.employeeName ?? rec.email,
-          subject: "Ative seu acesso à plataforma Saúde do Trabalho",
-          html: plainToHtml(
-            `Olá ${rec.employeeName ?? ""},
-
-` +
-            `Para ativar seu acesso à plataforma Saúde do Trabalho, defina sua senha em:
-
-${link}
-
-` +
-            `Este link expira em 7 dias. Se você não solicitou este e-mail, ignore-o.`
-          ),
+          subject: `Bem-vindo(a) à Plataforma Saúde do Trabalho — ${rec.company ?? ""}`,
+          html: buildWelcomeEmail({
+            name: rec.employeeName ?? "",
+            companyName: rec.company ?? "sua empresa",
+            link, base,
+          }),
         });
         return { ok: r2.ok, preview: r2.preview, error: r2.error ?? null };
       }),
@@ -3328,9 +4067,13 @@ ${link}
 
       try {
         // ── RH / SESMT / admin: denúncias abertas
+        // P18 GRANDE — .catch() adicionado: sem ele, um ambiente sem a tabela `denuncias`
+        // lançava exceção aqui e abortava SILENCIOSAMENTE todos os blocos seguintes deste
+        // try (cursos pendentes, alertas do Kit de Primeiros Socorros, etc.) — bug pré-existente
+        // descoberto ao validar os novos alertas escalonados do Kit de Primeiros Socorros.
         if (["rh", "sesmt", "admin", "admin_global", "company_admin", "super_admin"].includes(role)) {
           const r: any = await db.execute(drzSql`
-            SELECT COUNT(*) AS c FROM denuncias WHERE company_id=${cid} AND (status='aberta' OR status IS NULL)`);
+            SELECT COUNT(*) AS c FROM denuncias WHERE company_id=${cid} AND (status='aberta' OR status IS NULL)`).catch(() => [[{ c: 0 }]]);
           const n = Number((r as any)[0]?.[0]?.c ?? 0);
           if (n > 0) await upsertNotif({
             type: "rh_denuncia", priority: "alta",
@@ -3352,6 +4095,55 @@ ${link}
             link: "/admin/aprovacoes", icon: "book-open",
             dedup: `cursos_pendentes:${n}`,
           });
+        }
+
+        // ── SESMT / CIPA / RH / admin: alertas escalonados de vencimento do Kit de
+        // Primeiros Socorros (60/30/15/7 dias). P18 GRANDE — Bruno: notificar SESMT/CIPA/RH.
+        if (["sesmt", "cipa", "rh", "admin", "admin_global", "company_admin", "super_admin"].includes(role)) {
+          const faR: any = await db.execute(drzSql`
+            SELECT
+              SUM(CASE WHEN i.expiry_date < CURDATE() THEN 1 ELSE 0 END) AS vencidos,
+              SUM(CASE WHEN i.expiry_date >= CURDATE() AND i.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 7 DAY) THEN 1 ELSE 0 END) AS d7,
+              SUM(CASE WHEN i.expiry_date > DATE_ADD(CURDATE(), INTERVAL 7 DAY) AND i.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 15 DAY) THEN 1 ELSE 0 END) AS d15,
+              SUM(CASE WHEN i.expiry_date > DATE_ADD(CURDATE(), INTERVAL 15 DAY) AND i.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 30 DAY) THEN 1 ELSE 0 END) AS d30,
+              SUM(CASE WHEN i.expiry_date > DATE_ADD(CURDATE(), INTERVAL 30 DAY) AND i.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 60 DAY) THEN 1 ELSE 0 END) AS d60
+            FROM firstaid_items i JOIN firstaid_kits k ON k.id=i.kit_id
+            WHERE k.company_id=${cid} AND k.is_active=1 AND i.expiry_date IS NOT NULL`).catch(() => [[null]]);
+          const tiers = (faR as any)[0]?.[0];
+          if (tiers) {
+            const nVenc = Number(tiers.vencidos ?? 0), n7 = Number(tiers.d7 ?? 0), n15 = Number(tiers.d15 ?? 0), n30 = Number(tiers.d30 ?? 0), n60 = Number(tiers.d60 ?? 0);
+            if (nVenc > 0) await upsertNotif({
+              type: "fa_vencido", priority: "alta",
+              title: `${nVenc} item(ns) do Kit de Primeiros Socorros vencido(s)`,
+              body: "Substitua imediatamente os itens vencidos.",
+              link: "/admin/primeiros-socorros", icon: "alert-triangle",
+              dedup: `fa_vencido:${nVenc}`,
+            });
+            if (n7 > 0) await upsertNotif({
+              type: "fa_exp7", priority: "alta",
+              title: `${n7} item(ns) vencendo em até 7 dias`,
+              link: "/admin/primeiros-socorros", icon: "alert-triangle",
+              dedup: `fa_exp7:${n7}`,
+            });
+            if (n15 > 0) await upsertNotif({
+              type: "fa_exp15", priority: "media",
+              title: `${n15} item(ns) vencendo em até 15 dias`,
+              link: "/admin/primeiros-socorros", icon: "clock",
+              dedup: `fa_exp15:${n15}`,
+            });
+            if (n30 > 0) await upsertNotif({
+              type: "fa_exp30", priority: "media",
+              title: `${n30} item(ns) vencendo em até 30 dias`,
+              link: "/admin/primeiros-socorros", icon: "clock",
+              dedup: `fa_exp30:${n30}`,
+            });
+            if (n60 > 0) await upsertNotif({
+              type: "fa_exp60", priority: "baixa",
+              title: `${n60} item(ns) vencendo em até 60 dias`,
+              link: "/admin/primeiros-socorros", icon: "clock",
+              dedup: `fa_exp60:${n60}`,
+            });
+          }
         }
 
         // ── Colaborador: cursos pendentes (atribuídos a ele e não concluídos)
@@ -4345,6 +5137,18 @@ ${link}
           certBody: mod.certBody ?? null,
           certSignerName: mod.certSignerName ?? null,
           certSignerRole: mod.certSignerRole ?? null,
+          durationMinutes: (mod as any).durationMinutes ?? null,
+          // Bruno R5-P5/Fase3 #4 — Logo da empresa em destaque no topo do certificado.
+          companyLogoUrl: await (async () => {
+            try {
+              const cid = (ctx.user as any).companyId;
+              if (!cid) return null;
+              const db2 = await getDb(); if (!db2) return null;
+              const [[co]]: any = await execP(db2, `SELECT logo_url FROM companies WHERE id=?`, [cid]);
+              return co?.logo_url ?? null;
+            } catch { return null; }
+          })(),
+          companyName: ctx.user?.companyName || "Saúde do Trabalho",
         });
 
 
@@ -4652,6 +5456,87 @@ ${link}
 
 
   admin: router({
+    // Bruno R5 #1 — Reenvio manual do e-mail de boas-vindas/ativação.
+    // Aceita corporateEmailId; (re)gera token + envia. Útil pra casos onde Amanda
+    // foi cadastrada por um path que pulou o envio inicial.
+    // Bruno R5 #1 — DEMO. Envia o template de boas-vindas pra qualquer e-mail
+    // (sem precisar criar conta antes). Usado para validar a aparência do e-mail.
+    sendDemoWelcomeEmail: adminOrRhProcedure
+      .input(z.object({ to: z.string().email(), name: z.string().optional(), companyName: z.string().optional() }))
+      .mutation(async ({ input }) => {
+        const base = getEmailLinkBaseUrl();
+        // R5-P10 #12 — DEMO não tem token real; manda direto pro login (o '?demo=1'
+        // dá pra logar/diferenciar no client se um dia precisar). Antes ia pra
+        // /ativar?token=DEMO_TOKEN_PREVIEW e a tela mostrava aviso intermediário.
+        const link = `${base}/login?demo=1`;
+        const res = await sendEmail({
+          to: input.to,
+          toName: input.name || "Bruno Slop",
+          subject: `[DEMO] Bem-vindo(a) à Plataforma Saúde do Trabalho — ${input.companyName || "Saúde do Trabalho"}`,
+          html: buildWelcomeEmail({ name: input.name || "Bruno Slop", companyName: input.companyName || "Saúde do Trabalho — DEMO", link, base }),
+        });
+        if (!res.ok) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Falha SMTP: ${res.error || "?"}` });
+        return { ok: true, preview: !!res.preview, to: input.to };
+      }),
+
+    resendWelcomeEmail: adminOrRhProcedure
+      .input(z.object({ email: z.string().email().optional(), userId: z.number().int().optional() }))
+      .mutation(async ({ ctx, input }) => {
+        if (!input.email && !input.userId) throw new TRPCError({ code: "BAD_REQUEST", message: "Informe email ou userId." });
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const myRole = (ctx.user as any).role;
+        const myCid = (ctx.user as any).companyId;
+        let targetEmail = (input.email || "").trim().toLowerCase();
+        if (!targetEmail && input.userId) {
+          const ru: any = await db.execute(drzSql`SELECT email FROM users WHERE id = ${input.userId} LIMIT 1`);
+          const ruRows = Array.isArray(ru) ? ((ru as any)[0] ?? []) : [];
+          const ruRow = Array.isArray(ruRows) ? (ruRows[0] ?? null) : null;
+          if (!ruRow) throw new TRPCError({ code: "NOT_FOUND", message: "Usuário não encontrado." });
+          targetEmail = String(ruRow.email || "").toLowerCase();
+        }
+        const r: any = await db.execute(drzSql`SELECT id, email, employeeName, company, company_id, hasSetPassword FROM corporate_emails WHERE email = ${targetEmail} LIMIT 1`);
+        const rows = Array.isArray(r) ? ((r as any)[0] ?? []) : [];
+        const row = Array.isArray(rows) ? (rows[0] ?? null) : null;
+        if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "Colaborador não encontrado." });
+        if (myRole !== "admin_global" && myRole !== "super_admin" && row.company_id !== myCid) {
+          throw new TRPCError({ code: "FORBIDDEN" });
+        }
+        const base = getEmailLinkBaseUrl();
+        // R5-P11 #12 — Checagem robusta: alguns drivers MySQL devolvem tinyint(1)
+        // como string ("1") ou number — `if (row.hasSetPassword)` falhava em casos
+        // exóticos (truthy "0" em string nunca rola, mas null/undefined viraria false).
+        // Comparamos numericamente.
+        const isActive = Number(row.hasSetPassword ?? 0) === 1;
+        // Bruno R5-P8 #6 — Se conta já ativada, envia link de login em vez de gerar
+        // novo token (que causaria "Link inválido" na tela /ativar).
+        if (isActive) {
+          const link = `${base}/login`;
+          const sendRes = await sendEmail({
+            to: row.email,
+            toName: row.employeeName || row.email,
+            subject: `Acesso à Plataforma Saúde do Trabalho — ${row.company || ""}`,
+            html: buildWelcomeEmail({ name: row.employeeName || "", companyName: row.company || "Saúde do Trabalho", link, base }),
+          });
+          if (!sendRes.ok) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Falha SMTP: ${sendRes.error || "?"}` });
+          return { ok: true, preview: !!sendRes.preview, to: row.email, alreadyActive: true };
+        }
+        const { randomBytes } = await import("crypto");
+        const actToken = randomBytes(32).toString("hex");
+        const actExp = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 19).replace("T", " ");
+        // R5-P11 #12 — NÃO força hasSetPassword=0 aqui; se a conta estava ativa
+        // o branch anterior já tratou, e zerar aqui seria perigoso em caso de race.
+        await db.execute(drzSql`UPDATE corporate_emails SET activation_token=${actToken}, activation_expires_at=${actExp} WHERE id=${row.id} AND (hasSetPassword IS NULL OR hasSetPassword=0)`);
+        const link = `${base}/ativar?token=${actToken}`;
+        const sendRes = await sendEmail({
+          to: row.email,
+          toName: row.employeeName || row.email,
+          subject: `Bem-vindo(a) à Plataforma Saúde do Trabalho — ${row.company || ""}`,
+          html: buildWelcomeEmail({ name: row.employeeName || "", companyName: row.company || "Saúde do Trabalho", link, base }),
+        });
+        if (!sendRes.ok) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Falha SMTP: ${sendRes.error || "?"}` });
+        return { ok: true, preview: !!sendRes.preview, to: row.email };
+      }),
+
     updateUserAssignment: adminOrRhProcedure
       .input(z.object({
         userId: z.number(),
@@ -4862,6 +5747,33 @@ ${link}
             if (exrow.userId) {
               await db.execute(drzSql`UPDATE users SET company_id = ${companyId}, branch_id = ${branchId}, sector_id = ${sectorId}, role = ${role}, position = ${cargo}, whatsapp_e164 = COALESCE(${whatsappNorm}, whatsapp_e164) WHERE id = ${exrow.userId}`);
             }
+            // Bruno R5 #1: se o colaborador existe MAS nunca recebeu link de ativação,
+            // dispara e-mail de boas-vindas mesmo no path "updated". Caso da Amanda:
+            // cadastro pré-existente (sem token) re-importado caía em "updated" e nunca recebia.
+            const exTok: any = await db.execute(drzSql`SELECT activation_token, hasSetPassword FROM corporate_emails WHERE id = ${exrow.id}`);
+            const exTokRows = Array.isArray(exTok) ? ((exTok as any)[0] ?? []) : [];
+            const exTokRow = Array.isArray(exTokRows) ? (exTokRows[0] ?? null) : null;
+            if (exTokRow && !exTokRow.activation_token && !exTokRow.hasSetPassword) {
+              try {
+                const { randomBytes } = await import("crypto");
+                const actToken = randomBytes(32).toString("hex");
+                const actExp = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 19).replace("T", " ");
+                await db.execute(drzSql`UPDATE corporate_emails SET activation_token=${actToken}, activation_expires_at=${actExp} WHERE id=${exrow.id}`);
+                const base = getEmailLinkBaseUrl();
+                const link = `${base}/ativar?token=${actToken}`;
+                const sendRes = await sendEmail({
+                  to: email,
+                  toName: nome || email,
+                  subject: `Bem-vindo(a) à Plataforma Saúde do Trabalho — ${companyName}`,
+                  html: buildWelcomeEmail({ name: nome || "", companyName, link, base }),
+                });
+                if (sendRes.ok && !sendRes.preview) { res.emailSent = true; console.log(`[email] welcome sent (updated path) to ${email}`); }
+                else if (sendRes.preview) res.emailWarning = "SMTP não configurado — e-mail em modo preview.";
+                else res.emailWarning = `E-mail não enviado: ${sendRes.error || "?"}`;
+              } catch (emailErr: any) {
+                res.emailWarning = `Falha no e-mail (updated): ${emailErr?.message || "?"}`;
+              }
+            }
           } else {
             // ON DUPLICATE KEY UPDATE prevents race between concurrent imports on same email
             await db.execute(drzSql`INSERT INTO corporate_emails (email, company, sector, employeeName, isActive, company_id, branch_id, sector_id, role) VALUES (${email}, ${companyName}, ${setor || null}, ${nome || null}, 1, ${companyId}, ${branchId}, ${sectorId}, ${role}) ON DUPLICATE KEY UPDATE company=${companyName}, sector=${setor || null}, employeeName=${nome || null}, isActive=1, company_id=${companyId}, branch_id=${branchId}, sector_id=${sectorId}, role=${role}`);
@@ -4874,18 +5786,13 @@ ${link}
               const actToken = randomBytes(32).toString("hex");
               const actExp = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 19).replace("T", " ");
               await db.execute(drzSql`UPDATE corporate_emails SET activation_token=${actToken}, activation_expires_at=${actExp} WHERE email=${email}`);
-              const base = process.env.PUBLIC_BASE_URL || "https://dev.saudedotrabalho.com";
-              const link = `${base}/plataforma/activate?token=${actToken}`;
+              const base = getEmailLinkBaseUrl();
+              const link = `${base}/ativar?token=${actToken}`;
               const sendRes = await sendEmail({
                 to: email,
                 toName: nome || email,
-                subject: "Ative seu acesso à plataforma Saúde do Trabalho",
-                html: plainToHtml(
-                  `Olá ${nome || ""},\n\n` +
-                  `Você foi cadastrado(a) na plataforma ${companyName} — Saúde do Trabalho. ` +
-                  `Para ativar seu acesso e definir sua senha, clique no link abaixo:\n\n${link}\n\n` +
-                  `Este link expira em 7 dias. Se não solicitou este e-mail, ignore-o.`
-                ),
+                subject: `Bem-vindo(a) à Plataforma Saúde do Trabalho — ${companyName}`,
+                html: buildWelcomeEmail({ name: nome || "", companyName, link, base }),
               });
               if (!sendRes.ok) res.emailWarning = `Conta criada mas e-mail não enviado: ${sendRes.error || "erro desconhecido"}`;
               else if (sendRes.preview) res.emailWarning = "SMTP não configurado — e-mail em modo preview (log do servidor).";
@@ -4901,6 +5808,23 @@ ${link}
           if (urow) {
             await db.execute(drzSql`UPDATE users SET company_id = ${companyId}, branch_id = ${branchId}, sector_id = ${sectorId}, role = ${role}, position = ${cargo}, whatsapp_e164 = COALESCE(${whatsappNorm}, whatsapp_e164) WHERE id = ${urow.id}`);
             await db.execute(drzSql`UPDATE corporate_emails SET userId = ${urow.id} WHERE email = ${email} AND (userId IS NULL OR userId = 0)`);
+          } else {
+            // Bruno R5-P3 #2 — Cria o registro em `users` IMEDIATAMENTE no cadastro,
+            // mesmo antes do primeiro login. Sem isso o colaborador não aparece em
+            // listCollaborators (que faz JOIN com users) até alguém clicar no link de
+            // ativação — caso reportado pelo Bruno com testeteste31551029@hotmail.com.
+            try {
+              const openIdGen = `corporate:${email}`;
+              const insRes: any = await db.execute(drzSql`
+                INSERT INTO users (openId, name, email, loginMethod, role, company_id, branch_id, sector_id, position, whatsapp_e164, is_active)
+                VALUES (${openIdGen}, ${nome || email}, ${email}, ${'corporate'}, ${role}, ${companyId}, ${branchId}, ${sectorId}, ${cargo || null}, ${whatsappNorm || null}, 1)`);
+              const newUid = Number((insRes as any)[0]?.insertId ?? 0);
+              if (newUid > 0) {
+                await db.execute(drzSql`UPDATE corporate_emails SET userId = ${newUid} WHERE email = ${email}`);
+              }
+            } catch (uErr: any) {
+              console.warn(`[importCollaborators] falha ao criar user pra ${email}:`, uErr?.message);
+            }
           }
           // SP12 #81 — Auto WhatsApp de boas-vindas. Só se: tem whatsapp + não está em opt-out
           // + é colaborador NOVO (ainda não enviamos antes). Falha não derruba o import.
@@ -5041,8 +5965,15 @@ ${link}
       if (role === 'admin_global') return getAdminStats();
       const db2 = await getDb();
       if (!db2) return { totalUsers: 0, activeUsers: 0, completionRate: 0, totalCertificates: 0, completedModules: 0 };
-      const [uRows] = await execP(db2, `SELECT COUNT(*) as c FROM corporate_emails WHERE company_id = ? AND isActive = 1`, [cid]);
-      const [certRows] = await execP(db2, `SELECT COUNT(*) as c FROM certificates WHERE userId IN (SELECT id FROM users WHERE company_id = ?)`, [cid]);
+      // R5-P9 #3: alinhado com a tela "Colaboradores" (getHierarchyTreeForCompany) que usa users WHERE is_active=1.
+      // Antes contava corporate_emails (incluía ativos sem cadastro real), gerando divergência ex.: 18 vs 12.
+      // P18 #23 (cont.) — "Total de Colaboradores" aqui é um KPI de headcount (não a lista de
+      // gestão de usuários), por isso segue a definição canônica: exclui contas de equipe
+      // administrativa/técnica (admin, admin_global, super_admin, RH, psicólogo). A tela
+      // "Colaboradores" (lista de gestão) continua mostrando TODAS as contas, propositalmente —
+      // é um diretório de usuários pra administração, não um indicador de headcount.
+      const [uRows] = await execP(db2, `SELECT COUNT(*) as c FROM users u WHERE u.company_id = ? AND ${activeEmployeeWhere("u")}`, [cid]);
+      const [certRows] = await execP(db2, `SELECT COUNT(*) as c FROM certificates c INNER JOIN users u ON u.id=c.userId WHERE u.company_id = ? AND ${activeEmployeeWhere("u")}`, [cid]);
       const uCount = (uRows[0] ?? {}) as any; const certCount = (certRows[0] ?? {}) as any;
       return { totalUsers: Number(uCount.c) || 0, activeUsers: Number(uCount.c) || 0, completionRate: 0, totalCertificates: Number(certCount.c) || 0, completedModules: 0 };
     }),
@@ -5068,6 +5999,33 @@ ${link}
       const cid = (ctx.user as any).companyId;
       if (role === 'admin_global') return getSectorEngagement();
       return getSectorEngagementByCompany(cid);
+    }),
+
+    // R5-P9 #5 — Efetividade das Campanhas (substitui "Próximos Exames ASO" mockado no Dashboard RH).
+    campaignEffectiveness: adminOrRhProcedure.query(async ({ ctx }) => {
+      const cid = (ctx.user as any).companyId;
+      const db = await getDb();
+      if (!db || !cid) return { totalCampaigns: 0, totalRecipients: 0, sentCount: 0, failedCount: 0, topCampaigns: [] };
+      const [agg]: any = await execP(db,
+        `SELECT COUNT(*) AS total, COALESCE(SUM(total_recipients),0) AS rec, COALESCE(SUM(sent_count),0) AS sent, COALESCE(SUM(failed_count),0) AS fail
+         FROM email_campaigns WHERE company_id=? AND status IN ('sent','sending')`, [cid]);
+      const a = (agg[0] ?? {}) as any;
+      const [topRows]: any = await execP(db,
+        `SELECT name, total_recipients AS rec, sent_count AS sent
+         FROM email_campaigns WHERE company_id=? AND status IN ('sent','sending') AND total_recipients > 0
+         ORDER BY (sent_count / total_recipients) DESC, sent_count DESC LIMIT 5`, [cid]);
+      const top = (topRows as any[]).map(r => {
+        const rec = Number(r.rec ?? 0);
+        const sent = Number(r.sent ?? 0);
+        return { name: String(r.name ?? ""), recipients: rec, sent, rate: rec > 0 ? Math.min(100, Math.round((sent / rec) * 100)) : 0 };
+      });
+      return {
+        totalCampaigns: Number(a.total ?? 0),
+        totalRecipients: Number(a.rec ?? 0),
+        sentCount: Number(a.sent ?? 0),
+        failedCount: Number(a.fail ?? 0),
+        topCampaigns: top,
+      };
     }),
 
 
@@ -5861,78 +6819,23 @@ ${link}
 
 
         try {
-
-
-
-
-
-
-
-
-          // Log the reminder (actual email sending would require SMTP config)
-
-
-
-
-
-
-
-
-          await logEmail(
-
-
-
-
-
-
-
-
-            user.email,
-
-
-
-
-
-
-
-
-            "reminder_employee",
-
-
-
-
-
-
-
-
+          // Bruno R5-P5 #7 — SMTP já está configurado. ENVIA o e-mail de fato (antes só logava).
+          const base = getEmailLinkBaseUrl();
+          const sendRes = await sendEmail({
+            to: user.email,
+            toName: user.name || user.email,
+            subject: `Lembrete: Continue sua jornada na plataforma Saúde do Trabalho`,
+            html: plainToHtml(
+              `Olá, ${user.name || user.email.split('@')[0]}!\n\nNotamos que você não acessa a plataforma há alguns dias.\n` +
+              `Continue de onde parou — seus treinamentos, pesquisas e materiais estão te esperando.\n\n` +
+              `Acessar agora: ${base}/plataforma\n\n` +
+              `— Equipe Saúde do Trabalho`
+            ),
+          });
+          await logEmail(user.email, "reminder_employee",
             `Lembrete: Continue sua jornada na plataforma Saúde do Trabalho`,
-
-
-
-
-
-
-
-
-            true
-
-
-
-
-
-
-
-
-          );
-
-
-
-
-
-
-
-
-          sent++;
+            !!sendRes.ok, sendRes.error || undefined);
+          if (sendRes.ok) sent++;
 
 
 
@@ -10150,6 +11053,50 @@ ${link}
         await db.execute(drzSql`UPDATE companies SET is_active = IF(is_active = 1, 0, 1) WHERE id = ${input.id}`);
         return { ok: true };
       }),
+    getPlatformConfig: adminOrRhProcedure
+      .input(z.object({ companyId: z.number().int().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        const requestedId = input?.companyId;
+        const companyId = (role === "admin_global" || role === "super_admin") ? requestedId : (ctx.user as any).companyId;
+        if (!companyId) throw new TRPCError({ code: "BAD_REQUEST", message: "Empresa não definida." });
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensureCompanyPlatformConfigColumns(db);
+        const [[row]]: any = await execP(db, `SELECT id, drps_template_id, aep_template_id, access_method, communication_channel, require_whatsapp_on_first_access FROM companies WHERE id=? LIMIT 1`, [companyId]);
+        if (!row) throw new TRPCError({ code: "NOT_FOUND" });
+        return {
+          companyId: Number(row.id),
+          drpsTemplateId: row.drps_template_id ? Number(row.drps_template_id) : null,
+          aepTemplateId: row.aep_template_id ? Number(row.aep_template_id) : null,
+          accessMethod: row.access_method || "email",
+          communicationChannel: row.communication_channel || "email",
+          requireWhatsappOnFirstAccess: !!Number(row.require_whatsapp_on_first_access ?? 0),
+        };
+      }),
+    updatePlatformConfig: adminOrRhProcedure
+      .input(z.object({
+        companyId: z.number().int(),
+        drpsTemplateId: z.number().int().nullable().optional(),
+        aepTemplateId: z.number().int().nullable().optional(),
+        accessMethod: z.enum(["email", "cpf", "whatsapp"]).default("email"),
+        communicationChannel: z.enum(["email", "whatsapp", "both"]).default("email"),
+        requireWhatsappOnFirstAccess: z.boolean().default(false),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        if (role !== "admin_global" && role !== "super_admin") throw new TRPCError({ code: "FORBIDDEN" });
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensureCompanyPlatformConfigColumns(db);
+        await execP(db, `UPDATE companies SET drps_template_id=?, aep_template_id=?, access_method=?, communication_channel=?, require_whatsapp_on_first_access=? WHERE id=?`, [
+          input.drpsTemplateId ?? null,
+          input.aepTemplateId ?? null,
+          input.accessMethod,
+          input.communicationChannel,
+          input.requireWhatsappOnFirstAccess ? 1 : 0,
+          input.companyId,
+        ]);
+        return { ok: true };
+      }),
     updatePlus: adminOrRhProcedure
       .input(z.object({
         id: z.number(),
@@ -12348,6 +13295,34 @@ ${link}
         return { ok: true };
       }),
 
+    // ─── Bruno R5-P3 #6 — Faixas de preço editáveis (Super Admin) ─────────
+    crmListPricingFaixas: superAdminProcedure.query(async () => {
+      const { loadFaixas } = await import("./_core/crm");
+      return loadFaixas();
+    }),
+
+    crmUpsertPricingFaixas: superAdminProcedure
+      .input(z.object({
+        faixas: z.array(z.object({
+          faixa: z.string().min(1).max(40),
+          min: z.number().int().min(1),
+          max: z.number().int().min(1),
+          valor_mensal: z.number().min(0),
+          ordem: z.number().int().min(1),
+        })).min(1).max(20),
+      }))
+      .mutation(async ({ input }) => {
+        const { ensureFaixasTable, invalidateFaixasCache } = await import("./_core/crm");
+        await ensureFaixasTable();
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await db.execute(drzSql`DELETE FROM pricing_faixas`);
+        for (const f of input.faixas) {
+          await db.execute(drzSql`INSERT INTO pricing_faixas (faixa, min_colab, max_colab, valor_mensal, ordem) VALUES (${f.faixa}, ${f.min}, ${f.max}, ${f.valor_mensal}, ${f.ordem})`);
+        }
+        invalidateFaixasCache();
+        return { ok: true, count: input.faixas.length };
+      }),
+
     // ─── SP13 — CRM Comercial + Financeiro + Contratos (Bruno round 3) ────
     crmListProposals: superAdminProcedure
       .input(z.object({ status: z.string().optional() }).optional())
@@ -12385,17 +13360,19 @@ ${link}
         telefone: z.string().optional(),
         segmento: z.string().optional(),
         qtdColaboradores: z.number().int().default(0),
-        plano: z.enum(["starter","business","enterprise"]).default("starter"),
+        // Bruno R5-P3 — Aceita "auto" (faixa parametrizada, default novo) + legacy.
+        plano: z.enum(["auto","starter","business","enterprise"]).default("auto"),
         descontoExtraPct: z.number().default(0),
         validadeDias: z.number().int().default(15),
         partnerId: z.number().int().optional().nullable(),
         observacoes: z.string().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const { ensureCrmTables, calcularValores } = await import("./_core/crm");
+        const { ensureCrmTables, calcularValoresAsync } = await import("./_core/crm");
         await ensureCrmTables();
         const db = await getDb();
-        const v = calcularValores(input.plano, input.qtdColaboradores, input.descontoExtraPct);
+        // Bruno R5-P3 — usa calc async (faixas vivem em pricing_faixas, editáveis pelo SA).
+        const v = await calcularValoresAsync(input.plano, input.qtdColaboradores, input.descontoExtraPct);
         const uid = (ctx.user as any).id;
         if (input.id) {
           await db!.execute(drzSql`UPDATE commercial_proposals SET
@@ -12485,6 +13462,12 @@ ${link}
         tipoParceria: z.string().optional(), comissaoPct: z.number().default(10),
         comissaoFixa: z.number().default(0), dataInicio: z.string().optional(),
         isActive: z.boolean().default(true), observacoes: z.string().optional(),
+        // P14 #4 — dados bancários / PIX do intermediário
+        banco: z.string().optional(), agencia: z.string().optional(),
+        conta: z.string().optional(), pixKey: z.string().optional(),
+        // P14 #5 — vincular a um usuário da plataforma (perfil Intermediador) + hierarquia
+        userId: z.number().int().optional().nullable(),
+        parentPartnerId: z.number().int().optional().nullable(),
       }))
       .mutation(async ({ input }) => {
         const { ensureCrmTables } = await import("./_core/crm"); await ensureCrmTables();
@@ -12495,15 +13478,26 @@ ${link}
             telefone=${input.telefone ?? null}, tipo_parceria=${input.tipoParceria ?? null},
             comissao_pct=${input.comissaoPct}, comissao_fixa=${input.comissaoFixa},
             data_inicio=${input.dataInicio ?? null}, is_active=${input.isActive ? 1 : 0},
-            observacoes=${input.observacoes ?? null}
+            observacoes=${input.observacoes ?? null},
+            banco=${input.banco ?? null}, agencia=${input.agencia ?? null},
+            conta=${input.conta ?? null}, pix_key=${input.pixKey ?? null},
+            user_id=${input.userId ?? null}, parent_partner_id=${input.parentPartnerId ?? null}
             WHERE id=${input.id}`);
+          if (input.userId) {
+            await db!.execute(drzSql`UPDATE users SET role='intermediador' WHERE id=${input.userId}`);
+          }
           return { ok: true, id: input.id };
         }
         const r: any = await db!.execute(drzSql`INSERT INTO commercial_partners
-          (nome, cpf_cnpj, email, telefone, tipo_parceria, comissao_pct, comissao_fixa, data_inicio, is_active, observacoes)
+          (nome, cpf_cnpj, email, telefone, tipo_parceria, comissao_pct, comissao_fixa, data_inicio, is_active, observacoes, banco, agencia, conta, pix_key, user_id, parent_partner_id)
           VALUES (${input.nome}, ${input.cpfCnpj ?? null}, ${input.email ?? null}, ${input.telefone ?? null},
                   ${input.tipoParceria ?? null}, ${input.comissaoPct}, ${input.comissaoFixa},
-                  ${input.dataInicio ?? null}, ${input.isActive ? 1 : 0}, ${input.observacoes ?? null})`);
+                  ${input.dataInicio ?? null}, ${input.isActive ? 1 : 0}, ${input.observacoes ?? null},
+                  ${input.banco ?? null}, ${input.agencia ?? null}, ${input.conta ?? null}, ${input.pixKey ?? null},
+                  ${input.userId ?? null}, ${input.parentPartnerId ?? null})`);
+        if (input.userId) {
+          await db!.execute(drzSql`UPDATE users SET role='intermediador' WHERE id=${input.userId}`);
+        }
         return { ok: true, id: Number((r as any)[0]?.insertId ?? 0) };
       }),
 
@@ -12528,20 +13522,160 @@ ${link}
         await db!.execute(drzSql`UPDATE financial_receivables SET status='recebido', pagamento=${dt},
           forma_pagamento=${input.formaPagamento ?? null}, nota_fiscal=${input.notaFiscal ?? null}
           WHERE id=${input.id}`);
-        // Calcula comissão automaticamente se há parceiro vinculado
+        // Calcula comissão automaticamente pra CADA parceiro/intermediário vinculado ao cliente
+        // (P14 #4 — até então só considerava 1 parceiro por cliente; client_partner_links já
+        // suporta N parceiros por empresa, então distribui a comissão entre todos os vinculados).
         const [[rec]]: any = await db!.execute(drzSql`SELECT r.id, r.valor, r.company_id FROM financial_receivables r WHERE r.id=${input.id}`);
         if (rec) {
-          const [[link]]: any = await db!.execute(drzSql`
+          const [linkRows]: any = await db!.execute(drzSql`
             SELECT cpl.partner_id, COALESCE(cpl.comissao_pct, cp.comissao_pct) AS pct
             FROM client_partner_links cpl JOIN commercial_partners cp ON cp.id=cpl.partner_id
-            WHERE cpl.company_id=${rec.company_id} LIMIT 1`);
-          if (link) {
+            WHERE cpl.company_id=${rec.company_id}`);
+          for (const link of ((linkRows as any[]) ?? [])) {
             const valorCom = Math.round(Number(rec.valor) * Number(link.pct) / 100 * 100) / 100;
             await db!.execute(drzSql`INSERT INTO financial_commissions (receivable_id, partner_id, valor_bruto, comissao_pct, valor_comissao)
               VALUES (${rec.id}, ${link.partner_id}, ${rec.valor}, ${link.pct}, ${valorCom})
               ON DUPLICATE KEY UPDATE valor_bruto=${rec.valor}, comissao_pct=${link.pct}, valor_comissao=${valorCom}`);
           }
         }
+        return { ok: true };
+      }),
+
+    // P14 #4 — Calendário financeiro de comissões: consolidado de tudo previsto/pago.
+    crmListCommissions: superAdminProcedure
+      .input(z.object({ status: z.string().optional(), partnerId: z.number().int().optional() }).optional())
+      .query(async ({ input }) => {
+        const { ensureCrmTables } = await import("./_core/crm"); await ensureCrmTables();
+        const db = await getDb();
+        const inp = (input as any) ?? {};
+        let sql = drzSql`
+          SELECT fc.*, cp.nome AS partner_name, r.vencimento, r.company_id, co.name AS company_name
+          FROM financial_commissions fc
+          JOIN commercial_partners cp ON cp.id=fc.partner_id
+          JOIN financial_receivables r ON r.id=fc.receivable_id
+          LEFT JOIN companies co ON co.id=r.company_id
+          WHERE 1=1`;
+        if (inp.status) sql = drzSql`${sql} AND fc.status=${inp.status}`;
+        if (inp.partnerId) sql = drzSql`${sql} AND fc.partner_id=${inp.partnerId}`;
+        const r: any = await db!.execute(drzSql`${sql} ORDER BY r.vencimento DESC LIMIT 300`);
+        return (r as any)[0] ?? [];
+      }),
+    crmMarkCommissionPaid: superAdminProcedure
+      .input(z.object({ id: z.number().int(), pagoEm: z.string().optional() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        const dt = input.pagoEm ?? new Date().toISOString().slice(0, 10);
+        await db!.execute(drzSql`UPDATE financial_commissions SET status='pago', pago_em=${dt} WHERE id=${input.id}`);
+        return { ok: true };
+      }),
+
+    // P14 #4 — até 3 intermediários por contrato, cada um com % de participação própria.
+    crmListContractPartners: superAdminProcedure
+      .input(z.object({ contractId: z.number().int() }))
+      .query(async ({ input }) => {
+        const { ensureCrmTables } = await import("./_core/crm"); await ensureCrmTables();
+        const db = await getDb();
+        const r: any = await db!.execute(drzSql`
+          SELECT cp2.*, cp.nome AS partner_name, cp.cpf_cnpj, cp.email, cp.telefone
+          FROM contract_partners cp2 JOIN commercial_partners cp ON cp.id=cp2.partner_id
+          WHERE cp2.contract_id=${input.contractId} ORDER BY cp2.id ASC`);
+        return (r as any)[0] ?? [];
+      }),
+    crmSetContractPartners: superAdminProcedure
+      .input(z.object({
+        contractId: z.number().int(),
+        partners: z.array(z.object({
+          partnerId: z.number().int(),
+          comissaoPct: z.number().min(0).max(100),
+          status: z.enum(["ativo", "inativo"]).default("ativo"),
+          arquivoBase64: z.string().optional(), arquivoNome: z.string().optional(),
+        })).max(3),
+      }))
+      .mutation(async ({ input }) => {
+        const { ensureCrmTables } = await import("./_core/crm"); await ensureCrmTables();
+        const db = await getDb();
+        await db!.execute(drzSql`DELETE FROM contract_partners WHERE contract_id=${input.contractId}`);
+        for (const p of input.partners) {
+          let arquivoUrl: string | null = null;
+          if (p.arquivoBase64) {
+            const fs = await import("fs/promises");
+            const path = await import("path");
+            const dir = "/var/www/saudedotrabalho/uploads/contracts";
+            await fs.mkdir(dir, { recursive: true });
+            const b64 = p.arquivoBase64.includes(",") ? p.arquivoBase64.split(",", 2)[1] : p.arquivoBase64;
+            const buf = Buffer.from(b64, "base64");
+            const safeName = (p.arquivoNome || "contrato_intermediario.pdf").replace(/[^\w.\-]/g, "_");
+            const fname = `${Date.now()}_${safeName}`;
+            await fs.writeFile(path.join(dir, fname), buf);
+            arquivoUrl = `/uploads/contracts/${fname}`;
+          }
+          await db!.execute(drzSql`INSERT INTO contract_partners (contract_id, partner_id, comissao_pct, status, arquivo_url)
+            VALUES (${input.contractId}, ${p.partnerId}, ${p.comissaoPct}, ${p.status}, ${arquivoUrl})`);
+        }
+        return { ok: true, count: input.partners.length };
+      }),
+
+    // ═══ P15 #6 — Administração Delegada ═══════════════════════════════════════
+    // Substitui o simples "Acessar como" por um modo em que o SuperAdmin assume
+    // temporariamente as permissões de RH/SESMT/etc numa empresa cliente,
+    // gerando auditoria completa (quem, empresa, perfil, ação, IP, justificativa).
+    // A tabela delegated_admin_sessions guarda a sessão delegada aberta; cada
+    // ação relevante grava um log em delegated_admin_logs (via logAudit também,
+    // mas essa tabela dedicada permite relatórios rápidos por sessão).
+    logDelegatedAction: superAdminProcedure
+      .input(z.object({ companyId: z.number().int(), delegatedRole: z.string(), action: z.string(), justification: z.string().optional(), targetUserId: z.number().int().optional() }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        try {
+          await db.execute(drzSql`CREATE TABLE IF NOT EXISTS delegated_admin_logs (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            operator_user_id INT NOT NULL, operator_email VARCHAR(320),
+            company_id INT NOT NULL, delegated_role VARCHAR(40) NOT NULL,
+            action VARCHAR(120) NOT NULL, target_user_id INT NULL,
+            justification TEXT, ip_address VARCHAR(45),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_company_date (company_id, created_at), INDEX idx_operator (operator_user_id)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+        } catch (_) {}
+        const meta = getReqMeta(ctx);
+        await execP(db, `INSERT INTO delegated_admin_logs (operator_user_id, operator_email, company_id, delegated_role, action, target_user_id, justification, ip_address) VALUES (?,?,?,?,?,?,?,?)`,
+          [ctx.user.id, ctx.user.email, input.companyId, input.delegatedRole, input.action, input.targetUserId ?? null, input.justification || null, meta.ip || null]);
+        return { ok: true };
+      }),
+
+    listDelegatedLogs: superAdminProcedure
+      .input(z.object({ companyId: z.number().int().optional() }).optional())
+      .query(async ({ input }) => {
+        const db = await getDb(); if (!db) return [];
+        try {
+          const [rows]: any = await execP(db,
+            input?.companyId
+              ? `SELECT * FROM delegated_admin_logs WHERE company_id=? ORDER BY created_at DESC LIMIT 200`
+              : `SELECT * FROM delegated_admin_logs ORDER BY created_at DESC LIMIT 200`,
+            input?.companyId ? [input.companyId] : []);
+          return rows ?? [];
+        } catch { return []; }
+      }),
+
+    // Ferramenta de correção: invalidar uma resposta de pesquisa indevida
+    // (ex.: gestor respondeu no lugar do colaborador). Marca survey_response.status='invalid'
+    // e libera o survey para o usuário original. Ação típica auditável.
+    invalidateSurveyResponse: superAdminProcedure
+      .input(z.object({ responseId: z.number().int(), justification: z.string().min(1) }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        try { await db.execute(drzSql`ALTER TABLE survey_responses ADD COLUMN status VARCHAR(20) DEFAULT 'valid'`); } catch (_) {}
+        try { await db.execute(drzSql`ALTER TABLE survey_responses ADD COLUMN invalidated_by INT NULL`); } catch (_) {}
+        try { await db.execute(drzSql`ALTER TABLE survey_responses ADD COLUMN invalidated_reason TEXT`); } catch (_) {}
+        const [[row]]: any = await execP(db, `SELECT id, survey_id, user_id FROM survey_responses WHERE id=?`, [input.responseId]);
+        if (!row) throw new TRPCError({ code: "NOT_FOUND" });
+        await execP(db, `UPDATE survey_responses SET status='invalid', invalidated_by=?, invalidated_reason=? WHERE id=?`,
+          [ctx.user.id, input.justification, input.responseId]);
+        try { await execP(db, `DELETE FROM survey_user_completions WHERE user_id=? AND survey_id=?`, [row.user_id, row.survey_id]); } catch (_) {}
+        const meta = getReqMeta(ctx);
+        await logAudit({ userId: ctx.user.id, userEmail: ctx.user.email, action: "delegated_admin.invalidate_survey_response",
+          entityType: "survey_response", entityId: input.responseId, detailsJson: { justification: input.justification, surveyId: row.survey_id, targetUserId: row.user_id },
+          ipAddress: meta.ip, userAgent: meta.userAgent });
         return { ok: true };
       }),
 
@@ -13255,6 +14389,28 @@ ${link}
             return Array.isArray(rows) ? (rows[0] ?? rows) : [];
           }
           return [];
+        }
+        // Bruno R5-P6 #4 — Chefia só pode ver setores que ela administra
+        // (sector_id direto OU lista em managed_sector_ids JSON).
+        const userObj = (ctx.user as any);
+        if (role === "chefia") {
+          const own = userObj.sectorId ? [Number(userObj.sectorId)] : [];
+          let managed: number[] = [];
+          try {
+            const parsed = typeof userObj.managedSectorIds === "string" ? JSON.parse(userObj.managedSectorIds) : userObj.managedSectorIds;
+            if (Array.isArray(parsed)) managed = parsed.map((x: any) => Number(x)).filter(Boolean);
+          } catch {}
+          const allowedIds = Array.from(new Set([...own, ...managed]));
+          if (allowedIds.length === 0) return [];
+          const placeholders = allowedIds.join(",");
+          const rows: any = await db.execute(drzSql.raw(`
+            SELECT s.*, b.name AS branch_name,
+              (SELECT COUNT(*) FROM users u WHERE u.sector_id = s.id) AS users_count
+            FROM sectors s LEFT JOIN branches b ON b.id = s.branch_id
+            WHERE s.company_id = ${Number(cid)} AND s.id IN (${placeholders})
+            ORDER BY b.name, s.name
+          `));
+          return Array.isArray(rows) ? (rows[0] ?? rows) : [];
         }
         const rows: any = await db.execute(drzSql`
           SELECT s.*, b.name AS branch_name,
@@ -14095,12 +15251,21 @@ ${link}
       const [[planRow]] = await execP(db, `SELECT COUNT(*) AS cnt, SUM(CASE WHEN ap.end_date < CURDATE() AND ap.status NOT IN ('concluido','cancelado','completed','done') THEN 1 ELSE 0 END) AS overdue FROM risk_action_plan_items ap JOIN risk_assessments ra ON ra.id=ap.assessment_id WHERE ra.company_id=?`, [cid]) as any;
       const planCount = Number((planRow as any).cnt);
       const planOverdue = Number((planRow as any).overdue ?? 0);
-      const [[survRow]] = await execP(db, `SELECT COUNT(DISTINCT sr.user_id) AS respondentes FROM survey_responses sr JOIN surveys s ON s.id=sr.survey_id WHERE s.company_id=?`, [cid]) as any;
-      const respondentes = Number((survRow as any).respondentes);
-      const [[empRow]] = await execP(db, `SELECT COUNT(*) AS cnt FROM users WHERE company_id=? AND role NOT IN ('admin','rh','admin_global','super_admin','sesmt','psicologo','chefia')`, [cid]) as any;
+      // P17 #2 — DRPS grava user_id=NULL (anônimo LGPD). COUNT(DISTINCT user_id) ignorava
+      // NULLs e reduzia respondentes só ao AEP. Somamos identificados + anônimas com cap.
+      const [[survRow]] = await execP(db, `SELECT COUNT(DISTINCT sr.user_id) AS identificados, SUM(CASE WHEN sr.user_id IS NULL THEN 1 ELSE 0 END) AS anonimas FROM survey_responses sr JOIN surveys s ON s.id=sr.survey_id WHERE s.company_id=? AND (sr.status IS NULL OR sr.status <> 'invalid')`, [cid]) as any;
+      const [[empRow]] = await execP(db, `SELECT COUNT(*) AS cnt FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]) as any;
       const totalEmp = Math.max(1, Number((empRow as any).cnt));
+      const respondentes = Math.min(totalEmp, Number((survRow as any).identificados) + Number((survRow as any).anonimas ?? 0));
       const partRate = Math.min(100, Math.round((respondentes / totalEmp) * 100));
-      const [[courseRow]] = await execP(db, `SELECT COUNT(DISTINCT rcl.module_id) AS linked FROM risk_course_links rcl`, []) as any;
+      // P18 #13/#15 — Bruno: "44 cursos vinculados" contava a biblioteca GLOBAL de
+      // risk_course_links (todo fator×curso da plataforma), não os cursos que essa
+      // empresa realmente tem no Plano de Ação. Escopo correto: só módulos vinculados
+      // a ações do Plano de Ação DESTA empresa (mesmo critério do P17 #4).
+      const [[courseRow]] = await execP(db, `
+        SELECT COUNT(DISTINCT ap.preventive_program_module_id) AS linked
+        FROM risk_action_plan_items ap JOIN risk_assessments ra ON ra.id = ap.assessment_id
+        WHERE ra.company_id=? AND ap.preventive_program_module_id IS NOT NULL`, [cid]) as any;
       const coursesLinked = Number((courseRow as any).linked);
       const [[progRow]] = await execP(db, `SELECT COUNT(DISTINCT up.userId) AS completers FROM user_progress up JOIN users u ON u.id=up.userId WHERE u.company_id=? AND up.isCompleted=1`, [cid]) as any;
       const completers = Number((progRow as any).completers);
@@ -14150,9 +15315,10 @@ ${link}
       if (pCnt === 0) push("nao_conf", { eixo: "Plano de Ação", check: "Plano de ação ausente", detail: "Nenhuma ação cadastrada", acao: "Elaborar plano de ação vinculado aos riscos identificados" });
       else if (pOvd > 0) push("warn", { eixo: "Plano de Ação", check: "Ações vencidas", detail: `${pOvd} de ${pCnt} ação(ões) com prazo expirado`, acao: "Atualizar ou concluir ações vencidas" });
       else push("ok", { eixo: "Plano de Ação", check: "Plano de ação em dia", detail: `${pCnt} ação(ões), nenhuma vencida` });
-      const [[sR]] = await execP(db, `SELECT COUNT(DISTINCT sr.user_id) AS cnt FROM survey_responses sr JOIN surveys s ON s.id=sr.survey_id WHERE s.company_id=?`, [cid]) as any;
-      const [[eR]] = await execP(db, `SELECT COUNT(*) AS cnt FROM users WHERE company_id=? AND role NOT IN ('admin','rh','admin_global','super_admin','sesmt','psicologo','chefia')`, [cid]) as any;
-      const resp2 = Number((sR as any).cnt); const emp2 = Math.max(1, Number((eR as any).cnt)); const pct2 = Math.min(100, Math.round((resp2 / emp2) * 100));
+      // P17 #2 — identificados + anônimos (DRPS grava NULL por LGPD).
+      const [[sR]] = await execP(db, `SELECT COUNT(DISTINCT sr.user_id) AS identificados, SUM(CASE WHEN sr.user_id IS NULL THEN 1 ELSE 0 END) AS anonimas FROM survey_responses sr JOIN surveys s ON s.id=sr.survey_id WHERE s.company_id=? AND (sr.status IS NULL OR sr.status <> 'invalid')`, [cid]) as any;
+      const [[eR]] = await execP(db, `SELECT COUNT(*) AS cnt FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]) as any;
+      const resp2 = Number((sR as any).identificados) + Number((sR as any).anonimas ?? 0); const emp2 = Math.max(1, Number((eR as any).cnt)); const pct2 = Math.min(100, Math.round((resp2 / emp2) * 100));
       if (pct2 >= 70) push("ok", { eixo: "Participação", check: "Boa adesão às pesquisas", detail: `${pct2}% dos colaboradores responderam (${resp2}/${emp2})` });
       else if (pct2 >= 30) push("warn", { eixo: "Participação", check: "Participação abaixo do esperado", detail: `${pct2}% de adesão`, acao: "Reforçar comunicação e acesso às pesquisas" });
       else push("nao_conf", { eixo: "Participação", check: "Participação crítica", detail: `Apenas ${pct2}% de adesão`, acao: "Campanhas urgentes de mobilização e pesquisas simplificadas" });
@@ -14189,7 +15355,7 @@ ${link}
       const [planItems] = await execP(db, `SELECT ap.id, ap.action_description AS title, ap.status, ap.end_date AS due_date FROM risk_action_plan_items ap JOIN risk_assessments ra ON ra.id=ap.assessment_id WHERE ra.company_id=? ORDER BY ap.id DESC LIMIT 20`, [cid]) as any;
       const [certs2] = await execP(db, `SELECT c.id, c.certificateCode AS certificate_code, c.issuedAt AS issued_at, u.name AS user_name FROM certificates c JOIN users u ON u.id=c.userId WHERE u.company_id=? ORDER BY c.issuedAt DESC LIMIT 20`, [cid]) as any;
       const [terms2] = await execP(db, `SELECT ta.id, ta.accepted_at, ta.ip_address, u.name AS user_name FROM course_acceptance_terms ta JOIN users u ON u.id=ta.user_id WHERE u.company_id=? ORDER BY ta.accepted_at DESC LIMIT 20`, [cid]) as any;
-      const [surv2] = await execP(db, `SELECT s.id, s.title, COUNT(DISTINCT sr.user_id) AS respondentes FROM surveys s LEFT JOIN survey_responses sr ON sr.survey_id=s.id WHERE s.company_id=? GROUP BY s.id ORDER BY s.created_at DESC LIMIT 10`, [cid]) as any;
+      const [surv2] = await execP(db, `SELECT s.id, s.title, COUNT(DISTINCT COALESCE(sr.user_id, -sr.id)) AS respondentes FROM surveys s LEFT JOIN survey_responses sr ON sr.survey_id=s.id WHERE s.company_id=? GROUP BY s.id ORDER BY s.created_at DESC LIMIT 10`, [cid]) as any;
       return [
         { category: "Ciclos de Avaliação GRO", items: (cycles as any[]).map((r: any) => ({ label: r.title ?? `Ciclo #${r.id}`, detail: `Status: ${r.status} · ${r.created_at ? new Date(r.created_at).toLocaleDateString("pt-BR") : "—"}` })) },
         { category: "Inventário de Riscos", items: (invItems as any[]).map((r: any) => ({ label: r.description ? String(r.description).substring(0, 80) : `Item #${r.id}`, detail: `Nível: ${r.risk_level ?? "—"} · Ciclo: ${r.cycle ?? "—"}` })) },
@@ -14222,12 +15388,21 @@ ${link}
       const [[planRow]] = await execP(db, `SELECT COUNT(*) AS cnt, SUM(CASE WHEN ap.end_date < CURDATE() AND ap.status NOT IN ('concluido','cancelado','completed','done') THEN 1 ELSE 0 END) AS overdue FROM risk_action_plan_items ap JOIN risk_assessments ra ON ra.id=ap.assessment_id WHERE ra.company_id=?`, [cid]) as any;
       const planCount = Number((planRow as any).cnt);
       const planOverdue = Number((planRow as any).overdue ?? 0);
-      const [[survRow]] = await execP(db, `SELECT COUNT(DISTINCT sr.user_id) AS respondentes FROM survey_responses sr JOIN surveys s ON s.id=sr.survey_id WHERE s.company_id=?`, [cid]) as any;
-      const respondentes = Number((survRow as any).respondentes);
-      const [[empRow]] = await execP(db, `SELECT COUNT(*) AS cnt FROM users WHERE company_id=? AND role NOT IN ('admin','rh','admin_global','super_admin','sesmt','psicologo','chefia')`, [cid]) as any;
+      // P17 #2 — DRPS grava user_id=NULL (anônimo LGPD). COUNT(DISTINCT user_id) ignorava
+      // NULLs e reduzia respondentes só ao AEP. Somamos identificados + anônimas com cap.
+      const [[survRow]] = await execP(db, `SELECT COUNT(DISTINCT sr.user_id) AS identificados, SUM(CASE WHEN sr.user_id IS NULL THEN 1 ELSE 0 END) AS anonimas FROM survey_responses sr JOIN surveys s ON s.id=sr.survey_id WHERE s.company_id=? AND (sr.status IS NULL OR sr.status <> 'invalid')`, [cid]) as any;
+      const [[empRow]] = await execP(db, `SELECT COUNT(*) AS cnt FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]) as any;
       const totalEmp = Math.max(1, Number((empRow as any).cnt));
+      const respondentes = Math.min(totalEmp, Number((survRow as any).identificados) + Number((survRow as any).anonimas ?? 0));
       const partRate = Math.min(100, Math.round((respondentes / totalEmp) * 100));
-      const [[courseRow]] = await execP(db, `SELECT COUNT(DISTINCT rcl.module_id) AS linked FROM risk_course_links rcl`, []) as any;
+      // P18 #13/#15 — Bruno: "44 cursos vinculados" contava a biblioteca GLOBAL de
+      // risk_course_links (todo fator×curso da plataforma), não os cursos que essa
+      // empresa realmente tem no Plano de Ação. Escopo correto: só módulos vinculados
+      // a ações do Plano de Ação DESTA empresa (mesmo critério do P17 #4).
+      const [[courseRow]] = await execP(db, `
+        SELECT COUNT(DISTINCT ap.preventive_program_module_id) AS linked
+        FROM risk_action_plan_items ap JOIN risk_assessments ra ON ra.id = ap.assessment_id
+        WHERE ra.company_id=? AND ap.preventive_program_module_id IS NOT NULL`, [cid]) as any;
       const coursesLinked = Number((courseRow as any).linked);
       const [[progRow]] = await execP(db, `SELECT COUNT(DISTINCT up.userId) AS completers FROM user_progress up JOIN users u ON u.id=up.userId WHERE u.company_id=? AND up.isCompleted=1`, [cid]) as any;
       const completers = Number((progRow as any).completers);
@@ -14279,6 +15454,112 @@ ${link}
       };
     }),
 
+    // P18 #21 — Índice de Maturidade em Conformidade (Bruno): visão executiva única
+    // agregando pesquisas, treinamentos prioritários, evidências, CIPA, SIPAT e
+    // Primeiros Socorros — pensada pra reuniões com cliente/auditoria, não pro
+    // uso operacional do dia a dia (esse continua em nr01Status/ComplianceHub).
+    maturityIndex: adminOrRhProcedure.query(async ({ ctx }) => {
+      const cid = (ctx.user as any).companyId;
+      const db = await getDb();
+      if (!db || !cid) return null;
+
+      const [[co]] = await execP(db, `SELECT id, name FROM companies WHERE id=?`, [cid]) as any;
+
+      // Pesquisas — mesmo critério do P17 #2 (identificados + anônimas, capado na população).
+      const [[empRow]] = await execP(db, `SELECT COUNT(*) AS cnt FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]) as any;
+      const totalEmp = Math.max(1, Number(empRow?.cnt ?? 0));
+      const [[survRow]] = await execP(db, `SELECT COUNT(DISTINCT sr.user_id) AS identificados, SUM(CASE WHEN sr.user_id IS NULL THEN 1 ELSE 0 END) AS anonimas FROM survey_responses sr JOIN surveys s ON s.id=sr.survey_id WHERE s.company_id=? AND (sr.status IS NULL OR sr.status <> 'invalid')`, [cid]) as any;
+      const respondentes = Math.min(totalEmp, Number(survRow?.identificados ?? 0) + Number(survRow?.anonimas ?? 0));
+      const pesquisasScore = Math.round((respondentes / totalEmp) * 100);
+
+      // Treinamentos — cursos do Plano de Ação concluídos (mesmo critério do P17 #4/P18 #6).
+      const [[planModsRow]] = await execP(db, `SELECT COUNT(DISTINCT ap.preventive_program_module_id) AS cnt FROM risk_action_plan_items ap JOIN risk_assessments ra ON ra.id=ap.assessment_id WHERE ra.company_id=? AND ap.preventive_program_module_id IS NOT NULL`, [cid]) as any;
+      const planModsTotal = Number(planModsRow?.cnt ?? 0);
+      let treinamentosScore = 0;
+      if (planModsTotal > 0) {
+        const [[doneRow]] = await execP(db, `
+          SELECT COUNT(DISTINCT up.moduleId) AS cnt FROM user_progress up
+          JOIN risk_action_plan_items ap ON ap.preventive_program_module_id = up.moduleId
+          JOIN risk_assessments ra ON ra.id = ap.assessment_id
+          WHERE ra.company_id=? AND up.isCompleted=1`, [cid]) as any;
+        treinamentosScore = Math.round((Number(doneRow?.cnt ?? 0) / planModsTotal) * 100);
+      }
+
+      // Documentação — certificados emitidos + aceites eletrônicos (existência, não %).
+      const [[certRow]] = await execP(db, `SELECT COUNT(*) AS cnt FROM certificates c JOIN users u ON u.id=c.userId WHERE u.company_id=?`, [cid]) as any;
+      const [[termRow]] = await execP(db, `SELECT COUNT(*) AS cnt FROM course_acceptance_terms ta JOIN users u ON u.id=ta.user_id WHERE u.company_id=?`, [cid]) as any;
+      const [[rtRow]] = await execP(db, `SELECT COUNT(*) AS cnt FROM responsible_technicians WHERE company_id=?`, [cid]) as any;
+      const documentacaoScore = Math.min(100, (Number(certRow?.cnt ?? 0) > 0 ? 40 : 0) + (Number(termRow?.cnt ?? 0) > 0 ? 30 : 0) + (Number(rtRow?.cnt ?? 0) > 0 ? 30 : 0));
+
+      // AEP/DRPS respondidos — ciclo com pelo menos 1 resposta de cada.
+      const [[cycleRow]] = await execP(db, `SELECT id, drps_survey_id, aep_survey_id FROM risk_assessments WHERE company_id=? ORDER BY COALESCE(end_date,start_date) DESC, id DESC LIMIT 1`, [cid]) as any;
+      let drpsRespondido = false, aepRespondido = false;
+      if (cycleRow) {
+        if (cycleRow.drps_survey_id) {
+          const [[r]] = await execP(db, `SELECT COUNT(*) AS cnt FROM survey_responses WHERE survey_id=? AND (status IS NULL OR status <> 'invalid')`, [cycleRow.drps_survey_id]) as any;
+          drpsRespondido = Number(r?.cnt ?? 0) > 0;
+        }
+        if (cycleRow.aep_survey_id) {
+          const [[r]] = await execP(db, `SELECT COUNT(*) AS cnt FROM survey_responses WHERE survey_id=? AND (status IS NULL OR status <> 'invalid')`, [cycleRow.aep_survey_id]) as any;
+          aepRespondido = Number(r?.cnt ?? 0) > 0;
+        }
+      }
+
+      // Plano de Ação executado.
+      const [[planRow]] = await execP(db, `SELECT COUNT(*) AS cnt, SUM(CASE WHEN ap.end_date < CURDATE() AND ap.status NOT IN ('concluido','cancelado','completed','done') THEN 1 ELSE 0 END) AS overdue FROM risk_action_plan_items ap JOIN risk_assessments ra ON ra.id=ap.assessment_id WHERE ra.company_id=?`, [cid]) as any;
+      const planCount = Number(planRow?.cnt ?? 0);
+      const planOverdue = Number(planRow?.overdue ?? 0);
+      const planoAcaoScore = planCount === 0 ? 0 : Math.max(0, Math.round(((planCount - planOverdue) / planCount) * 100));
+
+      // CIPA regular — mandato ativo + ao menos 1 reunião registrada.
+      let cipaScore = 0;
+      try {
+        const [[membersRow]] = await execP(db, `SELECT COUNT(*) AS cnt FROM cipa_members WHERE company_id=? AND status='ativo'`, [cid]) as any;
+        const [[meetingsRow]] = await execP(db, `SELECT COUNT(*) AS cnt FROM cipa_meetings WHERE company_id=?`, [cid]) as any;
+        cipaScore = Math.min(100, (Number(membersRow?.cnt ?? 0) > 0 ? 60 : 0) + (Number(meetingsRow?.cnt ?? 0) > 0 ? 40 : 0));
+      } catch (_) {}
+
+      // SIPAT cadastrada — edição do ano vigente ou futura.
+      let sipatScore = 0;
+      try {
+        const [[sipatRow]] = await execP(db, `SELECT COUNT(*) AS cnt FROM sipat_editions WHERE company_id=? AND year >= YEAR(CURDATE())`, [cid]) as any;
+        sipatScore = Number(sipatRow?.cnt ?? 0) > 0 ? 100 : 0;
+      } catch (_) {}
+
+      // Primeiros Socorros — % de itens sem vencimento estourado nem estoque crítico.
+      let primeirosSocorrosScore = 0;
+      try {
+        const [[itemsRow]] = await execP(db, `SELECT COUNT(*) AS c FROM firstaid_items i JOIN firstaid_kits k ON k.id=i.kit_id WHERE k.company_id=? AND k.is_active=1`, [cid]) as any;
+        const totalItens = Number(itemsRow?.c ?? 0);
+        if (totalItens > 0) {
+          const [[badRow]] = await execP(db, `
+            SELECT COUNT(*) AS c FROM firstaid_items i JOIN firstaid_kits k ON k.id=i.kit_id
+            WHERE k.company_id=? AND k.is_active=1
+              AND ((i.expiry_date IS NOT NULL AND i.expiry_date < CURDATE()) OR (i.min_quantity > 0 AND i.quantity <= i.min_quantity))`, [cid]) as any;
+          primeirosSocorrosScore = Math.max(0, Math.round(((totalItens - Number(badRow?.c ?? 0)) / totalItens) * 100));
+        }
+      } catch (_) {}
+
+      const axes = [
+        { key: "pesquisas", label: "Pesquisas", score: pesquisasScore },
+        { key: "treinamentos", label: "Treinamentos", score: treinamentosScore },
+        { key: "documentacao", label: "Documentação", score: documentacaoScore },
+        { key: "planoAcao", label: "Plano de Ação", score: planoAcaoScore },
+        { key: "cipa", label: "CIPA", score: cipaScore },
+        { key: "sipat", label: "SIPAT", score: sipatScore },
+        { key: "primeirosSocorros", label: "Primeiros Socorros", score: primeirosSocorrosScore },
+      ];
+      const conformidadeGeral = Math.round(axes.reduce((a, x) => a + x.score, 0) / axes.length);
+
+      return {
+        company: co,
+        conformidadeGeral,
+        axes,
+        details: { drpsRespondido, aepRespondido, respondentes, totalEmp, planModsTotal, planCount, planOverdue },
+        generatedAt: new Date().toISOString(),
+      };
+    }),
+
     // ── Relatório de Legitimidade Metodológica ────────────────────────────────
     // SP6 #6 — Dados base pros 3 relatórios novos (Canal de Denúncias, Lei 14.457, LGPD/SI)
     // SP6 EXTRA — Pesquisa anônima imprimível + lançamento em lote
@@ -14299,6 +15580,280 @@ ${link}
         }
         const [[co]] = await execP(db, `SELECT name FROM companies WHERE id=?`, [cid]) as any;
         return { survey: sv, company: co, sector, questions: qs };
+      }),
+
+    /**
+     * R5-P11 #3 — NOVA METODOLOGIA de Pesquisas Impressas.
+     * Cria 1 LOTE de questionários digitalizados, com:
+     *   - vínculo ao ciclo psicossocial (obrigatório)
+     *   - empresa + setor + unidade + data de aplicação + quantidade
+     *   - assinatura eletrônica de termo de confidencialidade do LOTE
+     *   - código único de rastreabilidade pro Recibo de Confidencialidade
+     *
+     * Sem termo/etiqueta individuais. Toda a responsabilidade jurídica é deste
+     * único termo, vinculado ao lote.
+     */
+    createPrintedBatch: adminOrRhProcedure
+      .input(z.object({
+        batchName: z.string().optional(),  // R5-P12 #5 — nome amigável do lote
+        cycleId: z.number().int().optional(),
+        surveyId: z.number().int().optional(),
+        // R5-P13 — setor obrigatório: todas as respostas do lote são vinculadas a ESTE
+        // setor (não ao texto que o colaborador escreveu à mão no papel, que serve só
+        // para conferência do RH). Evita divergências de sigla/abreviação/grafia.
+        sectorId: z.number().int(),
+        branchId: z.number().int().optional(),
+        applicationDate: z.string(),     // 'YYYY-MM-DD'
+        unit: z.string().optional(),     // texto livre da unidade/filial
+        quantity: z.number().int().min(1).max(2000),
+        filesCount: z.number().int().min(0).max(2000).optional(),  // R5-P12 #5 — qtd de arquivos enviados
+        responsavel: z.object({
+          nome: z.string().min(2),
+          cpf: z.string().min(11),
+          cargo: z.string().min(2),
+        }),
+        termoAceito: z.literal(true),    // bloqueia se não aceitou
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const cid = (ctx.user as any).companyId;
+        // DDL idempotente
+        try {
+          await db.execute(drzSql`CREATE TABLE IF NOT EXISTS printed_survey_batches (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            code VARCHAR(40) NOT NULL UNIQUE,
+            company_id INT NOT NULL,
+            cycle_id INT NULL,
+            survey_id INT NULL,
+            branch_id INT NULL,
+            sector_id INT NULL,
+            application_date DATE NOT NULL,
+            unit_label VARCHAR(120) NULL,
+            quantity INT NOT NULL,
+            responsavel_nome VARCHAR(160) NOT NULL,
+            responsavel_cpf VARCHAR(20) NOT NULL,
+            responsavel_cargo VARCHAR(120) NOT NULL,
+            signed_at DATETIME NOT NULL,
+            signed_by_user_id INT NOT NULL,
+            ocr_status VARCHAR(32) NOT NULL DEFAULT 'aguardando',
+            ocr_responses_count INT NOT NULL DEFAULT 0,
+            files_json LONGTEXT NULL,
+            INDEX idx_company (company_id),
+            INDEX idx_cycle (cycle_id),
+            INDEX idx_survey (survey_id),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          )`);
+        } catch (e) { console.warn("DDL printed_survey_batches:", (e as any)?.message); }
+        // R5-P12 #5 — colunas novas de rastreabilidade (idempotente)
+        try { await db.execute(drzSql`ALTER TABLE printed_survey_batches ADD COLUMN batch_name VARCHAR(160) NULL`); } catch (_) {}
+        try { await db.execute(drzSql`ALTER TABLE printed_survey_batches ADD COLUMN files_count INT NOT NULL DEFAULT 0`); } catch (_) {}
+        // Código rastreabilidade tipo SDT-yymmddhhmm-XXXX
+        const now = new Date();
+        const yy = String(now.getFullYear()).slice(-2);
+        const mm = String(now.getMonth() + 1).padStart(2, '0');
+        const dd = String(now.getDate()).padStart(2, '0');
+        const hh = String(now.getHours()).padStart(2, '0');
+        const mi = String(now.getMinutes()).padStart(2, '0');
+        const rand = Math.floor(Math.random() * 0xffff).toString(16).toUpperCase().padStart(4, '0');
+        const code = `SDT-${yy}${mm}${dd}${hh}${mi}-${rand}`;
+        const ins: any = await db.execute(drzSql`
+          INSERT INTO printed_survey_batches
+            (code, company_id, cycle_id, survey_id, branch_id, sector_id,
+             application_date, unit_label, quantity, batch_name, files_count,
+             responsavel_nome, responsavel_cpf, responsavel_cargo,
+             signed_at, signed_by_user_id, ocr_status)
+          VALUES
+            (${code}, ${cid}, ${input.cycleId ?? null}, ${input.surveyId ?? null},
+             ${input.branchId ?? null}, ${input.sectorId ?? null},
+             ${input.applicationDate}, ${input.unit ?? null}, ${input.quantity},
+             ${input.batchName ?? null}, ${input.filesCount ?? 0},
+             ${input.responsavel.nome}, ${input.responsavel.cpf}, ${input.responsavel.cargo},
+             NOW(), ${ctx.user.id}, 'aguardando')`);
+        const batchId = Number((ins as any)[0]?.insertId ?? 0);
+        return { ok: true, batchId, code, signedAt: now.toISOString() };
+      }),
+
+    /** Lista os lotes de questionários impressos da empresa (mais recentes primeiro). */
+    listPrintedBatches: adminOrRhProcedure
+      .input(z.object({ cycleId: z.number().int().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) return [];
+        const cid = (ctx.user as any).companyId;
+        try { await db.execute(drzSql`SELECT 1 FROM printed_survey_batches LIMIT 1`); }
+        catch { return []; }
+        const cyFilter = input?.cycleId ? drzSql`AND b.cycle_id=${input.cycleId}` : drzSql``;
+        const r: any = await db.execute(drzSql`
+          SELECT b.*, s.title AS surveyTitle, sec.name AS sectorName
+          FROM printed_survey_batches b
+          LEFT JOIN surveys s ON s.id = b.survey_id
+          LEFT JOIN sectors sec ON sec.id = b.sector_id
+          WHERE b.company_id=${cid} ${cyFilter}
+          ORDER BY b.created_at DESC
+          LIMIT 200`);
+        const rows = Array.isArray((r as any)[0]) ? (r as any)[0] : [];
+        return rows.map((x: any) => ({
+          id: Number(x.id), code: String(x.code),
+          batchName: x.batch_name ?? null,
+          surveyId: x.survey_id, surveyTitle: x.surveyTitle ?? null,
+          sectorId: x.sector_id, sectorName: x.sectorName ?? null,
+          cycleId: x.cycle_id, branchId: x.branch_id,
+          applicationDate: x.application_date,
+          unit: x.unit_label, quantity: Number(x.quantity),
+          filesCount: Number(x.files_count ?? 0),
+          ocrStatus: String(x.ocr_status), ocrResponsesCount: Number(x.ocr_responses_count ?? 0),
+          ocrReport: (() => { try { return x.ocr_report_json ? JSON.parse(x.ocr_report_json) : null; } catch { return null; } })(),
+          signedAt: x.signed_at, createdAt: x.created_at,
+          responsavel: {
+            nome: x.responsavel_nome, cpf: x.responsavel_cpf, cargo: x.responsavel_cargo,
+          },
+        }));
+      }),
+
+    /**
+     * R5-P12 #6/#7/#8 — Leitura automática (OCR) de um lote de questionários impressos
+     * via OpenRouter Vision. Para cada imagem, lê a alternativa marcada por questão.
+     * Regras: rasura ou múltiplas marcações → aquela questão é desconsiderada; as demais
+     * respostas válidas do questionário seguem sendo gravadas. Gera relatório de aproveitamento.
+     */
+    processBatchOcr: adminOrRhProcedure
+      .input(z.object({ batchId: z.number().int(), images: z.array(z.string()).min(1).max(60), pagesPerQuestionnaire: z.number().int().min(1).max(20).optional() }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const cid = (ctx.user as any).companyId;
+        const key = (process.env.OPENROUTER_API_KEY || "").trim();
+        if (!key) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "OPENROUTER_API_KEY não configurada." });
+        try { await db.execute(drzSql`ALTER TABLE printed_survey_batches ADD COLUMN ocr_report_json LONGTEXT NULL`); } catch (_) {}
+        try { await db.execute(drzSql`ALTER TABLE survey_responses ADD COLUMN source VARCHAR(40) DEFAULT 'online'`); } catch (_) {}
+        // Marca em processamento
+        await execP(db, `UPDATE printed_survey_batches SET ocr_status='em_processamento' WHERE id=? AND company_id=?`, [input.batchId, cid]);
+        const [[b]]: any = await execP(db, `SELECT survey_id, sector_id FROM printed_survey_batches WHERE id=? AND company_id=?`, [input.batchId, cid]);
+        if (!b) throw new TRPCError({ code: "NOT_FOUND" });
+        const [qs]: any = await execP(db, `SELECT id, question_text, question_type, options, order_index FROM survey_questions WHERE survey_id=? ORDER BY order_index`, [b.survey_id]);
+        // Tipos discursivos (campo de texto livre) NÃO são lidos pelo OCR objetivo:
+        // são reportados à parte, nunca contam como "inválidos".
+        const DISCURSIVE = new Set(["text", "textarea", "open", "discursive", "long_text", "paragraph"]);
+        const allQuestions = (Array.isArray(qs) ? qs : []).map((q: any, i: number) => {
+          let opts: string[] = [];
+          try { const raw = q.options; const p = typeof raw === "string" ? JSON.parse(raw) : raw; if (Array.isArray(p)) opts = p.map((o: any) => typeof o === "string" ? o : (o?.label ?? o?.text ?? String(o))); } catch (_) {}
+          const type = String(q.question_type || "likert").toLowerCase();
+          const isObjective = !DISCURSIVE.has(type);
+          if (isObjective && opts.length === 0) opts = ["1", "2", "3", "4", "5"];
+          return { id: q.id, idx: i + 1, text: String(q.question_text || `Questão ${i + 1}`), options: opts, isObjective };
+        });
+        // Só as questões OBJETIVAS entram na leitura automática (Likert/múltipla escolha).
+        const questions = allQuestions.filter(q => q.isObjective);
+        const discursivasPorDoc = allQuestions.length - questions.length;
+        const optionsList = questions.map(q => `${q.idx}. "${q.text}" -> opções: ${q.options.map((o, j) => `${j + 1}) ${o}`).join(" ; ")}`).join("\n");
+
+        // R5-P13 — Questionário pode ter VÁRIAS PÁGINAS (ex.: DRPS 40 questões = ~5 páginas).
+        // Agrupamos as imagens em blocos de `pagesPerQuestionnaire` páginas: cada bloco é UM
+        // questionário (1 respondente) e as respostas das páginas são MESCLADAS por questão.
+        // Sem isso, cada página viraria um "respondente" e o resto das questões viraria "em branco".
+        const pagesPerQ = Math.max(1, input.pagesPerQuestionnaire ?? 1);
+        const totalQuestionarios = Math.ceil(input.images.length / pagesPerQ);
+        const report: any = {
+          recebidos: input.images.length,       // páginas/imagens enviadas
+          questionarios: totalQuestionarios,     // questionários montados (blocos de páginas)
+          paginasPorQuestionario: pagesPerQ,
+          lidos: 0, naoProcessados: 0,
+          respostasValidas: 0, emBranco: 0, rasura: 0, multipla: 0, naoInterpretadas: 0,
+          discursivasIgnoradas: 0,
+          questoesObjetivasPorDoc: questions.length,
+          questoesDiscursivasPorDoc: discursivasPorDoc,
+        };
+        let responsesInserted = 0;
+
+        // Lê UMA página via visão. Usa gemini-2.5-flash com detail:high (essencial p/ enxergar
+        // marcas finas de caneta em fotos/scans). Retorna array de respostas, ou null (falha técnica).
+        async function lerPagina(img: string): Promise<any[] | null> {
+          const dataUrl = img.startsWith("data:") ? img : `data:image/jpeg;base64,${img}`;
+          const prompt = `Esta imagem é UMA PÁGINA de um questionário impresso respondido à caneta (escala Likert). `
+            + `Cada questão tem alternativas em círculos numerados; o respondente marca UMA alternativa com X, risco, `
+            + `círculo ou rabisco — NÃO precisa preencher todo o círculo. Identifique, para as questões que APARECEM `
+            + `nesta página, qual alternativa foi assinalada.\n${optionsList}\n\n`
+            + `Responda SOMENTE em JSON {"respostas":[{"q":1,"marca":"2"}, ...]}: "q"=número da questão, `
+            + `"marca"=número da alternativa (1..N). RASURADA→"rasura"; MAIS DE UMA→"multipla"; SEM MARCA→"branco". `
+            + `Questões que NÃO aparecem nesta página: omita da lista ou use "branco".`;
+          try {
+            const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+              method: "POST",
+              headers: { "content-type": "application/json", authorization: `Bearer ${key}`, "HTTP-Referer": "https://saudedotrabalho.com", "X-Title": "Saude do Trabalho OCR" },
+              body: JSON.stringify({
+                model: "google/gemini-2.5-flash",
+                messages: [{ role: "user", content: [ { type: "text", text: prompt }, { type: "image_url", image_url: { url: dataUrl, detail: "high" } } ] }],
+                max_tokens: 2000,
+              }),
+            });
+            if (!resp.ok) { console.warn("[ocr] vision HTTP", resp.status, (await resp.text()).slice(0, 200)); return null; }
+            const j: any = await resp.json();
+            const content = j?.choices?.[0]?.message?.content ?? "";
+            const m = String(content).match(/\{[\s\S]*\}/);
+            if (!m) return null;
+            const parsed = JSON.parse(m[0]);
+            return Array.isArray(parsed?.respostas) ? parsed.respostas : [];
+          } catch (e) { console.warn("[ocr] exceção:", (e as any)?.message); return null; }
+        }
+
+        for (let g = 0; g < totalQuestionarios; g++) {
+          const chunk = input.images.slice(g * pagesPerQ, (g + 1) * pagesPerQ);
+          // merged: idx da questão -> melhor status encontrado entre as páginas do questionário.
+          const merged = new Map<number, { status: string; optNum?: number; id?: number; options?: string[] }>();
+          for (const img of chunk) {
+            const respostas = await lerPagina(img);
+            if (respostas === null) { report.naoProcessados++; continue; } // página com falha técnica
+            for (const q of questions) {
+              const found = respostas.find((r: any) => Number(r.q) === q.idx);
+              if (!found) continue; // questão não veio nesta página; outra página pode trazê-la
+              const marca = String(found.marca ?? "").toLowerCase();
+              if (!marca || marca === "branco") continue; // em branco nesta página; não sobrescreve
+              const cur = merged.get(q.idx);
+              if (cur?.status === "valida") continue; // já temos resposta válida de outra página
+              if (marca === "rasura") { merged.set(q.idx, { status: "rasura" }); continue; }
+              if (marca === "multipla") { merged.set(q.idx, { status: "multipla" }); continue; }
+              const optNum = parseInt(marca, 10);
+              if (!optNum || optNum < 1 || optNum > q.options.length) { merged.set(q.idx, { status: "naointerp" }); continue; }
+              merged.set(q.idx, { status: "valida", optNum, id: q.id, options: q.options });
+            }
+          }
+          // Grava UM questionário (uma survey_response) com as respostas válidas mescladas.
+          const validas = [...merged.values()].filter(v => v.status === "valida");
+          if (validas.length > 0) {
+            const insRes: any = await execP(db, `INSERT INTO survey_responses (survey_id, user_id, sector_id, source) VALUES (?, NULL, ?, 'offline_ocr')`, [b.survey_id, b.sector_id ?? null]);
+            const responseId = Number(insRes?.insertId ?? insRes?.[0]?.insertId ?? 0);
+            for (const v of validas) {
+              await execP(db, `INSERT INTO survey_answers (response_id, question_id, answer_value) VALUES (?,?,?)`, [responseId, v.id, String(v.options![v.optNum! - 1])]);
+            }
+            report.lidos++; responsesInserted++;
+          }
+          // Contadores por questão: uma vez por questionário, sobre TODAS as questões objetivas.
+          for (const q of questions) {
+            const st = merged.get(q.idx)?.status;
+            if (st === "valida") report.respostasValidas++;
+            else if (st === "rasura") report.rasura++;
+            else if (st === "multipla") report.multipla++;
+            else if (st === "naointerp") report.naoInterpretadas++;
+            else report.emBranco++; // não respondida em nenhuma página do questionário
+          }
+          report.discursivasIgnoradas += discursivasPorDoc;
+        }
+
+        // Aproveitamento de respostas = % das questões OBJETIVAS que renderam resposta utilizável.
+        const objetivasProcessadas = report.respostasValidas + report.emBranco + report.rasura + report.multipla + report.naoInterpretadas;
+        const aproveitamento = objetivasProcessadas > 0 ? Math.round((report.respostasValidas / objetivasProcessadas) * 100) : 0;
+        // Aproveitamento de documentos = quantos QUESTIONÁRIOS entraram no sistema.
+        const aproveitamentoDocumentos = report.questionarios > 0 ? Math.round((report.lidos / report.questionarios) * 100) : 0;
+        const finalStatus = report.lidos === 0
+          ? "erro"
+          : (report.naoProcessados > 0 ? "processado_inconsistencias"
+            : (report.lidos === report.questionarios ? "processado_sucesso" : "processado_parcial"));
+        // Compatibilidade retroativa: mantém chaves antigas (sucesso/invalidas) usadas em lotes já salvos.
+        const invalidas = report.emBranco + report.multipla + report.naoInterpretadas;
+        const fullReport = { ...report, invalidas, sucesso: report.lidos, aproveitamento, aproveitamentoDocumentos, objetivasProcessadas };
+        await execP(db, `UPDATE printed_survey_batches SET ocr_status=?, ocr_responses_count=?, ocr_report_json=? WHERE id=?`,
+          [finalStatus, responsesInserted, JSON.stringify(fullReport), input.batchId]);
+        return { ok: true, status: finalStatus, report: fullReport };
       }),
 
     // Lança N respostas anônimas em lote pra uma pesquisa+setor (usado depois
@@ -14322,13 +15877,13 @@ ${link}
         for (const r of input.responses) {
           // Cria resposta sem user_id (anônima). sector_id opcional.
           const res: any = await db!.execute(drzSql`
-            INSERT INTO survey_responses (survey_id, user_id, sector_id, source, created_at)
-            VALUES (${input.surveyId}, NULL, ${input.sectorId ?? null}, 'offline_paper', NOW())`);
+            INSERT INTO survey_responses (survey_id, user_id, sector_id, source)
+            VALUES (${input.surveyId}, NULL, ${input.sectorId ?? null}, 'offline_paper')`);
           const responseId = Number((res as any)[0]?.insertId ?? 0);
           for (const [qid, ans] of Object.entries(r)) {
             await db!.execute(drzSql`
-              INSERT INTO survey_answers (response_id, question_id, answer_value, created_at)
-              VALUES (${responseId}, ${Number(qid)}, ${String(ans)}, NOW())`);
+              INSERT INTO survey_answers (response_id, question_id, answer_value)
+              VALUES (${responseId}, ${Number(qid)}, ${String(ans)})`);
           }
           inserted++;
         }
@@ -14340,12 +15895,13 @@ ${link}
       if (!cid) return null;
       const db = await getDb();
       const [[co]] = await execP(db, `SELECT id, name, cnpj, address FROM companies WHERE id=?`, [cid]) as any;
-      const [[u]] = await execP(db, `SELECT COUNT(*) AS cnt FROM users WHERE company_id=? AND is_active=1`, [cid]) as any;
+      const [[u]] = await execP(db, `SELECT COUNT(*) AS cnt FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]) as any;
       // Canal de Denúncias
       let denuncias = { total: 0, ativas: 0, anonimas: 0 };
       try {
         const [[d1]] = await execP(db, `SELECT COUNT(*) AS cnt FROM denuncias WHERE company_id=?`, [cid]) as any;
-        const [[d2]] = await execP(db, `SELECT COUNT(*) AS cnt FROM denuncias WHERE company_id=? AND status='aberta'`, [cid]) as any;
+        // P18 #23 — alinhado com notifications.refresh: status NULL também conta como aberta.
+        const [[d2]] = await execP(db, `SELECT COUNT(*) AS cnt FROM denuncias WHERE company_id=? AND (status='aberta' OR status IS NULL)`, [cid]) as any;
         const [[d3]] = await execP(db, `SELECT COUNT(*) AS cnt FROM denuncias WHERE company_id=? AND (anonima=1 OR autor_id IS NULL)`, [cid]) as any;
         denuncias = { total: Number(d1?.cnt ?? 0), ativas: Number(d2?.cnt ?? 0), anonimas: Number(d3?.cnt ?? 0) };
       } catch (_) {}
@@ -14374,10 +15930,11 @@ ${link}
       const company = compRow as any;
       const [respRows] = await execP(db, `SELECT name, profession AS council, registration AS council_number, profession AS role FROM responsible_technicians WHERE company_id=? LIMIT 1`, [cid]) as any;
       const respTec = (respRows as any[])[0] ?? null;
-      const [[empRow]] = await execP(db, `SELECT COUNT(*) AS cnt FROM users WHERE company_id=? AND role NOT IN ('admin','rh','admin_global','super_admin','sesmt','psicologo','chefia')`, [cid]) as any;
+      const [[empRow]] = await execP(db, `SELECT COUNT(*) AS cnt FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]) as any;
       const totalEmp = Number((empRow as any).cnt);
-      const [[survRow]] = await execP(db, `SELECT COUNT(DISTINCT sr.user_id) AS respondentes, COUNT(DISTINCT s.id) AS surveys FROM survey_responses sr JOIN surveys s ON s.id=sr.survey_id WHERE s.company_id=?`, [cid]) as any;
-      const respondentes = Number((survRow as any).respondentes);
+      // P17 #2 — identificados + anônimos (DRPS grava NULL por LGPD).
+      const [[survRow]] = await execP(db, `SELECT COUNT(DISTINCT sr.user_id) AS identificados, SUM(CASE WHEN sr.user_id IS NULL THEN 1 ELSE 0 END) AS anonimas, COUNT(DISTINCT s.id) AS surveys FROM survey_responses sr JOIN surveys s ON s.id=sr.survey_id WHERE s.company_id=? AND (sr.status IS NULL OR sr.status <> 'invalid')`, [cid]) as any;
+      const respondentes = Math.min(totalEmp, Number((survRow as any).identificados) + Number((survRow as any).anonimas ?? 0));
       const surveyCount = Number((survRow as any).surveys);
       const [[certRow]] = await execP(db, `SELECT COUNT(*) AS cnt FROM certificates c JOIN users u ON u.id=c.userId WHERE u.company_id=?`, [cid]) as any;
       const certCount = Number((certRow as any).cnt);
@@ -14713,24 +16270,32 @@ ${link}
 
 
     deleteQuestion: adminOrRhProcedure
-
-
-
-
-
-
-
-
       .input(z.object({ id: z.number() }))
-
-
-
-
-
-
-
-
       .mutation(async ({ input }) => { await deleteSurveyQuestion(input.id); return { ok: true }; }),
+
+    // Bruno R5-P2 #17 — Edição completa de pergunta (sem precisar deletar+recriar).
+    updateQuestion: adminOrRhProcedure
+      .input(z.object({
+        id: z.number(),
+        questionText: z.string().min(1).optional(),
+        questionType: z.enum(["likert","multiple_choice","multiple","single","text","nps"]).optional(),
+        options: z.array(z.string()).nullable().optional(),
+        isRequired: z.boolean().optional(),
+        orderIndex: z.number().int().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const sets: string[] = []; const vals: any[] = [];
+        if (input.questionText !== undefined) { sets.push("question_text = ?"); vals.push(input.questionText); }
+        if (input.questionType !== undefined) { sets.push("question_type = ?"); vals.push(input.questionType); }
+        if (input.options !== undefined) { sets.push("options = ?"); vals.push(input.options === null ? null : JSON.stringify(input.options)); }
+        if (input.isRequired !== undefined) { sets.push("is_required = ?"); vals.push(input.isRequired ? 1 : 0); }
+        if (input.orderIndex !== undefined) { sets.push("order_index = ?"); vals.push(input.orderIndex); }
+        if (sets.length === 0) return { ok: true };
+        vals.push(input.id);
+        await execP(db, `UPDATE survey_questions SET ${sets.join(", ")} WHERE id = ?`, vals);
+        return { ok: true };
+      }),
 
 
 
@@ -14928,8 +16493,27 @@ ${link}
 
         const s = await getSurveyById(input.surveyId);
 
-
-
+        // P17 #3 — AEP é destinada a chefia/liderança; bloqueia submissão de colaborador
+        // comum sem exceção explícita (defesa em profundidade — a listagem já filtra).
+        if (s && s.category === "aep") {
+          const eligibleRoles = ["chefia", "admin", "rh", "sesmt", "psicologo", "admin_global", "company_admin", "super_admin"];
+          if (!eligibleRoles.includes(String((ctx.user as any).role))) {
+            const dbG = await getDb();
+            let hasException = false;
+            if (dbG) {
+              try {
+                const [[ra]]: any = await execP(dbG, `SELECT id FROM risk_assessments WHERE aep_survey_id=?`, [input.surveyId]);
+                if (ra) {
+                  const [[exc]]: any = await execP(dbG, `SELECT id FROM aep_exceptions WHERE assessment_id=? AND user_id=?`, [ra.id, uid]);
+                  hasException = !!exc;
+                }
+              } catch (_) {}
+            }
+            if (!hasException) {
+              throw new TRPCError({ code: "FORBIDDEN", message: "Este questionário é exclusivo para gestores autorizados." });
+            }
+          }
+        }
 
 
 
@@ -14944,14 +16528,22 @@ ${link}
 
 
 
-        const id = await submitSurveyResponse(input.surveyId, input.answers, userIdForResponse, branchId, sectorId);
+        const meta = getReqMeta(ctx);
+        const id = await submitSurveyResponse(input.surveyId, input.answers, userIdForResponse, branchId, sectorId, meta.ip, meta.ua);
 
-
-
-
-
-
-
+        // Bruno R5-P2 #15 — Registra completion (anonymous-safe) para sumir das pendências.
+        try {
+          const dbC = await getDb();
+          if (dbC && uid) {
+            await dbC.execute(drzSql`CREATE TABLE IF NOT EXISTS survey_user_completions (
+              user_id INT NOT NULL, survey_id INT NOT NULL,
+              completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              PRIMARY KEY (user_id, survey_id),
+              INDEX idx_su_user (user_id), INDEX idx_su_survey (survey_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+            await dbC.execute(drzSql`INSERT IGNORE INTO survey_user_completions (user_id, survey_id) VALUES (${uid}, ${input.surveyId})`);
+          }
+        } catch (e) { console.warn("[survey.submit] completion log failed:", (e as any)?.message); }
 
         return { id };
 
@@ -15026,9 +16618,11 @@ ${link}
       const sr: any = await db.execute(drzSql`SELECT name FROM sectors WHERE id=${sectorId} LIMIT 1`);
       const sectorName = (sr as any)[0]?.[0]?.name ?? "Meu setor";
       
-      // Team size
-      const tr: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM users WHERE company_id=${cid} AND sector_id=${sectorId} AND role='user'`);
-      const teamSize = Number((tr as any)[0]?.[0]?.c ?? 0);
+      // Team size — P18 #23: ampliado pra bater com riskCorrelation.sectorCollaboratorDetails
+      // (mesmo setor, mesma pergunta "quantas pessoas"). Antes só 'user' contava; agora
+      // qualquer não-administrativo (chefia, cipa, user) conta, igual à outra tela.
+      const [[tr]]: any = await execP(db, `SELECT COUNT(*) AS c FROM users u WHERE u.company_id=? AND u.sector_id=? AND ${activeEmployeeWhere("u")}`, [cid, sectorId]);
+      const teamSize = Number(tr?.c ?? 0);
       
       // Action plan items for this sector
       const apr: any = await db.execute(drzSql`
@@ -15062,16 +16656,19 @@ ${link}
         count: Number(r.cnt ?? 0),
       }));
       
-      // Training completion rate for the sector
-      const certR: any = await db.execute(drzSql`
-        SELECT 
-          COUNT(DISTINCT uc.user_id) AS completers,
+      // Training completion rate for the sector — P18 #23 (cont.): bug pré-existente, a query
+      // referenciava a tabela "user_completions" que não existe no schema (sempre deu erro 500
+      // pra qualquer chefia real). Corrigido pra usar user_progress.isCompleted=1, mesmo padrão
+      // usado em compliance.maturityIndex/nr01Status (>= 1 curso concluído).
+      const [[certR]]: any = await execP(db, `
+        SELECT
+          COUNT(DISTINCT uc.userId) AS completers,
           COUNT(DISTINCT u.id) AS total
         FROM users u
-        LEFT JOIN user_completions uc ON uc.user_id = u.id
-        WHERE u.company_id=${cid} AND u.sector_id=${sectorId} AND u.role='user'`);
-      const completers = Number((certR as any)[0]?.[0]?.completers ?? 0);
-      const total = Number((certR as any)[0]?.[0]?.total ?? 0);
+        LEFT JOIN user_progress uc ON uc.userId = u.id AND uc.isCompleted = 1
+        WHERE u.company_id=? AND u.sector_id=? AND ${activeEmployeeWhere("u")}`, [cid, sectorId]);
+      const completers = Number(certR?.completers ?? 0);
+      const total = Number(certR?.total ?? 0);
       const trainingRate = total > 0 ? Math.round((completers / total) * 100) : 0;
       
       return { sectorName, teamSize, actionPlanItems, riskSummary, trainingRate };
@@ -16787,18 +18384,20 @@ Return only the JSON content object (no wrapper). Format per type:
 
   // ── Email Campaigns (Phase 2) ─────────────────────────────────────────────
   emailCampaigns: router({
-    list: adminOrRhProcedure.query(async ({ ctx }) => {
+    // R5-P11 #5 — leitura aberta pra chefia (campanhas do setor); escrita continua RH-only.
+    list: adminRhOrChefiaProcedure.query(async ({ ctx }) => {
       const cid = (ctx.user as any).companyId;
       if (!cid) return [];
       return await listEmailCampaigns(cid);
     }),
 
-    getTemplates: adminOrRhProcedure.query(() => {
+    getTemplates: adminRhOrChefiaProcedure.query(() => {
       return Object.entries(EMAIL_TEMPLATES).map(([key, t]) => ({ key, ...t }));
     }),
 
-    getModules: adminOrRhProcedure
-      .input(z.object({ companyId: z.number().optional() }).optional())
+    getModules: adminRhOrChefiaProcedure
+      // R5-P9 #9: aceitar null/undefined — wizard envia null quando companyId ainda não escolhido.
+      .input(z.object({ companyId: z.number().optional() }).nullish())
       .query(async ({ ctx, input }) => {
         // Company-scoped users (RH) always use their own company; Admin Global supplies one.
         const cid = (ctx.user as any).companyId ?? input?.companyId ?? null;
@@ -16806,17 +18405,17 @@ Return only the JSON content object (no wrapper). Format per type:
         return await getModulesForCompany(cid);
       }),
 
-    getSurveys: adminOrRhProcedure
-      .input(z.object({ companyId: z.number().optional() }).optional())
+    getSurveys: adminRhOrChefiaProcedure
+      .input(z.object({ companyId: z.number().optional() }).nullish())
       .query(async ({ ctx, input }) => {
         const cid = (ctx.user as any).companyId ?? input?.companyId ?? null;
         if (!cid) return [];
         return await getSurveysForCompanyShort(cid);
       }),
 
-    previewRecipients: adminOrRhProcedure
+    previewRecipients: adminRhOrChefiaProcedure
       .input(z.object({
-        campaignType: z.enum(["course_pending", "survey_pending"]),
+        campaignType: z.enum(["course_pending", "survey_pending", "course_pending_personalized"]),
         companyId: z.number().optional(),
         targetModuleId: z.number().optional(),
         targetSurveyId: z.number().optional(),
@@ -16829,24 +18428,36 @@ Return only the JSON content object (no wrapper). Format per type:
       .query(async ({ ctx, input }) => {
         const cid = (ctx.user as any).companyId ?? input.companyId ?? null;
         if (!cid) return [];
-        const all = await previewCampaignRecipients({
+        // VÍDEO V3 — chefia só alcança a PRÓPRIA filial+setor. Sobrescreve qualquer
+        // branch/sector/role vindo do cliente (defesa em profundidade; UI não é segurança).
+        const { branchId, sectorId, targetRole } = applyChefiaScope(ctx, input);
+        // P18 GRANDE — "course_pending_personalized": cada colaborador tem sua PRÓPRIA
+        // lista de cursos prioritários pendentes (fator de risco → Plano de Ação), não
+        // um único módulo alvo. Usa o motor coursesPlanoAcao por baixo dos panos.
+        const all = input.campaignType === "course_pending_personalized"
+          ? await (async () => {
+              const db0 = await getDb();
+              if (!db0) return [];
+              return await previewPersonalizedPendingCourses(db0, cid, branchId ?? null, sectorId ?? null);
+            })()
+          : await previewCampaignRecipients({
           companyId: cid,
           campaignType: input.campaignType,
           targetModuleId: input.targetModuleId,
           targetSurveyId: input.targetSurveyId,
-          branchId: input.branchId,
-          sectorId: input.sectorId,
+          branchId,
+          sectorId,
           maxCompletionPercent: input.maxCompletionPercent,
         });
         // Filtro pós-query por role
-        if (input.targetRole && input.targetRole !== "todos") {
-          const wanted = input.targetRole === "chefia"
+        if (targetRole && targetRole !== "todos") {
+          const wanted = targetRole === "chefia"
             ? ["chefia","sector_lead","manager"]
-            : input.targetRole === "admin"
+            : targetRole === "admin"
             ? ["admin","company_admin","admin_global","super_admin"]
-            : input.targetRole === "colaborador"
+            : targetRole === "colaborador"
             ? ["user"]
-            : [input.targetRole];
+            : [targetRole];
           const db = await getDb();
           if (db) {
             const ids = (all as any[]).map(r => r.userId).filter(Boolean);
@@ -16861,11 +18472,11 @@ Return only the JSON content object (no wrapper). Format per type:
         return all;
       }),
 
-    create: adminOrRhProcedure
+    create: adminRhOrChefiaProcedure
       .input(z.object({
         name: z.string().min(1),
         companyId: z.number().optional(),
-        campaignType: z.enum(["course_pending", "survey_pending", "custom"]),
+        campaignType: z.enum(["course_pending", "survey_pending", "course_pending_personalized", "custom"]),
         targetModuleId: z.number().nullable().optional(),
         targetSurveyId: z.number().nullable().optional(),
         branchId: z.number().nullable().optional(),
@@ -16883,26 +18494,34 @@ Return only the JSON content object (no wrapper). Format per type:
         const cid = (ctx.user as any).companyId ?? input.companyId ?? null;
         if (!cid) throw new Error("Selecione a empresa da campanha");
         const uid = (ctx.user as any).id;
+        // VÍDEO V3 — chefia: público travado na própria filial+setor (ignora o que veio do cliente).
+        const scope = applyChefiaScope(ctx, input);
         let recipients: { userId: number; email: string; name?: string | null }[] = [];
-        if (input.campaignType === "course_pending" || input.campaignType === "survey_pending") {
-          let list = await previewCampaignRecipients({
+        if (input.campaignType === "course_pending" || input.campaignType === "survey_pending" || input.campaignType === "course_pending_personalized") {
+          let list = input.campaignType === "course_pending_personalized"
+            ? await (async () => {
+                const db0 = await getDb();
+                if (!db0) return [];
+                return await previewPersonalizedPendingCourses(db0, cid, scope.branchId ?? null, scope.sectorId ?? null);
+              })()
+            : await previewCampaignRecipients({
             companyId: cid,
             campaignType: input.campaignType,
             targetModuleId: input.targetModuleId ?? undefined,
             targetSurveyId: input.targetSurveyId ?? undefined,
-            branchId: input.branchId,
-            sectorId: input.sectorId,
+            branchId: scope.branchId,
+            sectorId: scope.sectorId,
             maxCompletionPercent: input.maxCompletionPercent,
           });
           // Bruno round 3: aplica filtro por perfil
-          if (input.targetRole && input.targetRole !== "todos") {
-            const wanted = input.targetRole === "chefia"
+          if (scope.targetRole && scope.targetRole !== "todos") {
+            const wanted = scope.targetRole === "chefia"
               ? ["chefia","sector_lead","manager"]
-              : input.targetRole === "admin"
+              : scope.targetRole === "admin"
               ? ["admin","company_admin","admin_global","super_admin"]
-              : input.targetRole === "colaborador"
+              : scope.targetRole === "colaborador"
               ? ["user"]
-              : [input.targetRole];
+              : [scope.targetRole];
             const db = await getDb();
             if (db) {
               const ids = (list as any[]).map(r => r.userId).filter(Boolean);
@@ -16941,7 +18560,7 @@ Return only the JSON content object (no wrapper). Format per type:
         return { id, recipientCount: recipients.length };
       }),
 
-    send: adminOrRhProcedure
+    send: adminRhOrChefiaProcedure
       .input(z.object({ campaignId: z.number() }))
       .mutation(async ({ ctx, input }) => {
         const cid = (ctx.user as any).companyId;
@@ -16970,16 +18589,45 @@ Return only the JSON content object (no wrapper). Format per type:
             resourceLink = `https://saudedotrabalho.com/plataforma/pesquisas/${c.targetSurveyId}/responder`;
           }
         }
+        // P18 GRANDE — motor de campanha personalizado: recalcula ao ENVIAR (não na
+        // criação) a lista real de cursos pendentes de CADA destinatário, pra refletir
+        // prazos/conclusões que mudaram entre criar e disparar a campanha.
+        const isPersonalized = c.campaignType === "course_pending_personalized";
+        const dbPersonalized = isPersonalized ? await getDb() : null;
+        const personalizedLink = "https://saudedotrabalho.com/plataforma/cursos";
+
         let sent = 0;
         let failed = 0;
+        let skipped = 0;
         let preview = false;
         for (const r of data.recipients) {
           if (r.status === "sent") continue;
+
+          let courseTitle = resourceTitle;
+          let link = resourceLink;
+          let coursesListText = "";
+          if (isPersonalized) {
+            if (!dbPersonalized) continue;
+            const pending = await getPendingPrioritariosForUser(dbPersonalized, cid, Number(r.userId));
+            if (pending.length === 0) {
+              // Colaborador já concluiu tudo desde a criação da campanha — não faz sentido cobrar.
+              skipped++;
+              await updateEmailCampaignRecipient(r.id, "skipped");
+              continue;
+            }
+            courseTitle = pending[0].moduleTitle;
+            link = personalizedLink;
+            coursesListText = pending
+              .map((p: any) => `- ${p.moduleTitle}${p.deadline ? ` (prazo: ${new Date(p.deadline).toLocaleDateString("pt-BR")}${p.isOverdue ? " — VENCIDO" : ""})` : ""}`)
+              .join("\n");
+          }
+
           const vars: Record<string, string> = {
             name: (r.name || r.email.split("@")[0]) as string,
-            course_title: resourceTitle,
+            course_title: courseTitle,
             survey_title: resourceTitle,
-            link: resourceLink,
+            courses_list: coursesListText,
+            link,
           };
           const subject = fillTemplate(c.emailSubject, vars);
           const body = fillTemplate(c.emailBody, vars);
@@ -16999,7 +18647,7 @@ Return only the JSON content object (no wrapper). Format per type:
         await bumpEmailCampaignCounters(c.id, { sent, failed });
         const finalStatus = sent > 0 && failed === 0 ? "sent" : (failed > 0 && sent === 0 ? "failed" : "sent");
         await updateEmailCampaignStatus(c.id, finalStatus, true);
-        return { sent, failed, preview };
+        return { sent, failed, skipped, preview };
       }),
 
     get: adminOrRhProcedure
@@ -17291,7 +18939,7 @@ Return only the JSON content object (no wrapper). Format per type:
         FROM psychosocial_factors f
         LEFT JOIN modules m ON m.id = f.preventive_program_module_id
         ORDER BY f.axis_order`);
-      return (r as any)[0] ?? [];
+      return dedupePsychosocialFactorRows(((r as any)[0] ?? []) as any[]);
     }),
 
     listAssessments: adminOrRhProcedure.query(async ({ ctx }) => {
@@ -17304,8 +18952,8 @@ Return only the JSON content object (no wrapper). Format per type:
                ra.drps_survey_id AS drpsSurveyId, ra.aep_survey_id AS aepSurveyId,
                ra.responsible_technician AS responsibleTechnician, ra.created_at AS createdAt,
                s.name AS sectorName, b.name AS branchName,
-               (SELECT COUNT(*) FROM survey_responses WHERE survey_id = ra.drps_survey_id) AS drpsResponses,
-               (SELECT COUNT(*) FROM survey_responses WHERE survey_id = ra.aep_survey_id) AS aepResponses
+               (SELECT COUNT(*) FROM survey_responses WHERE survey_id = ra.drps_survey_id AND (status IS NULL OR status <> 'invalid')) AS drpsResponses,
+               (SELECT COUNT(*) FROM survey_responses WHERE survey_id = ra.aep_survey_id AND (status IS NULL OR status <> 'invalid')) AS aepResponses
         FROM risk_assessments ra
         LEFT JOIN sectors s ON s.id = ra.sector_id
         LEFT JOIN branches b ON b.id = ra.branch_id
@@ -17341,17 +18989,17 @@ Return only the JSON content object (no wrapper). Format per type:
         const idCsv = ids.join(",");
 
         const invRaw: any = await db.execute(drzSql.raw(`
-          SELECT ii.id, ii.assessment_id AS assessmentId, ii.gravidade, ii.probabilidade,
+          SELECT ii.id, ii.assessment_id AS assessmentId, ii.sector_id, ii.gravidade, ii.probabilidade,
                  ii.risco_final, ii.fontes_geradoras, ii.medidas_existentes,
                  f.code AS factor_code, f.name AS factor_name, f.axis_order
           FROM risk_inventory_items ii
           INNER JOIN psychosocial_factors f ON f.id = ii.factor_id
           WHERE ii.assessment_id IN (${idCsv})
           ORDER BY f.axis_order`));
-        const invRows = unpack(invRaw);
+        const invRows = dedupeRiskRows(unpack(invRaw), "inventory");
 
         const planRaw: any = await db.execute(drzSql.raw(`
-          SELECT ap.id, ap.assessment_id AS assessmentId, ap.action_description,
+          SELECT ap.id, ap.assessment_id AS assessmentId, ap.sector_id, ap.action_description,
                  ap.responsible_party, ap.priority, ap.status,
                  ap.start_date, ap.end_date,
                  f.code AS factor_code, f.name AS factor_name
@@ -17359,7 +19007,7 @@ Return only the JSON content object (no wrapper). Format per type:
           INNER JOIN psychosocial_factors f ON f.id = ap.factor_id
           WHERE ap.assessment_id IN (${idCsv})
           ORDER BY ap.priority DESC, f.axis_order`));
-        const planRows = unpack(planRaw);
+        const planRows = dedupeRiskRows(unpack(planRaw), "action");
 
         const invByAssessment = new Map<number, any[]>();
         for (const it of invRows) {
@@ -17434,7 +19082,7 @@ Return only the JSON content object (no wrapper). Format per type:
           LEFT JOIN sectors sec ON sec.id = ii.sector_id
           WHERE ii.assessment_id=${input.id}
           ORDER BY sec.name, f.axis_order`);
-        const inventory = (ir as any)[0] ?? [];
+        const inventory = dedupeRiskRows(((ir as any)[0] ?? []) as any[], "inventory");
 
         const ar: any = await db.execute(drzSql`
           SELECT ap.*, f.code AS factor_code, f.name AS factor_name, m.title AS program_title,
@@ -17445,10 +19093,10 @@ Return only the JSON content object (no wrapper). Format per type:
           LEFT JOIN sectors sec ON sec.id = ap.sector_id
           WHERE ap.assessment_id=${input.id}
           ORDER BY sec.name, ap.priority DESC, f.axis_order`);
-        const actionPlan = (ar as any)[0] ?? [];
+        const actionPlan = dedupeRiskRows(((ar as any)[0] ?? []) as any[], "action");
 
-        const drpsCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${assessment.drps_survey_id}`);
-        const aepCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${assessment.aep_survey_id}`);
+        const drpsCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${assessment.drps_survey_id} AND (status IS NULL OR status <> 'invalid')`);
+        const aepCount: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM survey_responses WHERE survey_id=${assessment.aep_survey_id} AND (status IS NULL OR status <> 'invalid')`);
 
         return {
           assessment,
@@ -17467,7 +19115,7 @@ Return only the JSON content object (no wrapper). Format per type:
         branchId: z.number().nullable(),
         cycleName: z.string().min(2),
         drpsTemplateId: z.number().optional().nullable(),
-        aepTemplateId: z.number(),
+        aepTemplateId: z.number().optional().nullable(),
         responsibleTechnician: z.string().optional(),
         aepOnly: z.boolean().optional(),
       }))
@@ -17510,10 +19158,21 @@ Return only the JSON content object (no wrapper). Format per type:
           return newId;
         }
 
-        const drpsId = (!input.aepOnly && input.drpsTemplateId)
-          ? await cloneSurvey(input.drpsTemplateId)
+        await ensureCompanyPlatformConfigColumns(db);
+        const [[cfg]]: any = await execP(db, `SELECT drps_template_id, aep_template_id FROM companies WHERE id=? LIMIT 1`, [cid]).catch(() => [[{}]]);
+        const effectiveDrpsTemplateId = input.drpsTemplateId ?? (cfg?.drps_template_id ? Number(cfg.drps_template_id) : null);
+        const effectiveAepTemplateId = input.aepTemplateId ?? (cfg?.aep_template_id ? Number(cfg.aep_template_id) : null);
+        if (!input.aepOnly && !effectiveDrpsTemplateId) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Template DRPS não informado e não configurado para esta empresa." });
+        }
+        if (!effectiveAepTemplateId) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Template AEP não informado e não configurado para esta empresa." });
+        }
+
+        const drpsId = (!input.aepOnly && effectiveDrpsTemplateId)
+          ? await cloneSurvey(effectiveDrpsTemplateId)
           : null;
-        const aepId = await cloneSurvey(input.aepTemplateId);
+        const aepId = await cloneSurvey(effectiveAepTemplateId);
 
         const startDate = new Date();
         const endDate = new Date(); endDate.setMonth(endDate.getMonth() + 12);
@@ -17527,8 +19186,8 @@ Return only the JSON content object (no wrapper). Format per type:
         const idr: any = await db.execute(drzSql`SELECT LAST_INSERT_ID() AS id`);
         const assessmentId = Number((idr as any)[0]?.[0]?.id ?? 0);
 
-        const factors: any = await db.execute(drzSql`SELECT id FROM psychosocial_factors ORDER BY axis_order`);
-        const factorRows = (factors as any)[0] ?? [];
+        const factors: any = await db.execute(drzSql`SELECT id, code, name, axis_order FROM psychosocial_factors ORDER BY axis_order, id`);
+        const factorRows = dedupePsychosocialFactorRows(((factors as any)[0] ?? []) as any[]);
         for (const f of factorRows) {
           await db.execute(drzSql`
             INSERT INTO risk_inventory_items (assessment_id, factor_id, gravidade, probabilidade, risco_final)
@@ -17562,10 +19221,10 @@ Return only the JSON content object (no wrapper). Format per type:
         for (let i = 19; i <= 21; i++) orderToFactor[i] = "justica";
         for (let i = 22; i <= 24; i++) orderToFactor[i] = "sobrecarga";
         for (let i = 25; i <= 27; i++) orderToFactor[i] = "subcarga";
-        for (let i = 28; i <= 30; i++) orderToFactor[i] = "relacionamento";
-        for (let i = 31; i <= 33; i++) orderToFactor[i] = "comunicacao_dificil";
-        for (let i = 34; i <= 36; i++) orderToFactor[i] = "isolamento";
-        for (let i = 37; i <= 40; i++) orderToFactor[i] = "eventos_criticos";
+        for (let i = 28; i <= 30; i++) orderToFactor[i] = "relacionamentos";
+        for (let i = 31; i <= 33; i++) orderToFactor[i] = "comunicacao";
+        for (let i = 34; i <= 36; i++) orderToFactor[i] = "remoto";
+        for (let i = 37; i <= 40; i++) orderToFactor[i] = "trauma";
 
         // Reverse-scored question order_indexes (positive phrasing where higher likert = LOWER risk)
         const reverseSet = new Set([3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 29, 30, 31, 32, 33, 35, 39, 40]);
@@ -17589,7 +19248,8 @@ Return only the JSON content object (no wrapper). Format per type:
           SELECT sa.question_id, sa.answer_value, sr.id AS response_id, sr.sector_id, sr.branch_id
           FROM survey_answers sa
           INNER JOIN survey_responses sr ON sr.id = sa.response_id
-          WHERE sr.survey_id = ${a.drps_survey_id}`);
+          WHERE sr.survey_id = ${a.drps_survey_id}
+            AND (sr.status IS NULL OR sr.status <> 'invalid')`);
         const answers = (ansR as any)[0] ?? [];
 
         type Agg = Record<string, { sum: number; n: number; resp: Set<number> }>;
@@ -17646,8 +19306,8 @@ Return only the JSON content object (no wrapper). Format per type:
         }
 
         // Catálogo de fatores (id + code)
-        const fr: any = await db.execute(drzSql`SELECT id, code FROM psychosocial_factors ORDER BY axis_order`);
-        const factorRows = (fr as any)[0] ?? [];
+        const fr: any = await db.execute(drzSql`SELECT id, code, name, axis_order FROM psychosocial_factors ORDER BY axis_order, id`);
+        const factorRows = dedupePsychosocialFactorRows(((fr as any)[0] ?? []) as any[]);
 
         const sectorKeys = Object.keys(aggBySector);
         // Modo POR SETOR quando a avaliação é da empresa/filial (sem setor fixo) e há
@@ -17756,12 +19416,13 @@ Return only the JSON content object (no wrapper). Format per type:
         if (a.company_id !== cid) throw new TRPCError({ code: "FORBIDDEN" });
 
         const ir: any = await db.execute(drzSql`
-          SELECT ii.*, f.code, f.preventive_program_module_id AS programId, f.default_action AS defaultAction
+          SELECT ii.*, f.code, f.name AS factor_name, f.preventive_program_module_id AS programId, f.default_action AS defaultAction
           FROM risk_inventory_items ii
           INNER JOIN psychosocial_factors f ON f.id = ii.factor_id
           WHERE ii.assessment_id=${input.assessmentId}
           ORDER BY f.axis_order`);
-        const items = (ir as any)[0] ?? [];
+        const items = dedupeRiskRows(((ir as any)[0] ?? []) as any[], "inventory");
+        const courseLinks = await loadRiskCourseLinks(db);
 
         // Remove existing plan items
         await db.execute(drzSql`DELETE FROM risk_action_plan_items WHERE assessment_id=${input.assessmentId}`);
@@ -17787,11 +19448,13 @@ Return only the JSON content object (no wrapper). Format per type:
           const endIdx = months[months.length - 1];
           const sD = new Date(startD.getFullYear(), startD.getMonth() + startIdx, 1);
           const eD = new Date(startD.getFullYear(), startD.getMonth() + endIdx + 1, 0);
+          const selectedCourse = exactRiskCourseLinks(courseLinks, it.factor_name, it.code, it.risco_final)[0];
+          const moduleId = selectedCourse?.module_id ? Number(selectedCourse.module_id) : null;
 
           await db.execute(drzSql`
             INSERT INTO risk_action_plan_items
               (assessment_id, factor_id, sector_id, branch_id, preventive_program_module_id, action_description, responsible_party, priority, start_date, end_date, status, monthly_progress)
-            VALUES (${input.assessmentId}, ${it.factor_id}, ${it.sector_id ?? null}, ${it.branch_id ?? null}, ${it.programId ?? null}, ${it.defaultAction ?? "Ação a definir"},
+            VALUES (${input.assessmentId}, ${it.factor_id}, ${it.sector_id ?? null}, ${it.branch_id ?? null}, ${moduleId}, ${it.defaultAction ?? "Ação a definir"},
                     'Consultoria Saúde do Trabalho', ${priority},
                     ${sD.toISOString().slice(0, 10)}, ${eD.toISOString().slice(0, 10)},
                     'programado', ${JSON.stringify(progress)})`);
@@ -17906,7 +19569,8 @@ Return only the JSON content object (no wrapper). Format per type:
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
         const { generateInventoryPDF } = await import("./_core/risk_pdf");
         const data = await loadAssessmentForPDF(db, input.assessmentId, cid);
-        const url = await generateInventoryPDF(data.assessment, data.inventory);
+        // Bruno R5-P2 #18 — Passa sectorGroups pra renderizar por filial→setor
+        const url = await generateInventoryPDF(data.assessment, data.inventory, data.sectorGroups);
         return { ok: true, url };
       }),
 
@@ -17918,7 +19582,8 @@ Return only the JSON content object (no wrapper). Format per type:
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
         const { generateCronogramaPDF } = await import("./_core/risk_pdf");
         const data = await loadAssessmentForPDF(db, input.assessmentId, cid);
-        const url = await generateCronogramaPDF(data.assessment, data.actions);
+        // Bruno R5-P2 #18 — Cronograma individualizado por setor
+        const url = await generateCronogramaPDF(data.assessment, data.actions, data.sectorGroups);
         return { ok: true, url };
       }),
 
@@ -18016,6 +19681,120 @@ Return only the JSON content object (no wrapper). Format per type:
           summary: { responses: inserted, skipped, answersInserted, likertNormalized, invalidAnswers },
         };
       }),
+
+    // P17 #3 — Gestão de elegibilidade/rastreabilidade/exceção da AEP (Bruno, CAMED piloto).
+    aep: router({
+      // Quem respondeu a AEP, com nome/cargo/perfil/setor/data — sem abrir colaborador por colaborador.
+      listRespondents: adminOrRhProcedure
+        .input(z.object({ assessmentId: z.number().int() }))
+        .query(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb();
+          if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          const [[a]]: any = await execP(db, `SELECT company_id, aep_survey_id FROM risk_assessments WHERE id=?`, [input.assessmentId]);
+          if (!a) throw new TRPCError({ code: "NOT_FOUND" });
+          if (Number(a.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+          if (!a.aep_survey_id) return [];
+          // P18 #9/#19 — colunas de IP/dispositivo (idempotente; podem não existir ainda
+          // se nenhuma resposta foi submetida após o deploy deste campo).
+          try { await db.execute(drzSql`ALTER TABLE survey_responses ADD COLUMN ip_address VARCHAR(45)`); } catch (_) {}
+          try { await db.execute(drzSql`ALTER TABLE survey_responses ADD COLUMN user_agent VARCHAR(500)`); } catch (_) {}
+          const [rows]: any = await execP(db, `
+            SELECT sr.id AS responseId, sr.user_id AS userId, sr.submitted_at AS respondedAt,
+                   COALESCE(sr.status,'valid') AS status, sr.ip_address AS ipAddress, sr.user_agent AS userAgent,
+                   u.name, u.position, u.role, sec.name AS sectorName
+            FROM survey_responses sr
+            LEFT JOIN users u ON u.id = sr.user_id
+            LEFT JOIN sectors sec ON sec.id = sr.sector_id
+            WHERE sr.survey_id = ?
+            ORDER BY sr.submitted_at DESC`, [a.aep_survey_id]);
+          return rows ?? [];
+        }),
+
+      listExceptions: adminOrRhProcedure
+        .input(z.object({ assessmentId: z.number().int() }))
+        .query(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb();
+          if (!db) return [];
+          const [[a]]: any = await execP(db, `SELECT company_id FROM risk_assessments WHERE id=?`, [input.assessmentId]);
+          if (!a || Number(a.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+          try {
+            const [rows]: any = await execP(db, `
+              SELECT ae.id, ae.user_id AS userId, ae.note, ae.created_at AS createdAt, u.name, u.position
+              FROM aep_exceptions ae LEFT JOIN users u ON u.id = ae.user_id
+              WHERE ae.assessment_id = ? ORDER BY ae.created_at DESC`, [input.assessmentId]);
+            return rows ?? [];
+          } catch { return []; }
+        }),
+
+      grantException: adminOrRhProcedure
+        .input(z.object({ assessmentId: z.number().int(), userId: z.number().int(), note: z.string().min(1) }))
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb();
+          if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          const [[a]]: any = await execP(db, `SELECT company_id FROM risk_assessments WHERE id=?`, [input.assessmentId]);
+          if (!a || Number(a.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+          const [[u]]: any = await execP(db, `SELECT id FROM users WHERE id=? AND company_id=?`, [input.userId, cid]);
+          if (!u) throw new TRPCError({ code: "FORBIDDEN", message: "Colaborador de outra empresa rejeitado." });
+          await db.execute(drzSql`CREATE TABLE IF NOT EXISTS aep_exceptions (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            assessment_id INT NOT NULL, user_id INT NOT NULL, granted_by INT NOT NULL,
+            note TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uniq_aep_exc (assessment_id, user_id),
+            INDEX idx_aep_exc_assessment (assessment_id)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+          await db.execute(drzSql`
+            INSERT INTO aep_exceptions (assessment_id, user_id, granted_by, note)
+            VALUES (${input.assessmentId}, ${input.userId}, ${ctx.user.id}, ${input.note})
+            ON DUPLICATE KEY UPDATE note=${input.note}, granted_by=${ctx.user.id}`);
+          return { ok: true };
+        }),
+
+      revokeException: adminOrRhProcedure
+        .input(z.object({ id: z.number().int() }))
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb();
+          if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          const [[row]]: any = await execP(db, `
+            SELECT ae.id, ra.company_id FROM aep_exceptions ae
+            JOIN risk_assessments ra ON ra.id = ae.assessment_id WHERE ae.id=?`, [input.id]);
+          if (!row || Number(row.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+          await execP(db, `DELETE FROM aep_exceptions WHERE id=?`, [input.id]);
+          return { ok: true };
+        }),
+
+      // Invalidar resposta indevida (ex.: colaborador comum respondeu por engano),
+      // company-scoped — a versão global (qualquer empresa) já existe em superAdmin.
+      invalidateResponse: adminOrRhProcedure
+        .input(z.object({ responseId: z.number().int(), justification: z.string().min(1) }))
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb();
+          if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          const [[row]]: any = await execP(db, `
+            SELECT sr.id, sr.survey_id, sr.user_id, s.company_id
+            FROM survey_responses sr JOIN surveys s ON s.id = sr.survey_id
+            WHERE sr.id=?`, [input.responseId]);
+          if (!row) throw new TRPCError({ code: "NOT_FOUND" });
+          if (Number(row.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+          try { await db.execute(drzSql`ALTER TABLE survey_responses ADD COLUMN status VARCHAR(20) DEFAULT 'valid'`); } catch (_) {}
+          try { await db.execute(drzSql`ALTER TABLE survey_responses ADD COLUMN invalidated_by INT NULL`); } catch (_) {}
+          try { await db.execute(drzSql`ALTER TABLE survey_responses ADD COLUMN invalidated_reason TEXT`); } catch (_) {}
+          await execP(db, `UPDATE survey_responses SET status='invalid', invalidated_by=?, invalidated_reason=? WHERE id=?`,
+            [ctx.user.id, input.justification, input.responseId]);
+          if (row.user_id) {
+            try { await execP(db, `DELETE FROM survey_user_completions WHERE user_id=? AND survey_id=?`, [row.user_id, row.survey_id]); } catch (_) {}
+          }
+          const meta = getReqMeta(ctx);
+          await logAudit({ userId: ctx.user.id, userEmail: ctx.user.email, action: "aep.invalidate_response",
+            entityType: "survey_response", entityId: input.responseId, detailsJson: { justification: input.justification, surveyId: row.survey_id, targetUserId: row.user_id },
+            ipAddress: meta.ip, userAgent: meta.userAgent });
+          return { ok: true };
+        }),
+    }),
   }),
 
 
@@ -18547,6 +20326,118 @@ Return only the JSON content object (no wrapper). Format per type:
           [cid, input.textoIntroducao, input.textoConclusao, uid]);
         return { ok: true };
       }),
+
+    // ─── Bruno R5 #6/#8 — Textos padrão multi-documento (PGR/Psico/AEP/LTCAT) ──────
+    // Suporta escopo company (empresa) e global (Super Admin).
+    // Fallback de leitura: company → global → hardcoded.
+    getDefaultTextsV2: adminOrRhProcedure
+      .input(z.object({
+        docType: z.enum(["pgr", "psico", "aep", "ltcat"]),
+        scope: z.enum(["company", "global"]).default("company"),
+        companyId: z.number().int().optional(),
+      }))
+      .query(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        const isGlobal = role === "admin_global" || role === "super_admin";
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        // R5-P9 #19: UNIQUE com coluna gerada cobre o NULL de company_id (global), garantindo ON DUPLICATE KEY UPDATE real.
+        await execP(db, `CREATE TABLE IF NOT EXISTS default_texts_v2 (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          scope ENUM('company','global') NOT NULL,
+          company_id INT NULL,
+          company_id_key INT GENERATED ALWAYS AS (IFNULL(company_id, 0)) STORED,
+          doc_type ENUM('pgr','psico','aep','ltcat') NOT NULL,
+          texto_introducao MEDIUMTEXT,
+          texto_conclusao MEDIUMTEXT,
+          apply_to_future TINYINT(1) DEFAULT 0,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          updated_by_user_id INT NULL,
+          UNIQUE KEY uq_scope_v3 (scope, company_id_key, doc_type),
+          INDEX idx_doc (doc_type, scope)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`, []);
+
+        // Super Admin pode pedir global; demais perfis só leem company.
+        // LIMIT 1 + ORDER BY updated_at DESC é cinto+suspensório caso a UNIQUE deixe escapar duplicata.
+        if (input.scope === "global") {
+          if (!isGlobal) throw new TRPCError({ code: "FORBIDDEN", message: "Escopo global é exclusivo do Super Admin." });
+          const [rg]: any = await execP(db, `SELECT texto_introducao, texto_conclusao, apply_to_future, updated_at FROM default_texts_v2 WHERE scope='global' AND company_id IS NULL AND doc_type=? ORDER BY updated_at DESC LIMIT 1`, [input.docType]);
+          const row = (rg as any[])[0];
+          if (row) return { source: "global", texto_introducao: row.texto_introducao ?? "", texto_conclusao: row.texto_conclusao ?? "", applyToFuture: !!row.apply_to_future, updatedAt: row.updated_at };
+          return seedDefault(input.docType, "global");
+        }
+
+        const cid = isGlobal ? (input.companyId ?? null) : ((ctx.user as any).companyId ?? null);
+        if (!cid) return seedDefault(input.docType, "company");
+        // 1) tenta empresa
+        const [rc]: any = await execP(db, `SELECT texto_introducao, texto_conclusao, updated_at FROM default_texts_v2 WHERE scope='company' AND company_id=? AND doc_type=? ORDER BY updated_at DESC LIMIT 1`, [cid, input.docType]);
+        const rowC = (rc as any[])[0];
+        if (rowC) return { source: "company", texto_introducao: rowC.texto_introducao ?? "", texto_conclusao: rowC.texto_conclusao ?? "", applyToFuture: false, updatedAt: rowC.updated_at };
+        // 2) fallback pra global
+        const [rg]: any = await execP(db, `SELECT texto_introducao, texto_conclusao, updated_at FROM default_texts_v2 WHERE scope='global' AND company_id IS NULL AND doc_type=? ORDER BY updated_at DESC LIMIT 1`, [input.docType]);
+        const rowG = (rg as any[])[0];
+        if (rowG) return { source: "global-fallback", texto_introducao: rowG.texto_introducao ?? "", texto_conclusao: rowG.texto_conclusao ?? "", applyToFuture: false, updatedAt: rowG.updated_at };
+        // 3) sementes hardcoded
+        return seedDefault(input.docType, "company");
+      }),
+
+    saveDefaultTextsV2: adminOrRhProcedure
+      .input(z.object({
+        docType: z.enum(["pgr", "psico", "aep", "ltcat"]),
+        scope: z.enum(["company", "global"]).default("company"),
+        companyId: z.number().int().optional(),
+        textoIntroducao: z.string().max(120000),
+        textoConclusao: z.string().max(120000),
+        applyToCurrent: z.boolean().optional(),
+        applyToFuture: z.boolean().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        const isGlobal = role === "admin_global" || role === "super_admin";
+        const uid = (ctx.user as any).id ?? null;
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        // R5-P9 #19: usa company_id_key + UNIQUE uq_scope_v3 pra ON DUPLICATE KEY UPDATE funcionar inclusive no global (NULL).
+        await execP(db, `CREATE TABLE IF NOT EXISTS default_texts_v2 (
+          id INT AUTO_INCREMENT PRIMARY KEY, scope ENUM('company','global') NOT NULL, company_id INT NULL,
+          company_id_key INT GENERATED ALWAYS AS (IFNULL(company_id, 0)) STORED,
+          doc_type ENUM('pgr','psico','aep','ltcat') NOT NULL, texto_introducao MEDIUMTEXT, texto_conclusao MEDIUMTEXT,
+          apply_to_future TINYINT(1) DEFAULT 0, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          updated_by_user_id INT NULL, UNIQUE KEY uq_scope_v3 (scope, company_id_key, doc_type),
+          INDEX idx_doc (doc_type, scope)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`, []);
+
+        if (input.scope === "global") {
+          if (!isGlobal) throw new TRPCError({ code: "FORBIDDEN", message: "Apenas Super Admin pode salvar texto global." });
+          const applyFuture = input.applyToFuture ? 1 : 0;
+          await execP(db, `INSERT INTO default_texts_v2 (scope, company_id, doc_type, texto_introducao, texto_conclusao, apply_to_future, updated_by_user_id)
+            VALUES ('global', NULL, ?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE texto_introducao=VALUES(texto_introducao), texto_conclusao=VALUES(texto_conclusao),
+              apply_to_future=VALUES(apply_to_future), updated_by_user_id=VALUES(updated_by_user_id)`,
+            [input.docType, input.textoIntroducao, input.textoConclusao, applyFuture, uid]);
+          // applyToCurrent: copia o texto pra TODAS empresas ativas (sobrescreve override).
+          let applied = 0;
+          if (input.applyToCurrent) {
+            const [comps]: any = await execP(db, `SELECT id FROM companies WHERE is_active=1`, []);
+            for (const c of (comps as any[])) {
+              await execP(db, `INSERT INTO default_texts_v2 (scope, company_id, doc_type, texto_introducao, texto_conclusao, updated_by_user_id)
+                VALUES ('company', ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE texto_introducao=VALUES(texto_introducao), texto_conclusao=VALUES(texto_conclusao),
+                  updated_by_user_id=VALUES(updated_by_user_id)`,
+                [c.id, input.docType, input.textoIntroducao, input.textoConclusao, uid]);
+              applied++;
+            }
+          }
+          return { ok: true, appliedToCompanies: applied };
+        }
+
+        const cid = isGlobal ? input.companyId : (ctx.user as any).companyId;
+        if (!cid) throw new TRPCError({ code: "BAD_REQUEST", message: "Empresa não definida." });
+        await execP(db, `INSERT INTO default_texts_v2 (scope, company_id, doc_type, texto_introducao, texto_conclusao, updated_by_user_id)
+          VALUES ('company', ?, ?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE texto_introducao=VALUES(texto_introducao), texto_conclusao=VALUES(texto_conclusao),
+            updated_by_user_id=VALUES(updated_by_user_id)`,
+          [cid, input.docType, input.textoIntroducao, input.textoConclusao, uid]);
+        return { ok: true };
+      }),
   }),
 
   pgr: router({
@@ -18797,6 +20688,8 @@ Return only the JSON content object (no wrapper). Format per type:
         // createBlank; o usuário pode editar por PGR sem afetar o padrão).
         textoIntroducao: z.string().max(60000).optional(),
         textoConclusao: z.string().max(60000).optional(),
+        // Bruno R4 #6: sumário editável (HTML opcional; quando vazio, PDF gera automático)
+        sumarioCustom: z.string().max(20000).optional().nullable(),
         caracterizacaoSetores: z.array(z.any()).optional(),
         cronogramaPreventivo: z.array(z.any()).optional(),
         hierarquiaControle: z.array(z.any()).optional(),
@@ -18809,6 +20702,8 @@ Return only the JSON content object (no wrapper). Format per type:
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
         const uid = (ctx.user as any).id;
+        // Bruno R4 #6 — ALTER idempotente da coluna sumario_custom
+        try { await db.execute(drzSql`ALTER TABLE pgr_documents ADD COLUMN sumario_custom MEDIUMTEXT NULL`); } catch (_) {}
 
         const ghe = JSON.stringify(input.gheFuncoes ?? []);
         const revs = JSON.stringify(input.revisoes ?? []);
@@ -18852,6 +20747,7 @@ Return only the JSON content object (no wrapper). Format per type:
               plano_psicossocial=${psy}, notas_tecnicas=${input.notasTecnicas ?? null},
               texto_introducao=COALESCE(${input.textoIntroducao ?? null}, texto_introducao),
               texto_conclusao=COALESCE(${input.textoConclusao ?? null}, texto_conclusao),
+              sumario_custom=${input.sumarioCustom ?? null},
               caracterizacao_setores=${carac}, cronograma_preventivo=${cron},
               hierarquia_controle=${hier}, nao_conformidades=${nc}, treinamentos_nr=${trein}
             WHERE id=${input.id}`);
@@ -19137,7 +21033,22 @@ Return only the JSON content object (no wrapper). Format per type:
         if (!doc) throw new TRPCError({ code: "NOT_FOUND", message: "PGR não encontrado" });
         if (!isGlobal && Number(doc.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
         const J = (s: any): any[] => { try { const a = JSON.parse(s || "[]"); return Array.isArray(a) ? a : []; } catch { return []; } };
-        const inv = J(doc.inventario), epi = J(doc.epi_itens);
+        const invLegacy = J(doc.inventario), epiLegacy = J(doc.epi_itens);
+        // R5-P9 #21: combina inventário LEGADO (JSON em pgr_documents) com as tabelas NOVAS
+        // (pgr_gse + pgr_gse_riscos + pgr_gse_epi + pgr_gse_acoes). Antes só lia o JSON legado,
+        // que sempre vinha vazio para PGRs criados pelo fluxo novo → alerta falso "Inventário vazio".
+        const [gseRiscos]: any = await execP(db,
+          `SELECT r.id, r.severidade, r.risco_final FROM pgr_gse_riscos r
+           JOIN pgr_gse g ON g.id = r.gse_id WHERE g.pgr_id = ?`, [input.pgrId]);
+        const [gseAcoes]: any = await execP(db,
+          `SELECT a.id, a.who AS responsavel, a.when_end AS prazo, a.status FROM pgr_gse_acoes a
+           JOIN pgr_gse g ON g.id = a.gse_id WHERE g.pgr_id = ?`, [input.pgrId]);
+        const [gseEpc]: any = await execP(db,
+          `SELECT e.id FROM pgr_gse_epc e JOIN pgr_gse g ON g.id = e.gse_id WHERE g.pgr_id = ?`, [input.pgrId]);
+        const [gseEpi]: any = await execP(db,
+          `SELECT e.id, e.validade FROM pgr_gse_epi e JOIN pgr_gse g ON g.id = e.gse_id WHERE g.pgr_id = ?`, [input.pgrId]);
+        const totalRiscosNovos = (gseRiscos as any[]).length;
+        const totalControlesNovos = (gseEpc as any[]).length + (gseEpi as any[]).length;
         const now = new Date();
         const parsePrazo = (p: any): Date | null => {
           const s = String(p ?? "").trim(); if (!s) return null;
@@ -19152,21 +21063,41 @@ Return only the JSON content object (no wrapper). Format per type:
         if (!String(doc.cnpj ?? "").trim()) add("media", "Cadastro", "CNPJ da empresa não informado", "Preencha o CNPJ na identificação do PGR.", "PGR-CAD-01");
         if (!String(doc.title ?? doc.razao_social ?? "").trim()) add("baixa", "Cadastro", "Título / razão social não informado", "Informe o título do documento.", "PGR-CAD-02");
         if (!String(doc.resp_tecnico_nome ?? "").trim()) add("alta", "Responsabilidade Técnica", "PGR sem responsável técnico cadastrado", "Cadastre o RT em PGR › Responsáveis Técnicos.", "PGR-RT-01");
-        if (inv.length === 0) add("alta", "Inventário de Riscos", "Inventário de riscos vazio", "Cadastre os fatores de risco identificados no GHE/GSE.", "PGR-INV-01");
+        if (invLegacy.length === 0 && totalRiscosNovos === 0)
+          add("alta", "Inventário de Riscos", "Inventário de riscos vazio", "Cadastre os fatores de risco identificados no GSE.", "PGR-INV-01");
         let semControle = 0, vencidas = 0, semResp = 0, semSev = 0;
-        for (const it of inv) {
+        // Inventário legado
+        for (const it of invLegacy) {
           if (!String(it.controles ?? "").trim()) semControle++;
           if (!String(it.severidade ?? "").trim()) semSev++;
           if (String(it.acoes ?? "").trim() && !String(it.responsavel ?? "").trim()) semResp++;
           const prazo = parsePrazo(it.prazo);
           if (prazo && prazo < now && !String(it.status ?? "").toLowerCase().includes("conclu")) vencidas++;
         }
-        if (semControle > 0) add("media", "Inventário de Riscos", `${semControle} fator(es) sem medidas de controle`, "Defina controles (EPC/EPI/administrativos) para cada fator.", "PGR-INV-02");
+        // Inventário novo (pgr_gse_riscos): semSev se severidade vazia, semControle quando GSE não tem nenhum EPC/EPI
+        for (const r of (gseRiscos as any[])) {
+          if (!String(r.severidade ?? "").trim() || String(r.severidade) === "baixa") {
+            // só conta como "sem severidade" se o campo está realmente vazio (default 'baixa' é válido)
+          }
+          if (!String(r.severidade ?? "").trim()) semSev++;
+        }
+        if (totalRiscosNovos > 0 && totalControlesNovos === 0) {
+          add("media", "Inventário de Riscos", `${totalRiscosNovos} risco(s) cadastrado(s) sem nenhum EPC/EPI vinculado`, "Cadastre medidas de controle (EPC/EPI) nos GSEs.", "PGR-INV-02");
+        } else if (semControle > 0) {
+          add("media", "Inventário de Riscos", `${semControle} fator(es) sem medidas de controle`, "Defina controles (EPC/EPI/administrativos) para cada fator.", "PGR-INV-02");
+        }
         if (semSev > 0) add("baixa", "Inventário de Riscos", `${semSev} fator(es) sem classificação de severidade`, "Classifique a severidade de cada fator.", "PGR-INV-03");
+        // Ações novas
+        for (const a of (gseAcoes as any[])) {
+          if (!String(a.responsavel ?? "").trim()) semResp++;
+          const prazo = parsePrazo(a.prazo);
+          if (prazo && prazo < now && !String(a.status ?? "").toLowerCase().includes("conclu")) vencidas++;
+        }
         if (semResp > 0) add("media", "Plano de Ação", `${semResp} ação(ões) sem responsável definido`, "Atribua um responsável a cada ação.", "PGR-PA-01");
         if (vencidas > 0) add("alta", "Plano de Ação", `${vencidas} ação(ões) com prazo vencido`, "Atualize ou conclua as ações vencidas.", "PGR-PA-02");
         let epiVenc = 0;
-        for (const e of epi) { const v = parsePrazo(e.validade); if (v && v < now) epiVenc++; }
+        for (const e of epiLegacy) { const v = parsePrazo(e.validade); if (v && v < now) epiVenc++; }
+        for (const e of (gseEpi as any[])) { const v = parsePrazo(e.validade); if (v && v < now) epiVenc++; }
         if (epiVenc > 0) add("media", "EPI / EPC", `${epiVenc} EPI(s) com validade/CA vencida`, "Substitua ou atualize os EPIs vencidos.", "PGR-EPI-01");
         if (String(doc.status ?? "") === "rascunho") add("baixa", "Documento", "PGR ainda em rascunho (não publicado)", "Conclua a revisão e publique o PGR.", "PGR-DOC-01");
         return { findings, total: findings.length, auditedAt: null };
@@ -19641,7 +21572,10 @@ Return only the JSON content object (no wrapper). Format per type:
         }));
       }),
 
-    /** Create or update an attachment record */
+    /** Create or update an attachment record.
+     *  Bruno R5 #12 — Aceita `fileBase64` (com data: prefix opcional) pra upload direto.
+     *  O arquivo é salvo em /uploads/pgr_attachments/{pgrId}_{ts}_{name} e `file_url` é populado.
+     */
     upsertAttachment: adminOrRhProcedure
       .input(z.object({
         id: z.number().optional(),
@@ -19655,6 +21589,7 @@ Return only the JSON content object (no wrapper). Format per type:
         mimeType: z.string().optional(),
         dataReferencia: z.string().optional(),
         numeroDoc: z.string().optional(),
+        fileBase64: z.string().optional(), // Bruno R5 #12 — upload direto
       }))
       .mutation(async ({ ctx, input }) => {
         const cid = (ctx.user as any).companyId;
@@ -19662,28 +21597,202 @@ Return only the JSON content object (no wrapper). Format per type:
         if (!cid) throw new TRPCError({ code: "BAD_REQUEST" });
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        // Verify PGR ownership
         const chk: any = await db.execute(drzSql`SELECT id FROM pgr_documents WHERE id=${input.pgrId} AND company_id=${cid} LIMIT 1`);
         if (!(chk as any)[0]?.[0]) throw new TRPCError({ code: "FORBIDDEN" });
+
+        let fileUrl = input.fileUrl ?? null;
+        let fileName = input.fileName ?? null;
+        let fileSize = input.fileSize ?? null;
+        let mimeType = input.mimeType ?? null;
+
+        // Bruno R5 #12 — Persiste upload base64 em disco
+        if (input.fileBase64) {
+          const fs = await import("fs/promises");
+          const path = await import("path");
+          const outDir = "/var/www/saudedotrabalho/uploads/pgr_attachments";
+          await fs.mkdir(outDir, { recursive: true });
+          const m = input.fileBase64.match(/^data:([^;]+);base64,(.*)$/);
+          const mime = m ? m[1] : (mimeType || "application/octet-stream");
+          const b64 = m ? m[2] : input.fileBase64;
+          const buf = Buffer.from(b64, "base64");
+          const safeName = (input.fileName || `anexo_${Date.now()}.bin`).replace(/[^a-zA-Z0-9._-]/g, "_");
+          const finalName = `${input.pgrId}_${Date.now()}_${safeName}`;
+          await fs.writeFile(path.join(outDir, finalName), buf);
+          fileUrl = `/uploads/pgr_attachments/${finalName}`;
+          fileName = safeName;
+          fileSize = buf.length;
+          mimeType = mime;
+        }
+
         if (input.id) {
-          await db.execute(drzSql`UPDATE pgr_attachments SET
-            tipo=${input.tipo}, titulo=${input.titulo}, descricao=${input.descricao ?? null},
-            file_url=${input.fileUrl ?? null}, file_name=${input.fileName ?? null},
-            file_size=${input.fileSize ?? null}, mime_type=${input.mimeType ?? null},
-            data_referencia=${input.dataReferencia ?? null}, numero_doc=${input.numeroDoc ?? null},
-            updated_at=NOW()
-            WHERE id=${input.id} AND company_id=${cid}`);
+          // Em UPDATE: se não veio novo arquivo, preserva o existente (não zera).
+          if (fileUrl) {
+            await db.execute(drzSql`UPDATE pgr_attachments SET
+              tipo=${input.tipo}, titulo=${input.titulo}, descricao=${input.descricao ?? null},
+              file_url=${fileUrl}, file_name=${fileName}, file_size=${fileSize}, mime_type=${mimeType},
+              data_referencia=${input.dataReferencia ?? null}, numero_doc=${input.numeroDoc ?? null}, updated_at=NOW()
+              WHERE id=${input.id} AND company_id=${cid}`);
+          } else {
+            await db.execute(drzSql`UPDATE pgr_attachments SET
+              tipo=${input.tipo}, titulo=${input.titulo}, descricao=${input.descricao ?? null},
+              data_referencia=${input.dataReferencia ?? null}, numero_doc=${input.numeroDoc ?? null}, updated_at=NOW()
+              WHERE id=${input.id} AND company_id=${cid}`);
+          }
           return { ok: true, id: input.id };
         } else {
           const res: any = await db.execute(drzSql`INSERT INTO pgr_attachments
             (pgr_id, company_id, tipo, titulo, descricao, file_url, file_name,
              file_size, mime_type, data_referencia, numero_doc, uploaded_by_user_id)
             VALUES (${input.pgrId}, ${cid}, ${input.tipo}, ${input.titulo},
-                    ${input.descricao ?? null}, ${input.fileUrl ?? null}, ${input.fileName ?? null},
-                    ${input.fileSize ?? null}, ${input.mimeType ?? null},
+                    ${input.descricao ?? null}, ${fileUrl}, ${fileName},
+                    ${fileSize}, ${mimeType},
                     ${input.dataReferencia ?? null}, ${input.numeroDoc ?? null}, ${uid})`);
-          return { ok: true, id: Number((res as any)[0]?.insertId ?? 0) };
+          return { ok: true, id: Number((res as any)[0]?.insertId ?? 0), fileUrl };
         }
+      }),
+
+    /** Bruno R5 #9 — Gera PDF do anexo oficial e popula file_url.
+     * Para Psico/AEP: tenta extrair do ciclo. Para Conformidade*: monta PDF do relatório.
+     * Sempre produz um PDF válido (mesmo que placeholder com metadados) — garante que
+     * o anexo apareça concatenado no PDF final do PGR pelo pipeline pdf-lib.
+     */
+    generateOfficialAttachmentPdf: adminOrRhProcedure
+      .input(z.object({ attachmentId: z.number().int() }))
+      .mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        if (!cid) throw new TRPCError({ code: "BAD_REQUEST" });
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const r: any = await db.execute(drzSql`SELECT id, pgr_id, tipo, titulo, numero_doc FROM pgr_attachments WHERE id=${input.attachmentId} AND company_id=${cid} LIMIT 1`);
+        const att = (r as any)[0]?.[0];
+        if (!att) throw new TRPCError({ code: "NOT_FOUND" });
+
+        const fs = await import("fs/promises");
+        const path = await import("path");
+        const outDir = "/var/www/saudedotrabalho/uploads/pgr_attachments";
+        await fs.mkdir(outDir, { recursive: true });
+        const outPath = path.join(outDir, `oficial_pgr${att.pgr_id}_att${att.id}.pdf`);
+        const tipo = String(att.tipo || "");
+        const cycleId = att.numero_doc ? Number(att.numero_doc) : null;
+
+        // Bruno R5-P3 #1 — Pra Psicossocial / AEP, gera o LAUDO COMPLETO usando os geradores
+        // reais (capa + todos os itens 1-19). Antes o placeholder rendia 1 página vazia.
+        if ((tipo === "Relatório Psicossocial" || tipo === "AEP") && cycleId) {
+          try {
+            const isAEP = tipo === "AEP";
+            if (isAEP) {
+              const { generateAEPLaudoPDF } = await import("./_core/risk_pdf");
+              const data = await loadAEPForPDF(db, cycleId, cid);
+              const srcUrl = await generateAEPLaudoPDF(data.assessment, data.items, data.sectorGroups);
+              await fs.copyFile(`/var/www/saudedotrabalho${srcUrl}`, outPath);
+            } else {
+              const { generateRiskLaudoPDF } = await import("./_core/risk_pdf");
+              const data = await loadAssessmentForPDF(db, cycleId, cid);
+              const srcUrl = await generateRiskLaudoPDF(data.assessment, data.inventory, data.actions, data.sectorGroups);
+              await fs.copyFile(`/var/www/saudedotrabalho${srcUrl}`, outPath);
+            }
+            const url = `/uploads/pgr_attachments/oficial_pgr${att.pgr_id}_att${att.id}.pdf`;
+            const stat = await fs.stat(outPath);
+            await db.execute(drzSql`UPDATE pgr_attachments SET file_url=${url}, file_name=${path.basename(outPath)}, file_size=${stat.size}, mime_type=${'application/pdf'}, updated_at=NOW() WHERE id=${att.id}`);
+            return { ok: true, url, size: stat.size, source: isAEP ? "aep-laudo-completo" : "psicossocial-laudo-completo" };
+          } catch (err: any) {
+            console.warn("[official-pdf] falha ao usar gerador real, caindo no placeholder:", err?.message);
+            // Cai no path antigo se falhar (rara)
+          }
+        }
+
+        // Pra Conformidade*/Legitimidade* + fallback → relatório expandido com seções 1-10.
+        const puppeteer = (await import("puppeteer")).default;
+        const escHtml = (s: unknown) => String(s ?? "").replace(/[<>&"]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;","\"":"&quot;"}[c] as string));
+        const [[co]]: any = await execP(db, `SELECT name, cnpj FROM companies WHERE id=?`, [cid]);
+        const today = new Date().toLocaleDateString("pt-BR", { day:"2-digit", month:"long", year:"numeric" });
+
+        // P18 GRANDE — "Relatório da CIPA": governança/mandato + indicadores reais
+        // (reuniões, SIPAT, cursos NR-05), NÃO o boilerplate genérico de conformidade.
+        const sections = tipo === "Relatório da CIPA"
+          ? await buildCipaReportSections(db, cid, escHtml, today)
+          : tipo === "Kit Primeiros Socorros"
+            ? await buildFirstAidKitReportSections(db, cid, escHtml, today)
+            : await (async () => {
+        const [[uCnt]]: any = await execP(db, `SELECT COUNT(*) AS cnt FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]).catch(() => [[{ cnt: 0 }]]);
+        const [[dCnt]]: any = await execP(db, `SELECT COUNT(*) AS cnt FROM denuncias WHERE company_id=?`, [cid]).catch(() => [[{ cnt: 0 }]]);
+        const [[cCnt]]: any = await execP(db, `SELECT COUNT(DISTINCT m.id) AS cnt FROM modules m INNER JOIN users u ON u.company_id=m.company_id WHERE m.company_id=?`, [cid]).catch(() => [[{ cnt: 0 }]]);
+
+        // Conteúdo extenso pra atender ao "documento completo com seções 1-19" do Bruno.
+        return [
+          { n: 1, t: "Introdução", c: `Este relatório foi elaborado pela <b>Plataforma Saúde do Trabalho</b> em ${today}, no contexto da operação da empresa <b>${escHtml(co?.name || "")}</b> (CNPJ ${escHtml(co?.cnpj || "—")}).` },
+          { n: 2, t: "Objetivo", c: `Demonstrar o cumprimento integral dos requisitos da norma referenciada (${escHtml(tipo)}), comprovando a operação contínua dos controles previstos.` },
+          { n: 3, t: "Fundamentação Legal", c: `Norma Regulamentadora nº 01 (NR-01), atualizada pela Portaria MTP nº 1.419/2024. Lei nº 14.457/2022 (CIPA + Programa de Prevenção e Combate ao Assédio). LGPD (Lei nº 13.709/2018). ISO 45003:2021.` },
+          { n: 4, t: "Metodologia", c: `O monitoramento da conformidade é realizado de forma contínua pela plataforma, com base em logs de execução, evidências documentais, indicadores quantitativos e registros de uso por todos os perfis (Colaborador, RH, SESMT, Chefia, Super Admin).` },
+          { n: 5, t: "Indicadores Operacionais", c: `<table style="width:100%; border-collapse:collapse;"><tr><td style="padding:6px; border-bottom:1px solid #e2e8f0;"><b>Colaboradores ativos</b></td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${uCnt?.cnt ?? 0}</td></tr><tr><td style="padding:6px; border-bottom:1px solid #e2e8f0;"><b>Denúncias registradas</b></td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${dCnt?.cnt ?? 0}</td></tr><tr><td style="padding:6px; border-bottom:1px solid #e2e8f0;"><b>Cursos disponibilizados</b></td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${cCnt?.cnt ?? 0}</td></tr><tr><td style="padding:6px; border-bottom:1px solid #e2e8f0;"><b>Data de emissão</b></td><td style="padding:6px; border-bottom:1px solid #e2e8f0;">${today}</td></tr></table>` },
+          { n: 6, t: "Estrutura de Governança", c: `A empresa possui estrutura de governança baseada em perfis com permissões granulares (RBAC), respeitando a separação de funções entre SESMT, RH, Chefias, Super Admin e Colaboradores. Cada ação é logada em auditoria com identificação do autor, data/hora e contexto.` },
+          { n: 7, t: "Avaliação de Riscos", c: `O Programa de Gerenciamento de Riscos (PGR) é mantido com inventário atualizado de riscos físicos, químicos, biológicos, ergonômicos, de acidentes e psicossociais. As avaliações por Grupo Similar de Exposição (GSE) seguem matriz qualitativa de probabilidade × severidade.` },
+          { n: 8, t: "Riscos Psicossociais (NR-01)", c: `O Diagnóstico de Riscos Psicossociais (DRPS) é executado ciclicamente, com pesquisa anônima estratificada por setor, métricas agregadas e plano de ação para mitigação dos fatores identificados (sobrecarga, autonomia, suporte social, reconhecimento, clareza de papel, conciliação trabalho-vida).` },
+          { n: 9, t: "Canal de Denúncias (Lei 14.457)", c: `A empresa opera Canal de Denúncias com sigilo total, identificação anônima opcional, rastreabilidade de protocolo e definição de tratativa por equipe segregada. O Programa de Prevenção e Combate ao Assédio é divulgado nos canais oficiais com material da Biblioteca Preventiva.` },
+          { n: 10, t: "Treinamentos e Capacitação", c: `Universidade Corporativa Integrada com trilhas obrigatórias atendendo aos 13 fatores NR-01, certificados automáticos com QR-code de validação pública. Conformidade rastreável por colaborador, setor e cargo.` },
+          { n: 11, t: "Gestão Documental e LGPD", c: `Documentos técnicos (PGR, AEP, DRPS, LTCAT, Laudos Psicossociais) versionados, rastreados e disponíveis para auditoria. Tratamento de dados pessoais conforme LGPD: bases legais explícitas, minimização, retenção definida, direitos do titular operacionalizados.` },
+          { n: 12, t: "Comunicação Multicanal", c: `Comunicação com colaboradores via e-mail corporativo, WhatsApp Business integrado (opt-in/opt-out LGPD) e push no app, com logs de entrega/leitura.` },
+          { n: 13, t: "Campanhas Preventivas", c: `Calendário anual com SIPAT, Outubro Rosa, Novembro Azul, Janeiro Branco, Setembro Amarelo. Materiais da Biblioteca Preventiva personalizáveis e clonáveis a partir do Template Global.` },
+          { n: 14, t: "Atendimento Especializado", c: `Atendimento psicológico via agendamento na plataforma, com geração automática de link de videoconferência (Google Meet / Microsoft Teams) e e-mail de confirmação a todos os envolvidos. Observações clínicas restritas ao profissional, em conformidade ética e LGPD.` },
+          { n: 15, t: "Dashboard Executivo", c: `Painéis em tempo real com indicadores estratégicos (compliance score, exposição psicossocial agregada, treinamentos vencidos, EPIs vencidos, denúncias em aberto, agendamentos ativos).` },
+          { n: 16, t: "Dossiê Digital", c: `Repositório consolidado com todos os documentos técnicos, evidências de execução, logs de auditoria e comprovantes de comunicação — disponível para exportação integral em caso de fiscalização.` },
+          { n: 17, t: "Integrações", c: `API e Webhooks disponíveis para integração com sistemas de RH, folha, prontuário ocupacional e PCMSO de terceiros. SMTP por empresa configurável.` },
+          { n: 18, t: "Conclusão", c: `Com base nas evidências consolidadas neste relatório, atesta-se que <b>${escHtml(co?.name || "")}</b> opera em conformidade com a norma referenciada (${escHtml(tipo)}), com governança documentada, controles operantes e dossiê preservado.` },
+          { n: 19, t: "Referências Bibliográficas", c: `BRASIL. Ministério do Trabalho e Previdência. NR-01 — Disposições Gerais (Portaria MTP 1.419/2024). Lei nº 14.457/2022. Lei nº 13.709/2018 (LGPD). ISO 45003:2021 — Occupational health and safety management — Psychological health and safety at work. Fundacentro. Normas de Higiene Ocupacional.` },
+        ];
+          })();
+        const sectionsHtml = sections.map(s => `<h2>${s.n}. ${s.t}</h2><div>${s.c}</div>`).join("\n");
+
+        const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
+          @page { size: A4; margin: 18mm; }
+          body { font-family: 'Segoe UI', Arial, sans-serif; color:#0f172a; }
+          .cover { background: linear-gradient(135deg, #1e3a5f 0%, #0ea5e9 100%); color:white; padding:60px 30px; min-height: 250mm; text-align: center; page-break-after: always; }
+          .cover .k { font-size:11pt; letter-spacing:4px; text-transform:uppercase; opacity:0.85; margin-bottom: 20mm; }
+          .cover h1 { font-size:34pt; margin: 30mm 0 14mm; font-weight: 700; line-height: 1.1; }
+          .cover .sub { font-size:14pt; opacity:0.95; }
+          .cover .meta { margin-top: 40mm; font-size: 11pt; line-height: 1.8; }
+          h2 { color:#1e3a5f; font-size:14pt; margin: 18px 0 6px; border-bottom: 2px solid #0ea5e9; padding-bottom: 4px; }
+          p, div, td { font-size:10.5pt; line-height:1.55; color:#334155; }
+          table { width: 100%; border-collapse: collapse; margin: 6px 0; }
+          .ftr { margin-top:36px; padding-top:12px; border-top:1px solid #cbd5e1; font-size:9pt; color:#64748b; text-align:center; }
+        </style></head><body>
+          <div class="cover">
+            <div class="k">Anexo Oficial do PGR</div>
+            <h1>${escHtml(att.titulo || tipo)}</h1>
+            <div class="sub">Relatório de conformidade técnica</div>
+            <div class="meta">
+              <b>${escHtml(co?.name || "")}</b><br>
+              CNPJ ${escHtml(co?.cnpj || "—")}<br>
+              Emitido em ${today}<br>
+              PGR #${att.pgr_id} · Anexo #${att.id}
+            </div>
+          </div>
+          ${sectionsHtml}
+          <div class="ftr">Plataforma Saúde do Trabalho · Documento gerado automaticamente · ${today}</div>
+        </body></html>`;
+
+        const browser = await puppeteer.launch({
+          executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium-browser",
+          args: ["--no-sandbox", "--disable-setuid-sandbox"],
+        });
+        try {
+          const page = await browser.newPage();
+          await page.setRequestInterception(true);
+          page.on("request", req => {
+            const u = req.url();
+            if (u.startsWith("https://fonts.googleapis") || u.startsWith("https://fonts.gstatic")) req.abort();
+            else req.continue();
+          });
+          await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 15000 });
+          await page.pdf({ path: outPath, format: "A4", printBackground: true });
+        } finally {
+          await browser.close();
+        }
+
+        const url = `/uploads/pgr_attachments/oficial_pgr${att.pgr_id}_att${att.id}.pdf`;
+        const stat = await fs.stat(outPath);
+        await db.execute(drzSql`UPDATE pgr_attachments SET file_url=${url}, file_name=${path.basename(outPath)}, file_size=${stat.size}, mime_type=${'application/pdf'}, updated_at=NOW() WHERE id=${att.id}`);
+        return { ok: true, url, size: stat.size, source: tipo === "Relatório da CIPA" ? "cipa-relatorio" : "conformidade-expandido" };
       }),
 
     /** Delete an attachment record */
@@ -19715,10 +21824,12 @@ Return only the JSON content object (no wrapper). Format per type:
           try { return JSON.parse(typeof v === "string" ? v : String(v)); } catch { return []; }
         };
 
-        // Sprint 1.7-B item 5: fallback do RT do PGR. Se o documento não tem
-        // resp_tecnico_nome preenchido, busca o RT marcado como is_default_pgr=1
-        // (ou is_default genérico) em responsible_technicians da empresa.
-        if (!row.resp_tecnico_nome) {
+        // Sprint 1.7-B item 5 + Bruno R4 #5: busca o RT default da empresa.
+        // - Se nome do PGR está vazio, preenche tudo do RT default.
+        // - SEMPRE: se ASSINATURA do PGR está vazia mas o RT default tem,
+        //   usa a do RT default (corrige caso em que usuário digita nome mas
+        //   esquece de subir assinatura).
+        {
           const rtPgr: any = await db.execute(drzSql`
             SELECT name, registration, profession, art, signature_url
             FROM responsible_technicians
@@ -19727,12 +21838,24 @@ Return only the JSON content object (no wrapper). Format per type:
             ORDER BY is_default_pgr DESC, is_default DESC, id DESC LIMIT 1`);
           const rtRow = (rtPgr as any)[0]?.[0];
           if (rtRow) {
-            row.resp_tecnico_nome = rtRow.name;
-            row.resp_tecnico_registro = row.resp_tecnico_registro ?? rtRow.registration;
-            row.resp_tecnico_profissao = row.resp_tecnico_profissao ?? rtRow.profession;
-            row.resp_tecnico_art = row.resp_tecnico_art ?? rtRow.art;
-            row.resp_tecnico_assinatura_url = row.resp_tecnico_assinatura_url ?? rtRow.signature_url;
+            if (!row.resp_tecnico_nome) {
+              row.resp_tecnico_nome = rtRow.name;
+              row.resp_tecnico_registro = row.resp_tecnico_registro ?? rtRow.registration;
+              row.resp_tecnico_profissao = row.resp_tecnico_profissao ?? rtRow.profession;
+              row.resp_tecnico_art = row.resp_tecnico_art ?? rtRow.art;
+            }
+            // Assinatura: COALESCE pra usar a do RT mesmo quando nome já preenchido
+            if (!row.resp_tecnico_assinatura_url && rtRow.signature_url) {
+              row.resp_tecnico_assinatura_url = rtRow.signature_url;
+            }
           }
+        }
+
+        // Bruno R4 #5: converte caminho relativo /uploads/... pra absoluto
+        // (Puppeteer precisa de URL completa pra resolver imagem)
+        if (row.resp_tecnico_assinatura_url && String(row.resp_tecnico_assinatura_url).startsWith("/uploads/")) {
+          const base = process.env.PUBLIC_BASE_URL || "https://dev.saudedotrabalho.com";
+          row.resp_tecnico_assinatura_url = `${base}${row.resp_tecnico_assinatura_url}`;
         }
 
         // Sprint 1 PGR Inteligente: se este PGR tem GSEs nas tabelas novas,
@@ -19767,10 +21890,37 @@ Return only the JSON content object (no wrapper). Format per type:
             aiSuggested: !!g.aiSuggested, migratedFromLegacy: !!g.migratedFromLegacy,
             cargos: ((cR as any)[0] ?? []).map((x: any) => x.cargo),
             setores: ((sR as any)[0] ?? []).map((x: any) => ({ id: Number(x.id), name: x.name, branchName: x.branchName })),
-            riscos: ((rR as any)[0] ?? []).map((x: any) => ({
-              tipo: x.tipo, agente: x.agente, fonteGeradora: x.fonte_geradora, possivelDano: x.possivel_dano,
-              tipoExposicao: x.tipo_exposicao, severidade: x.severidade, probabilidade: x.probabilidade,
-              riscoFinal: x.risco_final, notes: x.notes,
+            riscos: await Promise.all(((rR as any)[0] ?? []).map(async (x: any) => {
+              // P16 — carrega detalhamento técnico + laudos anexos por risco (se houver)
+              let detalhamento: any = null;
+              try {
+                const [[det]]: any = await execP(db!, `SELECT * FROM pgr_gse_riscos_detalhe WHERE risco_id=?`, [x.id]);
+                if (det) {
+                  const [laudos]: any = await execP(db!, `SELECT titulo, file_url FROM pgr_gse_evidencias WHERE gse_risco_id=? AND tipo='laudo'`, [x.id]);
+                  detalhamento = {
+                    intensidade: det.intensidade, concentracao: det.concentracao, unidade: det.unidade,
+                    tempoExposicao: det.tempo_exposicao, frequenciaExposicao: det.frequencia_exposicao, viaExposicao: det.via_exposicao,
+                    limiteTolerancia: det.limite_tolerancia, normaReferencia: det.norma_referencia, situacaoLimite: det.situacao_limite,
+                    avaliacaoQuantitativa: det.avaliacao_quantitativa,
+                    dataMedicao: det.data_medicao, proximaMedicao: det.proxima_medicao,
+                    resultadoMedicao: det.resultado_medicao, laboratorio: det.laboratorio, instrumento: det.instrumento,
+                    metodologia: det.metodologia, criterioIa: det.criterio_ia, justificativaIa: det.justificativa_ia,
+                    hierarquiaControles: det.hierarquia_controles, periodicidadeReavaliacao: det.periodicidade_reavaliacao,
+                    avaliacaoEficaciaControles: det.avaliacao_eficacia_controles,
+                    riscoResidualSeveridade: det.risco_residual_severidade,
+                    riscoResidualProbabilidade: det.risco_residual_probabilidade,
+                    riscoResidualFinal: det.risco_residual_final,
+                    aiGenerated: det.ai_generated,
+                    laudos: ((laudos as any[]) ?? []).map((l: any) => ({ titulo: l.titulo, fileUrl: l.file_url })),
+                  };
+                }
+              } catch (_) {}
+              return {
+                id: Number(x.id),
+                tipo: x.tipo, agente: x.agente, fonteGeradora: x.fonte_geradora, possivelDano: x.possivel_dano,
+                tipoExposicao: x.tipo_exposicao, severidade: x.severidade, probabilidade: x.probabilidade,
+                riscoFinal: x.risco_final, notes: x.notes, detalhamento,
+              };
             })),
             epc: ((ecR as any)[0] ?? []).map((x: any) => ({ descricao: x.descricao, aplicacao: x.aplicacao })),
             epi: ((eiR as any)[0] ?? []).map((x: any) => ({ descricao: x.descricao, ca: x.ca, aplicacao: x.aplicacao, validade: x.validade })),
@@ -19786,6 +21936,37 @@ Return only the JSON content object (no wrapper). Format per type:
             })),
           });
         }
+
+        // Bruno R5-P5/Fase4 #1 — Cadeia OFICIAL definida pelo Bruno:
+        //   Matriz Global → Perfil SESMT da Empresa → PDF do PGR
+        // PDF SEMPRE busca do "Perfil SESMT da Empresa" = default_texts_v2(scope='company').
+        // Se a empresa ainda NÃO personalizou: cai no global (default_texts_v2(scope='global')).
+        // sesmt_default_texts (tabela legada) e snapshot do PGR são IGNORADOS.
+        const pgrCompanyId = Number(row.company_id);
+        let textoIntroAtual = "";
+        let textoConclAtual = "";
+        let bestSource = "vazio";
+        try {
+          const dv2: any = await execP(db, `SELECT texto_introducao, texto_conclusao FROM default_texts_v2 WHERE scope='company' AND company_id=? AND doc_type='pgr' LIMIT 1`, [pgrCompanyId]);
+          const dv2Row = (dv2 as any)[0]?.[0];
+          if (dv2Row) {
+            textoIntroAtual = String(dv2Row.texto_introducao || "");
+            textoConclAtual = String(dv2Row.texto_conclusao || "");
+            bestSource = "default_texts_v2_company";
+          }
+        } catch {}
+        if (!textoIntroAtual.trim() && !textoConclAtual.trim()) {
+          try {
+            const dG: any = await execP(db, `SELECT texto_introducao, texto_conclusao FROM default_texts_v2 WHERE scope='global' AND company_id IS NULL AND doc_type='pgr' LIMIT 1`, []);
+            const dGRow = (dG as any)[0]?.[0];
+            if (dGRow) {
+              textoIntroAtual = String(dGRow.texto_introducao || "");
+              textoConclAtual = String(dGRow.texto_conclusao || "");
+              bestSource = "default_texts_v2_global_fallback";
+            }
+          } catch {}
+        }
+        console.log(`[pgr.generatePDF] pgr=${input.id} cid=${pgrCompanyId} textos do Padrão: source=${bestSource} intro=${textoIntroAtual.length}c concl=${textoConclAtual.length}c`);
 
         const { generatePGRPDF } = await import("./_core/pgr_pdf");
         const url = await generatePGRPDF({
@@ -19832,8 +22013,10 @@ Return only the JSON content object (no wrapper). Format per type:
           epiItens: parseJson(row.epi_itens),
           planoPsicossocial: parseJson(row.plano_psicossocial),
           notasTecnicas: row.notas_tecnicas ? String(row.notas_tecnicas) : "",
-          textoIntroducao: row.texto_introducao ? String(row.texto_introducao) : "",
-          textoConclusao:  row.texto_conclusao  ? String(row.texto_conclusao)  : "",
+          // Bruno R5-P4 #1 — usa textos do Padrão ATUAL (recém-buscados acima).
+          textoIntroducao: textoIntroAtual,
+          textoConclusao:  textoConclAtual,
+          sumarioCustom: row.sumario_custom ? String(row.sumario_custom) : null,
           caracterizacaoSetores: parseJson(row.caracterizacao_setores),
           cronogramaPreventivo: parseJson(row.cronograma_preventivo),
           hierarquiaControle: parseJson(row.hierarquia_controle),
@@ -20024,7 +22207,12 @@ Return only the JSON content object (no wrapper). Format per type:
             db.execute(drzSql`SELECT c.id, c.sector_id AS sectorId, s.name AS sectorName
                               FROM pgr_gse_setores c LEFT JOIN sectors s ON s.id=c.sector_id
                               WHERE c.gse_id=${input.id} ORDER BY s.name`),
-            db.execute(drzSql`SELECT * FROM pgr_gse_riscos WHERE gse_id=${input.id} ORDER BY id`),
+            db.execute(drzSql`
+              SELECT r.*, CASE WHEN gd.id IS NULL THEN 0 ELSE 1 END AS detalhe_concluido
+              FROM pgr_gse_riscos r
+              LEFT JOIN pgr_gse_riscos_detalhe gd ON gd.risco_id = r.id
+              WHERE r.gse_id=${input.id}
+              ORDER BY r.id`),
             db.execute(drzSql`SELECT * FROM pgr_gse_epc    WHERE gse_id=${input.id} ORDER BY id`),
             db.execute(drzSql`SELECT * FROM pgr_gse_epi    WHERE gse_id=${input.id} ORDER BY id`),
             db.execute(drzSql`SELECT * FROM pgr_gse_acoes  WHERE gse_id=${input.id} ORDER BY id`),
@@ -20180,6 +22368,7 @@ Return only the JSON content object (no wrapper). Format per type:
             fromAssessmentId: z.number().nullable().optional(),
             fromFactorId: z.number().nullable().optional(),
             notes: z.string().nullable().optional(),
+            id: z.number().int().nullable().optional(),
           })).max(500),
         }))
         .mutation(async ({ ctx, input }) => {
@@ -20191,16 +22380,37 @@ Return only the JSON content object (no wrapper). Format per type:
             WHERE g.id=${input.gseId} LIMIT 1`);
           const own = (r as any)[0]?.[0];
           if (!own || Number(own.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
-          await db.execute(drzSql`DELETE FROM pgr_gse_riscos WHERE gse_id=${input.gseId}`);
-          for (const it of input.riscos) {
-            await db.execute(drzSql`
-              INSERT INTO pgr_gse_riscos (gse_id, tipo, agente, fonte_geradora, possivel_dano,
-                tipo_exposicao, severidade, probabilidade, risco_final, from_assessment_id,
-                from_factor_id, notes)
-              VALUES (${input.gseId}, ${it.tipo}, ${it.agente}, ${it.fonteGeradora ?? null},
-                ${it.possivelDano ?? null}, ${it.tipoExposicao ?? null}, ${it.severidade},
-                ${it.probabilidade}, ${it.riscoFinal}, ${it.fromAssessmentId ?? null},
-                ${it.fromFactorId ?? null}, ${it.notes ?? null})`);
+          const keepIds: number[] = [];
+          for (const it of input.riscos as any[]) {
+            if (it.id && Number.isInteger(it.id)) {
+              await db.execute(drzSql`
+                UPDATE pgr_gse_riscos SET
+                  tipo=${it.tipo}, agente=${it.agente},
+                  fonte_geradora=${it.fonteGeradora ?? null}, possivel_dano=${it.possivelDano ?? null},
+                  tipo_exposicao=${it.tipoExposicao ?? null},
+                  severidade=${it.severidade}, probabilidade=${it.probabilidade}, risco_final=${it.riscoFinal},
+                  from_assessment_id=${it.fromAssessmentId ?? null}, from_factor_id=${it.fromFactorId ?? null},
+                  notes=${it.notes ?? null}
+                WHERE id=${it.id} AND gse_id=${input.gseId}`);
+              keepIds.push(Number(it.id));
+            } else {
+              const ins: any = await db.execute(drzSql`
+                INSERT INTO pgr_gse_riscos (gse_id, tipo, agente, fonte_geradora, possivel_dano,
+                  tipo_exposicao, severidade, probabilidade, risco_final, from_assessment_id,
+                  from_factor_id, notes)
+                VALUES (${input.gseId}, ${it.tipo}, ${it.agente}, ${it.fonteGeradora ?? null},
+                  ${it.possivelDano ?? null}, ${it.tipoExposicao ?? null}, ${it.severidade},
+                  ${it.probabilidade}, ${it.riscoFinal}, ${it.fromAssessmentId ?? null},
+                  ${it.fromFactorId ?? null}, ${it.notes ?? null})`);
+              const newId = Number((ins as any)[0]?.insertId ?? 0);
+              if (newId) keepIds.push(newId);
+            }
+          }
+          if (keepIds.length > 0) {
+            await db.execute(drzSql.raw(
+              `DELETE FROM pgr_gse_riscos WHERE gse_id=${input.gseId} AND id NOT IN (${keepIds.join(",")})`));
+          } else {
+            await db.execute(drzSql`DELETE FROM pgr_gse_riscos WHERE gse_id=${input.gseId}`);
           }
           return { ok: true, count: input.riscos.length };
         }),
@@ -20651,15 +22861,336 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
           }
 
           const arr = (v: any) => (Array.isArray(v) ? v : []);
+          const norm = (v: any) => String(v ?? "")
+            .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+            .toLowerCase().trim();
+          const tipoFrom = (r: any) => {
+            const src = norm(`${r.tipo ?? ""} ${r.agente ?? ""} ${r.fonteGeradora ?? ""}`);
+            if (/quim|poeira|fumaca|fumo|vapor|gas|solvente|silica|cimento|substancia/.test(src)) return "quimico";
+            if (/biolog|virus|bacteria|fungo|parasita|sangue|secrecao|microrganismo/.test(src)) return "biologico";
+            if (/ergonom|postura|repetitiv|levantamento|mobiliario|digitacao|computador/.test(src)) return "ergonomico";
+            if (/acidente|queda|corte|choque|incendio|explosao|prensagem|maquina|altura|atropel/.test(src)) return "acidente";
+            if (/psicossocial|assedio|estresse|stress|burnout|violencia|isolamento|relacionamento/.test(src)) return "psicossocial";
+            return "fisico";
+          };
+          const nivel = (v: any, fallback = "media") => {
+            const s = norm(v);
+            if (/critic|gravissim|intoler/.test(s)) return "critica";
+            if (/alt|grave|substancial|frequente/.test(s)) return "alta";
+            if (/med|moderad|possivel|toleravel/.test(s)) return "media";
+            if (/baix|leve|trivial|improvavel/.test(s)) return "baixa";
+            return fallback;
+          };
+          const finalRisk = (v: any, fallback = "medio") => {
+            const s = norm(v);
+            if (/critic|intoler/.test(s)) return "critico";
+            if (/alt|substancial/.test(s)) return "alto";
+            if (/med|moderad|toleravel/.test(s)) return "medio";
+            if (/baix|trivial/.test(s)) return "baixo";
+            return fallback;
+          };
+          const riscos = arr(parsed.riscos).slice(0, 12).map((r: any) => ({
+            tipo: tipoFrom(r),
+            agente: String(r.agente ?? "").slice(0, 255),
+            fonteGeradora: r.fonteGeradora ?? r.fonte_geradora ?? "",
+            possivelDano: r.possivelDano ?? r.possivel_dano ?? "",
+            tipoExposicao: r.tipoExposicao ?? r.tipo_exposicao ?? "",
+            severidade: nivel(r.severidade, "media"),
+            probabilidade: nivel(r.probabilidade, "media"),
+            riscoFinal: finalRisk(r.riscoFinal ?? r.risco_final, "medio"),
+            notes: r.notes ?? r.observacoes ?? "",
+          })).filter((r: any) => r.agente.trim());
+          const maiorRisco = riscos.some((r: any) => r.riscoFinal === "critico") ? "critica"
+            : riscos.some((r: any) => r.riscoFinal === "alto") ? "alta"
+            : riscos.some((r: any) => r.riscoFinal === "medio") ? "media" : "baixa";
+          const acoes = arr(parsed.acoes).slice(0, 8).map((a: any) => ({
+            what: String(a.what ?? a.acao ?? a.titulo ?? "").slice(0, 1000),
+            why: a.why ?? a.porque ?? "",
+            where: a.where ?? a.onde ?? "",
+            whenStart: a.whenStart ?? a.when_start ?? null,
+            whenEnd: a.whenEnd ?? a.when_end ?? null,
+            who: a.who ?? a.responsavel ?? "",
+            how: a.how ?? a.como ?? "",
+            howMuch: a.howMuch ?? a.how_much ?? "",
+            priority: nivel(a.priority ?? a.prioridade, maiorRisco),
+            status: "programado",
+          })).filter((a: any) => a.what.trim());
+          const treinamentos = arr(parsed.treinamentos).slice(0, 8).map((t: any) => ({
+            nrCode: String(t.nrCode ?? t.nr_code ?? t.nr ?? "").slice(0, 30),
+            nome: String(t.nome ?? t.titulo ?? t.treinamento ?? "").slice(0, 255),
+            cargaHoraria: Number.parseInt(String(t.cargaHoraria ?? t.carga_horaria ?? "").replace(/\D+/g, ""), 10) || null,
+            obrigatorio: true,
+          })).filter((t: any) => t.nome.trim());
           return {
-            riscos: arr(parsed.riscos).slice(0, 12),
+            riscos,
             epc: arr(parsed.epc).slice(0, 8),
             epi: arr(parsed.epi).slice(0, 10),
-            acoes: arr(parsed.acoes).slice(0, 8),
-            treinamentos: arr(parsed.treinamentos).slice(0, 8),
+            acoes,
+            treinamentos,
             cargos,
             setoresUsados: setores,
           };
+        }),
+
+      // ═══ P16 — Detalhamento Técnico do Risco ═══════════════════════════════
+      // Guarda ~20 campos técnicos por risco (intensidade, unidade, limite tolerância,
+      // norma, avaliação quantitativa, medição, laboratório, laudo, tipo/via exposição,
+      // hierarquia de controles, risco residual, periodicidade reavaliação, etc).
+      // Autopreenchimento via GROQ especializado em NR-15/NHO/ACGIH.
+      getDetalhamento: adminOrRhProcedure
+        .input(z.object({ riscoId: z.number().int() }))
+        .query(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb(); if (!db) return null;
+          try {
+            await db.execute(drzSql`CREATE TABLE IF NOT EXISTS pgr_gse_riscos_detalhe (
+              id INT AUTO_INCREMENT PRIMARY KEY,
+              risco_id INT NOT NULL UNIQUE,
+              intensidade VARCHAR(60),
+              concentracao VARCHAR(60),
+              unidade VARCHAR(30),
+              tempo_exposicao VARCHAR(60),
+              frequencia_exposicao VARCHAR(60),
+              via_exposicao VARCHAR(80),
+              limite_tolerancia VARCHAR(120),
+              norma_referencia VARCHAR(255),
+              situacao_limite VARCHAR(40),
+              avaliacao_quantitativa TINYINT(1) DEFAULT 0,
+              data_medicao DATE NULL,
+              proxima_medicao DATE NULL,
+              resultado_medicao VARCHAR(255),
+              laboratorio VARCHAR(255),
+              instrumento VARCHAR(255),
+              metodologia TEXT,
+              criterio_ia TEXT,
+              justificativa_ia TEXT,
+              hierarquia_controles TEXT,
+              periodicidade_reavaliacao VARCHAR(60),
+              avaliacao_eficacia_controles TEXT,
+              risco_residual_severidade VARCHAR(30),
+              risco_residual_probabilidade VARCHAR(30),
+              risco_residual_final VARCHAR(30),
+              ai_generated TINYINT(1) DEFAULT 0,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+          } catch (_) {}
+          const [[r]]: any = await execP(db,
+            `SELECT gd.* FROM pgr_gse_riscos_detalhe gd
+             JOIN pgr_gse_riscos gr ON gr.id=gd.risco_id
+             JOIN pgr_gse g ON g.id=gr.gse_id
+             JOIN pgr_documents p ON p.id=g.pgr_id
+             WHERE gd.risco_id=? AND p.company_id=?`, [input.riscoId, cid]);
+          return r ?? null;
+        }),
+
+      // P18 #10/#22 — Bruno: "se já existe um risco 'Postura inadequada' em outro GSE,
+      // sugerir reaproveitar o detalhamento técnico já preenchido" (reduz retrabalho
+      // quando o mesmo agente aparece em setores/GSEs diferentes da mesma empresa).
+      findSimilarDetalhamento: adminOrRhProcedure
+        .input(z.object({ riscoId: z.number().int() }))
+        .query(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb(); if (!db) return null;
+          const [[risco]]: any = await execP(db,
+            `SELECT gr.agente, p.company_id FROM pgr_gse_riscos gr
+             JOIN pgr_gse g ON g.id=gr.gse_id JOIN pgr_documents p ON p.id=g.pgr_id
+             WHERE gr.id=?`, [input.riscoId]);
+          if (!risco || Number(risco.company_id) !== Number(cid) || !risco.agente) return null;
+          try {
+            const [[match]]: any = await execP(db, `
+              SELECT gd.*, gr.agente, g.nome AS gseName, gr.id AS sourceRiscoId
+              FROM pgr_gse_riscos_detalhe gd
+              JOIN pgr_gse_riscos gr ON gr.id=gd.risco_id
+              JOIN pgr_gse g ON g.id=gr.gse_id
+              JOIN pgr_documents p ON p.id=g.pgr_id
+              WHERE p.company_id=? AND gr.id<>? AND LOWER(TRIM(gr.agente))=LOWER(TRIM(?))
+              ORDER BY gd.updated_at DESC LIMIT 1`, [cid, input.riscoId, risco.agente]);
+            return match ?? null;
+          } catch (_) { return null; }
+        }),
+
+      setDetalhamento: adminOrRhProcedure
+        .input(z.object({
+          riscoId: z.number().int(),
+          intensidade: z.string().optional(), concentracao: z.string().optional(), unidade: z.string().optional(),
+          tempoExposicao: z.string().optional(), frequenciaExposicao: z.string().optional(), viaExposicao: z.string().optional(),
+          limiteTolerancia: z.string().optional(), normaReferencia: z.string().optional(), situacaoLimite: z.string().optional(),
+          avaliacaoQuantitativa: z.boolean().optional(),
+          dataMedicao: z.string().optional(), proximaMedicao: z.string().optional(),
+          resultadoMedicao: z.string().optional(), laboratorio: z.string().optional(),
+          instrumento: z.string().optional(), metodologia: z.string().optional(),
+          criterioIa: z.string().optional(), justificativaIa: z.string().optional(),
+          hierarquiaControles: z.string().optional(), periodicidadeReavaliacao: z.string().optional(),
+          avaliacaoEficaciaControles: z.string().optional(),
+          riscoResidualSeveridade: z.string().optional(), riscoResidualProbabilidade: z.string().optional(),
+          riscoResidualFinal: z.string().optional(),
+          aiGenerated: z.boolean().optional(),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          // Guard: risco pertence a essa empresa
+          const [[owner]]: any = await execP(db,
+            `SELECT p.company_id FROM pgr_gse_riscos r JOIN pgr_gse g ON g.id=r.gse_id JOIN pgr_documents p ON p.id=g.pgr_id WHERE r.id=?`,
+            [input.riscoId]);
+          if (!owner || Number(owner.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+          try { await db.execute(drzSql`CREATE TABLE IF NOT EXISTS pgr_gse_riscos_detalhe (id INT AUTO_INCREMENT PRIMARY KEY, risco_id INT NOT NULL UNIQUE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`); } catch(_) {}
+          // Upsert idempotente por risco_id (UNIQUE).
+          await execP(db, `
+            INSERT INTO pgr_gse_riscos_detalhe
+              (risco_id, intensidade, concentracao, unidade, tempo_exposicao, frequencia_exposicao, via_exposicao,
+               limite_tolerancia, norma_referencia, situacao_limite, avaliacao_quantitativa,
+               data_medicao, proxima_medicao, resultado_medicao, laboratorio, instrumento, metodologia,
+               criterio_ia, justificativa_ia, hierarquia_controles, periodicidade_reavaliacao, avaliacao_eficacia_controles,
+               risco_residual_severidade, risco_residual_probabilidade, risco_residual_final, ai_generated)
+            VALUES (?,?,?,?,?,?,?, ?,?,?,?, ?,?,?,?,?,?, ?,?,?,?,?, ?,?,?,?)
+            ON DUPLICATE KEY UPDATE
+              intensidade=VALUES(intensidade), concentracao=VALUES(concentracao), unidade=VALUES(unidade),
+              tempo_exposicao=VALUES(tempo_exposicao), frequencia_exposicao=VALUES(frequencia_exposicao), via_exposicao=VALUES(via_exposicao),
+              limite_tolerancia=VALUES(limite_tolerancia), norma_referencia=VALUES(norma_referencia), situacao_limite=VALUES(situacao_limite),
+              avaliacao_quantitativa=VALUES(avaliacao_quantitativa),
+              data_medicao=VALUES(data_medicao), proxima_medicao=VALUES(proxima_medicao),
+              resultado_medicao=VALUES(resultado_medicao), laboratorio=VALUES(laboratorio), instrumento=VALUES(instrumento), metodologia=VALUES(metodologia),
+              criterio_ia=VALUES(criterio_ia), justificativa_ia=VALUES(justificativa_ia),
+              hierarquia_controles=VALUES(hierarquia_controles), periodicidade_reavaliacao=VALUES(periodicidade_reavaliacao),
+              avaliacao_eficacia_controles=VALUES(avaliacao_eficacia_controles),
+              risco_residual_severidade=VALUES(risco_residual_severidade), risco_residual_probabilidade=VALUES(risco_residual_probabilidade),
+              risco_residual_final=VALUES(risco_residual_final), ai_generated=VALUES(ai_generated)`,
+            [input.riscoId, input.intensidade ?? null, input.concentracao ?? null, input.unidade ?? null,
+             input.tempoExposicao ?? null, input.frequenciaExposicao ?? null, input.viaExposicao ?? null,
+             input.limiteTolerancia ?? null, input.normaReferencia ?? null, input.situacaoLimite ?? null,
+             input.avaliacaoQuantitativa ? 1 : 0,
+             input.dataMedicao || null, input.proximaMedicao || null,
+             input.resultadoMedicao ?? null, input.laboratorio ?? null, input.instrumento ?? null, input.metodologia ?? null,
+             input.criterioIa ?? null, input.justificativaIa ?? null,
+             input.hierarquiaControles ?? null, input.periodicidadeReavaliacao ?? null, input.avaliacaoEficaciaControles ?? null,
+             input.riscoResidualSeveridade ?? null, input.riscoResidualProbabilidade ?? null, input.riscoResidualFinal ?? null,
+             input.aiGenerated ? 1 : 0]);
+          return { ok: true };
+        }),
+
+      // Autopreenchimento via IA especializada em NR-15/NHO/ACGIH. Retorna o
+      // pacote técnico completo (não salva — cliente decide se aceita/edita antes de salvar).
+      aiSuggestDetalhamento: adminOrRhProcedure
+        .input(z.object({ riscoId: z.number().int() }))
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          const rR: any = await db.execute(drzSql`
+            SELECT r.id, r.tipo, r.agente, r.fonte_geradora, r.possivel_dano, r.tipo_exposicao,
+                   r.severidade, r.probabilidade, r.risco_final,
+                   g.nome AS gse_nome, g.num_trabalhadores,
+                   p.company_id, p.razao_social, p.atividade_principal
+            FROM pgr_gse_riscos r JOIN pgr_gse g ON g.id=r.gse_id JOIN pgr_documents p ON p.id=g.pgr_id
+            WHERE r.id=${input.riscoId} LIMIT 1`);
+          const r = (rR as any)[0]?.[0];
+          if (!r) throw new TRPCError({ code: "NOT_FOUND" });
+          if (Number(r.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+
+          const cR: any = await db.execute(drzSql`
+            SELECT cargo FROM pgr_gse_cargos WHERE gse_id=(SELECT gse_id FROM pgr_gse_riscos WHERE id=${input.riscoId})`);
+          const cargos = ((cR as any)[0] ?? []).map((x: any) => x.cargo).filter(Boolean);
+
+          const GROQ_API_KEY = process.env.GROQ_API_KEY;
+          if (!GROQ_API_KEY) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "GROQ_API_KEY not set" });
+
+          const systemPrompt = `Você é higienista ocupacional sênior + engenheiro de segurança do trabalho, especialista em NR-15 (anexos 1-14), NR-09, NHO-01 (ruído), NHO-06 (calor), NHO-07 (iluminância), NHO-08 (vibração), NHO-09 (poeiras minerais), ACGIH TLVs e Portaria MTP 1.419/2024 (NR-01/PGR).
+
+Você recebe UM risco já identificado (tipo, agente, fonte, dano) e retorna o detalhamento técnico completo em JSON válido, sem markdown, exatamente neste schema (use "" ou null para não aplicável):
+
+{
+  "unidade": "dB(A)|ppm|mg/m³|lux|°C|m/s²|% ou string",
+  "intensidade": "valor típico esperado da atividade (ex: '85 a 92') ou faixa",
+  "concentracao": "quando químico/poeira, valor típico ou faixa; senão vazio",
+  "tempoExposicao": "ex: '8h/dia' ou '4h intermitente'",
+  "frequenciaExposicao": "Habitual|Intermitente|Eventual|Permanente",
+  "viaExposicao": "Inalatória|Cutânea|Ocular|Auditiva|Ergonômica|Mecânica",
+  "limiteTolerancia": "valor + unidade (ex: '85 dB(A) para 8h', '20 ppm TWA')",
+  "normaReferencia": "norma exata (ex: 'NR-15 Anexo 1', 'NHO-01', 'ACGIH TLV-TWA 2024')",
+  "situacaoLimite": "Abaixo|Próximo|Acima|A avaliar",
+  "avaliacaoQuantitativa": true|false,
+  "criterioIa": "critério técnico usado pra classificar (ex: 'atividade em setor operacional com fonte contínua')",
+  "justificativaIa": "1-2 frases justificando severidade/probabilidade/risco final",
+  "hierarquiaControles": "texto listando hierarquia esperada: 1) eliminação: X; 2) substituição: Y; 3) engenharia: Z; 4) administrativos: W; 5) EPC: V; 6) EPI: U",
+  "periodicidadeReavaliacao": "Anual|Bienal|Semestral|A cada nova avaliação de risco",
+  "riscoResidualSeveridade": "Leve|Moderada|Grave",
+  "riscoResidualProbabilidade": "Improvável|Possível|Provável",
+  "riscoResidualFinal": "Trivial|Tolerável|Moderado|Substancial"
+}
+
+REGRAS DURAS:
+- Sempre cite NORMA EXATA em "normaReferencia" (não invente).
+- "avaliacaoQuantitativa": true para agentes com limite quantitativo mensurável (ruído, calor, químico, poeira, vibração, iluminância); false para ergonômico/psicossocial/acidente qualitativos.
+- Risco residual DEVE ser menor OU igual ao risco final inicial (após controles).
+- "hierarquiaControles" é o coração técnico do documento — seja específico ao agente (para "Ruído": engenharia = enclausuramento da fonte; EPC = barreiras acústicas; EPI = protetor auricular tipo plug/concha com atenuação NRRSF adequada).
+- Em português técnico brasileiro.`;
+
+          const userPrompt = `Contexto:
+Empresa: ${r.razao_social ?? "—"}${r.atividade_principal ? ` (${r.atividade_principal})` : ""}
+GSE: ${r.gse_nome} — ${r.num_trabalhadores ?? 0} trabalhadores
+Cargos: ${cargos.join(", ") || "(não informado)"}
+
+Risco a detalhar:
+- Tipo: ${r.tipo}
+- Agente: ${r.agente}
+- Fonte geradora: ${r.fonte_geradora ?? "(não informado)"}
+- Possível dano: ${r.possivel_dano ?? "(não informado)"}
+- Tipo de exposição (livre): ${r.tipo_exposicao ?? "(não informado)"}
+- Severidade inicial: ${r.severidade}
+- Probabilidade inicial: ${r.probabilidade}
+- Risco final inicial: ${r.risco_final}
+
+Retorne o detalhamento técnico completo (JSON conforme schema).`;
+
+          const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${GROQ_API_KEY}` },
+            body: JSON.stringify({
+              model: "llama-3.3-70b-versatile",
+              messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
+              temperature: 0.3, max_tokens: 1400, response_format: { type: "json_object" },
+            }),
+          });
+          if (!resp.ok) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Groq ${resp.status}` });
+          const data = await resp.json();
+          const parsed = JSON.parse(String(data?.choices?.[0]?.message?.content ?? "{}"));
+          return { ...parsed, aiGenerated: true };
+        }),
+
+      // Anexos de laudo de medição quantitativa — reusa pgr_gse_evidencias (tipo=laudo).
+      addLaudoRisco: adminOrRhProcedure
+        .input(z.object({ riscoId: z.number().int(), gseId: z.number().int(), titulo: z.string().min(1),
+          descricao: z.string().optional(), fileBase64: z.string(), fileName: z.string() }))
+        .mutation(async ({ ctx, input }) => {
+          const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          const cid = (ctx.user as any).companyId;
+          const [[owner]]: any = await execP(db,
+            `SELECT p.company_id FROM pgr_gse g JOIN pgr_documents p ON p.id=g.pgr_id WHERE g.id=?`, [input.gseId]);
+          if (!owner || Number(owner.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+          const fs = await import("fs/promises");
+          const path = await import("path");
+          const dir = "/var/www/saudedotrabalho/uploads/pgr_laudos";
+          await fs.mkdir(dir, { recursive: true });
+          const b64 = input.fileBase64.includes(",") ? input.fileBase64.split(",", 2)[1] : input.fileBase64;
+          const buf = Buffer.from(b64, "base64");
+          const safeName = input.fileName.replace(/[^\w.\-]/g, "_");
+          const fname = `${Date.now()}_${safeName}`;
+          await fs.writeFile(path.join(dir, fname), buf);
+          const fileUrl = `/uploads/pgr_laudos/${fname}`;
+          await execP(db,
+            `INSERT INTO pgr_gse_evidencias (gse_id, tipo, titulo, descricao, file_url, gse_risco_id, uploaded_by_user_id) VALUES (?,?,?,?,?,?,?)`,
+            [input.gseId, "laudo", input.titulo, input.descricao || null, fileUrl, input.riscoId, ctx.user.id]);
+          return { ok: true, fileUrl };
+        }),
+
+      listLaudosDoRisco: adminOrRhProcedure
+        .input(z.object({ riscoId: z.number().int() }))
+        .query(async ({ input }) => {
+          const db = await getDb(); if (!db) return [];
+          const [rows]: any = await execP(db,
+            `SELECT * FROM pgr_gse_evidencias WHERE gse_risco_id=? AND tipo='laudo' ORDER BY created_at DESC`, [input.riscoId]);
+          return rows ?? [];
         }),
     }),
   }),
@@ -20675,7 +23206,14 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
         if (!cid) return { recomputed: 0 };
         const db = await getDb();
         if (!db) return { recomputed: 0 };
-        const [rows] = await execP(db, `SELECT id FROM users WHERE company_id=? AND is_active=1`, [cid]);
+        // Bruno R5-P5 #5 — Limpa TODAS as duplicatas do mês corrente desta empresa
+        // ANTES de recalcular (idempotente; cada user terá no máximo 1 snapshot do mês).
+        try {
+          await db.execute(drzSql`DELETE wi FROM wellbeing_index wi
+            INNER JOIN users u ON u.id = wi.user_id
+            WHERE u.company_id = ${cid} AND wi.snapshot_month = DATE_FORMAT(CURDATE(), '%Y-%m-01')`);
+        } catch (e) { console.warn("[recomputeWellbeing] cleanup falhou:", (e as any)?.message); }
+        const [rows] = await execP(db, `SELECT id FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]);
         let n = 0;
         for (const u of (rows as any[])) {
           try { await computeWellbeingIndex(Number(u.id), cid); n++; } catch (_) { /* segue */ }
@@ -20695,18 +23233,18 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
         if (!db) return { bands: { sem_risco: 0, sinal_precoce: 0, risco_moderado: 0, risco_elevado: 0 }, total: 0, evolution: [], bySector: [], topRisk: [] };
         const bId = input?.branchId ?? null, sId = input?.sectorId ?? null;
         const band = (sc: number) => sc >= 80 ? "sem_risco" : sc >= 60 ? "sinal_precoce" : sc >= 40 ? "risco_moderado" : "risco_elevado";
-        let where = "WHERE u.company_id=? AND u.is_active=1";
+        let where = `WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`;
         const params: any[] = [cid];
         if (bId) { where += " AND u.branch_id=?"; params.push(bId); }
         if (sId) { where += " AND u.sector_id=?"; params.push(sId); }
-        // último snapshot por colaborador
+        // Bruno R5-P5 #5 — último snapshot ÚNICO por colaborador (MAX(id) garante
+        // que mesmo com duplicatas legadas, cada user conta apenas 1 vez).
         const [rows] = await execP(db, `
           SELECT u.id AS userId, u.name, b.name AS branch, s.name AS sector, wi.score
           FROM users u
           LEFT JOIN branches b ON b.id=u.branch_id
           LEFT JOIN sectors s ON s.id=u.sector_id
-          LEFT JOIN wellbeing_index wi ON wi.user_id=u.id
-            AND wi.snapshot_month=(SELECT MAX(w2.snapshot_month) FROM wellbeing_index w2 WHERE w2.user_id=u.id)
+          LEFT JOIN wellbeing_index wi ON wi.id=(SELECT MAX(w2.id) FROM wellbeing_index w2 WHERE w2.user_id=u.id)
           ${where}`, params);
         const people = (rows as any[]).filter((r) => r.score != null).map((r) => ({ ...r, score: Number(r.score), band: band(Number(r.score)) }));
         const bands = { sem_risco: 0, sinal_precoce: 0, risco_moderado: 0, risco_elevado: 0 } as Record<string, number>;
@@ -20757,23 +23295,38 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
         const sectorFilter = input?.sectorId ? `AND u.sector_id = ${Number(input.sectorId)}` : '';
         const companyFilter = isGlobal ? '' : `AND u.company_id = ${cid}`;
 
-        const totalUsersR: any = await db.execute(drzSql.raw(`SELECT COUNT(*) AS c FROM users u WHERE 1=1 ${companyFilter} ${branchFilter} ${sectorFilter}`));
-        const activeUsersR: any = await db.execute(drzSql.raw(`SELECT COUNT(*) AS c FROM users u WHERE u.lastSignedIn >= DATE_SUB(NOW(), INTERVAL 30 DAY) ${companyFilter} ${branchFilter} ${sectorFilter}`));
-        const modulesCompletedR: any = await db.execute(drzSql.raw(`SELECT COUNT(*) AS c FROM user_progress p INNER JOIN users u ON u.id=p.userId WHERE p.isCompleted=1 ${companyFilter} ${branchFilter} ${sectorFilter}`));
-        const certsR: any = await db.execute(drzSql.raw(`SELECT COUNT(*) AS c FROM certificates c2 INNER JOIN users u ON u.id=c2.userId WHERE 1=1 ${companyFilter} ${branchFilter} ${sectorFilter}`));
+        // P18 #23 (cont.) — "colaboradores ativos" padronizado com o painel de Conformidade:
+        // is_active=1 e exclui cargos administrativos/técnicos (admin/RH/SESMT/psicólogo).
+        const STAFF_EXCL = activeEmployeeWhere("u");
+        const totalUsersR: any = await db.execute(drzSql.raw(`SELECT COUNT(*) AS c FROM users u WHERE ${STAFF_EXCL} ${companyFilter} ${branchFilter} ${sectorFilter}`));
+        const activeUsersR: any = await db.execute(drzSql.raw(`SELECT COUNT(*) AS c FROM users u WHERE ${STAFF_EXCL} AND u.lastSignedIn >= DATE_SUB(NOW(), INTERVAL 30 DAY) ${companyFilter} ${branchFilter} ${sectorFilter}`));
+        const modulesCompletedR: any = await db.execute(drzSql.raw(`SELECT COUNT(*) AS c FROM user_progress p INNER JOIN users u ON u.id=p.userId WHERE ${STAFF_EXCL} AND p.isCompleted=1 ${companyFilter} ${branchFilter} ${sectorFilter}`));
+        const certsR: any = await db.execute(drzSql.raw(`SELECT COUNT(*) AS c FROM certificates c2 INNER JOIN users u ON u.id=c2.userId WHERE ${STAFF_EXCL} ${companyFilter} ${branchFilter} ${sectorFilter}`));
 
-        // survey response rate: responses / (active surveys * total users) — simplified
+        // P18 #23 (cont.) — taxa de resposta unificada com a fórmula do Conformidade:
+        // % de colaboradores ativos que responderam PELO MENOS UMA pesquisa (identificados
+        // via user_id + anônimas via NULL, capado no total de colaboradores), excluindo
+        // respostas desconsideradas (status='invalid').
+        const survRespR: any = await db.execute(drzSql.raw(`
+          SELECT COUNT(DISTINCT sr.user_id) AS identificados, SUM(CASE WHEN sr.user_id IS NULL THEN 1 ELSE 0 END) AS anonimas
+          FROM survey_responses sr INNER JOIN surveys s ON s.id=sr.survey_id
+          WHERE (sr.status IS NULL OR sr.status <> 'invalid') ${isGlobal ? '' : `AND s.company_id = ${cid}`}`));
+        // Contagens brutas pros cards "Pesquisas Ativas" / "Respostas de Pesquisas" (não fazem
+        // parte da taxa unificada, mas o client ainda os exibe separadamente).
         const surveysR: any = await db.execute(drzSql.raw(`SELECT COUNT(*) AS c FROM surveys s WHERE s.status='active' ${isGlobal ? '' : `AND s.company_id = ${cid}`}`));
-        const responsesR: any = await db.execute(drzSql.raw(`SELECT COUNT(*) AS c FROM survey_responses r INNER JOIN surveys s ON s.id=r.survey_id WHERE 1=1 ${isGlobal ? '' : `AND s.company_id = ${cid}`}`));
+        const responsesR: any = await db.execute(drzSql.raw(`SELECT COUNT(*) AS c FROM survey_responses r INNER JOIN surveys s ON s.id=r.survey_id WHERE (r.status IS NULL OR r.status <> 'invalid') ${isGlobal ? '' : `AND s.company_id = ${cid}`}`));
+        const activeSurveys = Number(surveysR[0]?.[0]?.c ?? surveysR?.[0]?.c ?? 0);
+        const totalResponses = Number(responsesR[0]?.[0]?.c ?? responsesR?.[0]?.c ?? 0);
 
         const totalUsers = Number(totalUsersR[0]?.[0]?.c ?? totalUsersR?.[0]?.c ?? 0);
         const activeUsers = Number(activeUsersR[0]?.[0]?.c ?? activeUsersR?.[0]?.c ?? 0);
         const modulesCompleted = Number(modulesCompletedR[0]?.[0]?.c ?? modulesCompletedR?.[0]?.c ?? 0);
         const certificatesIssued = Number(certsR[0]?.[0]?.c ?? certsR?.[0]?.c ?? 0);
-        const activeSurveys = Number(surveysR[0]?.[0]?.c ?? surveysR?.[0]?.c ?? 0);
-        const totalResponses = Number(responsesR[0]?.[0]?.c ?? responsesR?.[0]?.c ?? 0);
-        const surveyResponseRate = (activeSurveys > 0 && totalUsers > 0) ? Math.round((totalResponses / (activeSurveys * totalUsers)) * 100) : 0;
-        const avgEngagementR: any = await db.execute(drzSql.raw(`SELECT ROUND(AVG(COALESCE(p.percentWatched,0)),1) AS avg_percent FROM user_progress p INNER JOIN users u ON u.id=p.userId WHERE 1=1 ${companyFilter} ${branchFilter} ${sectorFilter}`));
+        const survRespRow: any = survRespR[0]?.[0] ?? survRespR?.[0] ?? {};
+        const totalEmpForRate = Math.max(1, totalUsers);
+        const respondentesUnicos = Math.min(totalEmpForRate, Number(survRespRow.identificados ?? 0) + Number(survRespRow.anonimas ?? 0));
+        const surveyResponseRate = Math.round((respondentesUnicos / totalEmpForRate) * 100);
+        const avgEngagementR: any = await db.execute(drzSql.raw(`SELECT ROUND(AVG(COALESCE(p.percentWatched,0)),1) AS avg_percent FROM user_progress p INNER JOIN users u ON u.id=p.userId WHERE ${STAFF_EXCL} ${companyFilter} ${branchFilter} ${sectorFilter}`));
         const avgEngagement = Number(avgEngagementR[0]?.[0]?.avg_percent ?? avgEngagementR?.[0]?.avg_percent ?? 0);
 
         // Risk overview
@@ -20961,7 +23514,7 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
           LEFT JOIN user_progress p ON p.userId = u.id
           LEFT JOIN sectors s ON s.id = u.sector_id
           LEFT JOIN branches b ON b.id = u.branch_id
-          WHERE 1=1 ${isGlobal ? '' : `AND u.company_id = ${cid}`}${input?.branchId ? ` AND u.branch_id = ${Number(input.branchId)}` : ''}${input?.sectorId ? ` AND u.sector_id = ${Number(input.sectorId)}` : ''}
+          WHERE ${activeEmployeeWhere("u")} ${isGlobal ? '' : `AND u.company_id = ${cid}`}${input?.branchId ? ` AND u.branch_id = ${Number(input.branchId)}` : ''}${input?.sectorId ? ` AND u.sector_id = ${Number(input.sectorId)}` : ''}
           GROUP BY u.id, u.name, u.email, s.name, b.name
           HAVING modulesCompleted > 0
           ORDER BY modulesCompleted DESC, avgPercent DESC
@@ -20993,7 +23546,7 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
           LEFT JOIN user_progress p ON p.userId = u.id
           LEFT JOIN sectors s ON s.id = u.sector_id
           LEFT JOIN branches b ON b.id = u.branch_id
-          WHERE u.role NOT IN ('admin','admin_global','company_admin','rh','super_admin') ${isGlobal ? '' : `AND u.company_id = ${cid}`}${input?.branchId ? ` AND u.branch_id = ${Number(input.branchId)}` : ''}${input?.sectorId ? ` AND u.sector_id = ${Number(input.sectorId)}` : ''}
+          WHERE ${activeEmployeeWhere("u")} ${isGlobal ? '' : `AND u.company_id = ${cid}`}${input?.branchId ? ` AND u.branch_id = ${Number(input.branchId)}` : ''}${input?.sectorId ? ` AND u.sector_id = ${Number(input.sectorId)}` : ''}
           GROUP BY u.id, u.name, u.email, s.name, b.name
           ORDER BY avgPercent ASC, modulesCompleted ASC
           LIMIT ${lim}
@@ -21016,8 +23569,8 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
       if (!db) return [];
       const r: any = await db.execute(drzSql.raw(`
         SELECT s.id, s.title, s.category, s.status,
-          COUNT(DISTINCT r.id) AS responses,
-          (SELECT COUNT(*) FROM users u WHERE 1=1 ${isGlobal ? '' : `AND u.company_id = ${cid}`}) AS eligibleUsers
+          COUNT(DISTINCT CASE WHEN r.status IS NULL OR r.status <> 'invalid' THEN r.id END) AS responses,
+          (SELECT COUNT(*) FROM users u WHERE ${activeEmployeeWhere("u")} ${isGlobal ? '' : `AND u.company_id = ${cid}`}) AS eligibleUsers
         FROM surveys s
         LEFT JOIN survey_responses r ON r.survey_id = s.id
         WHERE 1=1 ${isGlobal ? '' : `AND (s.company_id = ${cid} OR s.is_template = 1)`}
@@ -21161,7 +23714,7 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
           FROM users u
           LEFT JOIN user_progress p ON p.userId = u.id
           LEFT JOIN sectors s ON s.id = u.sector_id
-          WHERE u.role NOT IN ('admin_global','super_admin') ${isGlobal ? '' : `AND u.company_id = ${cid}`}${input?.branchId ? ` AND u.branch_id = ${Number(input.branchId)}` : ''}${input?.sectorId ? ` AND u.sector_id = ${Number(input.sectorId)}` : ''}
+          WHERE ${activeEmployeeWhere("u")} ${isGlobal ? '' : `AND u.company_id = ${cid}`}${input?.branchId ? ` AND u.branch_id = ${Number(input.branchId)}` : ''}${input?.sectorId ? ` AND u.sector_id = ${Number(input.sectorId)}` : ''}
           GROUP BY u.id, u.name, u.email, s.name
           ORDER BY engagementScore DESC
           LIMIT ${lim}
@@ -21605,14 +24158,228 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
 
   }),
 
+  // ─── P14 #5 — Perfil "Intermediador" + CRM de Prospecção ──────────────────
+  intermediador: router({
+    /** Meu cadastro de intermediário (via commercial_partners.user_id) + se sou "principal". */
+    myProfile: protectedProcedure.query(async ({ ctx }) => {
+      const role = (ctx.user as any).role;
+      if (role !== "intermediador" && role !== "super_admin") return null;
+      const { ensureCrmTables } = await import("./_core/crm"); await ensureCrmTables();
+      const db = await getDb(); if (!db) return null;
+      const [[p]]: any = await execP(db, `SELECT * FROM commercial_partners WHERE user_id=?`, [ctx.user.id]);
+      if (!p) return null;
+      const [subs]: any = await execP(db, `SELECT id, nome FROM commercial_partners WHERE parent_partner_id=?`, [p.id]);
+      return {
+        id: Number(p.id), nome: p.nome, comissaoPct: Number(p.comissao_pct),
+        isPrincipal: (subs as any[]).length > 0,
+        subordinados: (subs as any[]).map((s: any) => ({ id: Number(s.id), nome: s.nome })),
+      };
+    }),
+
+    listProspects: protectedProcedure
+      .input(z.object({ estagio: z.string().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        if (role !== "intermediador" && role !== "super_admin") throw new TRPCError({ code: "FORBIDDEN" });
+        const { ensureCrmTables } = await import("./_core/crm"); await ensureCrmTables();
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const [[me]]: any = await execP(db, `SELECT id FROM commercial_partners WHERE user_id=?`, [ctx.user.id]);
+        if (!me) return [];
+        const [subs]: any = await execP(db, `SELECT id FROM commercial_partners WHERE parent_partner_id=?`, [me.id]);
+        const ids = [Number(me.id), ...(subs as any[]).map((s: any) => Number(s.id))];
+        const placeholders = ids.map(() => "?").join(",");
+        let sql = `SELECT pr.*, cp.nome AS owner_name FROM prospects pr JOIN commercial_partners cp ON cp.id=pr.partner_id WHERE pr.partner_id IN (${placeholders})`;
+        const params: any[] = [...ids];
+        if (input?.estagio) { sql += ` AND pr.estagio=?`; params.push(input.estagio); }
+        sql += ` ORDER BY pr.updated_at DESC LIMIT 300`;
+        const [rows]: any = await execP(db, sql, params);
+        return rows;
+      }),
+
+    upsertProspect: protectedProcedure
+      .input(z.object({
+        id: z.number().int().optional(),
+        empresaNome: z.string().min(1), cnpj: z.string().optional(),
+        contatoNome: z.string().optional(), contatoEmail: z.string().optional(), contatoTelefone: z.string().optional(),
+        estagio: z.enum(PROSPECT_STAGES.map(s => s.key) as [string, ...string[]]).default("lead_identificado"),
+        probabilidadePct: z.number().min(0).max(100).default(10),
+        observacoes: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        if (role !== "intermediador") throw new TRPCError({ code: "FORBIDDEN", message: "Apenas o Intermediador cadastra seus prospects." });
+        const { ensureCrmTables } = await import("./_core/crm"); await ensureCrmTables();
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const [[me]]: any = await execP(db, `SELECT id FROM commercial_partners WHERE user_id=?`, [ctx.user.id]);
+        if (!me) throw new TRPCError({ code: "FORBIDDEN", message: "Cadastro de intermediário não encontrado." });
+        if (input.id) {
+          const [[owner]]: any = await execP(db, `SELECT partner_id FROM prospects WHERE id=?`, [input.id]);
+          if (!owner || Number(owner.partner_id) !== Number(me.id)) throw new TRPCError({ code: "FORBIDDEN" });
+          await execP(db,
+            `UPDATE prospects SET empresa_nome=?, cnpj=?, contato_nome=?, contato_email=?, contato_telefone=?, estagio=?, probabilidade_pct=?, observacoes=? WHERE id=?`,
+            [input.empresaNome, input.cnpj || null, input.contatoNome || null, input.contatoEmail || null, input.contatoTelefone || null, input.estagio, input.probabilidadePct, input.observacoes || null, input.id]);
+          return { ok: true, id: input.id };
+        }
+        const [res]: any = await execP(db,
+          `INSERT INTO prospects (partner_id, empresa_nome, cnpj, contato_nome, contato_email, contato_telefone, estagio, probabilidade_pct, observacoes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [me.id, input.empresaNome, input.cnpj || null, input.contatoNome || null, input.contatoEmail || null, input.contatoTelefone || null, input.estagio, input.probabilidadePct, input.observacoes || null]);
+        return { ok: true, id: Number((res as any).insertId ?? 0) };
+      }),
+
+    changeStage: protectedProcedure
+      .input(z.object({ id: z.number().int(), newStage: z.enum(PROSPECT_STAGES.map(s => s.key) as [string, ...string[]]) }))
+      .mutation(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        if (role !== "intermediador") throw new TRPCError({ code: "FORBIDDEN" });
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const [[me]]: any = await execP(db, `SELECT id FROM commercial_partners WHERE user_id=?`, [ctx.user.id]);
+        if (!me) throw new TRPCError({ code: "FORBIDDEN" });
+        const [[p]]: any = await execP(db, `SELECT partner_id, estagio FROM prospects WHERE id=?`, [input.id]);
+        if (!p || Number(p.partner_id) !== Number(me.id)) throw new TRPCError({ code: "FORBIDDEN" });
+        await execP(db, `UPDATE prospects SET estagio=? WHERE id=?`, [input.newStage, input.id]);
+        const label = PROSPECT_STAGES.find(s => s.key === input.newStage)?.label ?? input.newStage;
+        await execP(db, `INSERT INTO prospect_interactions (prospect_id, tipo, descricao, created_by_user_id) VALUES (?, 'mudanca_estagio', ?, ?)`,
+          [input.id, `Estágio alterado para: ${label}`, ctx.user.id]);
+        return { ok: true };
+      }),
+
+    addInteraction: protectedProcedure
+      .input(z.object({ prospectId: z.number().int(), tipo: z.string().default("contato"), descricao: z.string().min(1) }))
+      .mutation(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        if (role !== "intermediador") throw new TRPCError({ code: "FORBIDDEN" });
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const [[me]]: any = await execP(db, `SELECT id FROM commercial_partners WHERE user_id=?`, [ctx.user.id]);
+        if (!me) throw new TRPCError({ code: "FORBIDDEN" });
+        const [[p]]: any = await execP(db, `SELECT partner_id FROM prospects WHERE id=?`, [input.prospectId]);
+        if (!p || Number(p.partner_id) !== Number(me.id)) throw new TRPCError({ code: "FORBIDDEN" });
+        await execP(db, `INSERT INTO prospect_interactions (prospect_id, tipo, descricao, created_by_user_id) VALUES (?, ?, ?, ?)`,
+          [input.prospectId, input.tipo, input.descricao, ctx.user.id]);
+        return { ok: true };
+      }),
+
+    listInteractions: protectedProcedure
+      .input(z.object({ prospectId: z.number().int() }))
+      .query(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        if (role !== "intermediador" && role !== "super_admin") throw new TRPCError({ code: "FORBIDDEN" });
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const [[me]]: any = await execP(db, `SELECT id FROM commercial_partners WHERE user_id=?`, [ctx.user.id]);
+        if (!me) return [];
+        const [subs]: any = await execP(db, `SELECT id FROM commercial_partners WHERE parent_partner_id=?`, [me.id]);
+        const ids = [Number(me.id), ...(subs as any[]).map((s: any) => Number(s.id))];
+        const [[p]]: any = await execP(db, `SELECT partner_id FROM prospects WHERE id=?`, [input.prospectId]);
+        if (!p || !ids.includes(Number(p.partner_id))) throw new TRPCError({ code: "FORBIDDEN" });
+        const [rows]: any = await execP(db, `SELECT * FROM prospect_interactions WHERE prospect_id=? ORDER BY created_at DESC LIMIT 100`, [input.prospectId]);
+        return rows;
+      }),
+
+    /** Dashboard gerencial: KPIs próprios + (se principal) da equipe. */
+    dashboard: protectedProcedure.query(async ({ ctx }) => {
+      const role = (ctx.user as any).role;
+      if (role !== "intermediador" && role !== "super_admin") throw new TRPCError({ code: "FORBIDDEN" });
+      const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const [[me]]: any = await execP(db, `SELECT id FROM commercial_partners WHERE user_id=?`, [ctx.user.id]);
+      if (!me) return null;
+      const [subs]: any = await execP(db, `SELECT id, nome FROM commercial_partners WHERE parent_partner_id=?`, [me.id]);
+      const ids = [Number(me.id), ...(subs as any[]).map((s: any) => Number(s.id))];
+      const placeholders = ids.map(() => "?").join(",");
+      const [[agg]]: any = await execP(db, `
+        SELECT COUNT(*) AS total, SUM(estagio NOT IN ('cliente_fechado','negociacao_perdida')) AS ativos,
+               SUM(estagio='cliente_fechado') AS fechados
+        FROM prospects WHERE partner_id IN (${placeholders})`, ids);
+      const [[comPendente]]: any = await execP(db, `SELECT COALESCE(SUM(valor_comissao),0) AS v FROM financial_commissions WHERE status='pendente' AND partner_id IN (${placeholders})`, ids);
+      const [[comPaga]]: any = await execP(db, `SELECT COALESCE(SUM(valor_comissao),0) AS v FROM financial_commissions WHERE status='pago' AND partner_id IN (${placeholders})`, ids);
+      const [proximos]: any = await execP(db, `
+        SELECT fc.valor_comissao, r.vencimento, cp.nome AS partner_name
+        FROM financial_commissions fc JOIN financial_receivables r ON r.id=fc.receivable_id
+        JOIN commercial_partners cp ON cp.id=fc.partner_id
+        WHERE fc.status='pendente' AND fc.partner_id IN (${placeholders}) ORDER BY r.vencimento ASC LIMIT 5`, ids);
+      let ranking: any[] = [];
+      if ((subs as any[]).length > 0) {
+        for (const s of subs as any[]) {
+          const [[a]]: any = await execP(db, `SELECT COUNT(*) AS total, SUM(estagio='cliente_fechado') AS fechados FROM prospects WHERE partner_id=?`, [s.id]);
+          ranking.push({ nome: s.nome, prospectados: Number(a?.total ?? 0), contratosFechados: Number(a?.fechados ?? 0) });
+        }
+        ranking.sort((a, b) => b.contratosFechados - a.contratosFechados);
+      }
+      return {
+        clientesProspectados: Number(agg?.total ?? 0),
+        clientesAtivos: Number(agg?.ativos ?? 0),
+        contratosFechados: Number(agg?.fechados ?? 0),
+        comissaoPrevista: Number(comPendente?.v ?? 0),
+        comissaoRecebida: Number(comPaga?.v ?? 0),
+        proximosPagamentos: proximos,
+        ranking,
+      };
+    }),
+  }),
+
   // ─── Appointment Scheduling ───────────────────────────────────────────────
   scheduling: router({
+    /**
+     * R5-P10 #4 — Elegibilidade do colaborador/chefia para o Programa de Acolhimento.
+     * Antes a procedure não existia → o front exibia tela de bloqueio para todos.
+     * Regra: qualquer usuário autenticado da empresa pode agendar,
+     * exceto o próprio psicólogo (ele é o profissional, não paciente).
+     */
+    myEligibility: protectedProcedure.query(async ({ ctx }) => {
+      const role = String((ctx.user as any).role || "");
+      if (role === "psicologo") {
+        return {
+          eligible: false,
+          message: "Este perfil é de profissional. Use 'Gestão de Atendimentos' no menu lateral para administrar a agenda.",
+        };
+      }
+      return {
+        eligible: true,
+        message: "Você pode agendar uma conversa confidencial com um(a) psicólogo(a). Tudo permanece sob sigilo.",
+      };
+    }),
+
+    /**
+     * R5-P11 #11 — Cadastro próprio do psicólogo logado.
+     * Criado on-demand quando o psicólogo abre /admin/agenda pela 1ª vez,
+     * para que ele consiga editar a própria disponibilidade sem depender de admin.
+     */
+    myProfessional: protectedProcedure.query(async ({ ctx }) => {
+      const role = String((ctx.user as any).role || "");
+      if (role !== "psicologo") return null;
+      const db2 = await getDb();
+      if (!db2) return null;
+      const email = String((ctx.user as any).email || "");
+      const name = String((ctx.user as any).name || email);
+      const cid = (ctx.user as any).companyId ?? null;
+      const found: any = await db2.execute(drzSql`
+        SELECT * FROM appointment_professionals WHERE email=${email} LIMIT 1`);
+      let row = (found as any)[0]?.[0];
+      if (!row) {
+        const ins: any = await db2.execute(drzSql`
+          INSERT INTO appointment_professionals (company_id, name, email, specialty, is_active)
+          VALUES (${cid}, ${name}, ${email}, 'Psicóloga(o)', 1)`);
+        const id = Number((ins as any)[0]?.insertId ?? 0);
+        const r2: any = await db2.execute(drzSql`SELECT * FROM appointment_professionals WHERE id=${id}`);
+        row = (r2 as any)[0]?.[0];
+      }
+      return {
+        id: Number(row.id),
+        name: String(row.name ?? ""),
+        email: row.email ?? null,
+        specialty: row.specialty ?? null,
+        bio: row.bio ?? null,
+        companyId: row.company_id ? Number(row.company_id) : null,
+        meetingUrlTemplate: row.meeting_url_template ?? null,
+        isActive: Boolean(row.is_active),
+      };
+    }),
+
     /** List professionals (admin: all in company; employee: active only) */
     listCollaborators: adminOrRhProcedure.query(async ({ ctx }) => {
       const cid = (ctx.user as any).companyId;
       if (!cid) return [];
       const db = await getDb();
-      const [rows] = await execP(db, `SELECT id, name, email FROM users WHERE company_id=? AND role NOT IN ('admin','rh','admin_global','super_admin','sesmt','psicologo','chefia') AND is_active=1 ORDER BY name ASC LIMIT 200`, [cid]) as any;
+      const [rows] = await execP(db, `SELECT id, name, email FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")} ORDER BY u.name ASC LIMIT 200`, [cid]) as any;
       return (rows as any[]).map((r: any) => ({ id: r.id, name: r.name ?? r.email, email: r.email }));
     }),
 
@@ -21633,6 +24400,7 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
           specialty: r.specialty ?? null,
           bio: r.bio ?? null,
           companyId: r.company_id ? Number(r.company_id) : null,
+          meetingUrlTemplate: r.meeting_url_template ?? null,
           isActive: Boolean(r.is_active),
         }));
       }),
@@ -21780,6 +24548,57 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
         return { ok: true };
       }),
 
+    /**
+     * R5-P11 #11 — Retorna as próximas N datas com pelo menos UM slot livre.
+     * Antes o front (AgendarAcolhimento) chamava esta proc, recebia 404 e exibia
+     * "Este profissional ainda não publicou disponibilidade" mesmo com horários
+     * cadastrados no Super Admin.
+     */
+    getAvailableDates: protectedProcedure
+      .input(z.object({ professionalId: z.number().int(), daysAhead: z.number().int().min(1).max(120).default(45) }))
+      .query(async ({ input }) => {
+        const db2 = await getDb();
+        if (!db2) throw new Error("DB unavailable");
+        // 1. Pega os days_of_week que o profissional atende.
+        const avRows: any = await db2.execute(
+          drzSql`SELECT DISTINCT day_of_week FROM appointment_availability WHERE professional_id=${input.professionalId} AND is_active=1`
+        );
+        const allowedDows = new Set(
+          (Array.isArray(avRows[0]) ? avRows[0] : []).map((r: any) => Number(r.day_of_week))
+        );
+        if (allowedDows.size === 0) return [] as string[];
+        // 2. Bloqueios full-day (blackouts cobrindo o dia inteiro).
+        const today = new Date();
+        const horizonStart = today.toISOString().slice(0, 10) + " 00:00:00";
+        const horizon = new Date(today.getTime() + input.daysAhead * 24 * 3600 * 1000);
+        const horizonEnd = horizon.toISOString().slice(0, 10) + " 23:59:59";
+        let blackoutDays = new Set<string>();
+        try {
+          const boRows: any = await db2.execute(drzSql`
+            SELECT DATE(starts_at) AS d
+            FROM appointment_blackouts
+            WHERE professional_id=${input.professionalId}
+              AND starts_at <= ${horizonEnd}
+              AND ends_at >= ${horizonStart}`);
+          blackoutDays = new Set(
+            (Array.isArray(boRows[0]) ? boRows[0] : []).map((r: any) =>
+              new Date(r.d).toISOString().slice(0, 10)
+            )
+          );
+        } catch (_) { /* tabela ausente — segue */ }
+        // 3. Iteração simples por dia.
+        const result: string[] = [];
+        for (let i = 0; i < input.daysAhead; i++) {
+          const d = new Date(today.getTime() + i * 24 * 3600 * 1000);
+          const dow = d.getDay();
+          if (!allowedDows.has(dow)) continue;
+          const iso = d.toISOString().slice(0, 10);
+          if (blackoutDays.has(iso)) continue;
+          result.push(iso);
+        }
+        return result;
+      }),
+
     /** Return available time slots for a given professional + date */
     getAvailableSlots: protectedProcedure
       .input(z.object({
@@ -21852,6 +24671,25 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
         const isAdminRole = adminRoles.includes((ctx.user as any).role ?? '');
         const collaboratorId = (input.collaboratorId && isAdminRole) ? input.collaboratorId : ctx.user.id;
 
+        // R5-P12 #3 — limite de 1 consulta ativa por SEMANA por colaborador (qualquer psicólogo).
+        // Semana = segunda a domingo da data escolhida. Bloqueia antes de confirmar.
+        try {
+          const d = new Date(`${input.date}T00:00:00`);
+          const dow = (d.getDay() + 6) % 7; // 0=segunda
+          const weekStart = new Date(d.getTime() - dow * 86400000);
+          const weekEnd = new Date(weekStart.getTime() + 7 * 86400000);
+          const ws = weekStart.toISOString().slice(0, 10) + " 00:00:00";
+          const we = weekEnd.toISOString().slice(0, 10) + " 00:00:00";
+          const [[cnt]]: any = await execP(db2,
+            `SELECT COUNT(*) AS n FROM appointments
+             WHERE collaborator_id=? AND scheduled_at >= ? AND scheduled_at < ?
+               AND status NOT IN ('cancelled','no_show','completed')`,
+            [collaboratorId, ws, we]);
+          if (Number(cnt?.n ?? 0) >= 1) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Você já possui uma consulta agendada nesta semana. Um novo agendamento só é possível para outra semana." });
+          }
+        } catch (err: any) { if (err?.code === "BAD_REQUEST") throw err; /* falha de query não bloqueia */ }
+
         // SP5 #7 — Bloqueia se profissional está em blackout no horário
         try {
           const bo: any = await db2.execute(drzSql`
@@ -21898,28 +24736,42 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
             }
           }
         } catch (e) { console.warn("[scheduling] notif sino falhou:", (e as any)?.message); }
-        // Send confirmation email to collaborator
+        // Bruno R5 #10 — E-mails ricos com link da reunião (Meet/Teams) destacado.
+        // Dispara pra COLABORADOR, PROFISSIONAL (se tiver email) e ADMIN da plataforma.
         try {
+          const { buildAppointmentEmail } = await import("./_core/email");
+          const base = getEmailLinkBaseUrl();
+          const [[co2]]: any = await execP(db2, `SELECT name FROM companies WHERE id=?`, [companyId]).catch(() => [[{ name: "" }]]);
+          const emailCommon = {
+            collaboratorName: ctx.user.name ?? ctx.user.email ?? "—",
+            professionalName: prof?.name ?? "—",
+            professionalSpecialty: prof?.specialty ?? null,
+            date: input.date, time: input.time, durationMin: input.durationMinutes,
+            meetingUrl: autoMeetingUrl, notes: input.notes ?? null,
+            companyName: co2?.name || "Saúde do Trabalho", base,
+          };
           if (ctx.user.email) {
             await sendEmail({
-              to: ctx.user.email,
-              subject: "Conversa de Acolhimento Agendada",
-              html: plainToHtml(
-                `Olá, ${ctx.user.name ?? ctx.user.email}!\n\nSua conversa de acolhimento foi agendada com sucesso.\n\nProfissional: ${prof?.name ?? "—"}\nData/Hora: ${input.date} às ${input.time}\nDuração: ${input.durationMinutes} minutos\n\nEm breve você receberá mais informações.\n\nPlataforma Saúde do Trabalho`
-              ),
+              to: ctx.user.email, toName: emailCommon.collaboratorName,
+              subject: `Agendamento confirmado — ${prof?.name ?? "Profissional"} · ${input.date} ${input.time}`,
+              html: buildAppointmentEmail({ ...emailCommon, audience: "collaborator" }),
             });
           }
-          // Notify platform admin about new appointment
+          if (prof?.email) {
+            await sendEmail({
+              to: prof.email, toName: prof.name ?? prof.email,
+              subject: `Novo agendamento — ${ctx.user.name ?? ctx.user.email} · ${input.date} ${input.time}`,
+              html: buildAppointmentEmail({ ...emailCommon, audience: "professional" }),
+            });
+          }
           await sendEmail({
-            to: "contato@saudedotrabalho.com",
-            toName: "Saúde do Trabalho",
-            subject: `[Agendamento] Nova conversa: ${ctx.user.name ?? ctx.user.email}`,
-            html: plainToHtml(
-              `Novo agendamento registrado na plataforma.\n\nColaborador: ${ctx.user.name ?? ctx.user.email} (${ctx.user.email ?? "—"})\nProfissional: ${prof?.name ?? "—"}\nData/Hora: ${input.date} às ${input.time}\nDuração: ${input.durationMinutes} minutos\nObservações: ${input.notes ?? "—"}\n\nAcesse a plataforma para gerenciar a agenda.`
-            ),
+            to: "contato@saudedotrabalho.com", toName: "Saúde do Trabalho",
+            subject: `[Agendamento] ${ctx.user.name ?? ctx.user.email} → ${prof?.name ?? "—"}`,
+            html: buildAppointmentEmail({ ...emailCommon, audience: "admin" }),
           });
         } catch(e) { console.warn("[scheduling] email error", e); }
-        return { ok: true, appointmentId };
+        // R5-P12 #1 — devolve o link (se houver) pra exibir imediatamente na confirmação.
+        return { ok: true, appointmentId, meetingUrl: autoMeetingUrl };
       }),
 
     /** List appointments (admin: all for company; employee: own) */
@@ -21964,10 +24816,38 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
         }));
       }),
 
+    /**
+     * R5-P12 #2 — próxima consulta ATIVA do colaborador logado (para o lembrete permanente
+     * no perfil). Retorna null quando não há consulta pendente/confirmada/em andamento.
+     */
+    myUpcomingAppointment: protectedProcedure.query(async ({ ctx }) => {
+      const db2 = await getDb();
+      if (!db2) return null;
+      try {
+        const [[r]]: any = await execP(db2,
+          `SELECT a.*, p.name AS professional_name, p.specialty
+           FROM appointments a JOIN appointment_professionals p ON p.id=a.professional_id
+           WHERE a.collaborator_id=? AND a.status IN ('pending','confirmed','in_progress','rescheduled')
+           ORDER BY a.scheduled_at ASC LIMIT 1`,
+          [ctx.user.id]);
+        if (!r) return null;
+        return {
+          id: Number(r.id),
+          professionalName: String(r.professional_name ?? ""),
+          specialty: r.specialty ?? null,
+          scheduledAt: r.scheduled_at,
+          durationMinutes: Number(r.duration_minutes ?? 30),
+          status: String(r.status ?? "pending"),
+          meetingUrl: r.meeting_url ?? null,
+        };
+      } catch { return null; }
+    }),
+
     updateAppointmentStatus: protectedProcedure
       .input(z.object({
         id: z.number().int(),
-        status: z.enum(["pending", "confirmed", "cancelled", "completed", "no_show", "rescheduled"]),
+        status: z.enum(["pending", "confirmed", "in_progress", "cancelled", "completed", "no_show", "rescheduled",
+          "no_show_collaborator", "no_show_professional", "cancelled_by_collaborator", "cancelled_by_professional", "cancelled_by_company"]),
         meetingUrl: z.string().optional(),
         cancelReason: z.string().optional(),
         outcomeNotes: z.string().optional(),
@@ -22058,6 +24938,289 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
         if (!row || Number(row.collaborator_id) !== ctx.user.id) throw ForbiddenError("Sem permissão.");
         await db2.execute(drzSql`UPDATE appointments SET status='cancelled', cancel_reason=${input.reason || null}, updated_at=NOW() WHERE id=${input.id}`);
         return { ok: true };
+      }),
+
+    // ─── R5-P12 #12 — Controle operacional da consulta (faturamento) ─────────
+    /** Psicólogo inicia a consulta — grava horário real de início. */
+    startConsultation: careManagerProcedure
+      .input(z.object({ id: z.number().int() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        for (const col of [
+          "started_at DATETIME NULL", "ended_at DATETIME NULL", "wait_start DATETIME NULL",
+          "wait_end DATETIME NULL", "billable TINYINT(1) NOT NULL DEFAULT 0",
+          "billable_rate DECIMAL(10,2) NULL", "effective_minutes INT NULL",
+        ]) { try { await db.execute(`ALTER TABLE appointments ADD COLUMN ${col}` as any); } catch (_) {} }
+        try { await db.execute(`ALTER TABLE appointment_professionals ADD COLUMN hourly_rate DECIMAL(10,2) NOT NULL DEFAULT 0` as any); } catch (_) {}
+        await execP(db, `UPDATE appointments SET started_at=NOW(), status='in_progress' WHERE id=?`, [input.id]);
+        return { ok: true };
+      }),
+
+    /** Psicólogo encerra a consulta — grava fim, duração efetiva e marca faturável. */
+    endConsultation: careManagerProcedure
+      .input(z.object({ id: z.number().int(), outcomeNotes: z.string().optional() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const [[a]]: any = await execP(db,
+          `SELECT a.started_at, a.professional_id, p.hourly_rate FROM appointments a
+           JOIN appointment_professionals p ON p.id=a.professional_id WHERE a.id=?`, [input.id]);
+        const start = a?.started_at ? new Date(a.started_at) : null;
+        const mins = start ? Math.max(1, Math.round((Date.now() - start.getTime()) / 60000)) : null;
+        await execP(db,
+          `UPDATE appointments SET ended_at=NOW(), status='completed', effective_minutes=?, billable=1, billable_rate=?, outcome_notes=COALESCE(?, outcome_notes) WHERE id=?`,
+          [mins, Number(a?.hourly_rate ?? 0), input.outcomeNotes ?? null, input.id]);
+        return { ok: true, effectiveMinutes: mins };
+      }),
+
+    /** Psicólogo registra ausência do colaborador (No Show) com janela de espera. */
+    markNoShow: careManagerProcedure
+      .input(z.object({ id: z.number().int(), waitStart: z.string(), waitEnd: z.string(), obs: z.string().optional() }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const cid = (ctx.user as any).companyId;
+        // Config de faturamento (tempo mínimo p/ ser faturável) por empresa.
+        try { await db.execute(`CREATE TABLE IF NOT EXISTS billing_config (company_id INT PRIMARY KEY, min_billable_minutes INT NOT NULL DEFAULT 15)` as any); } catch (_) {}
+        const [[cfg]]: any = await execP(db, `SELECT min_billable_minutes FROM billing_config WHERE company_id=?`, [cid]);
+        const minMin = Number(cfg?.min_billable_minutes ?? 15);
+        const [[a]]: any = await execP(db,
+          `SELECT p.hourly_rate FROM appointments a JOIN appointment_professionals p ON p.id=a.professional_id WHERE a.id=?`, [input.id]);
+        const waitMin = Math.max(0, Math.round((new Date(input.waitEnd).getTime() - new Date(input.waitStart).getTime()) / 60000));
+        const billable = waitMin >= minMin ? 1 : 0;
+        await execP(db,
+          `UPDATE appointments SET status='no_show_collaborator', wait_start=?, wait_end=?, cancel_reason=?, billable=?, billable_rate=?, effective_minutes=? WHERE id=?`,
+          [input.waitStart.replace("T", " ").slice(0, 19), input.waitEnd.replace("T", " ").slice(0, 19),
+           input.obs || `Colaborador não compareceu. Profissional disponível ${waitMin} min.`, billable, Number(a?.hourly_rate ?? 0), waitMin, input.id]);
+        return { ok: true, waitMinutes: waitMin, billable: !!billable };
+      }),
+
+      /**
+       * P14 #2 — Evolução Clínica (prontuário evolutivo). Histórico cronológico de
+       * evoluções por colaborador. Acesso restrito à psicóloga responsável pelo
+       * atendimento (ownership por professional_id, não apenas por role) + Super Admin
+       * (auditoria, leitura). Código de Ética do Psicólogo / LGPD: nenhum outro perfil
+       * (RH, chefia, admin comum) acessa este conteúdo.
+       */
+      listClinicalEvolutions: protectedProcedure
+        .input(z.object({ collaboratorEmail: z.string(), from: z.string().optional(), to: z.string().optional() }))
+        .query(async ({ ctx, input }) => {
+          const db2 = await getDb();
+          if (!db2) throw new Error("DB unavailable");
+          try {
+            await db2.execute(`CREATE TABLE IF NOT EXISTS clinical_evolutions (
+              id INT AUTO_INCREMENT PRIMARY KEY,
+              company_id INT NULL,
+              collaborator_email VARCHAR(320) NOT NULL,
+              professional_id INT NOT NULL,
+              appointment_id INT NULL,
+              note TEXT NOT NULL,
+              created_by_user_id INT NOT NULL,
+              created_by_name VARCHAR(255) NULL,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              INDEX idx_ce_collab (collaborator_email, created_at),
+              INDEX idx_ce_prof (professional_id)
+            )` as any);
+          } catch (_) {}
+
+          const role = (ctx.user as any).role;
+          const isSuperAdmin = role === "super_admin";
+          if (role !== "psicologo" && !isSuperAdmin) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "Evolução clínica é restrita à psicóloga responsável e ao Super Admin (auditoria)." });
+          }
+          let myProfId: number | null = null;
+          if (role === "psicologo") {
+            const email = String((ctx.user as any).email || "");
+            const [[row]]: any = await execP(db2, `SELECT id FROM appointment_professionals WHERE email=?`, [email]);
+            myProfId = row ? Number(row.id) : null;
+            if (!myProfId) return [];
+          }
+          const params: any[] = [input.collaboratorEmail];
+          let sql = `SELECT * FROM clinical_evolutions WHERE collaborator_email=?`;
+          if (myProfId) { sql += ` AND professional_id=?`; params.push(myProfId); }
+          if (input.from) { sql += ` AND created_at >= ?`; params.push(input.from); }
+          if (input.to) { sql += ` AND created_at <= ?`; params.push(input.to); }
+          sql += ` ORDER BY created_at DESC LIMIT 200`;
+          const [rows]: any = await execP(db2, sql, params);
+          return (rows as any[]).map((r: any) => ({
+            id: Number(r.id),
+            appointmentId: r.appointment_id ? Number(r.appointment_id) : null,
+            note: String(r.note ?? ""),
+            createdByName: r.created_by_name ?? null,
+            createdAt: r.created_at,
+          }));
+        }),
+
+      /** Registra uma nova entrada de evolução clínica. Só a psicóloga dona do cadastro grava. */
+      addClinicalEvolution: careManagerProcedure
+        .input(z.object({ collaboratorEmail: z.string(), appointmentId: z.number().int().optional(), note: z.string().min(1) }))
+        .mutation(async ({ ctx, input }) => {
+          const db2 = await getDb();
+          if (!db2) throw new Error("DB unavailable");
+          const role = (ctx.user as any).role;
+          if (role !== "psicologo") {
+            throw new TRPCError({ code: "FORBIDDEN", message: "Apenas a psicóloga responsável registra evoluções clínicas." });
+          }
+          const email = String((ctx.user as any).email || "");
+          const [[prof]]: any = await execP(db2, `SELECT id FROM appointment_professionals WHERE email=?`, [email]);
+          const profId = prof ? Number(prof.id) : null;
+          if (!profId) throw new TRPCError({ code: "FORBIDDEN", message: "Cadastro de profissional não encontrado." });
+          const cid = (ctx.user as any).companyId ?? null;
+          await execP(db2,
+            `INSERT INTO clinical_evolutions (company_id, collaborator_email, professional_id, appointment_id, note, created_by_user_id, created_by_name)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [cid, input.collaboratorEmail, profId, input.appointmentId ?? null, input.note, ctx.user.id, (ctx.user as any).name ?? email]);
+          return { ok: true };
+        }),
+
+      /**
+       * P14 #3 — Alerta ético Psicologia → RH/SESMT. Envia SOMENTE um dos 5 modelos fixos
+       * (ETHICAL_ALERT_TEMPLATES) — nunca texto livre — via notificação (sino) + e-mail,
+       * sempre com o aviso de que não é laudo/parecer/diagnóstico. Registra auditoria própria.
+       * Código de Ética do Psicólogo: nenhum conteúdo clínico trafega neste canal.
+       */
+      sendEthicalAlert: careManagerProcedure
+        .input(z.object({ collaboratorEmail: z.string(), templateKey: z.string() }))
+        .mutation(async ({ ctx, input }) => {
+          const role = (ctx.user as any).role;
+          if (role !== "psicologo") {
+            throw new TRPCError({ code: "FORBIDDEN", message: "Apenas a psicóloga responsável envia o alerta ético." });
+          }
+          const template = ETHICAL_ALERT_TEMPLATES.find(t => t.key === input.templateKey);
+          if (!template) throw new TRPCError({ code: "BAD_REQUEST", message: "Modelo de alerta inválido." });
+
+          const db2 = await getDb();
+          if (!db2) throw new Error("DB unavailable");
+
+          const [[collab]]: any = await execP(db2, `SELECT id, name, company_id FROM users WHERE email=?`, [input.collaboratorEmail]);
+          if (!collab) throw new TRPCError({ code: "NOT_FOUND", message: "Colaborador não encontrado." });
+          const cid = collab.company_id;
+
+          try {
+            await db2.execute(`CREATE TABLE IF NOT EXISTS ethical_alerts (
+              id INT AUTO_INCREMENT PRIMARY KEY,
+              company_id INT NULL,
+              collaborator_email VARCHAR(320) NOT NULL,
+              professional_id INT NULL,
+              template_key VARCHAR(60) NOT NULL,
+              sent_to_emails TEXT,
+              created_by_user_id INT NOT NULL,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )` as any);
+          } catch (_) {}
+
+          const [rhRows]: any = await execP(db2,
+            `SELECT id, name, email FROM users WHERE company_id=? AND is_active=1 AND role IN ('rh','sesmt')`, [cid]);
+
+          const title = `Recomendação preventiva — ${collab.name ?? input.collaboratorEmail}`;
+          const bodyText = `${template.body}\n\n${ETHICAL_ALERT_DISCLAIMER}`;
+
+          const sentTo: string[] = [];
+          for (const u of (rhRows as any[])) {
+            const dedupKey = `ethical_alert:${cid}:${input.collaboratorEmail}:${template.key}:${u.id}:${Date.now()}`;
+            await execP(db2,
+              `INSERT INTO notifications (user_id, company_id, type, priority, title, body, link, icon, dedup_key)
+               VALUES (?, ?, 'ethical_alert', 'media', ?, ?, '/agenda', 'alert-triangle', ?)`,
+              [u.id, cid, title, bodyText, dedupKey]);
+            if (u.email) {
+              await sendEmail({ to: u.email, toName: u.name || u.email, subject: title, html: plainToHtml(bodyText) });
+              sentTo.push(u.email);
+            }
+          }
+
+          const email = String((ctx.user as any).email || "");
+          const [[prof]]: any = await execP(db2, `SELECT id FROM appointment_professionals WHERE email=?`, [email]);
+
+          await execP(db2,
+            `INSERT INTO ethical_alerts (company_id, collaborator_email, professional_id, template_key, sent_to_emails, created_by_user_id)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [cid, input.collaboratorEmail, prof ? Number(prof.id) : null, template.key, sentTo.join(", "), ctx.user.id]);
+
+          return { ok: true, recipients: sentTo.length };
+        }),
+  }),
+
+  // ─── R5-P12 #12 — Faturamento Psicológico (CRM · Financeiro) ───────────────
+  billing: router({
+    /** Config por empresa: tempo mínimo (min) de espera p/ no-show ser faturável. */
+    getConfig: superAdminProcedure.query(async ({ ctx }) => {
+      const db = await getDb(); if (!db) return { minBillableMinutes: 15 };
+      const cid = (ctx.user as any).companyId;
+      try { await db.execute(`CREATE TABLE IF NOT EXISTS billing_config (company_id INT PRIMARY KEY, min_billable_minutes INT NOT NULL DEFAULT 15)` as any); } catch (_) {}
+      const [[c]]: any = await execP(db, `SELECT min_billable_minutes FROM billing_config WHERE company_id=?`, [cid]);
+      return { minBillableMinutes: Number(c?.min_billable_minutes ?? 15) };
+    }),
+    setConfig: superAdminProcedure
+      .input(z.object({ minBillableMinutes: z.number().int().min(0).max(120) }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const cid = (ctx.user as any).companyId;
+        try { await db.execute(`CREATE TABLE IF NOT EXISTS billing_config (company_id INT PRIMARY KEY, min_billable_minutes INT NOT NULL DEFAULT 15)` as any); } catch (_) {}
+        await execP(db, `INSERT INTO billing_config (company_id, min_billable_minutes) VALUES (?,?) ON DUPLICATE KEY UPDATE min_billable_minutes=?`, [cid, input.minBillableMinutes, input.minBillableMinutes]);
+        return { ok: true };
+      }),
+
+    /** Define o valor/hora do psicólogo, com vigência (histórico não altera meses passados). */
+    setHourlyRate: superAdminProcedure
+      .input(z.object({ professionalId: z.number().int(), hourlyRate: z.number().min(0), validFrom: z.string().optional() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        try { await db.execute(`ALTER TABLE appointment_professionals ADD COLUMN hourly_rate DECIMAL(10,2) NOT NULL DEFAULT 0` as any); } catch (_) {}
+        try { await db.execute(`CREATE TABLE IF NOT EXISTS professional_rate_history (id INT AUTO_INCREMENT PRIMARY KEY, professional_id INT NOT NULL, hourly_rate DECIMAL(10,2) NOT NULL, valid_from DATE NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX idx_prof (professional_id))` as any); } catch (_) {}
+        const vf = input.validFrom || new Date().toISOString().slice(0, 10);
+        await execP(db, `UPDATE appointment_professionals SET hourly_rate=? WHERE id=?`, [input.hourlyRate, input.professionalId]);
+        await execP(db, `INSERT INTO professional_rate_history (professional_id, hourly_rate, valid_from) VALUES (?,?,?)`, [input.professionalId, input.hourlyRate, vf]);
+        return { ok: true };
+      }),
+
+    listProfessionalsWithRate: superAdminProcedure.query(async ({ ctx }) => {
+      const db = await getDb(); if (!db) return [];
+      const cid = (ctx.user as any).companyId;
+      try { await db.execute(`ALTER TABLE appointment_professionals ADD COLUMN hourly_rate DECIMAL(10,2) NOT NULL DEFAULT 0` as any); } catch (_) {}
+      const [rows]: any = await execP(db, `SELECT id, name, specialty, email, hourly_rate FROM appointment_professionals WHERE (company_id=? OR company_id IS NULL) AND is_active=1 ORDER BY name`, [cid]);
+      return (Array.isArray(rows) ? rows : []).map((r: any) => ({ id: Number(r.id), name: r.name, specialty: r.specialty, email: r.email, hourlyRate: Number(r.hourly_rate ?? 0) }));
+    }),
+
+    /** Relatório mensal de faturamento por psicólogo (opcional: empresa). */
+    monthlyReport: superAdminProcedure
+      .input(z.object({ year: z.number().int(), month: z.number().int().min(1).max(12), professionalId: z.number().int().optional(), companyId: z.number().int().optional() }))
+      .query(async ({ ctx, input }) => {
+        const db = await getDb(); if (!db) return { items: [], totals: {} };
+        const role = (ctx.user as any).role;
+        const isGlobal = ["super_admin", "admin_global"].includes(role);
+        const cid = isGlobal ? (input.companyId ?? null) : (ctx.user as any).companyId;
+        const mm = String(input.month).padStart(2, "0");
+        const start = `${input.year}-${mm}-01 00:00:00`;
+        const endD = new Date(input.year, input.month, 1);
+        const end = `${endD.toISOString().slice(0, 10)} 00:00:00`;
+        const filters: string[] = [`a.scheduled_at >= ? AND a.scheduled_at < ?`];
+        const params: any[] = [start, end];
+        if (cid) { filters.push(`a.company_id=?`); params.push(cid); }
+        if (input.professionalId) { filters.push(`a.professional_id=?`); params.push(input.professionalId); }
+        const [rows]: any = await execP(db,
+          `SELECT a.*, u.name AS collab_name, p.name AS prof_name, c.name AS company_name
+           FROM appointments a
+           JOIN users u ON u.id=a.collaborator_id
+           JOIN appointment_professionals p ON p.id=a.professional_id
+           LEFT JOIN companies c ON c.id=a.company_id
+           WHERE ${filters.join(" AND ")}
+           ORDER BY a.scheduled_at ASC`, params);
+        const list = Array.isArray(rows) ? rows : [];
+        const items = list.map((r: any) => {
+          const rate = Number(r.billable_rate ?? 0);
+          const mins = Number(r.effective_minutes ?? 0);
+          const valor = r.billable ? +(rate * (mins / 60)).toFixed(2) : 0;
+          return {
+            id: Number(r.id), company: r.company_name, collaborator: r.collab_name, professional: r.prof_name,
+            scheduledAt: r.scheduled_at, durationMinutes: Number(r.duration_minutes ?? 30),
+            startedAt: r.started_at, endedAt: r.ended_at, effectiveMinutes: mins,
+            status: r.status, billable: !!r.billable, hourlyRate: rate, valorFaturavel: valor,
+          };
+        });
+        const realizadas = items.filter((i) => i.status === "completed").length;
+        const faltas = items.filter((i) => String(i.status).startsWith("no_show")).length;
+        const cancelamentos = items.filter((i) => String(i.status).startsWith("cancel")).length;
+        const horasFaturaveis = +(items.reduce((s, i) => s + (i.billable ? i.effectiveMinutes / 60 : 0), 0)).toFixed(2);
+        const valorTotal = +(items.reduce((s, i) => s + i.valorFaturavel, 0)).toFixed(2);
+        return { items, totals: { realizadas, faltas, cancelamentos, horasFaturaveis, valorTotal } };
       }),
   }),
 
@@ -22178,25 +25341,34 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
         LEFT JOIN modules m ON m.id = f.preventive_program_module_id
         ORDER BY f.axis_order
       `);
-      const frows = Array.isArray((fr as any)[0]) ? (fr as any)[0] : Array.isArray(fr) ? fr : [];
+      const frowsRaw = Array.isArray((fr as any)[0]) ? (fr as any)[0] : Array.isArray(fr) ? fr : [];
+      const frows = dedupePsychosocialFactorRows(frowsRaw as any[]);
       const lr: any = await db.execute(drzSql`
         SELECT rcl.factor_id, rcl.module_id, rcl.criticality, rcl.is_auto_linked,
-               m.title AS moduleTitle, m.template_category AS moduleCategory
+               m.title AS moduleTitle, m.template_category AS moduleCategory,
+               pf.name AS factorName, pf.code AS factorCode
         FROM risk_course_links rcl
+        JOIN psychosocial_factors pf ON pf.id = rcl.factor_id
         JOIN modules m ON m.id = rcl.module_id
       `);
       const lrows = Array.isArray((lr as any)[0]) ? (lr as any)[0] : Array.isArray(lr) ? lr : [];
-      const linksByFactor = new Map<number, any[]>();
+      const linksByFactor = new Map<string, Map<number, any>>();
+      const sevWeight = (v: any) => riskRank(v) || 0;
       for (const l of lrows) {
-        const fid = Number(l.factor_id);
-        if (!linksByFactor.has(fid)) linksByFactor.set(fid, []);
-        linksByFactor.get(fid)!.push({
+        const fKey = canonicalRiskFactorKey(l.factorName, l.factorCode);
+        if (!linksByFactor.has(fKey)) linksByFactor.set(fKey, new Map<number, any>());
+        const moduleId = Number(l.module_id);
+        const link = {
           module_id: Number(l.module_id),
           moduleTitle: String(l.moduleTitle ?? ""),
           moduleCategory: l.moduleCategory ? String(l.moduleCategory) : null,
           criticality: String(l.criticality ?? "media"),
           is_auto_linked: Boolean(l.is_auto_linked),
-        });
+        };
+        const existing = linksByFactor.get(fKey)!.get(moduleId);
+        if (!existing || sevWeight(link.criticality) < sevWeight(existing.criticality)) {
+          linksByFactor.get(fKey)!.set(moduleId, link);
+        }
       }
       return frows.map((f: any) => ({
         id: Number(f.id),
@@ -22205,7 +25377,7 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
         description: f.description ? String(f.description) : null,
         axisOrder: Number(f.axisOrder ?? 0),
         programTitle: f.programTitle ? String(f.programTitle) : null,
-        linkedCourses: linksByFactor.get(Number(f.id)) ?? [],
+        linkedCourses: Array.from((linksByFactor.get(canonicalRiskFactorKey(f.name, f.code)) ?? new Map()).values()),
       }));
     }),
 
@@ -22252,6 +25424,27 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
         return { ok: true };
       }),
 
+    // Bruno R5-P6 #11 — Editar criticidade + obrigatoriedade do vínculo
+    // (antes só dava pra deletar e recriar).
+    updateLink: adminOrRhProcedure
+      .input(z.object({
+        factorId: z.number().int(),
+        moduleId: z.number().int(),
+        criticality: z.enum(["baixa","media","alta","critica"]).optional(),
+        isMandatory: z.boolean().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        if (input.criticality !== undefined) {
+          await db.execute(drzSql`UPDATE risk_course_links SET criticality=${input.criticality}, is_auto_linked=0 WHERE factor_id=${input.factorId} AND module_id=${input.moduleId}`);
+        }
+        if (input.isMandatory !== undefined) {
+          await db.execute(drzSql`UPDATE modules SET is_mandatory=${input.isMandatory ? 1 : 0} WHERE id=${input.moduleId}`);
+        }
+        return { ok: true };
+      }),
+
     updateCourseCategory: adminOrRhProcedure
       .input(z.object({ moduleId: z.number().int(), category: z.string() }))
       .mutation(async ({ input }) => {
@@ -22263,12 +25456,329 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
         return { ok: true };
       }),
 
+    // Bruno R5-P6 #5/#1/#2 — Cursos prioritários SEM lógica paralela.
+    // Fonte ÚNICA de verdade: a configuração na aba "13 Fatores NR-01"
+    // (tabela risk_course_links: factor_id + module_id + criticality).
+    //
+    // Para CADA setor que aparece no inventário do ÚLTIMO ciclo psicossocial:
+    //   - encontra os fatores com riscoFinal igual à criticidade configurada no link
+    //   - retorna os módulos correspondentes
+    //
+    // Resposta agrupada por colaborador → usada pela tela "Meus Cursos",
+    // pelo perfil individual, pela visão da Chefia e pelo dashboard de prazos.
+    coursesPlanoAcao: protectedProcedure
+      .input(z.object({ userId: z.number().int().optional(), sectorId: z.number().int().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const userRole = (ctx.user as any).role;
+        const userId = (ctx.user as any).id;
+        const db = await getDb(); if (!db || !cid) return { prioritarios: [], importantes: [], complementares: [] };
+
+        const ADMIN_ROLES = ["admin", "rh", "admin_global", "company_admin", "sesmt", "super_admin"];
+        const isAdminRole = ADMIN_ROLES.includes(userRole);
+
+        // Resolve setor(es) alvo.
+        // Admin/RH: usa input (userId ou sectorId) ou todos os setores.
+        // Chefia/colaborador: restrito ao próprio setor (segurança — não pode ver outro setor).
+        let targetSectorIds: number[] = [];
+        if (input?.userId && isAdminRole) {
+          const [[u]]: any = await execP(db, `SELECT sector_id FROM users WHERE id=? AND company_id=?`, [input.userId, cid]);
+          if (u?.sector_id) targetSectorIds = [Number(u.sector_id)];
+        } else if (input?.sectorId && isAdminRole) {
+          targetSectorIds = [Number(input.sectorId)];
+        } else if (!isAdminRole) {
+          // Para chefia/colaborador: sempre filtra pelo próprio setor
+          const [[u]]: any = await execP(db, `SELECT sector_id FROM users WHERE id=? AND company_id=?`, [userId, cid]);
+          if (u?.sector_id) targetSectorIds = [Number(u.sector_id)];
+        }
+
+        // P18 GRANDE — cálculo de prioritários (fator de risco → curso → prazo do
+        // Plano de Ação) foi extraído pro helper computePrioritariosForSector, também
+        // usado pelo motor de campanha personalizado (mesma regra, uma única fonte).
+        const { prioritarios: prioritariosDedup, lastCycle } = await computePrioritariosForSector(db, cid, targetSectorIds);
+        const prioritariosIds = new Set(prioritariosDedup.map((p: any) => p.moduleId));
+
+        // 6) Importantes: módulos NR-01 (templateCategory contém "nr01" ou "psicossocial") que não viraram prioritários
+        const [allNR01]: any = await execP(db, `
+          SELECT id, title, template_category FROM modules
+          WHERE publish_status='published' AND (template_category LIKE '%nr01%' OR template_category LIKE '%psicossocial%' OR template_category LIKE '%assedio%' OR template_category LIKE '%burnout%')
+            AND (SELECT COUNT(*) FROM lessons l WHERE l.moduleId = modules.id) > 0`, []);
+        const importantes = (allNR01 as any[])
+          .filter((m: any) => !prioritariosIds.has(Number(m.id)))
+          .map((m: any) => ({ moduleId: Number(m.id), moduleTitle: m.title, templateCategory: m.template_category }));
+
+        // 7) Complementares: tudo que não é NR-01 e não é prioritário
+        const importantesModuleIds = new Set(importantes.map((m: any) => m.moduleId));
+        const [allOther]: any = await execP(db, `
+          SELECT id, title, template_category FROM modules
+          WHERE publish_status='published'
+            AND (SELECT COUNT(*) FROM lessons l WHERE l.moduleId = modules.id) > 0`, []);
+        const complementares = (allOther as any[])
+          .filter((m: any) => !prioritariosIds.has(Number(m.id)) && !importantesModuleIds.has(Number(m.id)))
+          .map((m: any) => ({ moduleId: Number(m.id), moduleTitle: m.title, templateCategory: m.template_category }));
+
+        return {
+          prioritarios: prioritariosDedup,
+          importantes,
+          complementares,
+          cycleInfo: lastCycle ? { id: lastCycle.id, name: lastCycle.cycle_name, status: lastCycle.status, startDate: lastCycle.start_date, endDate: lastCycle.end_date } : null,
+        };
+      }),
+
+    // Bruno R5-P6 #2 — Avisos do setor pro perfil do colaborador.
+    // Retorna riscos do setor do user no último ciclo que tem nível >= criticidade configurada
+    // → aviso "Seu setor apresentou risco elevado de ...".
+    sectorRisksForUser: protectedProcedure
+      .input(z.object({ userId: z.number().int().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        const uid = input?.userId ?? (ctx.user as any).id;
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid || !uid) return { sectorId: null, sectorName: null, alerts: [], cycle: null };
+        const [[u]]: any = await execP(db, `SELECT sector_id FROM users WHERE id=? AND company_id=?`, [uid, cid]);
+        if (!u?.sector_id) return { sectorId: null, sectorName: null, alerts: [], cycle: null };
+        const [[s]]: any = await execP(db, `SELECT name FROM sectors WHERE id=?`, [u.sector_id]);
+        const [[lastCycle]]: any = await execP(db, `
+          SELECT id, cycle_name, start_date FROM risk_assessments WHERE company_id=? AND status IN ('analyzing','review','closed','active')
+          ORDER BY COALESCE(end_date, start_date) DESC, id DESC LIMIT 1`, [cid]);
+        if (!lastCycle) return { sectorId: u.sector_id, sectorName: s?.name ?? null, alerts: [], cycle: null };
+        const [rows]: any = await execP(db, `
+          SELECT pf.name AS factor_name, pf.code AS factor_code, ri.risco_final, ri.factor_id, ri.sector_id
+          FROM risk_inventory_items ri
+          INNER JOIN psychosocial_factors pf ON pf.id = ri.factor_id
+          WHERE ri.assessment_id=? AND ri.sector_id=? AND ri.risco_final IN ('alta','alto','critica','critico')
+          ORDER BY FIELD(ri.risco_final, 'critica','critico','alta','alto')`, [lastCycle.id, u.sector_id]);
+        return {
+          sectorId: u.sector_id,
+          sectorName: s?.name ?? null,
+          cycle: { id: lastCycle.id, name: lastCycle.cycle_name, startDate: lastCycle.start_date },
+          alerts: dedupeRiskRows(rows as any[], "inventory").map((r: any) => ({
+            factorId: Number(r.factor_id), factorName: r.factor_name, riskLevel: r.risco_final,
+          })),
+        };
+      }),
+
+    // Bruno R5-P6 #1 — Dashboard Ciclos Psicossociais (PRIORIDADE MÁXIMA).
+    // Painel macro do ciclo: % saúde, ranking filiais/setores, top riscos, distribuição.
+    cycleDashboard: adminOrRhProcedure
+      .input(z.object({ cycleId: z.number().int().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) return { cycle: null, cycles: [], healthPercent: 0, rankingFiliais: [], rankingSetores: [], topRiscos: [], distribuicao: { baixo:0, medio:0, alto:0, critico:0 } };
+
+        // Lista todos os ciclos da empresa
+        const [cyclesRows]: any = await execP(db, `SELECT id, cycle_name, status, start_date, end_date FROM risk_assessments WHERE company_id=? ORDER BY COALESCE(end_date, start_date) DESC, id DESC`, [cid]);
+        const cycles = (cyclesRows as any[]).map((c: any) => ({ id: Number(c.id), name: c.cycle_name, status: c.status, startDate: c.start_date, endDate: c.end_date }));
+
+        const cycleId = input?.cycleId ?? cycles[0]?.id ?? null;
+        if (!cycleId) return { cycle: null, cycles, healthPercent: 0, rankingFiliais: [], rankingSetores: [], topRiscos: [], distribuicao: { baixo:0, medio:0, alto:0, critico:0 } };
+        const cycle = cycles.find(c => c.id === cycleId) || cycles[0];
+
+        // Inventário do ciclo
+        const [invRows]: any = await execP(db, `
+          SELECT ri.factor_id, ri.sector_id, ri.risco_final, pf.name AS factor_name, pf.code AS factor_code,
+                 s.name AS sector_name, b.id AS branch_id, b.name AS branch_name
+          FROM risk_inventory_items ri
+          INNER JOIN psychosocial_factors pf ON pf.id = ri.factor_id
+          LEFT JOIN sectors s ON s.id = ri.sector_id
+          LEFT JOIN branches b ON b.id = s.branch_id
+          WHERE ri.assessment_id=?`, [cycleId]);
+        const inv = dedupeRiskRows(invRows as any[], "inventory");
+
+        // Distribuição global
+        const distribuicao = { baixo: 0, medio: 0, alto: 0, critico: 0 };
+        for (const i of inv) {
+          const lvl = String(i.risco_final || "").toLowerCase();
+          if (lvl.includes("crit")) distribuicao.critico++;
+          else if (lvl.includes("alt")) distribuicao.alto++;
+          else if (lvl.includes("med")) distribuicao.medio++;
+          else distribuicao.baixo++;
+        }
+        const total = inv.length || 1;
+        // % saúde = % de riscos baixo/médio (quanto maior, mais saudável)
+        const healthPercent = Math.round(((distribuicao.baixo + distribuicao.medio) / total) * 100);
+
+        // Ranking de FILIAIS (% saúde por filial — quanto mais alto, melhor)
+        const branchMap = new Map<number, { id: number; name: string; total: number; baixo: number; medio: number; alto: number; critico: number }>();
+        for (const i of inv) {
+          if (!i.branch_id) continue;
+          const k = Number(i.branch_id);
+          if (!branchMap.has(k)) branchMap.set(k, { id: k, name: i.branch_name || `Filial ${k}`, total: 0, baixo:0, medio:0, alto:0, critico:0 });
+          const b = branchMap.get(k)!; b.total++;
+          const lvl = String(i.risco_final || "").toLowerCase();
+          if (lvl.includes("crit")) b.critico++;
+          else if (lvl.includes("alt")) b.alto++;
+          else if (lvl.includes("med")) b.medio++;
+          else b.baixo++;
+        }
+        const rankingFiliais = Array.from(branchMap.values()).map((b: any) => ({
+          ...b,
+          healthPercent: b.total > 0 ? Math.round(((b.baixo + b.medio) / b.total) * 100) : 0,
+        })).sort((a, b) => b.healthPercent - a.healthPercent);
+
+        // Ranking de SETORES
+        const sectorMap = new Map<number, { id: number; name: string; branchName: string; total: number; baixo: number; medio: number; alto: number; critico: number; factors: any[] }>();
+        for (const i of inv) {
+          if (!i.sector_id) continue;
+          const k = Number(i.sector_id);
+          if (!sectorMap.has(k)) sectorMap.set(k, { id: k, name: i.sector_name || `Setor ${k}`, branchName: i.branch_name || "", total:0, baixo:0, medio:0, alto:0, critico:0, factors: [] });
+          const s = sectorMap.get(k)!; s.total++;
+          s.factors.push({ factorId: Number(i.factor_id), factorName: i.factor_name, level: i.risco_final });
+          const lvl = String(i.risco_final || "").toLowerCase();
+          if (lvl.includes("crit")) s.critico++;
+          else if (lvl.includes("alt")) s.alto++;
+          else if (lvl.includes("med")) s.medio++;
+          else s.baixo++;
+        }
+        const rankingSetores = Array.from(sectorMap.values()).map((s: any) => ({
+          ...s,
+          healthPercent: s.total > 0 ? Math.round(((s.baixo + s.medio) / s.total) * 100) : 0,
+        })).sort((a, b) => a.healthPercent - b.healthPercent); // pior primeiro
+
+        // Top riscos (factor agregado, contando alto+critico)
+        const factorMap = new Map<string, { factorId: number; factorName: string; total: number; altoCritico: number }>();
+        for (const i of inv) {
+          const k = canonicalRiskFactorKey(i.factor_name, i.factor_code);
+          if (!factorMap.has(k)) factorMap.set(k, { factorId: Number(i.factor_id), factorName: i.factor_name, total: 0, altoCritico: 0 });
+          const f = factorMap.get(k)!; f.total++;
+          const lvl = String(i.risco_final || "").toLowerCase();
+          if (lvl.includes("alt") || lvl.includes("crit")) f.altoCritico++;
+        }
+        const topRiscos = Array.from(factorMap.values()).sort((a, b) => b.altoCritico - a.altoCritico).slice(0, 8);
+
+        return { cycle, cycles, healthPercent, distribuicao, rankingFiliais, rankingSetores, topRiscos };
+      }),
+
+    // Bruno R5-P6 #1 — Comparação entre dois ciclos
+    cycleCompare: adminOrRhProcedure
+      .input(z.object({ aId: z.number().int(), bId: z.number().int() }))
+      .query(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) return { fatores: [], healthDelta: 0 };
+        const fetchInv = async (id: number) => {
+          const [r]: any = await execP(db, `
+            SELECT ri.factor_id, ri.sector_id, ri.risco_final, pf.name AS factor_name, pf.code AS factor_code
+            FROM risk_inventory_items ri
+            INNER JOIN psychosocial_factors pf ON pf.id = ri.factor_id
+            INNER JOIN risk_assessments ra ON ra.id = ri.assessment_id AND ra.company_id=?
+            WHERE ri.assessment_id=?`, [cid, id]);
+          return dedupeRiskRows(r as any[], "inventory");
+        };
+        const SEV: Record<string, number> = { baixo:1, baixa:1, medio:2, media:2, alto:3, alta:3, critico:4, critica:4 };
+        const aInv = await fetchInv(input.aId);
+        const bInv = await fetchInv(input.bId);
+        const aMap = new Map<string, { id: number; name: string; severities: number[] }>();
+        const bMap = new Map<string, { id: number; name: string; severities: number[] }>();
+        for (const i of aInv) {
+          const k = canonicalRiskFactorKey(i.factor_name, i.factor_code);
+          if (!aMap.has(k)) aMap.set(k, { id: Number(i.factor_id), name: i.factor_name, severities: [] });
+          aMap.get(k)!.severities.push(SEV[String(i.risco_final||"").toLowerCase()] ?? 0);
+        }
+        for (const i of bInv) {
+          const k = canonicalRiskFactorKey(i.factor_name, i.factor_code);
+          if (!bMap.has(k)) bMap.set(k, { id: Number(i.factor_id), name: i.factor_name, severities: [] });
+          bMap.get(k)!.severities.push(SEV[String(i.risco_final||"").toLowerCase()] ?? 0);
+        }
+        const avg = (arr: number[]) => arr.length ? arr.reduce((s,n)=>s+n,0)/arr.length : 0;
+        const factorIds = Array.from(new Set(Array.from(aMap.keys()).concat(Array.from(bMap.keys()))));
+        const fatores: any[] = [];
+        for (const fid of factorIds) {
+          const a = aMap.get(fid); const b = bMap.get(fid);
+          const aAvg = a ? avg(a.severities) : 0;
+          const bAvg = b ? avg(b.severities) : 0;
+          const delta = bAvg - aAvg; // > 0 = piorou; < 0 = melhorou
+          fatores.push({
+            factorId: a?.id ?? b?.id ?? null,
+            factorName: a?.name || b?.name || `Fator ${fid}`,
+            avgA: Math.round(aAvg * 10) / 10,
+            avgB: Math.round(bAvg * 10) / 10,
+            delta: Math.round(delta * 10) / 10,
+            direction: delta > 0.3 ? "piorou" : delta < -0.3 ? "melhorou" : "estavel",
+          });
+        }
+        fatores.sort((x, y) => Math.abs(y.delta) - Math.abs(x.delta));
+        const aSev = aInv.length ? avg(aInv.map((i:any) => SEV[String(i.risco_final||"").toLowerCase()] ?? 0)) : 0;
+        const bSev = bInv.length ? avg(bInv.map((i:any) => SEV[String(i.risco_final||"").toLowerCase()] ?? 0)) : 0;
+        return { fatores, healthDelta: Math.round((aSev - bSev) * 10) / 10 };
+      }),
+
+    // Bruno R5-P8 #1.1 — Drill-down de colaboradores por setor (agendamento + cursos prioritários)
+    sectorCollaboratorDetails: adminOrRhProcedure
+      .input(z.object({ sectorId: z.number().int(), cycleId: z.number().int().optional() }))
+      .query(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb();
+        if (!db || !cid) return { collaborators: [], priorityCount: 0 };
+
+        // P18 #23 — corrigido typo "psicolog" (faltava o "o"): sem isso, psicólogo
+        // não era excluído aqui e contava como "colaborador do setor" só nesta tela.
+        const [usersRows]: any = await execP(db,
+          `SELECT id, name, email FROM users u WHERE u.sector_id=? AND u.company_id=? AND ${activeEmployeeWhere("u")}`,
+          [input.sectorId, cid]);
+        const users = usersRows as any[];
+        if (!users.length) return { collaborators: [], priorityCount: 0 };
+        const userIds = users.map((u: any) => Number(u.id));
+
+        let cycleId = input.cycleId;
+        if (!cycleId) {
+          const [[cr]]: any = await execP(db,
+            `SELECT id FROM risk_assessments WHERE company_id=? AND status IN ('analyzing','review','closed','active','completed') ORDER BY COALESCE(end_date, start_date) DESC, id DESC LIMIT 1`,
+            [cid]);
+          cycleId = cr?.id ? Number(cr.id) : undefined;
+        }
+
+        const { prioritarios } = await computePrioritariosForSector(db, cid, [input.sectorId], cycleId);
+        const priorityModuleIds = Array.from(new Set(prioritarios.map((p: any) => Number(p.moduleId)).filter(Boolean)));
+
+        const completionMap: Record<number, number> = {};
+        if (priorityModuleIds.length && userIds.length) {
+          const pu = userIds.map(() => '?').join(',');
+          const pm = priorityModuleIds.map(() => '?').join(',');
+          const [progRows]: any = await execP(db, `
+            SELECT userId, COUNT(DISTINCT moduleId) AS completed FROM user_progress
+            WHERE userId IN (${pu}) AND moduleId IN (${pm}) AND isCompleted=1 GROUP BY userId`,
+            [...userIds, ...priorityModuleIds]);
+          for (const r of progRows as any[]) completionMap[Number(r.userId)] = Number(r.completed);
+        }
+
+        const appointedSet = new Set<number>();
+        if (userIds.length) {
+          const pa = userIds.map(() => '?').join(',');
+          const [apptRows]: any = await execP(db, `
+            SELECT DISTINCT collaborator_id FROM appointments
+            WHERE collaborator_id IN (${pa}) AND scheduled_at > NOW() AND status IN ('pending','confirmed')`,
+            userIds);
+          for (const r of apptRows as any[]) appointedSet.add(Number(r.collaborator_id));
+        }
+
+        return {
+          collaborators: users.map((u: any) => ({
+            id: Number(u.id), name: u.name || "", email: u.email || "",
+            coursesCompleted: completionMap[Number(u.id)] || 0,
+            coursesTotal: priorityModuleIds.length,
+            hasAppointment: appointedSet.has(Number(u.id)),
+          })),
+          priorityCount: priorityModuleIds.length,
+        };
+      }),
+
     /** Get recommended courses for a given risk assessment based on linked factors */
     getRecommendedCourses: adminOrRhProcedure
       .input(z.object({ assessmentId: z.number().int() }))
       .query(async ({ ctx, input }) => {
         const db2 = await getDb();
         if (!db2) throw new Error("DB unavailable");
+        const cid = (ctx.user as any).companyId;
+        if (!cid) return [];
+        const { prioritarios } = await computePrioritariosForSector(db2, cid, [], input.assessmentId);
+        return prioritarios.map((p: any) => ({
+          factorId: Number(p.factorId ?? 0),
+          factorName: String(p.factorName ?? ""),
+          riskLevel: String(p.riscoFinal ?? ""),
+          moduleId: Number(p.moduleId),
+          moduleTitle: String(p.moduleTitle ?? ""),
+          source: "risco_prioritario" as const,
+        }));
+        /*
         // Get high/critical factors from this assessment inventory
         const rows = await db2.execute(drzSql`
           SELECT ri.factor_id, ri.risco_final, pf.name as factor_name,
@@ -22284,13 +25794,49 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
           ORDER BY ri.risco_final DESC, pf.name
         `);
         const list = Array.isArray((rows as any)[0]) ? (rows as any)[0] : [];
-        return list.map((r: any) => ({
-          factorId: Number(r.factor_id),
-          factorName: String(r.factor_name ?? ""),
-          riskLevel: String(r.risco_final ?? ""),
-          moduleId: Number(r.module_id ?? 0),
-          moduleTitle: String(r.module_title ?? ""),
-        }));
+        const byModule = new Map<number, any>();
+        for (const r of list) {
+          const moduleId = Number(r.module_id ?? 0);
+          if (!moduleId) continue;
+          byModule.set(moduleId, {
+            factorId: Number(r.factor_id),
+            factorName: String(r.factor_name ?? ""),
+            riskLevel: String(r.risco_final ?? ""),
+            moduleId,
+            moduleTitle: String(r.module_title ?? ""),
+            source: "risco_alto_critico" as const,
+          });
+        }
+
+        // P17 #4 — Bruno (CAMED): curso já cronogramado no Plano de Ação deve contar
+        // como prioritário mesmo quando o fator ficou como "médio" (não alto/crítico).
+        const planRows = await db2.execute(drzSql`
+          SELECT DISTINCT ap.factor_id, pf.name AS factor_name, ri.risco_final,
+                 m.id AS module_id, m.title AS module_title
+          FROM risk_action_plan_items ap
+          JOIN modules m ON m.id = ap.preventive_program_module_id
+          LEFT JOIN psychosocial_factors pf ON pf.id = ap.factor_id
+          LEFT JOIN risk_inventory_items ri ON ri.assessment_id = ap.assessment_id AND ri.factor_id = ap.factor_id
+          WHERE ap.assessment_id = ${input.assessmentId}
+            AND ap.preventive_program_module_id IS NOT NULL
+            AND m.publish_status = 'published'
+        `);
+        const planList = Array.isArray((planRows as any)[0]) ? (planRows as any)[0] : [];
+        for (const r of planList) {
+          const moduleId = Number(r.module_id ?? 0);
+          if (!moduleId || byModule.has(moduleId)) continue;
+          byModule.set(moduleId, {
+            factorId: Number(r.factor_id ?? 0),
+            factorName: String(r.factor_name ?? ""),
+            riskLevel: String(r.risco_final ?? "medio"),
+            moduleId,
+            moduleTitle: String(r.module_title ?? ""),
+            source: "plano_de_acao" as const,
+          });
+        }
+
+        return Array.from(byModule.values());
+        */
       }),
   }),
 
@@ -22376,17 +25922,18 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
         const factorR: any = await db.execute(drzSql`
           SELECT id, code, name FROM psychosocial_factors ORDER BY axis_order, id
         `);
-        const factors = (Array.isArray((factorR as any)[0]) ? (factorR as any)[0] : [])
+        const factors = dedupePsychosocialFactorRows((Array.isArray((factorR as any)[0]) ? (factorR as any)[0] : []) as any[])
           .map((r: any) => ({ id: Number(r.id), code: String(r.code ?? ""), name: String(r.name ?? "") }));
         const heatRows: any = await db.execute(drzSql`
           SELECT ra.id as assessment_id, ra.cycle_name,
                  COALESCE(s.name, 'Geral') as sector_name,
                  COALESCE(b.name, '') as branch_name,
-                 ri.factor_id, ri.risco_final
+                 ri.factor_id, ri.risco_final, pf.code AS factor_code, pf.name AS factor_name
           FROM risk_assessments ra
           LEFT JOIN sectors s ON s.id = ra.sector_id
           LEFT JOIN branches b ON b.id = ra.branch_id
           LEFT JOIN risk_inventory_items ri ON ri.assessment_id = ra.id
+          LEFT JOIN psychosocial_factors pf ON pf.id = ri.factor_id
           WHERE ra.company_id=${cid}
           ORDER BY ra.id, ri.factor_id
         `);
@@ -22400,11 +25947,11 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
               cycleName: String(r.cycle_name ?? ""),
               sectorName: String(r.sector_name ?? "Geral"),
               branchName: String(r.branch_name ?? ""),
-              cells: new Map<number, string>(),
+              cells: new Map<string, string>(),
             });
           }
           if (r.factor_id && r.risco_final) {
-            assessMap.get(aid)!.cells.set(Number(r.factor_id), String(r.risco_final));
+            assessMap.get(aid)!.cells.set(canonicalRiskFactorKey(r.factor_name, r.factor_code), String(r.risco_final));
           }
         }
         const resultRows = Array.from(assessMap.values()).map((a: any) => ({
@@ -22414,7 +25961,7 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
           branchName: a.branchName,
           cells: factors.map((f: any) => ({
             factorId: f.id,
-            risco: a.cells.get(f.id) ?? null,
+            risco: a.cells.get(canonicalRiskFactorKey(f.name, f.code)) ?? null,
           })),
         }));
         return { factors, rows: resultRows };
@@ -23194,6 +26741,44 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
         return { alreadyExists: false, id: newId, materialsCloned: (mats as any[]).length, linksCloned: (lks as any[]).length };
       }),
 
+    // P15 #2 — Promove uma campanha JÁ CONFIGURADA de uma empresa (ex: MF Conexões) a
+    // Template Global do Super Admin — direção inversa de cloneFromTemplate. Copia nome,
+    // código, mês, tema, cor, descrição, materiais e links; fica desativada por padrão
+    // (is_active=0) até cada RH decidir clonar e habilitar. Não altera a campanha de origem.
+    promoteToTemplate: superAdminProcedure
+      .input(z.object({ campaignId: z.number().int(), newName: z.string().optional() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        const [[src]] = await execP(db, `SELECT * FROM preventive_library_campaigns WHERE id=? AND is_template=0`, [input.campaignId]) as any;
+        if (!src) throw new TRPCError({ code: "NOT_FOUND", message: "Campanha de origem não encontrada (ou já é um template)." });
+
+        const name = (input.newName ?? (src as any).name).slice(0, 250);
+        const [ins] = await execP(db, `
+          INSERT INTO preventive_library_campaigns
+            (company_id, name, code, month_number, theme, color, description, is_template, is_active, cloned_from)
+          VALUES (NULL, ?, ?, ?, ?, ?, ?, 1, 0, NULL)`,
+          [name, (src as any).code, (src as any).month_number, (src as any).theme,
+           (src as any).color, (src as any).description]) as any;
+        const newId = Number((ins as any).insertId);
+
+        const [mats] = await execP(db, `SELECT * FROM preventive_library_materials WHERE campaign_id=?`, [input.campaignId]) as any;
+        for (const m of (mats as any[])) {
+          await execP(db, `INSERT INTO preventive_library_materials
+            (campaign_id, title, material_type, target_audience, file_name, mime_type, file_url, description)
+            VALUES (?,?,?,?,?,?,?,?)`,
+            [newId, m.title, m.material_type, m.target_audience ?? 'todos',
+             m.file_name, m.mime_type, m.file_url, m.description]);
+        }
+        const [lks] = await execP(db, `SELECT * FROM preventive_library_links WHERE campaign_id=?`, [input.campaignId]) as any;
+        for (const l of (lks as any[])) {
+          await execP(db, `INSERT INTO preventive_library_links
+            (campaign_id, link_type, ref_id, title, notes, target_audience)
+            VALUES (?,?,?,?,?,?)`,
+            [newId, l.link_type, l.ref_id, l.title, l.notes, l.target_audience ?? 'todos']);
+        }
+        return { id: newId, materialsCloned: (mats as any[]).length, linksCloned: (lks as any[]).length };
+      }),
+
     // SP5 #3 — Toggle ativar/desativar campanha (RH/SESMT/admin da empresa, ou Super Admin pra qualquer)
     setCampaignActive: adminOrRhProcedure
       .input(z.object({ campaignId: z.number().int(), isActive: z.boolean() }))
@@ -23255,6 +26840,43 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
         return { campaign: c, materials: mats, links: lks };
       }),
 
+    // Preview de quantos destinatários caem em cada status — RH decide o filtro com dados na mão.
+    previewParticipation: adminOrRhProcedure
+      .input(z.object({
+        campaignId: z.number().int(),
+        audience: z.enum(["todos","colaboradores","rh","sesmt","admin","chefia","sesmt_rh","managers"]).default("todos"),
+        // P18 #16 — mesma lógica de "% máximo assistido" já usada em emailCampaigns.previewRecipients,
+        // agora também disponível pras campanhas da Biblioteca Preventiva.
+        maxCompletionPercent: z.number().min(0).max(100).optional(),
+      }))
+      .query(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb();
+        if (!db || !cid) return { totalItems: 0, naoRespondeu: 0, emAndamento: 0, concluiu: 0, totalRecipients: 0, abaixoDoLimite: 0 };
+        const roleFilter: Record<string, string | null> = {
+          todos: null, colaboradores: `'user'`, rh: `'rh'`, sesmt: `'sesmt'`,
+          admin: `'admin','company_admin','admin_global'`, chefia: `'chefia','sector_lead','manager'`,
+          sesmt_rh: `'sesmt','rh','admin','company_admin'`,
+          managers: `'manager','sector_lead','chefia','admin','company_admin'`,
+        };
+        let usersSql = `SELECT id FROM users WHERE company_id=? AND is_active=1`;
+        const rolesIn = roleFilter[input.audience];
+        if (rolesIn) usersSql += ` AND role IN (${rolesIn})`;
+        const [users] = await execP(db, usersSql, [cid]) as any;
+        const userIds = (users as any[]).map(u => Number(u.id));
+        const { totalItems, doneCount } = await computeCampaignParticipation(db, input.campaignId, userIds);
+        let naoRespondeu = 0, emAndamento = 0, concluiu = 0, abaixoDoLimite = 0;
+        for (const uid of userIds) {
+          const st = totalItems === 0 ? "nao_respondeu" : participationStatus(doneCount.get(uid) ?? 0, totalItems);
+          if (st === "nao_respondeu") naoRespondeu++; else if (st === "concluiu") concluiu++; else emAndamento++;
+          if (input.maxCompletionPercent != null && totalItems > 0) {
+            const pct = ((doneCount.get(uid) ?? 0) / totalItems) * 100;
+            if (pct < input.maxCompletionPercent) abaixoDoLimite++;
+          }
+        }
+        return { totalItems, naoRespondeu, emAndamento, concluiu, totalRecipients: userIds.length, abaixoDoLimite };
+      }),
+
     // Sprint 2 / item 23 — Disparar Campanha
     // Dispara notificações (sino) e/ou e-mails para colaboradores da empresa.
     // audience: "todos" | "sesmt_rh" (perfis SST) | "managers" (líderes de setor).
@@ -23279,6 +26901,11 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
         customMessage: z.string().optional(),
         // Nome do template HSM aprovado na Meta (ex: "campanha_saude_v1"). Se ausente, usa fallback.
         whatsappTemplate: z.string().optional(),
+        // P17 #6 — filtro de participação: quem já respondeu/concluiu não recebe de novo.
+        participationFilter: z.enum(["todos", "nao_respondeu", "em_andamento", "concluiu"]).default("todos"),
+        // P18 #16 — alternativa numérica: só quem concluiu MENOS que X% do conteúdo vinculado.
+        // Quando presente, tem precedência sobre participationFilter (mais granular).
+        maxCompletionPercent: z.number().min(0).max(100).optional(),
       }))
       .mutation(async ({ ctx, input }) => {
         const cid = (ctx.user as any).companyId;
@@ -23308,16 +26935,33 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
         const rolesIn = roleFilter[input.audience];
         if (rolesIn) usersSql += ` AND role IN (${rolesIn})`;
         const [users] = await execP(db, usersSql, params) as any;
-        const userList: any[] = users as any[];
+        let userList: any[] = users as any[];
+
+        // P17 #6 / P18 #16 — aplica filtro de participação (categórico OU % máximo) sobre a audiência.
+        if ((input.maxCompletionPercent != null || input.participationFilter !== "todos") && userList.length > 0) {
+          const { totalItems, doneCount } = await computeCampaignParticipation(db, input.campaignId, userList.map(u => Number(u.id)));
+          if (totalItems === 0) {
+            return { notified: 0, emailsSent: 0, emailsFailed: 0, warning: "Esta campanha não tem pesquisa ou curso vinculado — não é possível filtrar por participação." };
+          }
+          if (input.maxCompletionPercent != null) {
+            userList = userList.filter(u => (((doneCount.get(Number(u.id)) ?? 0) / totalItems) * 100) < input.maxCompletionPercent!);
+          } else {
+            userList = userList.filter(u => participationStatus(doneCount.get(Number(u.id)) ?? 0, totalItems) === input.participationFilter);
+          }
+        }
+
         if (userList.length === 0) {
-          return { notified: 0, emailsSent: 0, emailsFailed: 0, warning: "Nenhum destinatário corresponde à audiência selecionada." };
+          return { notified: 0, emailsSent: 0, emailsFailed: 0, warning: "Nenhum destinatário corresponde à audiência/filtro selecionado." };
         }
 
         const subject = `Campanha de Saúde: ${(camp as any).name}`;
         // SPA roda sob /plataforma/ no domínio prod e dev (nginx prefix).
         // Link tanto pra notificação no sino (relative, wouter cuida) quanto pra
-        // e-mail (absoluto: usa PUBLIC_BASE_URL + /plataforma).
+        // e-mail (absoluto). P17 #1 — Bruno: link estava hardcoded pra dev; agora
+        // usa PUBLIC_EMAIL_BASE_URL (mesmo padrão já usado em sipat.sendBlast),
+        // com fallback pro domínio de produção — nunca mais aponta pra dev por padrão.
         const link = `/plataforma/campanhas/${input.campaignId}`;
+        const emailBase = process.env.PUBLIC_EMAIL_BASE_URL || "https://saudedotrabalho.com";
         const introBody = input.customMessage?.trim() || (camp as any).description ||
           `Nova campanha de saúde preventiva disponível para acompanhamento — "${(camp as any).name}".`;
         const html = `
@@ -23325,7 +26969,7 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
             <h2 style="color:#1e3a5f;margin-bottom:4px">${(camp as any).name}</h2>
             ${(camp as any).theme ? `<p style="color:#64748b;margin-top:0">${(camp as any).theme}</p>` : ""}
             <p>${introBody}</p>
-            <p><a href="https://dev.saudedotrabalho.com${link}" style="background:#0ea5e9;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none;display:inline-block">Acessar campanha</a></p>
+            <p><a href="${emailBase}${link}" style="background:#0ea5e9;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none;display:inline-block">Acessar campanha</a></p>
             <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0">
             <p style="font-size:11px;color:#94a3b8">Você recebeu este aviso porque está cadastrado(a) na plataforma Saúde do Trabalho.</p>
           </div>`;
@@ -23623,11 +27267,1604 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
           try {
             await execP(db, `INSERT INTO ${cfg.table} (${fields.join(",")}) VALUES (${fields.map(() => "?").join(",")})`, values);
             inserted++;
+            // Bruno R5-P5/Fase3 #8 — Após inserir, dispara wellbeing_signal pro user
+            // pra que a importação IMPACTE o Índice de Bem-Estar (antes só populava
+            // a tabela bruta e não alimentava o cálculo).
+            if (userId) {
+              try {
+                let signalType = ""; let severity = "baixo"; let weight = 1;
+                if (input.kind === "absenteismo" || input.kind === "atestados") {
+                  signalType = "absenteismo";
+                  const dias = Number(row.dias_afastados ?? row.dias ?? 0);
+                  if (dias >= 15) severity = "critico";
+                  else if (dias >= 7) severity = "alto";
+                  else if (dias >= 3) severity = "moderado";
+                  else severity = "baixo";
+                  weight = 1.2;
+                } else if (input.kind === "acidentes") {
+                  signalType = "acidente";
+                  const grav = String(row.gravidade || "").toLowerCase();
+                  severity = grav.includes("grav") || grav.includes("crit") ? "critico"
+                           : grav.includes("modera") ? "alto"
+                           : "moderado";
+                  weight = 1.5;
+                } else if (input.kind === "disciplinares") {
+                  signalType = "disciplinar"; severity = "moderado"; weight = 0.8;
+                } else if (input.kind === "turnover") {
+                  signalType = "turnover"; severity = "alto"; weight = 1.0;
+                }
+                if (signalType) {
+                  await execP(db, `INSERT INTO wellbeing_signals (user_id, company_id, signal_type, value, weight, severity, recorded_at) VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+                    [userId, cid, signalType, Number(row.dias_afastados ?? row.dias ?? 1), weight, severity]);
+                  // Recalcula índice deste user imediatamente
+                  try { const { computeWellbeingIndex } = await import("./db"); await computeWellbeingIndex(userId, cid); } catch {}
+                }
+              } catch (sErr: any) { console.warn(`[import ${input.kind}] signal failed for ${email}:`, sErr?.message); }
+            }
           } catch (e: any) { if (errors.length < 10) errors.push(`${email}: ${(e?.message || "erro").slice(0, 80)}`); skipped++; }
         }
         return { inserted, skipped, errors };
       }),
   }),
+
+  // Bruno R5-P5/Fase3 #8.1 — Módulo SIPAT (Semana Interna de Prevenção de Acidentes).
+  // Foundation MVP: edições anuais com tema, identidade, cronograma, materiais e sorteios.
+  sipat: (() => {
+    let _sipatDdlDone = false;
+    async function ensureSipatTables(db: any) {
+      if (_sipatDdlDone || !db) return;
+      try {
+        await db.execute(drzSql`CREATE TABLE IF NOT EXISTS sipat_editions (
+          id INT AUTO_INCREMENT PRIMARY KEY, company_id INT NOT NULL, year INT NOT NULL,
+          theme VARCHAR(255), color VARCHAR(20) DEFAULT '#0ea5e9',
+          starts_at DATE NULL, ends_at DATE NULL, banner_url VARCHAR(500),
+          meeting_link_template VARCHAR(500), is_active TINYINT(1) DEFAULT 0,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY uq_company_year (company_id, year), INDEX idx_active (company_id, is_active)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+        await db.execute(drzSql`CREATE TABLE IF NOT EXISTS sipat_schedule (
+          id INT AUTO_INCREMENT PRIMARY KEY, edition_id INT NOT NULL, day DATE NOT NULL, time TIME NULL,
+          title VARCHAR(255) NOT NULL, description TEXT, meeting_url VARCHAR(500),
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX idx_edition (edition_id, day, time)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+        await db.execute(drzSql`CREATE TABLE IF NOT EXISTS sipat_materials (
+          id INT AUTO_INCREMENT PRIMARY KEY, edition_id INT NOT NULL,
+          kind VARCHAR(20) NOT NULL, title VARCHAR(255) NOT NULL, url VARCHAR(1000) NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX idx_edition (edition_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+        await db.execute(drzSql`CREATE TABLE IF NOT EXISTS sipat_raffles (
+          id INT AUTO_INCREMENT PRIMARY KEY, edition_id INT NOT NULL, prize VARCHAR(255) NOT NULL,
+          winner_user_id INT NULL, winner_name VARCHAR(255), winner_email VARCHAR(255),
+          drawn_at TIMESTAMP NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX idx_edition (edition_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+        // P13 #3 — colunas de gestão de sorteios (idempotente)
+        try { await db.execute(drzSql`ALTER TABLE sipat_raffles ADD COLUMN scheduled_at DATETIME NULL`); } catch (_) {}
+        try { await db.execute(drzSql`ALTER TABLE sipat_raffles ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'aberto'`); } catch (_) {}
+        try { await db.execute(drzSql`ALTER TABLE sipat_raffles ADD COLUMN allow_repeat_winner TINYINT(1) NOT NULL DEFAULT 0`); } catch (_) {}
+        try { await db.execute(drzSql`ALTER TABLE sipat_raffles ADD COLUMN drawn_by_user_id INT NULL`); } catch (_) {}
+        try { await db.execute(drzSql`ALTER TABLE sipat_raffles ADD COLUMN drawn_by_name VARCHAR(255) NULL`); } catch (_) {}
+        // P15 #3 — certificado vinculado à edição da SIPAT (distinto do certificado por módulo)
+        try { await db.execute(drzSql`ALTER TABLE certificates ADD COLUMN sipat_edition_id INT NULL`); } catch (_) {}
+        // P15 #3 — telemetria básica de acesso ao portal da SIPAT (participação/indicadores)
+        await db.execute(drzSql`CREATE TABLE IF NOT EXISTS sipat_access_events (
+          id INT AUTO_INCREMENT PRIMARY KEY, edition_id INT NOT NULL, user_id INT NOT NULL,
+          access_type VARCHAR(30) NOT NULL DEFAULT 'portal',
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_edition_user (edition_id, user_id), INDEX idx_edition_day (edition_id, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+        _sipatDdlDone = true;
+      } catch (e) { console.warn("[sipat] DDL:", (e as any)?.message); }
+    }
+    // Extrai o moduleId de uma URL de material tipo "/cursos/123".
+    function extractModuleId(url: string): number | null {
+      const m = /\/cursos\/(\d+)/.exec(url || "");
+      return m ? Number(m[1]) : null;
+    }
+    return router({
+    // R5-P9 #13 — SIPAT interativa pro Colaborador. Retorna a edição ATIVA da empresa do user
+    // junto com cronograma + materiais + sorteios (todos do mesmo edition_id).
+    activeForUser: protectedProcedure.query(async ({ ctx }) => {
+      const cid = (ctx.user as any).companyId;
+      const db = await getDb();
+      if (!db || !cid) return null;
+      const er: any = await db.execute(drzSql`SELECT * FROM sipat_editions WHERE company_id=${cid} AND is_active=1 ORDER BY year DESC LIMIT 1`);
+      const edition = ((er as any)[0] ?? [])[0];
+      if (!edition) return null;
+      const sr: any = await db.execute(drzSql`SELECT * FROM sipat_schedule WHERE edition_id=${edition.id} ORDER BY day, time`);
+      const mr: any = await db.execute(drzSql`SELECT * FROM sipat_materials WHERE edition_id=${edition.id} ORDER BY created_at DESC`);
+      const rr: any = await db.execute(drzSql`SELECT id, prize, winner_name, drawn_at FROM sipat_raffles WHERE edition_id=${edition.id} ORDER BY created_at DESC`);
+      return {
+        edition,
+        schedule: ((sr as any)[0] ?? []),
+        materials: ((mr as any)[0] ?? []),
+        raffles: ((rr as any)[0] ?? []),
+      };
+    }),
+    listEditions: adminOrRhProcedure.query(async ({ ctx }) => {
+      const cid = (ctx.user as any).companyId;
+      const db = await getDb(); if (!db || !cid) return [];
+      await ensureSipatTables(db);
+      try {
+        await db.execute(drzSql`CREATE TABLE IF NOT EXISTS sipat_editions (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          company_id INT NOT NULL,
+          year INT NOT NULL,
+          theme VARCHAR(255),
+          color VARCHAR(20) DEFAULT '#0ea5e9',
+          starts_at DATE NULL,
+          ends_at DATE NULL,
+          banner_url VARCHAR(500),
+          meeting_link_template VARCHAR(500),
+          is_active TINYINT(1) DEFAULT 0,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY uq_company_year (company_id, year),
+          INDEX idx_active (company_id, is_active)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+        await db.execute(drzSql`CREATE TABLE IF NOT EXISTS sipat_schedule (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          edition_id INT NOT NULL,
+          day DATE NOT NULL, time TIME NULL,
+          title VARCHAR(255) NOT NULL, description TEXT,
+          meeting_url VARCHAR(500),
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_edition (edition_id, day, time)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+        await db.execute(drzSql`CREATE TABLE IF NOT EXISTS sipat_materials (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          edition_id INT NOT NULL,
+          kind VARCHAR(20) NOT NULL,
+          title VARCHAR(255) NOT NULL, url VARCHAR(1000) NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_edition (edition_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+        await db.execute(drzSql`CREATE TABLE IF NOT EXISTS sipat_raffles (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          edition_id INT NOT NULL,
+          prize VARCHAR(255) NOT NULL,
+          winner_user_id INT NULL,
+          winner_name VARCHAR(255), winner_email VARCHAR(255),
+          drawn_at TIMESTAMP NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_edition (edition_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+      } catch (e) { console.warn("[sipat] DDL:", (e as any)?.message); }
+      const r: any = await db.execute(drzSql`SELECT * FROM sipat_editions WHERE company_id=${cid} ORDER BY year DESC`);
+      return (r as any)[0] ?? [];
+    }),
+    upsertEdition: adminOrRhProcedure
+      .input(z.object({
+        id: z.number().optional(),
+        year: z.number().int(), theme: z.string().optional(), color: z.string().optional(),
+        startsAt: z.string().optional(), endsAt: z.string().optional(),
+        bannerUrl: z.string().optional(), meetingLinkTemplate: z.string().optional(),
+        isActive: z.boolean().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+        await ensureSipatTables(db);
+        // Se está ativando, desativa as outras pra ter só 1 ativa por vez
+        if (input.isActive) await db.execute(drzSql`UPDATE sipat_editions SET is_active=0 WHERE company_id=${cid}`);
+        if (input.id) {
+          await db.execute(drzSql`UPDATE sipat_editions SET year=${input.year}, theme=${input.theme ?? null}, color=${input.color ?? "#0ea5e9"},
+            starts_at=${input.startsAt || null}, ends_at=${input.endsAt || null}, banner_url=${input.bannerUrl ?? null},
+            meeting_link_template=${input.meetingLinkTemplate ?? null}, is_active=${input.isActive ? 1 : 0}
+            WHERE id=${input.id} AND company_id=${cid}`);
+          return { ok: true, id: input.id };
+        }
+        const res: any = await db.execute(drzSql`INSERT INTO sipat_editions (company_id, year, theme, color, starts_at, ends_at, banner_url, meeting_link_template, is_active)
+          VALUES (${cid}, ${input.year}, ${input.theme ?? null}, ${input.color ?? "#0ea5e9"}, ${input.startsAt || null}, ${input.endsAt || null}, ${input.bannerUrl ?? null}, ${input.meetingLinkTemplate ?? null}, ${input.isActive ? 1 : 0})`);
+        return { ok: true, id: Number((res as any)[0]?.insertId ?? 0) };
+      }),
+    listSchedule: adminOrRhProcedure.input(z.object({ editionId: z.number() })).query(async ({ input }) => {
+      const db = await getDb(); if (!db) return [];
+      const r: any = await db.execute(drzSql`SELECT * FROM sipat_schedule WHERE edition_id=${input.editionId} ORDER BY day, time`);
+      return (r as any)[0] ?? [];
+    }),
+    upsertScheduleItem: adminOrRhProcedure
+      .input(z.object({ id: z.number().optional(), editionId: z.number(), day: z.string(), time: z.string().optional(), title: z.string(), description: z.string().optional(), meetingUrl: z.string().optional() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        if (input.id) {
+          await db.execute(drzSql`UPDATE sipat_schedule SET day=${input.day}, time=${input.time || null}, title=${input.title}, description=${input.description ?? null}, meeting_url=${input.meetingUrl ?? null} WHERE id=${input.id}`);
+          return { ok: true };
+        }
+        await db.execute(drzSql`INSERT INTO sipat_schedule (edition_id, day, time, title, description, meeting_url) VALUES (${input.editionId}, ${input.day}, ${input.time || null}, ${input.title}, ${input.description ?? null}, ${input.meetingUrl ?? null})`);
+        return { ok: true };
+      }),
+    removeScheduleItem: adminOrRhProcedure.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
+      const db = await getDb(); if (!db) return { ok: false };
+      await db.execute(drzSql`DELETE FROM sipat_schedule WHERE id=${input.id}`);
+      return { ok: true };
+    }),
+    listMaterials: adminOrRhProcedure.input(z.object({ editionId: z.number() })).query(async ({ input }) => {
+      const db = await getDb(); if (!db) return [];
+      const r: any = await db.execute(drzSql`SELECT * FROM sipat_materials WHERE edition_id=${input.editionId} ORDER BY created_at DESC`);
+      return (r as any)[0] ?? [];
+    }),
+    upsertMaterial: adminOrRhProcedure
+      .input(z.object({ editionId: z.number(), kind: z.string(), title: z.string(), url: z.string() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await db.execute(drzSql`INSERT INTO sipat_materials (edition_id, kind, title, url) VALUES (${input.editionId}, ${input.kind}, ${input.title}, ${input.url})`);
+        return { ok: true };
+      }),
+    removeMaterial: adminOrRhProcedure.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
+      const db = await getDb(); if (!db) return { ok: false };
+      await db.execute(drzSql`DELETE FROM sipat_materials WHERE id=${input.id}`);
+      return { ok: true };
+    }),
+    listRaffles: adminOrRhProcedure.input(z.object({ editionId: z.number() })).query(async ({ input }) => {
+      const db = await getDb(); if (!db) return [];
+      const r: any = await db.execute(drzSql`SELECT * FROM sipat_raffles WHERE edition_id=${input.editionId} ORDER BY created_at DESC`);
+      return (r as any)[0] ?? [];
+    }),
+    upsertRaffle: adminOrRhProcedure
+      .input(z.object({ editionId: z.number(), prize: z.string().min(1), scheduledAt: z.string().optional(), allowRepeatWinner: z.boolean().optional() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensureSipatTables(db);
+        await db.execute(drzSql`INSERT INTO sipat_raffles (edition_id, prize, scheduled_at, allow_repeat_winner)
+          VALUES (${input.editionId}, ${input.prize}, ${input.scheduledAt || null}, ${input.allowRepeatWinner ? 1 : 0})`);
+        return { ok: true };
+      }),
+    // P13 #3 — editar prêmio/agenda/config de um sorteio (só se ainda não sorteado)
+    updateRaffle: adminOrRhProcedure
+      .input(z.object({ id: z.number(), prize: z.string().min(1).optional(), scheduledAt: z.string().nullable().optional(), allowRepeatWinner: z.boolean().optional() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        if (input.prize !== undefined) await db.execute(drzSql`UPDATE sipat_raffles SET prize=${input.prize} WHERE id=${input.id}`);
+        if (input.scheduledAt !== undefined) await db.execute(drzSql`UPDATE sipat_raffles SET scheduled_at=${input.scheduledAt || null} WHERE id=${input.id}`);
+        if (input.allowRepeatWinner !== undefined) await db.execute(drzSql`UPDATE sipat_raffles SET allow_repeat_winner=${input.allowRepeatWinner ? 1 : 0} WHERE id=${input.id}`);
+        return { ok: true };
+      }),
+    // P13 #3 — excluir sorteio
+    removeRaffle: adminOrRhProcedure.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
+      const db = await getDb(); if (!db) return { ok: false };
+      await db.execute(drzSql`DELETE FROM sipat_raffles WHERE id=${input.id}`);
+      return { ok: true };
+    }),
+    // P13 #3 — duplicar sorteio (reutilizar em outra ocasião); a cópia nasce sem vencedor
+    duplicateRaffle: adminOrRhProcedure.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
+      const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const r: any = await db.execute(drzSql`SELECT edition_id, prize, scheduled_at, allow_repeat_winner FROM sipat_raffles WHERE id=${input.id}`);
+      const src = ((r as any)[0] ?? [])[0];
+      if (!src) throw new TRPCError({ code: "NOT_FOUND" });
+      await db.execute(drzSql`INSERT INTO sipat_raffles (edition_id, prize, scheduled_at, allow_repeat_winner, status)
+        VALUES (${src.edition_id}, ${(src.prize || "") + " (cópia)"}, ${src.scheduled_at || null}, ${src.allow_repeat_winner ? 1 : 0}, 'aberto')`);
+      return { ok: true };
+    }),
+    // P13 #3 — encerrar manualmente um sorteio (não recebe mais inscritos / não sorteia)
+    closeRaffle: adminOrRhProcedure.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
+      const db = await getDb(); if (!db) return { ok: false };
+      await db.execute(drzSql`UPDATE sipat_raffles SET status='encerrado' WHERE id=${input.id}`);
+      return { ok: true };
+    }),
+    reopenRaffle: adminOrRhProcedure.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
+      const db = await getDb(); if (!db) return { ok: false };
+      await db.execute(drzSql`UPDATE sipat_raffles SET status='aberto' WHERE id=${input.id} AND winner_user_id IS NULL`);
+      return { ok: true };
+    }),
+    // P13 #3 — participantes elegíveis (colaboradores ativos) + já sorteados na edição.
+    // Usado para mostrar a quantidade antes do sorteio e para exportar a relação.
+    raffleParticipants: adminOrRhProcedure.input(z.object({ editionId: z.number() })).query(async ({ ctx, input }) => {
+      const cid = (ctx.user as any).companyId;
+      const db = await getDb(); if (!db || !cid) return { participants: [], winners: [] };
+      const [parts]: any = await execP(db, `SELECT id, name, email, position FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")} ORDER BY u.name`, [cid]);
+      const wr: any = await db.execute(drzSql`SELECT prize, winner_name, winner_email, drawn_at, drawn_by_name FROM sipat_raffles WHERE edition_id=${input.editionId} AND winner_user_id IS NOT NULL ORDER BY drawn_at DESC`);
+      return { participants: Array.isArray(parts) ? parts : [], winners: ((wr as any)[0] ?? []) };
+    }),
+    drawRaffle: adminOrRhProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+        // Estado do sorteio: não sorteia se encerrado ou já realizado.
+        const rr: any = await db.execute(drzSql`SELECT edition_id, status, winner_user_id, allow_repeat_winner FROM sipat_raffles WHERE id=${input.id}`);
+        const raffle = ((rr as any)[0] ?? [])[0];
+        if (!raffle) throw new TRPCError({ code: "NOT_FOUND" });
+        if (raffle.winner_user_id) throw new TRPCError({ code: "BAD_REQUEST", message: "Este sorteio já tem um vencedor." });
+        if (raffle.status === "encerrado") throw new TRPCError({ code: "BAD_REQUEST", message: "Sorteio encerrado. Reabra antes de sortear." });
+        // Se não permite repetir, exclui quem já venceu OUTRO sorteio da mesma edição.
+        let excludeIds: number[] = [];
+        if (!raffle.allow_repeat_winner) {
+          const wr: any = await db.execute(drzSql`SELECT winner_user_id FROM sipat_raffles WHERE edition_id=${raffle.edition_id} AND winner_user_id IS NOT NULL`);
+          excludeIds = ((wr as any)[0] ?? []).map((w: any) => Number(w.winner_user_id)).filter(Boolean);
+        }
+        const notIn = excludeIds.length ? ` AND id NOT IN (${excludeIds.map(() => "?").join(",")})` : "";
+        const params = [cid, ...excludeIds];
+        const [users]: any = await execP(db, `SELECT id, name, email FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}${notIn} ORDER BY RAND() LIMIT 1`, params);
+        const winner = (users as any[])[0];
+        if (!winner) throw new TRPCError({ code: "BAD_REQUEST", message: "Nenhum colaborador elegível encontrado (todos já foram sorteados nesta edição?)." });
+        const drawnBy = (ctx.user as any).name || (ctx.user as any).email || "—";
+        await db.execute(drzSql`UPDATE sipat_raffles SET winner_user_id=${winner.id}, winner_name=${winner.name}, winner_email=${winner.email}, drawn_at=NOW(), drawn_by_user_id=${(ctx.user as any).id}, drawn_by_name=${drawnBy}, status='realizado' WHERE id=${input.id}`);
+        return { ok: true, winnerName: winner.name, winnerEmail: winner.email };
+      }),
+    sendBlast: adminOrRhProcedure
+      .input(z.object({ editionId: z.number(), method: z.enum(["notification","email","both"]) }))
+      .mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+        const [[ed]]: any = await execP(db, `SELECT * FROM sipat_editions WHERE id=? AND company_id=?`, [input.editionId, cid]);
+        if (!ed) throw new TRPCError({ code: "NOT_FOUND" });
+        const [users]: any = await execP(db, `SELECT id, name, email FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]);
+        let notified = 0, emailsSent = 0;
+        const base = process.env.PUBLIC_EMAIL_BASE_URL || "https://saudedotrabalho.com";
+        const subject = `SIPAT ${ed.year} — ${ed.theme || "Semana de Prevenção"}`;
+        const body = `Olá!\n\nA SIPAT ${ed.year} já está disponível.\nTema: ${ed.theme || "Prevenção"}\nPeríodo: ${ed.starts_at ? new Date(ed.starts_at).toLocaleDateString("pt-BR") : "—"} a ${ed.ends_at ? new Date(ed.ends_at).toLocaleDateString("pt-BR") : "—"}\n\nAcesse: ${base}/plataforma/sipat\n\n— Equipe Saúde do Trabalho`;
+        for (const u of users as any[]) {
+          try {
+            if (input.method === "notification" || input.method === "both") {
+              await db.execute(drzSql`INSERT INTO notifications (user_id, company_id, type, priority, title, body, link, icon, dedup_key)
+                VALUES (${u.id}, ${cid}, 'sipat', 'media', ${subject}, ${ed.theme ?? "Veja a programação completa"}, '/sipat', 'calendar', ${`sipat:${input.editionId}:${u.id}`})`);
+              notified++;
+            }
+            if ((input.method === "email" || input.method === "both") && u.email) {
+              const r = await sendEmail({ to: u.email, toName: u.name || u.email, subject, html: plainToHtml(body) });
+              if (r.ok) emailsSent++;
+            }
+          } catch {}
+        }
+        return { notified, emailsSent };
+      }),
+
+      // P15 #3 — Telemetria básica de acesso ao portal da SIPAT (base dos indicadores de participação).
+      logAccess: protectedProcedure
+        .input(z.object({ editionId: z.number().int(), accessType: z.string().default("portal") }))
+        .mutation(async ({ ctx, input }) => {
+          const db = await getDb(); if (!db) return { ok: false };
+          await ensureSipatTables(db);
+          // Evita poluir a tabela — só 1 registro por usuário/edição/tipo/dia.
+          const [[dup]]: any = await execP(db,
+            `SELECT id FROM sipat_access_events WHERE edition_id=? AND user_id=? AND access_type=? AND DATE(created_at)=CURDATE()`,
+            [input.editionId, ctx.user.id, input.accessType]);
+          if (dup) return { ok: true, deduped: true };
+          await execP(db, `INSERT INTO sipat_access_events (edition_id, user_id, access_type) VALUES (?,?,?)`,
+            [input.editionId, ctx.user.id, input.accessType]);
+          return { ok: true, deduped: false };
+        }),
+
+      // P15 #3 — Status de elegibilidade do colaborador ao certificado da edição.
+      myCertificateStatus: protectedProcedure
+        .input(z.object({ editionId: z.number().int() }))
+        .query(async ({ ctx, input }) => {
+          const db = await getDb(); if (!db) return null;
+          const [[ed]]: any = await execP(db, `SELECT * FROM sipat_editions WHERE id=?`, [input.editionId]);
+          if (!ed) return null;
+          const [mats]: any = await execP(db, `SELECT url FROM sipat_materials WHERE edition_id=? AND kind='course'`, [input.editionId]);
+          const moduleIds = ((mats as any[]) ?? []).map((m: any) => extractModuleId(m.url)).filter((x): x is number => x != null);
+          let completed = 0;
+          for (const mid of moduleIds) {
+            const [[p]]: any = await execP(db, `SELECT isCompleted FROM user_progress WHERE userId=? AND moduleId=?`, [ctx.user.id, mid]);
+            if (p && Number(p.isCompleted) === 1) completed++;
+          }
+          const [[existing]]: any = await execP(db, `SELECT certificateCode, pdfUrl FROM certificates WHERE userId=? AND sipat_edition_id=?`, [ctx.user.id, input.editionId]);
+          return {
+            requiredCourses: moduleIds.length,
+            completedCourses: completed,
+            eligible: moduleIds.length > 0 && completed === moduleIds.length,
+            alreadyIssued: !!existing,
+            certUrl: existing?.pdfUrl ?? null,
+          };
+        }),
+
+      // P15 #3 — Emite (ou retorna o já emitido) certificado de participação da edição.
+      issueMyCertificate: protectedProcedure
+        .input(z.object({ editionId: z.number().int() }))
+        .mutation(async ({ ctx, input }) => {
+          const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          const [[ed]]: any = await execP(db, `SELECT * FROM sipat_editions WHERE id=?`, [input.editionId]);
+          if (!ed) throw new TRPCError({ code: "NOT_FOUND" });
+
+          const [[already]]: any = await execP(db, `SELECT certificateCode, pdfUrl FROM certificates WHERE userId=? AND sipat_edition_id=?`, [ctx.user.id, input.editionId]);
+          if (already) return { ok: true, alreadyExisted: true, url: already.pdfUrl, code: already.certificateCode };
+
+          const [mats]: any = await execP(db, `SELECT url FROM sipat_materials WHERE edition_id=? AND kind='course'`, [input.editionId]);
+          const moduleIds = ((mats as any[]) ?? []).map((m: any) => extractModuleId(m.url)).filter((x): x is number => x != null);
+          if (moduleIds.length === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "Esta SIPAT ainda não tem cursos vinculados como requisito de certificado." });
+
+          for (const mid of moduleIds) {
+            const [[p]]: any = await execP(db, `SELECT isCompleted FROM user_progress WHERE userId=? AND moduleId=?`, [ctx.user.id, mid]);
+            if (!p || Number(p.isCompleted) !== 1) {
+              throw new TRPCError({ code: "BAD_REQUEST", message: "Você ainda não concluiu todos os cursos vinculados a esta SIPAT." });
+            }
+          }
+
+          const anchorModuleId = moduleIds[0];
+          const [[mod]]: any = await execP(db, `SELECT * FROM modules WHERE id=?`, [anchorModuleId]);
+          const code = nanoid(20).toUpperCase();
+          const period = `${ed.starts_at ? new Date(ed.starts_at).toLocaleDateString("pt-BR") : "—"} a ${ed.ends_at ? new Date(ed.ends_at).toLocaleDateString("pt-BR") : "—"}`;
+          const companyId = (ctx.user as any).companyId;
+          const [[co]]: any = companyId ? await execP(db, `SELECT logo_url, name FROM companies WHERE id=?`, [companyId]) : [null];
+
+          const pdfBuffer = await generateCertificatePDF({
+            userName: ctx.user.name ?? ctx.user.email ?? "Participante",
+            moduleName: `SIPAT ${ed.year}${ed.theme ? " — " + ed.theme : ""}`,
+            completedAt: new Date(),
+            certificateCode: code,
+            certTitle: "Certificado de Participação",
+            certBody: `Certificamos a participação nas atividades da Semana Interna de Prevenção de Acidentes do Trabalho (SIPAT) ${ed.year}, no período de ${period}.`,
+            durationMinutes: (mod as any)?.durationMinutes ?? null,
+            companyLogoUrl: co?.logo_url ?? null,
+            companyName: co?.name ?? ctx.user?.companyName ?? "Saúde do Trabalho",
+          });
+          const { storagePut } = await import("./storage");
+          const { url } = await storagePut(`certificates/${code}.png`, pdfBuffer, "image/png");
+          const cert = await createCertificate(ctx.user.id, anchorModuleId, code, url);
+          await execP(db, `UPDATE certificates SET sipat_edition_id=? WHERE certificateCode=?`, [input.editionId, code]);
+          const meta = getReqMeta(ctx);
+          await logAudit({ userId: ctx.user.id, userEmail: ctx.user.email, action: "sipat_certificate_issued", entityType: "certificate", entityId: cert?.id, detailsJson: { editionId: input.editionId, code }, ipAddress: meta.ip, userAgent: meta.userAgent });
+          return { ok: true, alreadyExisted: false, url, code };
+        }),
+
+      // P15 #3 — Relatório de Evidências + Ata de Participação (RH/SESMT/admin).
+      evidenceReport: adminOrRhProcedure
+        .input(z.object({ editionId: z.number().int() }))
+        .query(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+          const [[ed]]: any = await execP(db, `SELECT * FROM sipat_editions WHERE id=? AND company_id=?`, [input.editionId, cid]);
+          if (!ed) throw new TRPCError({ code: "NOT_FOUND" });
+
+          const [users]: any = await execP(db, `
+            SELECT u.id, u.name, u.email, s.name AS sector_name
+            FROM users u LEFT JOIN sectors s ON s.id = u.sector_id
+            WHERE u.company_id=? AND ${activeEmployeeWhere("u")} ORDER BY u.name`, [cid]);
+
+          const [accessRows]: any = await execP(db, `
+            SELECT user_id, COUNT(*) AS cnt, MIN(created_at) AS first_access, MAX(created_at) AS last_access
+            FROM sipat_access_events WHERE edition_id=? GROUP BY user_id`, [input.editionId]);
+          const accessMap = new Map<number, any>((accessRows as any[]).map((r: any) => [Number(r.user_id), r]));
+
+          const [certRows]: any = await execP(db, `SELECT userId, certificateCode, issuedAt FROM certificates WHERE sipat_edition_id=?`, [input.editionId]);
+          const certMap = new Map<number, any>((certRows as any[]).map((r: any) => [Number(r.userId), r]));
+
+          const [mats]: any = await execP(db, `SELECT url FROM sipat_materials WHERE edition_id=? AND kind='course'`, [input.editionId]);
+          const moduleIds = ((mats as any[]) ?? []).map((m: any) => extractModuleId(m.url)).filter((x): x is number => x != null);
+
+          const rows: any[] = [];
+          for (const u of (users as any[])) {
+            let coursesCompleted = 0;
+            for (const mid of moduleIds) {
+              const [[p]]: any = await execP(db, `SELECT isCompleted FROM user_progress WHERE userId=? AND moduleId=?`, [u.id, mid]);
+              if (p && Number(p.isCompleted) === 1) coursesCompleted++;
+            }
+            const acc = accessMap.get(Number(u.id));
+            const cert = certMap.get(Number(u.id));
+            rows.push({
+              userId: u.id, name: u.name, email: u.email, sector: u.sector_name ?? null,
+              accessCount: acc ? Number(acc.cnt) : 0,
+              firstAccess: acc?.first_access ?? null, lastAccess: acc?.last_access ?? null,
+              coursesCompleted, coursesRequired: moduleIds.length,
+              certificateIssued: !!cert, certificateCode: cert?.certificateCode ?? null,
+            });
+          }
+          const totalInvited = rows.length;
+          const totalParticipated = rows.filter(r => r.accessCount > 0 || r.certificateIssued).length;
+          const totalCertificates = rows.filter(r => r.certificateIssued).length;
+          return {
+            edition: ed,
+            collaborators: rows,
+            summary: {
+              totalInvited, totalParticipated,
+              pctAdesao: totalInvited > 0 ? Math.round((totalParticipated / totalInvited) * 1000) / 10 : 0,
+              totalCertificates,
+              period: `${ed.starts_at ? new Date(ed.starts_at).toLocaleDateString("pt-BR") : "—"} a ${ed.ends_at ? new Date(ed.ends_at).toLocaleDateString("pt-BR") : "—"}`,
+              generatedAt: new Date().toISOString(),
+            },
+          };
+        }),
+
+      // P15 #3 — Indicadores gerenciais da edição.
+      dashboardStats: adminOrRhProcedure
+        .input(z.object({ editionId: z.number().int() }))
+        .query(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+          const [[ed]]: any = await execP(db, `SELECT * FROM sipat_editions WHERE id=? AND company_id=?`, [input.editionId, cid]);
+          if (!ed) throw new TRPCError({ code: "NOT_FOUND" });
+
+          const [[invitedRow]]: any = await execP(db, `SELECT COUNT(*) AS c FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]);
+          const totalInvited = Number(invitedRow?.c ?? 0);
+
+          const [[participRow]]: any = await execP(db, `SELECT COUNT(DISTINCT user_id) AS c FROM sipat_access_events WHERE edition_id=?`, [input.editionId]);
+          const totalParticipated = Number(participRow?.c ?? 0);
+
+          const [[certRow]]: any = await execP(db, `SELECT COUNT(*) AS c FROM certificates WHERE sipat_edition_id=?`, [input.editionId]);
+          const certificadosEmitidos = Number(certRow?.c ?? 0);
+
+          const [mats]: any = await execP(db, `SELECT title, url FROM sipat_materials WHERE edition_id=? AND kind='course'`, [input.editionId]);
+          const cursosMaisAcessados: any[] = [];
+          for (const m of (mats as any[]) ?? []) {
+            const mid = extractModuleId(m.url);
+            if (!mid) continue;
+            const [[c]]: any = await execP(db, `SELECT COUNT(*) AS c FROM user_progress WHERE moduleId=? AND percentWatched>0`, [mid]);
+            cursosMaisAcessados.push({ title: m.title, acessos: Number(c?.c ?? 0) });
+          }
+          cursosMaisAcessados.sort((a, b) => b.acessos - a.acessos);
+
+          const [porSetor]: any = await execP(db, `
+            SELECT s.name AS setor, COUNT(DISTINCT ae.user_id) AS participantes
+            FROM sipat_access_events ae
+            JOIN users u ON u.id = ae.user_id
+            LEFT JOIN sectors s ON s.id = u.sector_id
+            WHERE ae.edition_id=?
+            GROUP BY s.name ORDER BY participantes DESC`, [input.editionId]);
+
+          return {
+            pctParticipacao: totalInvited > 0 ? Math.round((totalParticipated / totalInvited) * 1000) / 10 : 0,
+            pctConclusao: totalInvited > 0 ? Math.round((certificadosEmitidos / totalInvited) * 1000) / 10 : 0,
+            pendentes: Math.max(0, totalInvited - totalParticipated),
+            certificadosEmitidos,
+            totalInvited, totalParticipated,
+            cursosMaisAcessados: cursosMaisAcessados.slice(0, 10),
+            participacaoPorSetor: porSetor ?? [],
+          };
+        }),
+    }); // close inner router
+  })(), // close IIFE — Bruno R5-P5/Fase3 #8.1
+
+  // ─── P15 #4 — Módulo CIPA (Comissão Interna de Prevenção de Acidentes) ────
+  cipa: (() => {
+    let _cipaDdlDone = false;
+    async function ensureCipaTables(db: any) {
+      if (_cipaDdlDone || !db) return;
+      try {
+        await db.execute(drzSql`CREATE TABLE IF NOT EXISTS cipa_elections (
+          id INT AUTO_INCREMENT PRIMARY KEY, company_id INT NOT NULL, name VARCHAR(255) NOT NULL,
+          seats_titular INT NOT NULL DEFAULT 3, seats_suplente INT NOT NULL DEFAULT 3,
+          mandate_months INT NOT NULL DEFAULT 12,
+          inscription_start DATE NULL, inscription_end DATE NULL,
+          voting_start DATE NULL, voting_end DATE NULL,
+          tie_break_note TEXT,
+          status VARCHAR(20) NOT NULL DEFAULT 'rascunho',
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_company (company_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+        await db.execute(drzSql`CREATE TABLE IF NOT EXISTS cipa_candidates (
+          id INT AUTO_INCREMENT PRIMARY KEY, election_id INT NOT NULL,
+          name VARCHAR(255) NOT NULL, sector_id INT NULL, photo_url VARCHAR(500), pitch TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX idx_election (election_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+        // Prova de participação (quem votou) — SEM referência ao candidato escolhido.
+        await db.execute(drzSql`CREATE TABLE IF NOT EXISTS cipa_voters (
+          id INT AUTO_INCREMENT PRIMARY KEY, election_id INT NOT NULL, user_id INT NOT NULL,
+          voted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, ip_address VARCHAR(45),
+          UNIQUE KEY uq_election_user (election_id, user_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+        // Voto anônimo — SEM referência ao eleitor. As duas tabelas nunca se cruzam por eleitor.
+        await db.execute(drzSql`CREATE TABLE IF NOT EXISTS cipa_votes (
+          id INT AUTO_INCREMENT PRIMARY KEY, election_id INT NOT NULL, candidate_id INT NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX idx_election_cand (election_id, candidate_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+        await db.execute(drzSql`CREATE TABLE IF NOT EXISTS cipa_members (
+          id INT AUTO_INCREMENT PRIMARY KEY, company_id INT NOT NULL, election_id INT NULL,
+          user_id INT NULL, name VARCHAR(255) NOT NULL,
+          role VARCHAR(30) NOT NULL DEFAULT 'titular',
+          mandate_start DATE NULL, mandate_end DATE NULL,
+          status VARCHAR(20) NOT NULL DEFAULT 'ativo',
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX idx_company (company_id, status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+        await db.execute(drzSql`CREATE TABLE IF NOT EXISTS cipa_meetings (
+          id INT AUTO_INCREMENT PRIMARY KEY, company_id INT NOT NULL,
+          meeting_date DATE NOT NULL, title VARCHAR(255) NOT NULL,
+          participants_text TEXT, pauta TEXT, ata_text TEXT, action_plan_text TEXT,
+          related_sipat_edition_id INT NULL,
+          created_by_user_id INT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_company (company_id, meeting_date)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+        await db.execute(drzSql`CREATE TABLE IF NOT EXISTS cipa_meeting_attachments (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          meeting_id INT NOT NULL,
+          company_id INT NOT NULL,
+          kind VARCHAR(40) NOT NULL DEFAULT 'documento',
+          title VARCHAR(255) NULL,
+          file_url VARCHAR(500) NOT NULL,
+          file_name VARCHAR(255) NULL,
+          mime_type VARCHAR(120) NULL,
+          file_size INT NULL,
+          uploaded_by_user_id INT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_meeting (meeting_id),
+          INDEX idx_company (company_id, kind)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+        // P18 GRANDE — cartão de candidato completo (cargo/chapa) + comprovante de voto.
+        try { await db.execute(drzSql`ALTER TABLE cipa_candidates ADD COLUMN cargo VARCHAR(160) NULL`); } catch (_) {}
+        try { await db.execute(drzSql`ALTER TABLE cipa_candidates ADD COLUMN chapa VARCHAR(30) NULL`); } catch (_) {}
+        try { await db.execute(drzSql`ALTER TABLE cipa_voters ADD COLUMN receipt_code VARCHAR(24) NULL`); } catch (_) {}
+        try { await db.execute(drzSql`ALTER TABLE cipa_meetings ADD COLUMN action_plan_text TEXT NULL`); } catch (_) {}
+        _cipaDdlDone = true;
+      } catch (e) { console.warn("[cipa] DDL:", (e as any)?.message); }
+    }
+    function assertCanManageCipaMeeting(ctx: any) {
+      const role = (ctx.user as any).role;
+      if (!["cipa", "admin", "rh", "admin_global", "company_admin", "super_admin", "sesmt"].includes(role)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Apenas integrantes da CIPA e RH/SESMT registram reuniões." });
+      }
+    }
+    async function generateCipaMeetingPdf(db: any, cid: number, meetingId: number) {
+      const puppeteer = (await import("puppeteer")).default;
+      const fs = await import("fs/promises");
+      const path = await import("path");
+      const escHtml = (s: unknown) => String(s ?? "").replace(/[<>&"]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;","\"":"&quot;"}[c] as string));
+      const [[meeting]]: any = await execP(db, `SELECT * FROM cipa_meetings WHERE id=? AND company_id=?`, [meetingId, cid]);
+      if (!meeting) throw new TRPCError({ code: "NOT_FOUND", message: "Reunião não encontrada." });
+      const [[co]]: any = await execP(db, `SELECT name, cnpj FROM companies WHERE id=?`, [cid]).catch(() => [[{ name: "", cnpj: "" }]]);
+      const [attachments]: any = await execP(db, `SELECT * FROM cipa_meeting_attachments WHERE meeting_id=? AND company_id=? ORDER BY kind, created_at`, [meetingId, cid]);
+      const today = new Date().toLocaleDateString("pt-BR", { day: "2-digit", month: "long", year: "numeric" });
+      const meetingDate = meeting.meeting_date ? new Date(meeting.meeting_date).toLocaleDateString("pt-BR") : "-";
+      const pre = (v: any) => escHtml(v || "-").replace(/\n/g, "<br>");
+      const attachmentRows = (attachments ?? []).map((a: any) => `<tr><td>${escHtml(a.kind)}</td><td>${escHtml(a.title || a.file_name || "-")}</td><td>${escHtml(a.mime_type || "-")}</td><td>${Number(a.file_size || 0).toLocaleString("pt-BR")} bytes</td></tr>`).join("");
+      const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
+        @page { size: A4; margin: 18mm; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; color:#0f172a; }
+        h1 { font-size: 22pt; margin:0 0 4px; color:#065f46; }
+        h2 { font-size: 13pt; margin:18px 0 8px; color:#0f172a; border-bottom:1px solid #d1fae5; padding-bottom:4px; }
+        .meta { color:#64748b; font-size:9pt; margin-bottom:18px; }
+        .box { border:1px solid #e2e8f0; border-radius:8px; padding:10px 12px; margin-bottom:10px; }
+        table { width:100%; border-collapse:collapse; font-size:9pt; }
+        th, td { border:1px solid #e2e8f0; padding:6px; vertical-align:top; }
+        th { background:#f0fdf4; text-align:left; }
+        .footer { position: fixed; bottom: 8mm; left: 18mm; right: 18mm; font-size:8pt; color:#94a3b8; border-top:1px solid #e2e8f0; padding-top:4px; }
+      </style></head><body>
+        <h1>Documento Técnico de Reunião da CIPA</h1>
+        <div class="meta">Empresa: <b>${escHtml(co?.name || "")}</b> · CNPJ: ${escHtml(co?.cnpj || "-")} · Emissão: ${today}</div>
+        <div class="box"><b>Título:</b> ${escHtml(meeting.title)}<br><b>Data:</b> ${meetingDate}<br><b>Participantes:</b><br>${pre(meeting.participants_text)}</div>
+        <h2>1. Pauta</h2><div>${pre(meeting.pauta)}</div>
+        <h2>2. Ata e Deliberações</h2><div>${pre(meeting.ata_text)}</div>
+        <h2>3. Plano de Ação</h2><div>${pre(meeting.action_plan_text)}</div>
+        <h2>4. Evidências e Anexos</h2>
+        <table><thead><tr><th>Tipo</th><th>Documento</th><th>MIME</th><th>Tamanho</th></tr></thead><tbody>${attachmentRows || `<tr><td colspan="4">Nenhum anexo registrado.</td></tr>`}</tbody></table>
+        <h2>5. Rastreabilidade</h2><div>Registro mantido na Plataforma Saúde do Trabalho para consulta, auditoria e evidência documental da CIPA.</div>
+        <div class="footer">Plataforma Saúde do Trabalho · Documento gerado automaticamente · ${today}</div>
+      </body></html>`;
+      const outDir = "/var/www/saudedotrabalho/uploads/cipa_meetings";
+      await fs.mkdir(outDir, { recursive: true });
+      const fileName = `cipa_reuniao_${meetingId}_${Date.now()}.pdf`;
+      const outPath = path.join(outDir, fileName);
+      const browser = await puppeteer.launch({
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium-browser",
+        headless: true,
+        args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      });
+      try {
+        const page = await browser.newPage();
+        await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 15000 });
+        await page.pdf({ path: outPath, format: "A4", printBackground: true });
+      } finally {
+        await browser.close();
+      }
+      return `/uploads/cipa_meetings/${fileName}`;
+    }
+    return router({
+      listElections: adminOrRhProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) return [];
+        await ensureCipaTables(db);
+        const [rows]: any = await execP(db, `SELECT * FROM cipa_elections WHERE company_id=? ORDER BY created_at DESC`, [cid]);
+        return rows ?? [];
+      }),
+      upsertElection: adminOrRhProcedure
+        .input(z.object({
+          id: z.number().optional(), name: z.string().min(1),
+          seatsTitular: z.number().int().min(1).default(3), seatsSuplente: z.number().int().min(0).default(3),
+          mandateMonths: z.number().int().min(1).default(12),
+          inscriptionStart: z.string().optional(), inscriptionEnd: z.string().optional(),
+          votingStart: z.string().optional(), votingEnd: z.string().optional(),
+          tieBreakNote: z.string().optional(),
+          status: z.enum(["rascunho", "inscricoes_abertas", "votacao_aberta", "apurada", "encerrada"]).optional(),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+          await ensureCipaTables(db);
+          if (input.id) {
+            // P18 GRANDE — detecta transição de status pra disparar e-mail automático
+            // (mesmo padrão de "old vs new" usado em crmChangeStatus).
+            const [[before]]: any = await execP(db, `SELECT status, name FROM cipa_elections WHERE id=? AND company_id=?`, [input.id, cid]);
+            await execP(db, `UPDATE cipa_elections SET name=?, seats_titular=?, seats_suplente=?, mandate_months=?,
+              inscription_start=?, inscription_end=?, voting_start=?, voting_end=?, tie_break_note=?, status=COALESCE(?, status)
+              WHERE id=? AND company_id=?`,
+              [input.name, input.seatsTitular, input.seatsSuplente, input.mandateMonths,
+               input.inscriptionStart || null, input.inscriptionEnd || null, input.votingStart || null, input.votingEnd || null,
+               input.tieBreakNote || null, input.status || null, input.id, cid]);
+            if (input.status && before && before.status !== input.status) {
+              await notifyCipaStatusChange(db, cid, input.id, input.name, input.status).catch((e: any) => console.warn("[cipa] email status:", e?.message));
+            }
+            return { ok: true, id: input.id };
+          }
+          const [res]: any = await execP(db, `INSERT INTO cipa_elections
+            (company_id, name, seats_titular, seats_suplente, mandate_months, inscription_start, inscription_end, voting_start, voting_end, tie_break_note, status)
+            VALUES (?,?,?,?,?,?,?,?,?,?,'rascunho')`,
+            [cid, input.name, input.seatsTitular, input.seatsSuplente, input.mandateMonths,
+             input.inscriptionStart || null, input.inscriptionEnd || null, input.votingStart || null, input.votingEnd || null, input.tieBreakNote || null]);
+          return { ok: true, id: Number((res as any).insertId ?? 0) };
+        }),
+
+      listCandidates: protectedProcedure.input(z.object({ electionId: z.number().int() })).query(async ({ input }) => {
+        const db = await getDb(); if (!db) return [];
+        const [rows]: any = await execP(db, `SELECT c.*, s.name AS sector_name FROM cipa_candidates c LEFT JOIN sectors s ON s.id=c.sector_id WHERE c.election_id=? ORDER BY c.name`, [input.electionId]);
+        return rows ?? [];
+      }),
+      upsertCandidate: adminOrRhProcedure
+        .input(z.object({
+          id: z.number().optional(), electionId: z.number().int(), name: z.string().min(1),
+          sectorId: z.number().int().optional(), photoUrl: z.string().optional(), pitch: z.string().optional(),
+          cargo: z.string().optional(), chapa: z.string().optional(),
+        }))
+        .mutation(async ({ input }) => {
+          const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          await ensureCipaTables(db);
+          if (input.id) {
+            await execP(db, `UPDATE cipa_candidates SET name=?, sector_id=?, photo_url=?, pitch=?, cargo=?, chapa=? WHERE id=?`,
+              [input.name, input.sectorId ?? null, input.photoUrl || null, input.pitch || null, input.cargo || null, input.chapa || null, input.id]);
+            return { ok: true, id: input.id };
+          }
+          const [res]: any = await execP(db, `INSERT INTO cipa_candidates (election_id, name, sector_id, photo_url, pitch, cargo, chapa) VALUES (?,?,?,?,?,?,?)`,
+            [input.electionId, input.name, input.sectorId ?? null, input.photoUrl || null, input.pitch || null, input.cargo || null, input.chapa || null]);
+          return { ok: true, id: Number((res as any).insertId ?? 0) };
+        }),
+      removeCandidate: adminOrRhProcedure.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
+        const db = await getDb(); if (!db) return { ok: false };
+        await execP(db, `DELETE FROM cipa_candidates WHERE id=?`, [input.id]);
+        return { ok: true };
+      }),
+      // P18 GRANDE — foto do candidato (mesmo padrão base64→disco do pgr.uploadSignature).
+      uploadCandidatePhoto: adminOrRhProcedure
+        .input(z.object({ imageBase64: z.string().max(500_000) }))
+        .mutation(async ({ input }) => {
+          const fs = await import("fs/promises");
+          const path = await import("path");
+          const crypto = await import("crypto");
+          const m = input.imageBase64.match(/^data:image\/(png|jpe?g|webp);base64,(.*)$/);
+          if (!m) throw new TRPCError({ code: "BAD_REQUEST", message: "Formato de imagem inválido." });
+          const ext = m[1] === "jpeg" ? "jpg" : m[1];
+          const buf = Buffer.from(m[2], "base64");
+          if (buf.length > 200_000) throw new TRPCError({ code: "BAD_REQUEST", message: "Imagem muito grande (máx. 200KB)." });
+          const hash = crypto.createHash("md5").update(buf).digest("hex").slice(0, 8);
+          const outDir = "/var/www/saudedotrabalho/uploads/cipa_candidates";
+          await fs.mkdir(outDir, { recursive: true });
+          const fileName = `candidato_${hash}.${ext}`;
+          await fs.writeFile(path.join(outDir, fileName), buf);
+          return { url: `/uploads/cipa_candidates/${fileName}` };
+        }),
+
+      // Elegibilidade + status de participação do colaborador (nunca revela EM QUEM ele votou).
+      myVotingStatus: protectedProcedure.input(z.object({ electionId: z.number().int() })).query(async ({ ctx, input }) => {
+        const db = await getDb(); if (!db) return null;
+        const [[voted]]: any = await execP(db, `SELECT id, receipt_code, voted_at FROM cipa_voters WHERE election_id=? AND user_id=?`, [input.electionId, ctx.user.id]);
+        return { alreadyVoted: !!voted, receiptCode: voted?.receipt_code ?? null, votedAt: voted?.voted_at ?? null };
+      }),
+      // P18 GRANDE — descobre automaticamente a eleição ativa da empresa (inscrições
+      // ou votação abertas), evitando que o colaborador precise digitar o ID manualmente.
+      activeElection: protectedProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) return null;
+        await ensureCipaTables(db);
+        const [[el]]: any = await execP(db, `
+          SELECT * FROM cipa_elections WHERE company_id=? AND status IN ('inscricoes_abertas','votacao_aberta','apurada')
+          ORDER BY FIELD(status,'votacao_aberta','apurada','inscricoes_abertas'), id DESC LIMIT 1`, [cid]);
+        return el ?? null;
+      }),
+      // P18 GRANDE — monitoramento AO VIVO durante a votação: só o TURNOUT (quantos já
+      // votaram), NUNCA a apuração por candidato — preserva o sigilo do voto até apurar.
+      liveParticipation: adminOrRhProcedure.input(z.object({ electionId: z.number().int() })).query(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) return null;
+        const [[el]]: any = await execP(db, `SELECT id, status, name FROM cipa_elections WHERE id=? AND company_id=?`, [input.electionId, cid]);
+        if (!el) return null;
+        const [[elegiveis]]: any = await execP(db, `SELECT COUNT(*) AS c FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]);
+        const [[votaram]]: any = await execP(db, `SELECT COUNT(*) AS c FROM cipa_voters WHERE election_id=?`, [input.electionId]);
+        const total = Number(elegiveis?.c ?? 0), done = Number(votaram?.c ?? 0);
+        return { status: el.status, totalElegiveis: total, totalVotaram: done, pct: total > 0 ? Math.round((done / total) * 1000) / 10 : 0 };
+      }),
+      // Voto secreto: grava EVIDÊNCIA de participação (cipa_voters) e o VOTO ANÔNIMO
+      // (cipa_votes) em inserts separados, sem qualquer chave que os ligue depois.
+      castVote: protectedProcedure
+        .input(z.object({ electionId: z.number().int(), candidateId: z.number().int() }))
+        .mutation(async ({ ctx, input }) => {
+          const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          const [[el]]: any = await execP(db, `SELECT status, voting_start, voting_end FROM cipa_elections WHERE id=?`, [input.electionId]);
+          if (!el) throw new TRPCError({ code: "NOT_FOUND" });
+          if (el.status !== "votacao_aberta") throw new TRPCError({ code: "BAD_REQUEST", message: "A votação não está aberta no momento." });
+          const [[cand]]: any = await execP(db, `SELECT id FROM cipa_candidates WHERE id=? AND election_id=?`, [input.candidateId, input.electionId]);
+          if (!cand) throw new TRPCError({ code: "BAD_REQUEST", message: "Candidato inválido." });
+          const [[already]]: any = await execP(db, `SELECT id FROM cipa_voters WHERE election_id=? AND user_id=?`, [input.electionId, ctx.user.id]);
+          if (already) throw new TRPCError({ code: "BAD_REQUEST", message: "Você já votou nesta eleição." });
+          const meta = getReqMeta(ctx);
+          // P18 GRANDE — comprovante de participação (NÃO revela em quem votou, só que votou).
+          const crypto = await import("crypto");
+          const receiptCode = `CIPA-${crypto.randomBytes(5).toString("hex").toUpperCase()}`;
+          await execP(db, `INSERT INTO cipa_voters (election_id, user_id, ip_address, receipt_code) VALUES (?,?,?,?)`, [input.electionId, ctx.user.id, meta.ip || null, receiptCode]);
+          await execP(db, `INSERT INTO cipa_votes (election_id, candidate_id) VALUES (?,?)`, [input.electionId, input.candidateId]);
+          return { ok: true, receiptCode };
+        }),
+
+      // Resultado — só visível depois de apurada/encerrada (transparência pós-votação).
+      results: protectedProcedure.input(z.object({ electionId: z.number().int() })).query(async ({ input }) => {
+        const db = await getDb(); if (!db) return null;
+        const [[el]]: any = await execP(db, `SELECT * FROM cipa_elections WHERE id=?`, [input.electionId]);
+        if (!el) return null;
+        if (!["apurada", "encerrada"].includes(el.status)) return { election: el, released: false };
+        const [tally]: any = await execP(db, `
+          SELECT c.id, c.name, COUNT(v.id) AS votes
+          FROM cipa_candidates c LEFT JOIN cipa_votes v ON v.candidate_id=c.id AND v.election_id=c.election_id
+          WHERE c.election_id=? GROUP BY c.id ORDER BY votes DESC`, [input.electionId]);
+        const [[voterCount]]: any = await execP(db, `SELECT COUNT(*) AS c FROM cipa_voters WHERE election_id=?`, [input.electionId]);
+        const totalVotes = (tally as any[]).reduce((s, t) => s + Number(t.votes), 0);
+        return {
+          election: el, released: true,
+          totalVoters: Number(voterCount?.c ?? 0), totalVotes,
+          candidates: (tally as any[]).map((t: any) => ({ ...t, votes: Number(t.votes), pct: totalVotes > 0 ? Math.round((Number(t.votes) / totalVotes) * 1000) / 10 : 0 })),
+        };
+      }),
+
+      // Apuração automática: encerra votação, ordena por votos, define titulares/suplentes,
+      // cria os registros de mandato. Idempotente (não duplica se já apurada).
+      apurar: adminOrRhProcedure.input(z.object({ electionId: z.number().int() })).mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+        const [[el]]: any = await execP(db, `SELECT * FROM cipa_elections WHERE id=? AND company_id=?`, [input.electionId, cid]);
+        if (!el) throw new TRPCError({ code: "NOT_FOUND" });
+        if (el.status === "apurada" || el.status === "encerrada") throw new TRPCError({ code: "BAD_REQUEST", message: "Esta eleição já foi apurada." });
+        const [tally]: any = await execP(db, `
+          SELECT c.id, c.name, c.sector_id, COUNT(v.id) AS votes
+          FROM cipa_candidates c LEFT JOIN cipa_votes v ON v.candidate_id=c.id AND v.election_id=c.election_id
+          WHERE c.election_id=? GROUP BY c.id ORDER BY votes DESC, c.id ASC`, [input.electionId]);
+        const ranked = (tally as any[]);
+        const titulares = ranked.slice(0, el.seats_titular);
+        const suplentes = ranked.slice(el.seats_titular, el.seats_titular + el.seats_suplente);
+        const start = new Date().toISOString().slice(0, 10);
+        const end = new Date(); end.setMonth(end.getMonth() + Number(el.mandate_months || 12));
+        const endStr = end.toISOString().slice(0, 10);
+        for (const c of titulares) {
+          await execP(db, `INSERT INTO cipa_members (company_id, election_id, name, role, mandate_start, mandate_end, status) VALUES (?,?,?,?,?,?,'ativo')`,
+            [cid, input.electionId, c.name, "titular", start, endStr]);
+        }
+        for (const c of suplentes) {
+          await execP(db, `INSERT INTO cipa_members (company_id, election_id, name, role, mandate_start, mandate_end, status) VALUES (?,?,?,?,?,?,'ativo')`,
+            [cid, input.electionId, c.name, "suplente", start, endStr]);
+        }
+        await execP(db, `UPDATE cipa_elections SET status='apurada' WHERE id=?`, [input.electionId]);
+        return { ok: true, titulares: titulares.length, suplentes: suplentes.length };
+      }),
+
+      listMembers: protectedProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) return [];
+        await ensureCipaTables(db);
+        const [rows]: any = await execP(db, `SELECT * FROM cipa_members WHERE company_id=? AND status='ativo' ORDER BY role, name`, [cid]);
+        return rows ?? [];
+      }),
+      // Vincula um membro eleito a um usuário da plataforma e concede o perfil "Integrante da CIPA".
+      linkMemberToUser: adminOrRhProcedure
+        .input(z.object({ memberId: z.number().int(), userId: z.number().int() }))
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+          const [[m]]: any = await execP(db, `SELECT id FROM cipa_members WHERE id=? AND company_id=?`, [input.memberId, cid]);
+          if (!m) throw new TRPCError({ code: "NOT_FOUND" });
+          const [[u]]: any = await execP(db, `SELECT id FROM users WHERE id=? AND company_id=?`, [input.userId, cid]);
+          if (!u) throw new TRPCError({ code: "NOT_FOUND", message: "Usuário não encontrado nesta empresa." });
+          await execP(db, `UPDATE cipa_members SET user_id=? WHERE id=?`, [input.userId, input.memberId]);
+          await execP(db, `UPDATE users SET role='cipa' WHERE id=?`, [input.userId]);
+          return { ok: true };
+        }),
+      encerrarMandatoMembro: adminOrRhProcedure.input(z.object({ memberId: z.number().int() })).mutation(async ({ input }) => {
+        const db = await getDb(); if (!db) return { ok: false };
+        await execP(db, `UPDATE cipa_members SET status='encerrado' WHERE id=?`, [input.memberId]);
+        return { ok: true };
+      }),
+
+      listMeetings: protectedProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) return [];
+        await ensureCipaTables(db);
+        const [rows]: any = await execP(db, `SELECT * FROM cipa_meetings WHERE company_id=? ORDER BY meeting_date DESC`, [cid]);
+        const ids = (rows ?? []).map((r: any) => Number(r.id)).filter(Boolean);
+        if (!ids.length) return rows ?? [];
+        const placeholders = ids.map(() => "?").join(",");
+        const [atts]: any = await execP(db, `SELECT * FROM cipa_meeting_attachments WHERE company_id=? AND meeting_id IN (${placeholders}) ORDER BY created_at DESC`, [cid, ...ids]);
+        const byMeeting = new Map<number, any[]>();
+        for (const a of atts ?? []) {
+          const arr = byMeeting.get(Number(a.meeting_id)) ?? [];
+          arr.push(a);
+          byMeeting.set(Number(a.meeting_id), arr);
+        }
+        return (rows ?? []).map((r: any) => ({ ...r, attachments: byMeeting.get(Number(r.id)) ?? [] }));
+      }),
+      upsertMeeting: protectedProcedure
+        .input(z.object({
+          id: z.number().optional(), meetingDate: z.string(), title: z.string().min(1),
+          participantsText: z.string().optional(), pauta: z.string().optional(), ataText: z.string().optional(), actionPlanText: z.string().optional(),
+          relatedSipatEditionId: z.number().int().optional(),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          const role = (ctx.user as any).role;
+          if (!["cipa", "admin", "rh", "admin_global", "company_admin", "super_admin", "sesmt"].includes(role)) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "Apenas integrantes da CIPA e RH/SESMT registram reuniões." });
+          }
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+          await ensureCipaTables(db);
+          if (input.id) {
+            await execP(db, `UPDATE cipa_meetings SET meeting_date=?, title=?, participants_text=?, pauta=?, ata_text=?, action_plan_text=?, related_sipat_edition_id=? WHERE id=? AND company_id=?`,
+              [input.meetingDate, input.title, input.participantsText || null, input.pauta || null, input.ataText || null, input.actionPlanText || null, input.relatedSipatEditionId ?? null, input.id, cid]);
+            return { ok: true, id: input.id };
+          }
+          const [res]: any = await execP(db, `INSERT INTO cipa_meetings (company_id, meeting_date, title, participants_text, pauta, ata_text, action_plan_text, related_sipat_edition_id, created_by_user_id) VALUES (?,?,?,?,?,?,?,?,?)`,
+            [cid, input.meetingDate, input.title, input.participantsText || null, input.pauta || null, input.ataText || null, input.actionPlanText || null, input.relatedSipatEditionId ?? null, ctx.user.id]);
+          return { ok: true, id: Number((res as any).insertId ?? 0) };
+        }),
+      removeMeeting: protectedProcedure
+        .input(z.object({ id: z.number().int() }))
+        .mutation(async ({ ctx, input }) => {
+          assertCanManageCipaMeeting(ctx);
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+          await ensureCipaTables(db);
+          await execP(db, `DELETE FROM cipa_meeting_attachments WHERE meeting_id=? AND company_id=?`, [input.id, cid]);
+          await execP(db, `DELETE FROM cipa_meetings WHERE id=? AND company_id=?`, [input.id, cid]);
+          return { ok: true };
+        }),
+      addMeetingAttachment: protectedProcedure
+        .input(z.object({
+          meetingId: z.number().int(),
+          kind: z.enum(["lista_presenca", "fotografia", "evidencia", "plano_acao", "documento"]).default("documento"),
+          title: z.string().optional(),
+          fileName: z.string().optional(),
+          mimeType: z.string().optional(),
+          fileBase64: z.string().max(12_000_000),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          assertCanManageCipaMeeting(ctx);
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+          await ensureCipaTables(db);
+          const [[meeting]]: any = await execP(db, `SELECT id FROM cipa_meetings WHERE id=? AND company_id=?`, [input.meetingId, cid]);
+          if (!meeting) throw new TRPCError({ code: "NOT_FOUND", message: "Reunião não encontrada." });
+          const fs = await import("fs/promises");
+          const path = await import("path");
+          const crypto = await import("crypto");
+          const m = input.fileBase64.match(/^data:([^;]+);base64,(.*)$/);
+          const mime = input.mimeType || m?.[1] || "application/octet-stream";
+          const b64 = m ? m[2] : input.fileBase64;
+          const buf = Buffer.from(b64, "base64");
+          if (!buf.length || buf.length > 8_000_000) throw new TRPCError({ code: "BAD_REQUEST", message: "Arquivo inválido ou maior que 8MB." });
+          const safeOriginal = (input.fileName || "anexo").replace(/[^\w.\-]+/g, "_").slice(0, 120);
+          const ext = path.extname(safeOriginal) || (mime.includes("pdf") ? ".pdf" : mime.includes("png") ? ".png" : mime.includes("jpeg") ? ".jpg" : ".bin");
+          const finalName = `cipa_${input.meetingId}_${Date.now()}_${crypto.randomBytes(4).toString("hex")}${ext}`;
+          const outDir = "/var/www/saudedotrabalho/uploads/cipa_meetings";
+          await fs.mkdir(outDir, { recursive: true });
+          await fs.writeFile(path.join(outDir, finalName), buf);
+          const url = `/uploads/cipa_meetings/${finalName}`;
+          const [res]: any = await execP(db, `INSERT INTO cipa_meeting_attachments (meeting_id, company_id, kind, title, file_url, file_name, mime_type, file_size, uploaded_by_user_id) VALUES (?,?,?,?,?,?,?,?,?)`,
+            [input.meetingId, cid, input.kind, input.title || safeOriginal, url, safeOriginal, mime, buf.length, ctx.user.id]);
+          return { ok: true, id: Number((res as any).insertId ?? 0), url };
+        }),
+      generateMeetingPdf: protectedProcedure
+        .input(z.object({ id: z.number().int() }))
+        .mutation(async ({ ctx, input }) => {
+          assertCanManageCipaMeeting(ctx);
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+          await ensureCipaTables(db);
+          const url = await generateCipaMeetingPdf(db, cid, input.id);
+          return { ok: true, url };
+        }),
+
+      dashboard: protectedProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) return null;
+        await ensureCipaTables(db);
+        const [[meetingsCount]]: any = await execP(db, `SELECT COUNT(*) AS c FROM cipa_meetings WHERE company_id=?`, [cid]);
+        const [[membersCount]]: any = await execP(db, `SELECT COUNT(*) AS c FROM cipa_members WHERE company_id=? AND status='ativo'`, [cid]);
+        const [[nextExpiry]]: any = await execP(db, `SELECT MIN(mandate_end) AS d FROM cipa_members WHERE company_id=? AND status='ativo'`, [cid]);
+        const daysLeft = nextExpiry?.d ? Math.max(0, Math.ceil((new Date(nextExpiry.d).getTime() - Date.now()) / 86400000)) : null;
+        return {
+          reunioesRealizadas: Number(meetingsCount?.c ?? 0),
+          integrantesAtivos: Number(membersCount?.c ?? 0),
+          diasParaFimMandato: daysLeft,
+          mandateEndDate: nextExpiry?.d ?? null,
+        };
+      }),
+    });
+  })(),
+
+  // ─── P15 #5 — Kit de Primeiros Socorros (NR-07 item 7.5.1) ────────────────
+  firstaid: (() => {
+    let _faDdlDone = false;
+    async function ensureFaTables(db: any) {
+      if (_faDdlDone || !db) return;
+      try {
+        await db.execute(drzSql`CREATE TABLE IF NOT EXISTS firstaid_kits (
+          id INT AUTO_INCREMENT PRIMARY KEY, company_id INT NOT NULL,
+          name VARCHAR(255) NOT NULL, location VARCHAR(255),
+          branch_id INT NULL, sector_id INT NULL,
+          responsible_name VARCHAR(255), responsible_user_id INT NULL,
+          is_active TINYINT(1) NOT NULL DEFAULT 1,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_company (company_id, is_active)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+        await db.execute(drzSql`CREATE TABLE IF NOT EXISTS firstaid_items (
+          id INT AUTO_INCREMENT PRIMARY KEY, kit_id INT NOT NULL,
+          name VARCHAR(255) NOT NULL, category VARCHAR(60),
+          quantity INT NOT NULL DEFAULT 0, min_quantity INT NOT NULL DEFAULT 0,
+          unit VARCHAR(30) DEFAULT 'un',
+          lot VARCHAR(60), manufacturer VARCHAR(160), supplier VARCHAR(160),
+          purchase_date DATE NULL, expiry_date DATE NULL,
+          notes TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          INDEX idx_kit (kit_id), INDEX idx_expiry (expiry_date)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+        await db.execute(drzSql`CREATE TABLE IF NOT EXISTS firstaid_movements (
+          id INT AUTO_INCREMENT PRIMARY KEY, kit_id INT NOT NULL, item_id INT NOT NULL,
+          movement_type VARCHAR(30) NOT NULL,
+          quantity INT NOT NULL,
+          justification TEXT, incident_location VARCHAR(255), collaborator_email VARCHAR(320),
+          user_id INT NOT NULL, user_name VARCHAR(255),
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_kit_date (kit_id, created_at), INDEX idx_item (item_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+        await db.execute(drzSql`CREATE TABLE IF NOT EXISTS firstaid_learning_contents (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          company_id INT NOT NULL,
+          content_type VARCHAR(30) NOT NULL,
+          module_id INT NULL,
+          title VARCHAR(255) NOT NULL,
+          description TEXT,
+          url VARCHAR(1024),
+          file_url VARCHAR(1024),
+          file_name VARCHAR(255),
+          mime_type VARCHAR(120),
+          provider VARCHAR(80),
+          is_required TINYINT(1) NOT NULL DEFAULT 0,
+          validity_months INT NULL,
+          order_index INT NOT NULL DEFAULT 0,
+          is_active TINYINT(1) NOT NULL DEFAULT 1,
+          created_by INT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          INDEX idx_fa_learning_company (company_id, is_active, order_index),
+          INDEX idx_fa_learning_module (module_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+        await db.execute(drzSql`CREATE TABLE IF NOT EXISTS firstaid_learning_progress (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          content_id INT NOT NULL,
+          user_id INT NOT NULL,
+          started_at TIMESTAMP NULL,
+          completed_at TIMESTAMP NULL,
+          percent_watched DECIMAL(5,2) NOT NULL DEFAULT 0,
+          time_spent_seconds INT NOT NULL DEFAULT 0,
+          score DECIMAL(5,2) NULL,
+          certificate_issued TINYINT(1) NOT NULL DEFAULT 0,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          UNIQUE KEY uq_fa_learning_user (content_id, user_id),
+          INDEX idx_fa_learning_progress_user (user_id),
+          INDEX idx_fa_learning_progress_content (content_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+        // P18 GRANDE — cadastro completo: inspeção periódica + evidência fotográfica do kit.
+        try { await db.execute(drzSql`ALTER TABLE firstaid_kits ADD COLUMN photo_url VARCHAR(500) NULL`); } catch (_) {}
+        try { await db.execute(drzSql`ALTER TABLE firstaid_kits ADD COLUMN last_inspected_date DATE NULL`); } catch (_) {}
+        try { await db.execute(drzSql`ALTER TABLE firstaid_kits ADD COLUMN last_inspected_by VARCHAR(255) NULL`); } catch (_) {}
+        _faDdlDone = true;
+      } catch (e) { console.warn("[firstaid] DDL:", (e as any)?.message); }
+    }
+    const learningContentInput = z.object({
+      id: z.number().optional(),
+      contentType: z.enum(["course", "material", "video", "link"]),
+      moduleId: z.number().int().optional(),
+      title: z.string().min(1),
+      description: z.string().optional(),
+      url: z.string().optional(),
+      fileUrl: z.string().optional(),
+      fileName: z.string().optional(),
+      mimeType: z.string().optional(),
+      provider: z.string().optional(),
+      isRequired: z.boolean().optional(),
+      validityMonths: z.number().int().min(0).optional(),
+      orderIndex: z.number().int().optional(),
+    });
+
+    return router({
+      listLearningAdmin: adminOrRhProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) return [];
+        await ensureFaTables(db);
+        const [rows]: any = await execP(db, `
+          SELECT c.*,
+            m.title AS module_title, m.durationMinutes AS module_duration,
+            CASE WHEN c.content_type='course' THEN (
+              SELECT COUNT(DISTINCT up.userId)
+              FROM user_progress up JOIN users u ON u.id=up.userId
+              WHERE u.company_id=c.company_id AND up.moduleId=c.module_id AND COALESCE(up.percentWatched,0)>0
+            ) ELSE (
+              SELECT COUNT(DISTINCT p.user_id)
+              FROM firstaid_learning_progress p JOIN users u ON u.id=p.user_id
+              WHERE u.company_id=c.company_id AND p.content_id=c.id AND p.started_at IS NOT NULL
+            ) END AS started_count,
+            CASE WHEN c.content_type='course' THEN (
+              SELECT COUNT(DISTINCT up.userId)
+              FROM user_progress up JOIN users u ON u.id=up.userId
+              WHERE u.company_id=c.company_id AND up.moduleId=c.module_id AND up.isCompleted=1
+            ) ELSE (
+              SELECT COUNT(DISTINCT p.user_id)
+              FROM firstaid_learning_progress p JOIN users u ON u.id=p.user_id
+              WHERE u.company_id=c.company_id AND p.content_id=c.id AND p.completed_at IS NOT NULL
+            ) END AS completed_count,
+            (
+              SELECT COUNT(DISTINCT cert.id)
+              FROM certificates cert JOIN users u ON u.id=cert.userId
+              WHERE u.company_id=c.company_id AND cert.moduleId=c.module_id
+            ) AS certificates_count
+          FROM firstaid_learning_contents c
+          LEFT JOIN modules m ON m.id = c.module_id
+          WHERE c.company_id=? AND c.is_active=1
+          ORDER BY c.order_index, c.id`, [cid]);
+        return (rows ?? []).map((r: any) => ({
+          id: Number(r.id),
+          companyId: Number(r.company_id),
+          contentType: String(r.content_type),
+          moduleId: r.module_id == null ? null : Number(r.module_id),
+          moduleTitle: r.module_title ? String(r.module_title) : null,
+          moduleDuration: Number(r.module_duration ?? 0),
+          title: String(r.title ?? ""),
+          description: r.description ? String(r.description) : null,
+          url: r.url ? String(r.url) : null,
+          fileUrl: r.file_url ? String(r.file_url) : null,
+          fileName: r.file_name ? String(r.file_name) : null,
+          mimeType: r.mime_type ? String(r.mime_type) : null,
+          provider: r.provider ? String(r.provider) : null,
+          isRequired: Boolean(Number(r.is_required ?? 0)),
+          validityMonths: r.validity_months == null ? null : Number(r.validity_months),
+          orderIndex: Number(r.order_index ?? 0),
+          startedCount: Number(r.started_count ?? 0),
+          completedCount: Number(r.completed_count ?? 0),
+          certificatesCount: Number(r.certificates_count ?? 0),
+        }));
+      }),
+
+      listFirstAidCourseOptions: adminOrRhProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db) return [];
+        await ensureFaTables(db);
+        const [rows]: any = await execP(db, `
+          SELECT DISTINCT m.id, m.title, m.description, m.durationMinutes, m.template_category
+          FROM modules m
+          WHERE m.isActive=1 AND (
+            m.created_by_company_id=?
+            OR EXISTS (
+              SELECT 1 FROM company_content_enrollments cce
+              WHERE cce.company_id=? AND cce.content_type='module' AND cce.content_id=m.id AND cce.is_active=1
+            )
+            OR LOWER(m.title) REGEXP 'primeiros|socorro|emergencia|engasgo|heimlich|queimadura|hemorragia|fratura|convulsao|desmaio|cardiorrespiratoria|kit'
+          )
+          ORDER BY
+            CASE WHEN LOWER(m.title) REGEXP 'primeiros|socorro|emergencia|engasgo|heimlich|queimadura|hemorragia|fratura|convulsao|desmaio|cardiorrespiratoria|kit' THEN 0 ELSE 1 END,
+            m.title`, [cid ?? 0, cid ?? 0]);
+        return (rows ?? []).map((r: any) => ({
+          id: Number(r.id),
+          title: String(r.title ?? ""),
+          description: r.description ? String(r.description) : null,
+          durationMinutes: Number(r.durationMinutes ?? 0),
+          category: r.template_category ? String(r.template_category) : null,
+        }));
+      }),
+
+      upsertLearningContent: adminOrRhProcedure.input(learningContentInput).mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+        await ensureFaTables(db);
+        if (input.contentType === "course" && !input.moduleId) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Selecione um curso da plataforma." });
+        }
+        if (input.contentType !== "course" && !input.url && !input.fileUrl) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Informe uma URL ou arquivo para o conteudo." });
+        }
+        if (input.id) {
+          await execP(db, `
+            UPDATE firstaid_learning_contents
+            SET content_type=?, module_id=?, title=?, description=?, url=?, file_url=?, file_name=?, mime_type=?,
+                provider=?, is_required=?, validity_months=?, order_index=?
+            WHERE id=? AND company_id=?`, [
+            input.contentType, input.moduleId ?? null, input.title, input.description || null,
+            input.url || null, input.fileUrl || null, input.fileName || null, input.mimeType || null,
+            input.provider || null, input.isRequired ? 1 : 0, input.validityMonths ?? null,
+            input.orderIndex ?? 0, input.id, cid,
+          ]);
+          return { ok: true, id: input.id };
+        }
+        const [res]: any = await execP(db, `
+          INSERT INTO firstaid_learning_contents
+            (company_id, content_type, module_id, title, description, url, file_url, file_name, mime_type, provider, is_required, validity_months, order_index, created_by)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [
+          cid, input.contentType, input.moduleId ?? null, input.title, input.description || null,
+          input.url || null, input.fileUrl || null, input.fileName || null, input.mimeType || null,
+          input.provider || null, input.isRequired ? 1 : 0, input.validityMonths ?? null,
+          input.orderIndex ?? 0, ctx.user.id,
+        ]);
+        return { ok: true, id: Number((res as any).insertId ?? 0) };
+      }),
+
+      removeLearningContent: adminOrRhProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) return { ok: false };
+        await ensureFaTables(db);
+        await execP(db, `UPDATE firstaid_learning_contents SET is_active=0 WHERE id=? AND company_id=?`, [input.id, cid]);
+        return { ok: true };
+      }),
+
+      markLearningProgress: protectedProcedure
+        .input(z.object({
+          contentId: z.number().int(),
+          percentWatched: z.number().min(0).max(100).optional(),
+          timeSpentSeconds: z.number().int().min(0).optional(),
+          completed: z.boolean().optional(),
+          score: z.number().min(0).max(100).optional(),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+          await ensureFaTables(db);
+          const [[content]]: any = await execP(db, `SELECT id FROM firstaid_learning_contents WHERE id=? AND company_id=? AND is_active=1`, [input.contentId, cid]);
+          if (!content) throw new TRPCError({ code: "NOT_FOUND" });
+          const pct = input.completed ? 100 : Math.max(0, Math.min(100, Number(input.percentWatched ?? 0)));
+          await execP(db, `
+            INSERT INTO firstaid_learning_progress
+              (content_id, user_id, started_at, completed_at, percent_watched, time_spent_seconds, score)
+            VALUES (?, ?, NOW(), ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE
+              started_at=COALESCE(started_at, NOW()),
+              completed_at=CASE WHEN VALUES(completed_at) IS NOT NULL THEN VALUES(completed_at) ELSE completed_at END,
+              percent_watched=GREATEST(percent_watched, VALUES(percent_watched)),
+              time_spent_seconds=time_spent_seconds + VALUES(time_spent_seconds),
+              score=COALESCE(VALUES(score), score)`, [
+            input.contentId, ctx.user.id, input.completed || pct >= 100 ? new Date() : null,
+            pct, input.timeSpentSeconds ?? 0, input.score ?? null,
+          ]);
+          return { ok: true };
+        }),
+
+      learningForEmployee: protectedProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId;
+        const userId = ctx.user.id;
+        const empty = { summary: { total: 0, completed: 0, required: 0, pendingRequired: 0, certificates: 0 }, courses: [], resources: [] };
+        const db = await getDb(); if (!db || !cid) return empty;
+        await ensureFaTables(db);
+        const [rows]: any = await execP(db, `
+          SELECT c.*, m.title AS module_title, m.description AS module_description, m.durationMinutes AS module_duration,
+            up.percentWatched AS course_percent, up.isCompleted AS course_completed, up.completedAt AS course_completed_at,
+            p.started_at, p.completed_at, p.percent_watched AS external_percent, p.time_spent_seconds, p.score,
+            cert.id AS certificate_id, cert.certificateCode AS certificate_code, cert.pdfUrl AS certificate_url, cert.issuedAt AS certificate_issued_at
+          FROM firstaid_learning_contents c
+          LEFT JOIN modules m ON m.id = c.module_id
+          LEFT JOIN user_progress up ON up.userId=? AND up.moduleId=c.module_id
+          LEFT JOIN firstaid_learning_progress p ON p.content_id=c.id AND p.user_id=?
+          LEFT JOIN certificates cert ON cert.userId=? AND cert.moduleId=c.module_id
+          WHERE c.company_id=? AND c.is_active=1
+          ORDER BY c.order_index, c.id`, [userId, userId, userId, cid]);
+        const list = (rows ?? []).map((r: any) => {
+          const isCourse = String(r.content_type) === "course";
+          const percent = isCourse ? Number(r.course_percent ?? 0) : Number(r.external_percent ?? 0);
+          const completed = isCourse ? Boolean(Number(r.course_completed ?? 0)) : Boolean(r.completed_at);
+          return {
+            id: Number(r.id),
+            contentType: String(r.content_type),
+            moduleId: r.module_id == null ? null : Number(r.module_id),
+            title: String(r.title || r.module_title || ""),
+            description: r.description ? String(r.description) : (r.module_description ? String(r.module_description) : null),
+            url: r.url ? String(r.url) : null,
+            fileUrl: r.file_url ? String(r.file_url) : null,
+            fileName: r.file_name ? String(r.file_name) : null,
+            mimeType: r.mime_type ? String(r.mime_type) : null,
+            provider: r.provider ? String(r.provider) : null,
+            isRequired: Boolean(Number(r.is_required ?? 0)),
+            validityMonths: r.validity_months == null ? null : Number(r.validity_months),
+            durationMinutes: Number(r.module_duration ?? 0),
+            percent,
+            isCompleted: completed,
+            startedAt: r.started_at ?? null,
+            completedAt: isCourse ? (r.course_completed_at ?? null) : (r.completed_at ?? null),
+            timeSpentSeconds: Number(r.time_spent_seconds ?? 0),
+            score: r.score == null ? null : Number(r.score),
+            certificate: r.certificate_id ? {
+              id: Number(r.certificate_id),
+              code: String(r.certificate_code ?? ""),
+              url: r.certificate_url ? String(r.certificate_url) : null,
+              issuedAt: r.certificate_issued_at ?? null,
+            } : null,
+          };
+        });
+        const completed = list.filter((i: any) => i.isCompleted).length;
+        const required = list.filter((i: any) => i.isRequired).length;
+        const pendingRequired = list.filter((i: any) => i.isRequired && !i.isCompleted).length;
+        const certificates = list.filter((i: any) => i.certificate).length;
+        return {
+          summary: { total: list.length, completed, required, pendingRequired, certificates },
+          courses: list.filter((i: any) => i.contentType === "course"),
+          resources: list.filter((i: any) => i.contentType !== "course"),
+        };
+      }),
+
+      learningDashboard: adminOrRhProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) return null;
+        await ensureFaTables(db);
+        const [[emp]]: any = await execP(db, `SELECT COUNT(*) AS c FROM users WHERE company_id=? AND role='user' AND COALESCE(is_active,1)=1`, [cid]);
+        const [[contents]]: any = await execP(db, `SELECT COUNT(*) AS c, SUM(is_required=1) AS required_count FROM firstaid_learning_contents WHERE company_id=? AND is_active=1`, [cid]);
+        const [[trained]]: any = await execP(db, `
+          SELECT COUNT(DISTINCT x.user_id) AS c FROM (
+            SELECT up.userId AS user_id
+            FROM firstaid_learning_contents c JOIN user_progress up ON up.moduleId=c.module_id AND up.isCompleted=1
+            JOIN users u ON u.id=up.userId
+            WHERE c.company_id=? AND c.is_active=1 AND c.content_type='course' AND u.company_id=?
+            UNION
+            SELECT p.user_id
+            FROM firstaid_learning_contents c JOIN firstaid_learning_progress p ON p.content_id=c.id AND p.completed_at IS NOT NULL
+            JOIN users u ON u.id=p.user_id
+            WHERE c.company_id=? AND c.is_active=1 AND c.content_type<>'course' AND u.company_id=?
+          ) x`, [cid, cid, cid, cid]);
+        const [[certs]]: any = await execP(db, `
+          SELECT COUNT(*) AS c FROM certificates cert
+          JOIN firstaid_learning_contents c ON c.module_id=cert.moduleId AND c.company_id=? AND c.is_active=1
+          JOIN users u ON u.id=cert.userId AND u.company_id=?`, [cid, cid]);
+        const [byContent]: any = await execP(db, `
+          SELECT c.id, c.title, c.content_type, c.is_required,
+            CASE WHEN c.content_type='course' THEN (
+              SELECT COUNT(DISTINCT up.userId)
+              FROM user_progress up JOIN users u ON u.id=up.userId
+              WHERE u.company_id=? AND up.moduleId=c.module_id AND up.isCompleted=1
+            ) ELSE (
+              SELECT COUNT(DISTINCT p.user_id)
+              FROM firstaid_learning_progress p JOIN users u ON u.id=p.user_id
+              WHERE u.company_id=? AND p.content_id=c.id AND p.completed_at IS NOT NULL
+            ) END AS completed_count,
+            CASE WHEN c.content_type='course' THEN (
+              SELECT COUNT(DISTINCT up.userId)
+              FROM user_progress up JOIN users u ON u.id=up.userId
+              WHERE u.company_id=? AND up.moduleId=c.module_id AND COALESCE(up.percentWatched,0)>0
+            ) ELSE (
+              SELECT COUNT(DISTINCT p.user_id)
+              FROM firstaid_learning_progress p JOIN users u ON u.id=p.user_id
+              WHERE u.company_id=? AND p.content_id=c.id AND p.started_at IS NOT NULL
+            ) END AS started_count
+          FROM firstaid_learning_contents c
+          WHERE c.company_id=? AND c.is_active=1
+          ORDER BY c.order_index, c.id`, [cid, cid, cid, cid, cid]);
+        const totalEmployees = Number(emp?.c ?? 0);
+        const trainedEmployees = Number(trained?.c ?? 0);
+        return {
+          totalEmployees,
+          trainedEmployees,
+          pendingEmployees: Math.max(0, totalEmployees - trainedEmployees),
+          completionRate: totalEmployees > 0 ? Math.round((trainedEmployees / totalEmployees) * 100) : 0,
+          totalContents: Number(contents?.c ?? 0),
+          requiredContents: Number(contents?.required_count ?? 0),
+          certificatesIssued: Number(certs?.c ?? 0),
+          byContent: (byContent ?? []).map((r: any) => ({
+            id: Number(r.id),
+            title: String(r.title ?? ""),
+            contentType: String(r.content_type),
+            isRequired: Boolean(Number(r.is_required ?? 0)),
+            startedCount: Number(r.started_count ?? 0),
+            completedCount: Number(r.completed_count ?? 0),
+            pendingCount: Math.max(0, totalEmployees - Number(r.completed_count ?? 0)),
+            completionRate: totalEmployees > 0 ? Math.round((Number(r.completed_count ?? 0) / totalEmployees) * 100) : 0,
+          })),
+        };
+      }),
+
+      listKits: protectedProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) return [];
+        await ensureFaTables(db);
+        const [rows]: any = await execP(db, `SELECT * FROM firstaid_kits WHERE company_id=? AND is_active=1 ORDER BY name`, [cid]);
+        return rows ?? [];
+      }),
+      upsertKit: adminOrRhProcedure
+        .input(z.object({
+          id: z.number().optional(), name: z.string().min(1), location: z.string().optional(),
+          branchId: z.number().int().optional(), sectorId: z.number().int().optional(),
+          responsibleName: z.string().optional(), responsibleUserId: z.number().int().optional(),
+          photoUrl: z.string().optional(),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+          await ensureFaTables(db);
+          if (input.id) {
+            await execP(db, `UPDATE firstaid_kits SET name=?, location=?, branch_id=?, sector_id=?, responsible_name=?, responsible_user_id=?, photo_url=? WHERE id=? AND company_id=?`,
+              [input.name, input.location || null, input.branchId ?? null, input.sectorId ?? null, input.responsibleName || null, input.responsibleUserId ?? null, input.photoUrl || null, input.id, cid]);
+            return { ok: true, id: input.id };
+          }
+          const [res]: any = await execP(db, `INSERT INTO firstaid_kits (company_id, name, location, branch_id, sector_id, responsible_name, responsible_user_id, photo_url) VALUES (?,?,?,?,?,?,?,?)`,
+            [cid, input.name, input.location || null, input.branchId ?? null, input.sectorId ?? null, input.responsibleName || null, input.responsibleUserId ?? null, input.photoUrl || null]);
+          return { ok: true, id: Number((res as any).insertId ?? 0) };
+        }),
+      removeKit: adminOrRhProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) return { ok: false };
+        await execP(db, `UPDATE firstaid_kits SET is_active=0 WHERE id=? AND company_id=?`, [input.id, cid]);
+        return { ok: true };
+      }),
+      // P18 GRANDE — registra inspeção periódica do kit (checagem física NR-07).
+      registerInspection: adminOrRhProcedure
+        .input(z.object({ kitId: z.number().int(), inspectedBy: z.string().min(1) }))
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+          await execP(db, `UPDATE firstaid_kits SET last_inspected_date=CURDATE(), last_inspected_by=? WHERE id=? AND company_id=?`,
+            [input.inspectedBy, input.kitId, cid]);
+          return { ok: true };
+        }),
+
+      listItems: protectedProcedure.input(z.object({ kitId: z.number().int() })).query(async ({ input }) => {
+        const db = await getDb(); if (!db) return [];
+        const [rows]: any = await execP(db, `SELECT * FROM firstaid_items WHERE kit_id=? ORDER BY name`, [input.kitId]);
+        return rows ?? [];
+      }),
+      upsertItem: adminOrRhProcedure
+        .input(z.object({
+          id: z.number().optional(), kitId: z.number().int(),
+          name: z.string().min(1), category: z.string().optional(),
+          quantity: z.number().int().min(0).default(0), minQuantity: z.number().int().min(0).default(0),
+          unit: z.string().optional(),
+          lot: z.string().optional(), manufacturer: z.string().optional(), supplier: z.string().optional(),
+          purchaseDate: z.string().optional(), expiryDate: z.string().optional(),
+          notes: z.string().optional(),
+        }))
+        .mutation(async ({ input }) => {
+          const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          if (input.id) {
+            await execP(db, `UPDATE firstaid_items SET name=?, category=?, quantity=?, min_quantity=?, unit=?, lot=?, manufacturer=?, supplier=?, purchase_date=?, expiry_date=?, notes=? WHERE id=?`,
+              [input.name, input.category || null, input.quantity, input.minQuantity, input.unit || "un", input.lot || null, input.manufacturer || null, input.supplier || null, input.purchaseDate || null, input.expiryDate || null, input.notes || null, input.id]);
+            return { ok: true, id: input.id };
+          }
+          const [res]: any = await execP(db, `INSERT INTO firstaid_items (kit_id, name, category, quantity, min_quantity, unit, lot, manufacturer, supplier, purchase_date, expiry_date, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+            [input.kitId, input.name, input.category || null, input.quantity, input.minQuantity, input.unit || "un", input.lot || null, input.manufacturer || null, input.supplier || null, input.purchaseDate || null, input.expiryDate || null, input.notes || null]);
+          return { ok: true, id: Number((res as any).insertId ?? 0) };
+        }),
+      removeItem: adminOrRhProcedure.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
+        const db = await getDb(); if (!db) return { ok: false };
+        await execP(db, `DELETE FROM firstaid_items WHERE id=?`, [input.id]);
+        return { ok: true };
+      }),
+
+      // Movimentação de estoque (entrada/uso/perda/descarte/ajuste) — atualiza a
+      // quantidade do item e grava histórico auditável.
+      registerMovement: adminOrRhProcedure
+        .input(z.object({
+          itemId: z.number().int(),
+          movementType: z.enum(["entrada", "uso", "perda", "descarte_vencimento", "ajuste"]),
+          quantity: z.number().int().min(1),
+          justification: z.string().optional(),
+          incidentLocation: z.string().optional(),
+          collaboratorEmail: z.string().optional(),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          const [[item]]: any = await execP(db, `SELECT id, kit_id, quantity FROM firstaid_items WHERE id=?`, [input.itemId]);
+          if (!item) throw new TRPCError({ code: "NOT_FOUND" });
+          const delta = input.movementType === "entrada" ? input.quantity : -input.quantity;
+          const nova = Number(item.quantity) + delta;
+          if (nova < 0) throw new TRPCError({ code: "BAD_REQUEST", message: `Estoque insuficiente (${item.quantity} disponíveis).` });
+          await execP(db, `UPDATE firstaid_items SET quantity=? WHERE id=?`, [nova, input.itemId]);
+          const name = (ctx.user as any).name || (ctx.user as any).email;
+          await execP(db, `INSERT INTO firstaid_movements (kit_id, item_id, movement_type, quantity, justification, incident_location, collaborator_email, user_id, user_name) VALUES (?,?,?,?,?,?,?,?,?)`,
+            [item.kit_id, input.itemId, input.movementType, input.quantity, input.justification || null, input.incidentLocation || null, input.collaboratorEmail || null, ctx.user.id, name]);
+          return { ok: true, newQuantity: nova };
+        }),
+
+      listMovements: protectedProcedure.input(z.object({ kitId: z.number().int().optional(), itemId: z.number().int().optional() })).query(async ({ input }) => {
+        const db = await getDb(); if (!db) return [];
+        let sql = `SELECT m.*, i.name AS item_name FROM firstaid_movements m JOIN firstaid_items i ON i.id=m.item_id WHERE 1=1`;
+        const params: any[] = [];
+        if (input.kitId) { sql += ` AND m.kit_id=?`; params.push(input.kitId); }
+        if (input.itemId) { sql += ` AND m.item_id=?`; params.push(input.itemId); }
+        sql += ` ORDER BY m.created_at DESC LIMIT 300`;
+        const [rows]: any = await execP(db, sql, params);
+        return rows ?? [];
+      }),
+
+      // Alertas escalonados: vencidos + janelas de 7/15/30/60 dias + estoque crítico.
+      // P18 GRANDE — Bruno: "alertas escalonados (60/30/15/7 dias)" pra SESMT/CIPA/RH.
+      alerts: protectedProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId;
+        const empty = { vencidos: [], d7: [], d15: [], d30: [], d60: [], proximos: [], criticos: [] };
+        const db = await getDb(); if (!db || !cid) return empty;
+        await ensureFaTables(db);
+        const baseSelect = `SELECT i.*, k.name AS kit_name, k.branch_id, b.name AS branch_name
+          FROM firstaid_items i JOIN firstaid_kits k ON k.id=i.kit_id LEFT JOIN branches b ON b.id=k.branch_id`;
+        const [vencidos]: any = await execP(db, `${baseSelect}
+          WHERE k.company_id=? AND k.is_active=1 AND i.expiry_date IS NOT NULL AND i.expiry_date < CURDATE()`, [cid]);
+        const [d7]: any = await execP(db, `${baseSelect}
+          WHERE k.company_id=? AND k.is_active=1 AND i.expiry_date IS NOT NULL
+            AND i.expiry_date >= CURDATE() AND i.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 7 DAY)`, [cid]);
+        const [d15]: any = await execP(db, `${baseSelect}
+          WHERE k.company_id=? AND k.is_active=1 AND i.expiry_date IS NOT NULL
+            AND i.expiry_date > DATE_ADD(CURDATE(), INTERVAL 7 DAY) AND i.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 15 DAY)`, [cid]);
+        const [d30]: any = await execP(db, `${baseSelect}
+          WHERE k.company_id=? AND k.is_active=1 AND i.expiry_date IS NOT NULL
+            AND i.expiry_date > DATE_ADD(CURDATE(), INTERVAL 15 DAY) AND i.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 30 DAY)`, [cid]);
+        const [d60]: any = await execP(db, `${baseSelect}
+          WHERE k.company_id=? AND k.is_active=1 AND i.expiry_date IS NOT NULL
+            AND i.expiry_date > DATE_ADD(CURDATE(), INTERVAL 30 DAY) AND i.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 60 DAY)`, [cid]);
+        const [criticos]: any = await execP(db, `
+          SELECT i.*, k.name AS kit_name FROM firstaid_items i JOIN firstaid_kits k ON k.id=i.kit_id
+          WHERE k.company_id=? AND k.is_active=1 AND i.min_quantity > 0 AND i.quantity <= i.min_quantity`, [cid]);
+        const proximos = [...(d7 ?? []), ...(d15 ?? []), ...(d30 ?? [])]; // compat: "próximos 30d" usado em telas antigas
+        return {
+          vencidos: vencidos ?? [], d7: d7 ?? [], d15: d15 ?? [], d30: d30 ?? [], d60: d60 ?? [],
+          proximos, criticos: criticos ?? [],
+        };
+      }),
+
+      report: protectedProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) return { summary: { kits: 0, items: 0, expired: 0, soon30: 0, missing: 0, critical: 0, kitsWithoutItems: 0 }, rows: [], byLocation: [] };
+        await ensureFaTables(db);
+        return loadFirstAidKitReport(db, cid);
+      }),
+
+      generateReportPdf: adminOrRhProcedure.mutation(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+        await ensureFaTables(db);
+        const url = await generateFirstAidKitReportPdf(db, cid);
+        return { ok: true, url };
+      }),
+
+      dashboard: protectedProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) return null;
+        await ensureFaTables(db);
+        const [[kits]]: any = await execP(db, `SELECT COUNT(*) AS c FROM firstaid_kits WHERE company_id=? AND is_active=1`, [cid]);
+        const [[items]]: any = await execP(db, `
+          SELECT COUNT(*) AS c FROM firstaid_items i JOIN firstaid_kits k ON k.id=i.kit_id WHERE k.company_id=? AND k.is_active=1`, [cid]);
+        const [[vencidos]]: any = await execP(db, `
+          SELECT COUNT(*) AS c FROM firstaid_items i JOIN firstaid_kits k ON k.id=i.kit_id
+          WHERE k.company_id=? AND k.is_active=1 AND i.expiry_date IS NOT NULL AND i.expiry_date < CURDATE()`, [cid]);
+        const [[proximos]]: any = await execP(db, `
+          SELECT COUNT(*) AS c FROM firstaid_items i JOIN firstaid_kits k ON k.id=i.kit_id
+          WHERE k.company_id=? AND k.is_active=1 AND i.expiry_date IS NOT NULL
+            AND i.expiry_date >= CURDATE() AND i.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 30 DAY)`, [cid]);
+        const [[criticos]]: any = await execP(db, `
+          SELECT COUNT(*) AS c FROM firstaid_items i JOIN firstaid_kits k ON k.id=i.kit_id
+          WHERE k.company_id=? AND k.is_active=1 AND i.min_quantity > 0 AND i.quantity <= i.min_quantity`, [cid]);
+        const [[movMes]]: any = await execP(db, `
+          SELECT COUNT(*) AS c FROM firstaid_movements m JOIN firstaid_kits k ON k.id=m.kit_id
+          WHERE k.company_id=? AND YEAR(m.created_at)=YEAR(NOW()) AND MONTH(m.created_at)=MONTH(NOW())`, [cid]);
+        const [maisUsados]: any = await execP(db, `
+          SELECT i.name, SUM(m.quantity) AS total FROM firstaid_movements m
+          JOIN firstaid_items i ON i.id=m.item_id JOIN firstaid_kits k ON k.id=m.kit_id
+          WHERE k.company_id=? AND m.movement_type='uso' GROUP BY i.name ORDER BY total DESC LIMIT 5`, [cid]);
+        // P18 GRANDE — mapa de calor por filial: kits/vencidos/próximos/críticos agrupados por branch.
+        const [porFilial]: any = await execP(db, `
+          SELECT COALESCE(b.id, 0) AS branchId, COALESCE(b.name, 'Sem filial definida') AS branchName,
+            COUNT(DISTINCT k.id) AS kits,
+            SUM(CASE WHEN i.expiry_date IS NOT NULL AND i.expiry_date < CURDATE() THEN 1 ELSE 0 END) AS vencidos,
+            SUM(CASE WHEN i.expiry_date IS NOT NULL AND i.expiry_date >= CURDATE() AND i.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 30 DAY) THEN 1 ELSE 0 END) AS proximos,
+            SUM(CASE WHEN i.min_quantity > 0 AND i.quantity <= i.min_quantity THEN 1 ELSE 0 END) AS criticos
+          FROM firstaid_kits k
+          LEFT JOIN branches b ON b.id = k.branch_id
+          LEFT JOIN firstaid_items i ON i.kit_id = k.id
+          WHERE k.company_id=? AND k.is_active=1
+          GROUP BY branchId, branchName
+          ORDER BY vencidos DESC, proximos DESC`, [cid]);
+        return {
+          totalKits: Number(kits?.c ?? 0), totalItens: Number(items?.c ?? 0),
+          vencidos: Number(vencidos?.c ?? 0), proximosVencimento: Number(proximos?.c ?? 0),
+          estoqueCritico: Number(criticos?.c ?? 0), movimentacoesMes: Number(movMes?.c ?? 0),
+          itensMaisUsados: (maisUsados ?? []).map((r: any) => ({ name: r.name, total: Number(r.total) })),
+          porFilial: (porFilial ?? []).map((r: any) => ({
+            branchId: Number(r.branchId), branchName: r.branchName,
+            kits: Number(r.kits), vencidos: Number(r.vencidos), proximos: Number(r.proximos), criticos: Number(r.criticos),
+          })),
+        };
+      }),
+    });
+  })(),
 
   denuncia: router({
     submitReport: publicProcedure

@@ -4,7 +4,7 @@ import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { Plus, Trash2, BookOpen, ShieldAlert } from "lucide-react";
+import { Plus, Trash2, BookOpen, ShieldAlert, Pencil, Check, X } from "lucide-react";
 
 const CATEGORIES = [
   { value: "saude_mental", label: "Saúde Mental" },
@@ -42,6 +42,12 @@ export default function AdminFatores() {
     onSuccess: () => { toast.success("Categoria atualizada."); coursesQ.refetch(); factorsQ.refetch(); },
     onError: (e: any) => toast.error(e?.message ?? "Erro ao atualizar"),
   });
+  // Bruno R5-P6 #11 — Edit inline da criticidade + obrigatoriedade.
+  const updateLinkMut = trpc.riskCorrelation.updateLink.useMutation({
+    onSuccess: () => { toast.success("Vínculo atualizado — refletido em toda a plataforma."); factorsQ.refetch(); setEditingLink(null); },
+    onError: (e: any) => toast.error(e?.message ?? "Erro"),
+  });
+  const [editingLink, setEditingLink] = useState<{ factorId: number; moduleId: number; criticality: string; isMandatory: boolean } | null>(null);
 
   const factors = (factorsQ.data ?? []) as any[];
   const courses = (coursesQ.data ?? []) as any[];
@@ -102,6 +108,7 @@ export default function AdminFatores() {
                           <tbody>
                             {linked.map((l: any) => {
                               const crit = CRITICALITY_LABEL[l.criticality] ?? CRITICALITY_LABEL.media;
+                              const isEditing = editingLink && editingLink.factorId === f.id && editingLink.moduleId === l.module_id;
                               return (
                                 <tr key={l.module_id} className="border-t border-border">
                                   <td className="px-2 py-1">{l.moduleTitle}</td>
@@ -114,16 +121,53 @@ export default function AdminFatores() {
                                       {CATEGORIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
                                     </select>
                                   </td>
-                                  <td className="px-2 py-1 text-center"><span className={`text-xs px-2 py-0.5 rounded-full font-medium ${crit.cls}`}>{crit.label}</span></td>
-                                  <td className="px-2 py-1 text-center text-muted-foreground">{l.is_auto_linked ? "Auto" : "Manual"}</td>
                                   <td className="px-2 py-1 text-center">
-                                    <button
-                                      onClick={() => { if (confirm("Remover vínculo?")) unlinkMut.mutate({ factorId: f.id, moduleId: l.module_id }); }}
-                                      className="text-rose-600 hover:text-rose-800"
-                                      title="Desvincular"
-                                    >
-                                      <Trash2 size={14} />
-                                    </button>
+                                    {/* Bruno R5-P6 #11 — Edit inline da criticidade */}
+                                    {isEditing ? (
+                                      <select value={editingLink!.criticality}
+                                        onChange={(e) => setEditingLink({ ...editingLink!, criticality: e.target.value })}
+                                        className="text-xs px-1 py-0.5 border border-border rounded bg-white">
+                                        <option value="baixa">Baixa</option>
+                                        <option value="media">Média</option>
+                                        <option value="alta">Alta</option>
+                                        <option value="critica">Crítica</option>
+                                      </select>
+                                    ) : (
+                                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${crit.cls}`}>{crit.label}</span>
+                                    )}
+                                  </td>
+                                  <td className="px-2 py-1 text-center text-muted-foreground">
+                                    {isEditing ? (
+                                      <label className="inline-flex items-center gap-1 text-xs">
+                                        <input type="checkbox" checked={editingLink!.isMandatory}
+                                          onChange={(e) => setEditingLink({ ...editingLink!, isMandatory: e.target.checked })}/>
+                                        Obrig.
+                                      </label>
+                                    ) : (l.is_auto_linked ? "Auto" : "Manual")}
+                                  </td>
+                                  <td className="px-2 py-1 text-center">
+                                    {isEditing ? (
+                                      <div className="inline-flex gap-1">
+                                        <button onClick={() => updateLinkMut.mutate({ factorId: editingLink!.factorId, moduleId: editingLink!.moduleId, criticality: editingLink!.criticality as any, isMandatory: editingLink!.isMandatory })}
+                                          disabled={updateLinkMut.isPending} className="text-emerald-600 hover:text-emerald-800" title="Salvar">
+                                          <Check size={14} />
+                                        </button>
+                                        <button onClick={() => setEditingLink(null)} className="text-slate-500 hover:text-slate-700" title="Cancelar">
+                                          <X size={14} />
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <div className="inline-flex gap-1">
+                                        <button onClick={() => setEditingLink({ factorId: f.id, moduleId: l.module_id, criticality: l.criticality || "media", isMandatory: !!l.isMandatory })}
+                                          className="text-sky-600 hover:text-sky-800" title="Editar criticidade/obrigatoriedade">
+                                          <Pencil size={14} />
+                                        </button>
+                                        <button onClick={() => { if (confirm("Remover vínculo?")) unlinkMut.mutate({ factorId: f.id, moduleId: l.module_id }); }}
+                                          className="text-rose-600 hover:text-rose-800" title="Desvincular">
+                                          <Trash2 size={14} />
+                                        </button>
+                                      </div>
+                                    )}
                                   </td>
                                 </tr>
                               );

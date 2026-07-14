@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import AppLayout from "@/components/AppLayout";
 import { trpc } from "@/lib/trpc";
@@ -15,7 +15,7 @@ import {
 import { toast } from "sonner";
 import {
   ShieldAlert, Plus, Calendar, Building2, Users, ChevronRight, Loader2, FileSearch, ClipboardCheck,
-  Download, Archive, RefreshCcw, Eye, EyeOff, Layers,
+  Download, Archive, RefreshCcw, Eye, EyeOff,
 } from "lucide-react";
 
 // ─── CSV template data ────────────────────────────────────────────────────────
@@ -72,6 +72,7 @@ export default function AdminRiskAssessments() {
   const branchesQ = trpc.branchesAdmin.list.useQuery();
   const sectorsQ = trpc.departmentsAdmin.list.useQuery(form.branchId ? { branchId: form.branchId } : undefined);
   const libraryQ = trpc.templateLibrary.list.useQuery();
+  const platformConfigQ = (trpc.companies as any).getPlatformConfig.useQuery();
 
   const updateMut = trpc.riskAssessment.updateAssessment.useMutation({
     onSuccess: () => { listQ.refetch(); toast.success("Ciclo atualizado."); },
@@ -92,9 +93,22 @@ export default function AdminRiskAssessments() {
   const drpsTemplates = surveyTemplates.filter((s) => s.category === "psicossocial");
   const aepTemplates = surveyTemplates.filter((s) => s.category === "aep");
 
+  useEffect(() => {
+    const cfg = platformConfigQ.data as any;
+    if (!cfg) return;
+    setForm((f) => ({
+      ...f,
+      drpsTemplateId: f.drpsTemplateId ?? cfg.drpsTemplateId ?? undefined,
+      aepTemplateId: f.aepTemplateId ?? cfg.aepTemplateId ?? undefined,
+    }));
+  }, [platformConfigQ.data]);
+
   function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!form.cycleName || (!form.aepOnly && !form.drpsTemplateId) || !form.aepTemplateId) {
+    const cfg = platformConfigQ.data as any;
+    const effectiveDrpsTemplateId = form.drpsTemplateId ?? cfg?.drpsTemplateId;
+    const effectiveAepTemplateId = form.aepTemplateId ?? cfg?.aepTemplateId;
+    if (!form.cycleName || (!form.aepOnly && !effectiveDrpsTemplateId) || !effectiveAepTemplateId) {
       toast.error("Preencha nome do ciclo e selecione os templates" + (form.aepOnly ? " AEP." : " DRPS e AEP."));
       return;
     }
@@ -103,8 +117,8 @@ export default function AdminRiskAssessments() {
       cycleName: form.cycleName,
       branchId: form.branchId ?? null,
       sectorId: form.sectorId ?? null,
-      drpsTemplateId: form.aepOnly ? undefined : form.drpsTemplateId,
-      aepTemplateId: form.aepTemplateId,
+      drpsTemplateId: form.aepOnly ? undefined : effectiveDrpsTemplateId,
+      aepTemplateId: effectiveAepTemplateId,
       responsibleTechnician: form.responsibleTechnician || undefined,
       aepOnly: form.aepOnly,
     });
@@ -131,10 +145,6 @@ export default function AdminRiskAssessments() {
           </div>
 
           <div className="flex flex-wrap gap-2 items-center">
-            <Button variant="outline" size="sm" className="gap-1.5 text-xs border-rose-300 text-rose-700 hover:bg-rose-50"
-              onClick={() => setLocation("/admin/risco-consolidado")}>
-              <Layers size={13} /> Visão por Filial e Setor
-            </Button>
             <Button variant="outline" size="sm" className="gap-1.5 text-xs"
               onClick={() => downloadCsv(DRPS_TEMPLATE, "modelo-drps.csv")}>
               <Download size={13} /> Template DRPS
@@ -324,10 +334,12 @@ export default function AdminRiskAssessments() {
                     <div className="text-blue-600 font-medium flex items-center gap-1"><FileSearch size={12} /> DRPS</div>
                     <div className="text-slate-700 mt-0.5">{rate}</div>
                   </div>
-                  <div className="bg-purple-50 px-2 py-1.5 rounded">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setLocation(`/admin/analise-risco/${a.id}/aep`); }}
+                    className="bg-purple-50 hover:bg-purple-100 transition-colors px-2 py-1.5 rounded text-left">
                     <div className="text-purple-600 font-medium flex items-center gap-1"><ClipboardCheck size={12} /> AEP</div>
-                    <div className="text-slate-700 mt-0.5">{a.aepResponses} liderança(s)</div>
-                  </div>
+                    <div className="text-slate-700 mt-0.5">{a.aepResponses} resposta(s) — gerir</div>
+                  </button>
                 </div>
 
                 {a.startDate && (
@@ -343,5 +355,3 @@ export default function AdminRiskAssessments() {
     </AppLayout>
   );
 }
-
-

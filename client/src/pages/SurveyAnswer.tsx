@@ -105,7 +105,12 @@ export default function SurveyAnswer() {
                   ))}
                 </div>
               )}
-              {q.questionType === "text" && (
+              {/* Bruno R5-P2 #17 — Tolera vários aliases pra "texto livre" e cai
+                  em textarea como default quando o tipo da pergunta não bate com nenhum
+                  renderer conhecido (evita pergunta "muda" no front). */}
+              {(["text","open","textarea","long","aberta","livre"].includes(String(q.questionType||"").toLowerCase())
+                || (q.questionType !== "likert" && q.questionType !== "nps" && q.questionType !== "single" && q.questionType !== "multiple" && q.questionType !== "multiple_choice")
+              ) && (
                 <Textarea value={answers[q.id] ?? ""} onChange={e => setA(q.id, e.target.value)} rows={3} placeholder="Sua resposta..." />
               )}
             </div>
