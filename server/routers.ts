@@ -2327,6 +2327,14 @@ function activeEmployeeWhere(alias = "u"): string {
   return `${alias}.is_active=1 AND ${alias}.role IN (${ACTIVE_EMPLOYEE_ROLES.map((r) => `'${r}'`).join(",")})`;
 }
 
+async function ensureCompanyPlatformConfigColumns(db: any) {
+  try { await db.execute(drzSql`ALTER TABLE companies ADD COLUMN drps_template_id INT NULL`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE companies ADD COLUMN aep_template_id INT NULL`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE companies ADD COLUMN access_method VARCHAR(30) NOT NULL DEFAULT 'email'`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE companies ADD COLUMN communication_channel VARCHAR(30) NOT NULL DEFAULT 'email'`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE companies ADD COLUMN require_whatsapp_on_first_access TINYINT(1) NOT NULL DEFAULT 0`); } catch (_) {}
+}
+
 function normalizeTextKey(value: unknown): string {
   return String(value ?? "")
     .normalize("NFD")
@@ -11045,6 +11053,50 @@ export const appRouter = router({
         await db.execute(drzSql`UPDATE companies SET is_active = IF(is_active = 1, 0, 1) WHERE id = ${input.id}`);
         return { ok: true };
       }),
+    getPlatformConfig: adminOrRhProcedure
+      .input(z.object({ companyId: z.number().int().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        const requestedId = input?.companyId;
+        const companyId = (role === "admin_global" || role === "super_admin") ? requestedId : (ctx.user as any).companyId;
+        if (!companyId) throw new TRPCError({ code: "BAD_REQUEST", message: "Empresa não definida." });
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensureCompanyPlatformConfigColumns(db);
+        const [[row]]: any = await execP(db, `SELECT id, drps_template_id, aep_template_id, access_method, communication_channel, require_whatsapp_on_first_access FROM companies WHERE id=? LIMIT 1`, [companyId]);
+        if (!row) throw new TRPCError({ code: "NOT_FOUND" });
+        return {
+          companyId: Number(row.id),
+          drpsTemplateId: row.drps_template_id ? Number(row.drps_template_id) : null,
+          aepTemplateId: row.aep_template_id ? Number(row.aep_template_id) : null,
+          accessMethod: row.access_method || "email",
+          communicationChannel: row.communication_channel || "email",
+          requireWhatsappOnFirstAccess: !!Number(row.require_whatsapp_on_first_access ?? 0),
+        };
+      }),
+    updatePlatformConfig: adminOrRhProcedure
+      .input(z.object({
+        companyId: z.number().int(),
+        drpsTemplateId: z.number().int().nullable().optional(),
+        aepTemplateId: z.number().int().nullable().optional(),
+        accessMethod: z.enum(["email", "cpf", "whatsapp"]).default("email"),
+        communicationChannel: z.enum(["email", "whatsapp", "both"]).default("email"),
+        requireWhatsappOnFirstAccess: z.boolean().default(false),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        if (role !== "admin_global" && role !== "super_admin") throw new TRPCError({ code: "FORBIDDEN" });
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensureCompanyPlatformConfigColumns(db);
+        await execP(db, `UPDATE companies SET drps_template_id=?, aep_template_id=?, access_method=?, communication_channel=?, require_whatsapp_on_first_access=? WHERE id=?`, [
+          input.drpsTemplateId ?? null,
+          input.aepTemplateId ?? null,
+          input.accessMethod,
+          input.communicationChannel,
+          input.requireWhatsappOnFirstAccess ? 1 : 0,
+          input.companyId,
+        ]);
+        return { ok: true };
+      }),
     updatePlus: adminOrRhProcedure
       .input(z.object({
         id: z.number(),
@@ -19063,7 +19115,7 @@ Return only the JSON content object (no wrapper). Format per type:
         branchId: z.number().nullable(),
         cycleName: z.string().min(2),
         drpsTemplateId: z.number().optional().nullable(),
-        aepTemplateId: z.number(),
+        aepTemplateId: z.number().optional().nullable(),
         responsibleTechnician: z.string().optional(),
         aepOnly: z.boolean().optional(),
       }))
@@ -19106,10 +19158,21 @@ Return only the JSON content object (no wrapper). Format per type:
           return newId;
         }
 
-        const drpsId = (!input.aepOnly && input.drpsTemplateId)
-          ? await cloneSurvey(input.drpsTemplateId)
+        await ensureCompanyPlatformConfigColumns(db);
+        const [[cfg]]: any = await execP(db, `SELECT drps_template_id, aep_template_id FROM companies WHERE id=? LIMIT 1`, [cid]).catch(() => [[{}]]);
+        const effectiveDrpsTemplateId = input.drpsTemplateId ?? (cfg?.drps_template_id ? Number(cfg.drps_template_id) : null);
+        const effectiveAepTemplateId = input.aepTemplateId ?? (cfg?.aep_template_id ? Number(cfg.aep_template_id) : null);
+        if (!input.aepOnly && !effectiveDrpsTemplateId) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Template DRPS não informado e não configurado para esta empresa." });
+        }
+        if (!effectiveAepTemplateId) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Template AEP não informado e não configurado para esta empresa." });
+        }
+
+        const drpsId = (!input.aepOnly && effectiveDrpsTemplateId)
+          ? await cloneSurvey(effectiveDrpsTemplateId)
           : null;
-        const aepId = await cloneSurvey(input.aepTemplateId);
+        const aepId = await cloneSurvey(effectiveAepTemplateId);
 
         const startDate = new Date();
         const endDate = new Date(); endDate.setMonth(endDate.getMonth() + 12);
@@ -22144,7 +22207,12 @@ Return only the JSON content object (no wrapper). Format per type:
             db.execute(drzSql`SELECT c.id, c.sector_id AS sectorId, s.name AS sectorName
                               FROM pgr_gse_setores c LEFT JOIN sectors s ON s.id=c.sector_id
                               WHERE c.gse_id=${input.id} ORDER BY s.name`),
-            db.execute(drzSql`SELECT * FROM pgr_gse_riscos WHERE gse_id=${input.id} ORDER BY id`),
+            db.execute(drzSql`
+              SELECT r.*, CASE WHEN gd.id IS NULL THEN 0 ELSE 1 END AS detalhe_concluido
+              FROM pgr_gse_riscos r
+              LEFT JOIN pgr_gse_riscos_detalhe gd ON gd.risco_id = r.id
+              WHERE r.gse_id=${input.id}
+              ORDER BY r.id`),
             db.execute(drzSql`SELECT * FROM pgr_gse_epc    WHERE gse_id=${input.id} ORDER BY id`),
             db.execute(drzSql`SELECT * FROM pgr_gse_epi    WHERE gse_id=${input.id} ORDER BY id`),
             db.execute(drzSql`SELECT * FROM pgr_gse_acoes  WHERE gse_id=${input.id} ORDER BY id`),

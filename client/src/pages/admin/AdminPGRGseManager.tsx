@@ -15,7 +15,7 @@ import {
 import {
   Layers, Plus, Pencil, Trash2, Loader2, Save, Users, Building2,
   ShieldAlert, HardHat, ListChecks, Camera, GraduationCap, Sparkles,
-  Cog, Upload, FileText,
+  Cog, Upload, FileText, CheckCircle2, AlertCircle,
 } from "lucide-react";
 
 // Sub-componente: gerenciador de Grupos Similares de Exposição (GSE) — Sprint 1
@@ -238,6 +238,7 @@ function GseEditorDialog({
   const [acoes, setAcoes] = useState<any[]>([]);
   const [evidencias, setEvidencias] = useState<any[]>([]);
   const [treinamentos, setTreinamentos] = useState<any[]>([]);
+  const [detalhandoRiscoId, setDetalhandoRiscoId] = useState<number | null>(null);
 
   // Setores da empresa (para o multi-select). hierarchyTree retorna uma lista de
   // empresas (admin global pode ter várias); pegamos a do usuário ou a primeira.
@@ -273,7 +274,7 @@ function GseEditorDialog({
       id: r.id,
       tipo: r.tipo, agente: r.agente, fonteGeradora: r.fonte_geradora, possivelDano: r.possivel_dano,
       tipoExposicao: r.tipo_exposicao, severidade: r.severidade, probabilidade: r.probabilidade,
-      riscoFinal: r.risco_final, notes: r.notes,
+      riscoFinal: r.risco_final, notes: r.notes, detalheConcluido: !!r.detalhe_concluido,
     })));
     setEpc((d.epc ?? []).map((x: any) => ({ descricao: x.descricao, aplicacao: x.aplicacao })));
     setEpi((d.epi ?? []).map((x: any) => ({ descricao: x.descricao, ca: x.ca, aplicacao: x.aplicacao, validade: x.validade })));
@@ -349,7 +350,8 @@ function GseEditorDialog({
     return { hardErrors, softWarnings };
   }
 
-  async function saveAll() {
+  async function saveAll(options?: { close?: boolean; detailRiskIndex?: number }) {
+    const shouldClose = options?.close !== false;
     const { hardErrors, softWarnings } = validateGse();
     if (hardErrors.length) {
       toast.error(`Não foi possível salvar:\n• ${hardErrors.join("\n• ")}`, { duration: 7000 });
@@ -371,8 +373,24 @@ function GseEditorDialog({
       await setAcoesMut.mutateAsync({ gseId, items: acoes });
       await setEvidMut.mutateAsync({ gseId, items: evidencias });
       await setTreinMut.mutateAsync({ gseId, items: treinamentos });
+      const refreshed = await detailQ.refetch();
       toast.success("GSE salvo.");
-      onSaved(); onClose();
+      onSaved();
+      if (typeof options?.detailRiskIndex === "number") {
+        const savedRisk = (refreshed.data as any)?.riscos?.[options.detailRiskIndex];
+        if (savedRisk?.id) {
+          setTab("riscos");
+          setDetalhandoRiscoId(Number(savedRisk.id));
+          toast.message("Risco salvo. Complete o Detalhamento Técnico antes de finalizar o GSE.");
+          return;
+        }
+        toast.warning("Risco salvo, mas não foi possível abrir o Detalhamento Técnico automaticamente. Abra pelo botão na lista de riscos.");
+        return;
+      }
+      if (riscos.some((r: any) => r.id && !r.detalheConcluido)) {
+        toast.warning("GSE salvo, mas há riscos com Detalhamento Técnico pendente.", { duration: 6000 });
+      }
+      if (shouldClose) onClose();
     } catch (e: any) {
       toast.error(`Falha ao salvar: ${e?.message ?? "erro"}`);
     }
@@ -480,7 +498,18 @@ function GseEditorDialog({
               <div className="max-w-6xl mx-auto">
                 {tab === "cargos" && <CargosTab cargos={cargos} setCargos={setCargos} />}
                 {tab === "setores" && <SetoresTab setores={setores} setSetores={setSetores} allSectors={allSectors} />}
-                {tab === "riscos" && <RiscosTab riscos={riscos} setRiscos={setRiscos} gseId={gseId} />}
+                {tab === "riscos" && (
+                  <RiscosTab
+                    riscos={riscos}
+                    setRiscos={setRiscos}
+                    gseId={gseId}
+                    gseName={meta.nome}
+                    detalhandoRiscoId={detalhandoRiscoId}
+                    setDetalhandoRiscoId={setDetalhandoRiscoId}
+                    onSaveAndDetail={(index) => saveAll({ close: false, detailRiskIndex: index })}
+                    onDetailSaved={() => detailQ.refetch()}
+                  />
+                )}
                 {tab === "epc" && <EpcEpiTab items={epc} setItems={setEpc} isEpi={false} />}
                 {tab === "epi" && <EpcEpiTab items={epi} setItems={setEpi} isEpi={true} />}
                 {tab === "acoes" && <AcoesTab acoes={acoes} setAcoes={setAcoes} />}
@@ -489,9 +518,9 @@ function GseEditorDialog({
               </div>
             </div>
 
-            <DialogFooter className="border-t bg-white px-4 sm:px-6 py-3 shrink-0 sticky bottom-0 z-20 flex-col sm:flex-row gap-2">
+            <DialogFooter className="border-t bg-white px-4 sm:px-6 py-3 shrink-0 sticky bottom-0 z-20 flex-col sm:flex-row gap-2 pb-[calc(env(safe-area-inset-bottom)+0.75rem)]">
               <Button variant="outline" onClick={onClose} className="w-full sm:w-auto">Fechar sem salvar</Button>
-              <Button onClick={saveAll} disabled={allPending} className="gap-1 w-full sm:w-auto">
+              <Button onClick={() => saveAll()} disabled={allPending} className="gap-1 w-full sm:w-auto min-h-11">
                 {allPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
                 Salvar tudo
               </Button>
@@ -559,14 +588,31 @@ function SetoresTab({
   );
 }
 
-function RiscosTab({ riscos, setRiscos, gseId }: { riscos: any[]; setRiscos: (v: any[]) => void; gseId: number }) {
+function RiscosTab({
+  riscos,
+  setRiscos,
+  gseId,
+  gseName,
+  detalhandoRiscoId,
+  setDetalhandoRiscoId,
+  onSaveAndDetail,
+  onDetailSaved,
+}: {
+  riscos: any[];
+  setRiscos: (v: any[]) => void;
+  gseId: number;
+  gseName: string;
+  detalhandoRiscoId: number | null;
+  setDetalhandoRiscoId: (id: number | null) => void;
+  onSaveAndDetail: (index: number) => void;
+  onDetailSaved: () => void;
+}) {
   function add() {
     setRiscos([...riscos, { tipo: "fisico", agente: "", severidade: "baixa", probabilidade: "baixa", riscoFinal: "baixo" }]);
   }
   function patch(i: number, p: any) { setRiscos(riscos.map((r, j) => j === i ? { ...r, ...p } : r)); }
   function del(i: number) { setRiscos(riscos.filter((_, j) => j !== i)); }
   // P16 — Detalhamento Técnico do Risco (painel abre por risco JÁ salvo, com autopreenchimento IA).
-  const [detalhandoRiscoId, setDetalhandoRiscoId] = useState<number | null>(null);
   return (
     <div className="space-y-2">
       <div className="flex justify-between items-center">
@@ -632,7 +678,24 @@ function RiscosTab({ riscos, setRiscos, gseId }: { riscos: any[]; setRiscos: (v:
               </Select>
             </div>
           </div>
-          <div className="flex justify-end items-center gap-2">
+          <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2">
+            <div className="text-[11px]">
+              {r.id ? (
+                r.detalheConcluido ? (
+                  <span className="inline-flex items-center gap-1 text-emerald-700 font-medium"><CheckCircle2 size={13} /> Detalhamento concluído</span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 text-amber-700 font-medium"><AlertCircle size={13} /> Detalhamento pendente</span>
+                )
+              ) : (
+                <span className="inline-flex items-center gap-1 text-slate-500"><AlertCircle size={13} /> Salve para gerar o detalhamento</span>
+              )}
+            </div>
+            <div className="flex justify-end items-center gap-2">
+              {!r.id && (
+                <Button size="sm" variant="outline" onClick={() => onSaveAndDetail(i)} className="gap-1 text-blue-700 border-blue-300 hover:bg-blue-50">
+                  <Save size={12} /> Salvar GSE e detalhar
+                </Button>
+              )}
             {r.id ? (
               <Button size="sm" variant="outline" onClick={() => setDetalhandoRiscoId(r.id)} className="gap-1 text-blue-600 border-blue-200">
                 <Cog size={12} /> Detalhamento Técnico
@@ -641,6 +704,7 @@ function RiscosTab({ riscos, setRiscos, gseId }: { riscos: any[]; setRiscos: (v:
               <span className="text-[10px] text-slate-400 italic">Salve o GSE para abrir o Detalhamento Técnico</span>
             )}
             <Button size="sm" variant="ghost" onClick={() => del(i)}><Trash2 size={13} className="text-rose-600" /></Button>
+            </div>
           </div>
         </div>
       ))}
@@ -649,8 +713,11 @@ function RiscosTab({ riscos, setRiscos, gseId }: { riscos: any[]; setRiscos: (v:
         <DetalhamentoTecnicoDialog
           riscoId={detalhandoRiscoId}
           gseId={gseId}
+          gseName={gseName}
+          risk={riscos.find((r) => Number(r.id) === Number(detalhandoRiscoId))}
           riskIds={riscos.map((r) => Number(r.id)).filter(Boolean)}
           onMoveToRisk={(id) => setDetalhandoRiscoId(id)}
+          onSaved={onDetailSaved}
           onClose={() => setDetalhandoRiscoId(null)}
         />
       )}
@@ -882,14 +949,20 @@ function TreinamentosTab({ items, setItems }: { items: any[]; setItems: (v: any[
 function DetalhamentoTecnicoDialog({
   riscoId,
   gseId,
+  gseName,
+  risk,
   riskIds,
   onMoveToRisk,
+  onSaved,
   onClose,
 }: {
   riscoId: number;
   gseId: number;
+  gseName?: string;
+  risk?: any;
   riskIds: number[];
   onMoveToRisk: (id: number) => void;
+  onSaved: () => void;
   onClose: () => void;
 }) {
   const detQ = (trpc.pgr.gse as any).getDetalhamento.useQuery({ riscoId });
@@ -902,7 +975,11 @@ function DetalhamentoTecnicoDialog({
   const similarQ = (trpc.pgr.gse as any).findSimilarDetalhamento.useQuery({ riscoId }, { enabled: !detQ.isLoading && !detQ.data });
   const [dismissedSimilar, setDismissedSimilar] = useState(false);
   const saveMut = (trpc.pgr.gse as any).setDetalhamento.useMutation({
-    onSuccess: () => { toast.success("Detalhamento salvo."); (utils.pgr.gse as any).getDetalhamento.invalidate({ riscoId }); },
+    onSuccess: () => {
+      toast.success("Detalhamento salvo.");
+      (utils.pgr.gse as any).getDetalhamento.invalidate({ riscoId });
+      onSaved();
+    },
     onError: (e: any) => toast.error(e?.message ?? "Erro"),
   });
   const uploadMut = (trpc.pgr.gse as any).addLaudoRisco.useMutation({
@@ -1000,6 +1077,11 @@ function DetalhamentoTecnicoDialog({
           <DialogDescription>
             Informações técnicas complementares para o Inventário de Riscos. Podem ser autopreenchidas pela IA e serão incorporadas ao PDF do PGR.
           </DialogDescription>
+          <div className="mt-2 rounded-lg border bg-slate-50 px-3 py-2 text-xs text-slate-700">
+            <div><b>GSE:</b> {gseName || "GSE não identificado"}</div>
+            <div><b>Risco:</b> {risk?.agente || `#${riscoId}`} {risk?.tipo ? <span className="text-slate-500">({risk.tipo})</span> : null}</div>
+            {risk?.fonteGeradora ? <div className="text-slate-500"><b>Fonte:</b> {risk.fonteGeradora}</div> : null}
+          </div>
         </DialogHeader>
         <div className="flex-1 overflow-y-auto space-y-3 pr-1 pb-24 sm:pb-2">
           {similarQ.data && !dismissedSimilar && (

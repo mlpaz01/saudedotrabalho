@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -9,8 +9,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Building2, MapPin, Layers, Users, Plus, Trash2, ArrowLeft } from "lucide-react";
+import { Building2, MapPin, Layers, Users, Plus, Trash2, ArrowLeft, Settings, Save } from "lucide-react";
 import { Link } from "wouter";
+import { toast } from "sonner";
 
 export default function AdminCompanyDetail() {
   const params = useParams<{ id: string }>();
@@ -21,16 +22,45 @@ export default function AdminCompanyDetail() {
   const { data: sectors, refetch: refetchSectors } = trpc.companies.sectors.useQuery({ companyId });
   const { data: employees } = trpc.companies.usersByCompany.useQuery({ companyId });
   const { data: engagement } = trpc.companies.sectorEngagement.useQuery({ companyId });
+  const { data: templateLibrary } = trpc.templateLibrary.list.useQuery();
+  const platformConfigQ = (trpc.companies as any).getPlatformConfig.useQuery({ companyId });
 
   const createBranch = trpc.companies.createBranch.useMutation({ onSuccess: () => { refetchBranches(); } });
   const deleteBranch = trpc.companies.deleteBranch.useMutation({ onSuccess: () => { refetchBranches(); } });
   const createSector = trpc.companies.createSector.useMutation({ onSuccess: () => { refetchSectors(); } });
   const deleteSector = trpc.companies.deleteSector.useMutation({ onSuccess: () => { refetchSectors(); } });
+  const updatePlatformConfig = (trpc.companies as any).updatePlatformConfig.useMutation({
+    onSuccess: () => { toast.success("Configurações salvas."); platformConfigQ.refetch(); },
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao salvar configurações."),
+  });
 
   const [branchForm, setBranchForm] = useState({ name: "", city: "", state: "" });
   const [sectorForm, setSectorForm] = useState({ name: "", branchId: "" });
   const [branchOpen, setBranchOpen] = useState(false);
   const [sectorOpen, setSectorOpen] = useState(false);
+  const [configForm, setConfigForm] = useState({
+    drpsTemplateId: "",
+    aepTemplateId: "",
+    accessMethod: "email",
+    communicationChannel: "email",
+    requireWhatsappOnFirstAccess: false,
+  });
+
+  useEffect(() => {
+    const cfg = platformConfigQ.data as any;
+    if (!cfg) return;
+    setConfigForm({
+      drpsTemplateId: cfg.drpsTemplateId ? String(cfg.drpsTemplateId) : "",
+      aepTemplateId: cfg.aepTemplateId ? String(cfg.aepTemplateId) : "",
+      accessMethod: cfg.accessMethod ?? "email",
+      communicationChannel: cfg.communicationChannel ?? "email",
+      requireWhatsappOnFirstAccess: !!cfg.requireWhatsappOnFirstAccess,
+    });
+  }, [platformConfigQ.data]);
+
+  const surveyTemplates = ((templateLibrary as any)?.surveys ?? []) as any[];
+  const drpsTemplates = surveyTemplates.filter((s) => s.category === "psicossocial");
+  const aepTemplates = surveyTemplates.filter((s) => s.category === "aep");
 
   const getEngagementColor = (pct: number) => {
     if (pct >= 90) return "#22c55e";
@@ -59,6 +89,7 @@ export default function AdminCompanyDetail() {
           <TabsTrigger value="estrutura">Estrutura</TabsTrigger>
           <TabsTrigger value="funcionarios">Funcionários ({(employees ?? []).length})</TabsTrigger>
           <TabsTrigger value="engajamento">Engajamento</TabsTrigger>
+          <TabsTrigger value="configuracoes">Configurações</TabsTrigger>
         </TabsList>
 
         {/* TAB: ESTRUTURA */}
@@ -210,6 +241,90 @@ export default function AdminCompanyDetail() {
               <div className="col-span-3 text-center py-12 text-muted-foreground">Sem dados de engajamento ainda</div>
             )}
           </div>
+        </TabsContent>
+
+        <TabsContent value="configuracoes">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Settings className="w-4 h-4" /> Templates, acesso e comunicação
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <Label>Template DRPS padrão</Label>
+                  <Select value={configForm.drpsTemplateId || "__none__"} onValueChange={(v) => setConfigForm((f) => ({ ...f, drpsTemplateId: v === "__none__" ? "" : v }))}>
+                    <SelectTrigger><SelectValue placeholder="Usar seleção manual" /></SelectTrigger>
+                    <SelectContent className="max-w-[90vw]">
+                      <SelectItem value="__none__">Sem padrão definido</SelectItem>
+                      {drpsTemplates.map((t) => <SelectItem key={t.id} value={String(t.id)} className="whitespace-normal">{t.title}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Template AEP padrão</Label>
+                  <Select value={configForm.aepTemplateId || "__none__"} onValueChange={(v) => setConfigForm((f) => ({ ...f, aepTemplateId: v === "__none__" ? "" : v }))}>
+                    <SelectTrigger><SelectValue placeholder="Usar seleção manual" /></SelectTrigger>
+                    <SelectContent className="max-w-[90vw]">
+                      <SelectItem value="__none__">Sem padrão definido</SelectItem>
+                      {aepTemplates.map((t) => <SelectItem key={t.id} value={String(t.id)} className="whitespace-normal">{t.title}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <Label>Método de acesso</Label>
+                  <Select value={configForm.accessMethod} onValueChange={(v) => setConfigForm((f) => ({ ...f, accessMethod: v }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="email">Login por e-mail</SelectItem>
+                      <SelectItem value="cpf">Login por CPF</SelectItem>
+                      <SelectItem value="whatsapp">WhatsApp como principal</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Canal de comunicação</Label>
+                  <Select value={configForm.communicationChannel} onValueChange={(v) => setConfigForm((f) => ({ ...f, communicationChannel: v }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="email">E-mail</SelectItem>
+                      <SelectItem value="whatsapp">WhatsApp</SelectItem>
+                      <SelectItem value="both">E-mail + WhatsApp</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <label className="flex items-center gap-2 text-sm mt-6">
+                  <input
+                    type="checkbox"
+                    checked={configForm.requireWhatsappOnFirstAccess}
+                    onChange={(e) => setConfigForm((f) => ({ ...f, requireWhatsappOnFirstAccess: e.target.checked }))}
+                  />
+                  Exigir WhatsApp no primeiro acesso
+                </label>
+              </div>
+
+              <div className="flex justify-end">
+                <Button
+                  className="gap-2"
+                  disabled={updatePlatformConfig.isPending}
+                  onClick={() => updatePlatformConfig.mutate({
+                    companyId,
+                    drpsTemplateId: configForm.drpsTemplateId ? Number(configForm.drpsTemplateId) : null,
+                    aepTemplateId: configForm.aepTemplateId ? Number(configForm.aepTemplateId) : null,
+                    accessMethod: configForm.accessMethod,
+                    communicationChannel: configForm.communicationChannel,
+                    requireWhatsappOnFirstAccess: configForm.requireWhatsappOnFirstAccess,
+                  })}
+                >
+                  <Save className="w-4 h-4" /> Salvar configurações
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
         </TabsContent>
       </Tabs>
     </div>

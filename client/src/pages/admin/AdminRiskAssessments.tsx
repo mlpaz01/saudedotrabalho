@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import AppLayout from "@/components/AppLayout";
 import { trpc } from "@/lib/trpc";
@@ -72,6 +72,7 @@ export default function AdminRiskAssessments() {
   const branchesQ = trpc.branchesAdmin.list.useQuery();
   const sectorsQ = trpc.departmentsAdmin.list.useQuery(form.branchId ? { branchId: form.branchId } : undefined);
   const libraryQ = trpc.templateLibrary.list.useQuery();
+  const platformConfigQ = (trpc.companies as any).getPlatformConfig.useQuery();
 
   const updateMut = trpc.riskAssessment.updateAssessment.useMutation({
     onSuccess: () => { listQ.refetch(); toast.success("Ciclo atualizado."); },
@@ -92,9 +93,22 @@ export default function AdminRiskAssessments() {
   const drpsTemplates = surveyTemplates.filter((s) => s.category === "psicossocial");
   const aepTemplates = surveyTemplates.filter((s) => s.category === "aep");
 
+  useEffect(() => {
+    const cfg = platformConfigQ.data as any;
+    if (!cfg) return;
+    setForm((f) => ({
+      ...f,
+      drpsTemplateId: f.drpsTemplateId ?? cfg.drpsTemplateId ?? undefined,
+      aepTemplateId: f.aepTemplateId ?? cfg.aepTemplateId ?? undefined,
+    }));
+  }, [platformConfigQ.data]);
+
   function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!form.cycleName || (!form.aepOnly && !form.drpsTemplateId) || !form.aepTemplateId) {
+    const cfg = platformConfigQ.data as any;
+    const effectiveDrpsTemplateId = form.drpsTemplateId ?? cfg?.drpsTemplateId;
+    const effectiveAepTemplateId = form.aepTemplateId ?? cfg?.aepTemplateId;
+    if (!form.cycleName || (!form.aepOnly && !effectiveDrpsTemplateId) || !effectiveAepTemplateId) {
       toast.error("Preencha nome do ciclo e selecione os templates" + (form.aepOnly ? " AEP." : " DRPS e AEP."));
       return;
     }
@@ -103,8 +117,8 @@ export default function AdminRiskAssessments() {
       cycleName: form.cycleName,
       branchId: form.branchId ?? null,
       sectorId: form.sectorId ?? null,
-      drpsTemplateId: form.aepOnly ? undefined : form.drpsTemplateId,
-      aepTemplateId: form.aepTemplateId,
+      drpsTemplateId: form.aepOnly ? undefined : effectiveDrpsTemplateId,
+      aepTemplateId: effectiveAepTemplateId,
       responsibleTechnician: form.responsibleTechnician || undefined,
       aepOnly: form.aepOnly,
     });
