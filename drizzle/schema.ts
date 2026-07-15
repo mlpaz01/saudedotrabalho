@@ -27,6 +27,9 @@ export const users = mysqlTable("users", {
   sectorId: int("sector_id"),
   // Cargo do colaborador — usado por PGR/AEP/EPI/Treinamentos. Migração: ALTER TABLE users ADD COLUMN position VARCHAR(120) NULL.
   position: varchar("position", { length: 120 }),
+  cpf: varchar("cpf", { length: 20 }),
+  whatsappE164: varchar("whatsapp_e164", { length: 20 }),
+  isActive: tinyint("is_active").default(1).notNull(),
 });
 
 export type User = typeof users.$inferSelect;
@@ -48,6 +51,11 @@ export const corporateEmails = mysqlTable("corporate_emails", {
   companyId: int("company_id"),
   branchId: int("branch_id"),
   sectorId: int("sector_id"),
+  role: varchar("role", { length: 30 }).default("user"),
+  cpf: varchar("cpf", { length: 20 }),
+  whatsappE164: varchar("whatsapp_e164", { length: 20 }),
+  activationToken: varchar("activation_token", { length: 128 }),
+  activationExpiresAt: timestamp("activation_expires_at"),
 });
 
 export type CorporateEmail = typeof corporateEmails.$inferSelect;

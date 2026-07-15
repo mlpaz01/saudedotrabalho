@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Eye, EyeOff, Lock, CheckCircle2 } from "lucide-react";
+import { Eye, EyeOff, Lock, CheckCircle2, Phone } from "lucide-react";
 
 const LOGO_URL = "/logo.png";
 
@@ -13,10 +13,11 @@ export default function SetPassword() {
   const [, navigate] = useLocation();
   const search = useSearch();
   const params = new URLSearchParams(search);
-  const email = params.get("email") ?? "";
+  const identifier = params.get("identifier") ?? params.get("email") ?? "";
 
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [whatsapp, setWhatsapp] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [done, setDone] = useState(false);
 
@@ -69,7 +70,7 @@ export default function SetPassword() {
           </div>
 
           <div className="bg-muted/50 rounded-lg px-4 py-3 mb-6 text-sm text-muted-foreground">
-            <span className="font-medium text-foreground">{email}</span>
+            <span className="font-medium text-foreground">{identifier}</span>
           </div>
 
           <form
@@ -77,10 +78,26 @@ export default function SetPassword() {
               e.preventDefault();
               if (password !== confirm) { toast.error("As senhas não coincidem."); return; }
               if (password.length < 8) { toast.error("A senha deve ter pelo menos 8 caracteres."); return; }
-              setPasswordMutation.mutate({ email, password });
+              setPasswordMutation.mutate({ identifier, password, whatsapp });
             }}
             className="space-y-5"
           >
+            <div className="space-y-2">
+              <Label htmlFor="whatsapp">WhatsApp</Label>
+              <div className="relative">
+                <Phone size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  id="whatsapp"
+                  type="tel"
+                  value={whatsapp}
+                  onChange={(e) => setWhatsapp(e.target.value)}
+                  placeholder="(11) 99999-9999"
+                  className="pl-10 h-11"
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">Informe o número se sua empresa utiliza acesso por CPF ou WhatsApp.</p>
+            </div>
+
             <div className="space-y-2">
               <Label htmlFor="password">Nova Senha</Label>
               <div className="relative">

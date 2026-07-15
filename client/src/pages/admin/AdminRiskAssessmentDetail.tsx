@@ -83,6 +83,7 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
   const [showImport, setShowImport] = useState(false);
 
   const detailQ = trpc.riskAssessment.getAssessment.useQuery({ id });
+  const coverageQ = trpc.riskAssessment.cycleSectorCoverage.useQuery({ assessmentId: id });
   // R5-P12 #10 — lotes de questionários IMPRESSOS que alimentaram este ciclo.
   const printedBatchesQ = (trpc.compliance as any).listPrintedBatches.useQuery({ cycleId: id });
   const printedBatches = (printedBatchesQ.data ?? []) as any[];
@@ -105,6 +106,13 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
   const genPlanMut = trpc.riskAssessment.generateActionPlan.useMutation({
     onSuccess: (d: any) => { toast.success(`Plano de ação gerado — ${d.created} ações`); detailQ.refetch(); },
     onError: (e: any) => toast.error(e?.message ?? "Erro ao gerar plano"),
+  });
+  const sendPendingMut = trpc.riskAssessment.sendPendingSurveyReminder.useMutation({
+    onSuccess: (d: any) => {
+      toast.success(d.sent > 0 ? `Cobrança enviada para ${d.sent} pendente(s).` : "Nenhum pendente encontrado.");
+      coverageQ.refetch();
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao cobrar pesquisas pendentes"),
   });
   const upPlan = trpc.riskAssessment.updateActionPlanItem.useMutation({
     onSuccess: () => { toast.success("Ação atualizada"); detailQ.refetch(); setEditPlan(null); },
@@ -140,6 +148,8 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
   const a = assessment ?? {};
   const stats = statsRaw ?? { drpsResponses: 0, aepResponses: 0 };
   const inv = (inventory ?? []) as any[];
+  const coverage = coverageQ.data as any;
+  const coverageSectors = (coverage?.sectors ?? []) as any[];
   const plan = ((actionPlan ?? []) as any[]).slice().sort((x, y) => (PRIORITY_RANK[y.priority] ?? 0) - (PRIORITY_RANK[x.priority] ?? 0));
   // Segmentação por setor (NR-01): agrupa inventário e plano pelo setor de cada item.
   // Quando nenhum item tem setor (avaliação consolidada antiga), cai num único grupo sem cabeçalho.
@@ -224,6 +234,51 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
               <div className="text-xs text-slate-600 mt-1">Fatores com risco médio ou superior.</div>
             </div>
             <div className="bg-white border rounded-xl p-4 md:col-span-3">
+              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-slate-800 flex items-center gap-2">
+                    <ClipboardCheck size={15} className="text-emerald-600" /> Cruzamento DRPS + AEP por setor
+                  </div>
+                  <p className="text-xs text-slate-500 mt-1">Setores sem pelo menos 1 DRPS e 1 AEP validos ficam pendentes e nao entram na matriz/plano tecnico do ciclo.</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" className="gap-1" disabled={sendPendingMut.isPending} onClick={() => sendPendingMut.mutate({ assessmentId: a.id, target: "drps" })}>
+                    {sendPendingMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <AlertTriangle size={13} />} Cobrar DRPS
+                  </Button>
+                  <Button size="sm" variant="outline" className="gap-1" disabled={sendPendingMut.isPending} onClick={() => sendPendingMut.mutate({ assessmentId: a.id, target: "aep" })}>
+                    {sendPendingMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <AlertTriangle size={13} />} Cobrar AEP
+                  </Button>
+                </div>
+              </div>
+              <div className="grid sm:grid-cols-4 gap-2 mt-3">
+                <div className="rounded-lg bg-slate-50 border p-3"><div className="text-[11px] uppercase text-slate-500 font-semibold">Setores</div><div className="text-xl font-bold">{coverage?.summary?.sectorsTotal ?? 0}</div></div>
+                <div className="rounded-lg bg-emerald-50 border border-emerald-200 p-3"><div className="text-[11px] uppercase text-emerald-700 font-semibold">Completos</div><div className="text-xl font-bold text-emerald-800">{coverage?.summary?.sectorsComplete ?? 0}</div></div>
+                <div className="rounded-lg bg-amber-50 border border-amber-200 p-3"><div className="text-[11px] uppercase text-amber-700 font-semibold">Pendentes</div><div className="text-xl font-bold text-amber-800">{coverage?.summary?.sectorsPending ?? 0}</div></div>
+                <div className="rounded-lg bg-blue-50 border border-blue-200 p-3"><div className="text-[11px] uppercase text-blue-700 font-semibold">Colab. ativos</div><div className="text-xl font-bold text-blue-800">{coverage?.summary?.activeEmployees ?? 0}</div></div>
+              </div>
+              <div className="mt-3 overflow-x-auto border-b pb-4 mb-4">
+                <table className="w-full text-xs">
+                  <thead className="text-slate-500 border-b">
+                    <tr><th className="text-left py-1.5 pr-3">Setor</th><th className="py-1.5 pr-3">Ativos</th><th className="py-1.5 pr-3">DRPS</th><th className="py-1.5 pr-3">AEP</th><th className="py-1.5 pr-3">Status</th></tr>
+                  </thead>
+                  <tbody>
+                    {coverageSectors.map((s: any) => (
+                      <tr key={s.sectorId} className="border-b last:border-0">
+                        <td className="py-1.5 pr-3">{s.branchName ? `${s.branchName} / ` : ""}{s.sectorName}</td>
+                        <td className="py-1.5 pr-3 text-center">{s.activeEmployees}</td>
+                        <td className="py-1.5 pr-3 text-center">{s.drpsResponses}</td>
+                        <td className="py-1.5 pr-3 text-center">{s.aepResponses}</td>
+                        <td className="py-1.5 pr-3 text-center">
+                          <span className={`inline-flex rounded-full px-2 py-0.5 font-semibold ${s.hasCompleteCrossing ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>
+                            {s.hasCompleteCrossing ? "Completo" : "Pendente"}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                    {!coverageQ.isLoading && coverageSectors.length === 0 && <tr><td colSpan={5} className="py-3 text-center text-slate-400">Nenhum setor encontrado para este ciclo.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
               <div className="text-sm font-semibold text-slate-800 mb-2">Resumo do ciclo</div>
               <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-sm">
                 <div><dt className="inline text-slate-500">Status: </dt><dd className="inline text-slate-800">{a.status}</dd></div>

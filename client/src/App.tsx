@@ -67,6 +67,7 @@ import SuperAdminCrm from "@/pages/superadmin/SuperAdminCrm";
 import IntermediadorDashboard from "@/pages/IntermediadorDashboard";
 import Cipa from "@/pages/Cipa";
 import AdminCipa from "@/pages/admin/AdminCipa";
+import AdminCorporateMinutes from "@/pages/admin/AdminCorporateMinutes";
 import AdminFirstAid from "@/pages/admin/AdminFirstAid";
 import CampanhasIndex, { CampanhaDetail } from "@/pages/Campanhas";
 import Configurador from "@/pages/admin/Configurador";
@@ -275,6 +276,7 @@ function Router() {
       <Route path="/admin/sipat" component={() => <ProtectedRoute component={AdminSipat} adminOnly />} />
       {/* P15 #4 — Módulo CIPA */}
       <Route path="/admin/cipa" component={() => <CipaAdminRoute component={AdminCipa} />} />
+      <Route path="/admin/atas-corporativas" component={() => <ProtectedRoute component={AdminCorporateMinutes} adminOnly />} />
       {/* P17 #7 — Rota do colaborador pra CIPA (link "CIPA" do employeeNav) */}
       <Route path="/cipa" component={() => <ProtectedRoute component={Cipa} />} />
       {/* P15 #5 — Kit de Primeiros Socorros (NR-07) */}

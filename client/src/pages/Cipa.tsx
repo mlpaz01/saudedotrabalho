@@ -1,6 +1,6 @@
 import AppLayout from "@/components/AppLayout";
 import { trpc } from "@/lib/trpc";
-import { ShieldCheck, Vote, Loader2, Users, Maximize, Minimize, LogOut, CheckCircle2, Printer, User as UserIcon } from "lucide-react";
+import { ShieldCheck, Vote, Loader2, Users, Maximize, Minimize, LogOut, CheckCircle2, Printer, User as UserIcon, BookOpen, FileText, ExternalLink, Award } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from "recharts";
@@ -56,6 +56,8 @@ export default function Cipa() {
           </section>
         )}
 
+        {!kiosk && <CipaLearningSection />}
+
         <VotingSection kiosk={kiosk} onExitKiosk={() => setKiosk(false)} />
       </div>
     </div>
@@ -63,6 +65,63 @@ export default function Cipa() {
 
   if (kiosk) return body; // tela cheia — sem AppLayout (sem menu/nav)
   return <AppLayout>{body}</AppLayout>;
+}
+
+function CipaLearningSection() {
+  const q = (trpc.cipaTraining as any).learningForEmployee.useQuery();
+  const markMut = (trpc.cipaTraining as any).markProgress.useMutation({ onSuccess: () => q.refetch() });
+  const data = q.data as any;
+  const summary = data?.summary ?? { total: 0, completed: 0, required: 0, pendingRequired: 0, certificates: 0 };
+  const items = [...((data?.courses ?? []) as any[]), ...((data?.resources ?? []) as any[])];
+  if (q.isLoading || summary.total === 0) return null;
+  function mark(item: any, completed = false) {
+    if (item.contentType !== "course") {
+      markMut.mutate({ contentId: item.id, percentWatched: completed ? 100 : Math.max(item.percent || 0, 10), timeSpentSeconds: completed ? 60 : 15, completed });
+    }
+  }
+  return (
+    <section className="bg-white border rounded-xl p-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h2 className="font-bold text-lg mb-1 flex items-center gap-2"><BookOpen size={18} className="text-emerald-600" /> Capacitação da CIPA</h2>
+          <p className="text-sm text-slate-500">Cursos, materiais e evidências de treinamento liberados pela empresa.</p>
+        </div>
+        <div className="grid grid-cols-4 gap-2 text-center text-xs">
+          <Metric label="Conteúdos" value={summary.total} />
+          <Metric label="Concluídos" value={summary.completed} />
+          <Metric label="Obrig." value={summary.required} />
+          <Metric label="Cert." value={summary.certificates} />
+        </div>
+      </div>
+      <div className="grid md:grid-cols-2 gap-3 mt-4">
+        {items.map((it: any) => (
+          <div key={it.id} className="border rounded-lg p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="font-semibold text-sm flex items-center gap-1.5">
+                  {it.contentType === "course" ? <BookOpen size={14} className="text-emerald-600" /> : <FileText size={14} className="text-sky-600" />}
+                  {it.title}
+                </div>
+                {it.description && <p className="text-xs text-slate-500 mt-1 line-clamp-2">{it.description}</p>}
+              </div>
+              {it.isCompleted ? <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-semibold">Concluído</span> : <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-semibold">Pendente</span>}
+            </div>
+            <div className="mt-3 h-2 rounded-full bg-slate-100 overflow-hidden"><div className="h-full bg-emerald-600" style={{ width: `${Math.max(0, Math.min(100, Math.round(it.percent || 0)))}%` }} /></div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {it.contentType === "course" && it.moduleId && <a href={`/cursos/${it.moduleId}`} className="px-3 py-1.5 rounded bg-emerald-600 text-white text-xs font-semibold">Iniciar curso</a>}
+              {it.contentType !== "course" && (it.url || it.fileUrl) && <a href={it.url || it.fileUrl} target="_blank" rel="noreferrer" onClick={() => mark(it)} className="px-3 py-1.5 rounded border text-xs font-semibold inline-flex items-center gap-1"><ExternalLink size={12} /> Abrir</a>}
+              {it.contentType !== "course" && !it.isCompleted && <button onClick={() => mark(it, true)} className="px-3 py-1.5 rounded border text-xs font-semibold">Marcar concluído</button>}
+              {it.certificate?.url && <a href={it.certificate.url} target="_blank" rel="noreferrer" className="px-3 py-1.5 rounded border text-xs font-semibold inline-flex items-center gap-1"><Award size={12} /> Certificado</a>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: number }) {
+  return <div className="rounded border bg-slate-50 px-2 py-1"><div className="font-bold text-slate-800">{value}</div><div className="text-slate-500">{label}</div></div>;
 }
 
 function VotingSection({ kiosk, onExitKiosk }: { kiosk: boolean; onExitKiosk: () => void }) {

@@ -278,7 +278,7 @@ function UserDrawer({ userId, onClose }: { userId: number; onClose: () => void }
 /* ==================== OVERVIEW TAB ==================== */
 function OverviewTab({ filters }: { filters: any }) {
   // overview accepts { from, to, branchId, sectorId }
-  const overviewInput = useMemo(() => ({ branchId: filters.branchId, sectorId: filters.sectorId }), [filters.branchId, filters.sectorId]);
+  const overviewInput = useMemo(() => ({ branchId: filters.branchId, sectorId: filters.sectorId, cycleId: filters.cycleId }), [filters.branchId, filters.sectorId, filters.cycleId]);
   const q = trpc.analytics.overview.useQuery(overviewInput);
   const data = q.data;
 
@@ -504,8 +504,8 @@ function UserTable({ users, sort, toggleSort, onUserClick, highlight }: { users:
 /* ==================== SURVEYS TAB ==================== */
 function SurveysTab({ filters }: { filters: any }) {
   const [surveyType, setSurveyType] = useState<string | undefined>(undefined);
-  const ratesQ = trpc.analytics.surveyResponseRate.useQuery();
-  const trendQ = trpc.analytics.surveyTrendOverTime.useQuery({ days: 30 });
+  const ratesQ = trpc.analytics.surveyResponseRate.useQuery({ cycleId: filters.cycleId, branchId: filters.branchId, sectorId: filters.sectorId });
+  const trendQ = trpc.analytics.surveyTrendOverTime.useQuery({ days: 30, cycleId: filters.cycleId });
   const [selectedSurvey, setSelectedSurvey] = useState<number | null>(null);
   const likertQ = trpc.analytics.surveyLikertDistribution.useQuery(
     { surveyId: selectedSurvey ?? 0 },
@@ -770,9 +770,9 @@ function EngagementTab({ filters, drill, setDrill }: { filters: any; drill: Dril
 
 /* ==================== RISK TAB ==================== */
 function RiskTab({ filters, drill, setDrill }: { filters: any; drill: DrillState; setDrill: (d: DrillState) => void }) {
-  const matrixQ = trpc.analytics.riskMatrixByCompany.useQuery();
-  const topQ = trpc.analytics.topCriticalFactors.useQuery();
-  const evoQ = trpc.analytics.riskEvolution.useQuery();
+  const matrixQ = trpc.analytics.riskMatrixByCompany.useQuery({ cycleId: filters.cycleId });
+  const topQ = trpc.analytics.topCriticalFactors.useQuery({ cycleId: filters.cycleId });
+  const evoQ = trpc.analytics.riskEvolution.useQuery({ cycleId: filters.cycleId });
 
   const m = matrixQ.data;
   const factorsSort = useSort(topQ.data ?? [], "occurrences", "desc");
@@ -1228,6 +1228,7 @@ export default function AdminAnalytics() {
   const [tab, setTab] = useState<TabKey>("overview");
   const [drill, setDrillState] = useState<DrillState>({});
   const [period, setPeriod] = useState<number | undefined>(30);
+  const [cycleId, setCycleId] = useState<number | undefined>(undefined);
 
   const filtersQ = trpc.analytics.filterOptions.useQuery();
   const filterOpts = filtersQ.data;
@@ -1235,8 +1236,9 @@ export default function AdminAnalytics() {
   const filters = useMemo(() => ({
     branchId: drill.branchId,
     sectorId: drill.sectorId,
+    cycleId,
     days: period,
-  }), [drill.branchId, drill.sectorId, period]);
+  }), [drill.branchId, drill.sectorId, cycleId, period]);
 
   const setDrill = (d: DrillState) => setDrillState(d);
   const clearDrill = (level: "branch" | "sector") => {
@@ -1264,6 +1266,12 @@ export default function AdminAnalytics() {
               placeholder="Todo o período"
             />
             <FilterSelect
+              value={cycleId}
+              onChange={(v) => setCycleId(v as any)}
+              options={(filterOpts?.cycles ?? []).map((c: any) => ({ value: c.id, label: `${c.name}${c.status ? ` (${c.status})` : ""}` }))}
+              placeholder="Todos os ciclos"
+            />
+            <FilterSelect
               value={drill.branchId}
               onChange={(v) => setDrillState({ ...drill, branchId: v as any, sectorId: undefined })}
               options={(filterOpts?.branches ?? []).map((b: any) => ({ value: b.id, label: b.name }))}
@@ -1275,8 +1283,8 @@ export default function AdminAnalytics() {
               options={(filterOpts?.sectors ?? []).filter((s: any) => !drill.branchId || s.branchId === drill.branchId).map((s: any) => ({ value: s.id, label: s.name }))}
               placeholder="Todos os setores"
             />
-            {(drill.branchId || drill.sectorId) && (
-              <button onClick={() => setDrillState({})} className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 px-2">
+            {(drill.branchId || drill.sectorId || cycleId) && (
+              <button onClick={() => { setDrillState({}); setCycleId(undefined); }} className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 px-2">
                 <X size={12} /> limpar
               </button>
             )}

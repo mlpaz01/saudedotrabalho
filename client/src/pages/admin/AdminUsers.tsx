@@ -301,7 +301,7 @@ export default function AdminUsers() {
 }
 
 // ----- CSV import -----------------------------------------------------------
-type ParsedRow = { email: string; nome: string; filial: string; setor: string; cargo: string; perfil: string; whatsapp: string };
+type ParsedRow = { email: string; cpf: string; nome: string; filial: string; setor: string; cargo: string; perfil: string; whatsapp: string };
 
 function stripAccents(s: string) {
   return s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
@@ -335,6 +335,7 @@ function parseCSV(text: string): ParsedRow[] {
   const header = grid[0].map(stripAccents);
   const find = (...keys: string[]) => header.findIndex((h) => keys.some((k) => h.includes(k)));
   let iEmail = find("mail");
+  let iCpf = find("cpf", "documento");
   let iNome = find("nome");
   let iFilial = find("filial", "unidade");
   let iSetor = find("setor", "departamento", "depto");
@@ -349,12 +350,17 @@ function parseCSV(text: string): ParsedRow[] {
   const hasHeader = iEmail !== -1 && !firstHasEmail;
   const dataRows = hasHeader ? grid.slice(1) : grid;
   // Ordem padrão sem cabeçalho: email; nome; filial; setor; cargo; perfil; whatsapp
-  if (!hasHeader) { iEmail = 0; iNome = 1; iFilial = 2; iSetor = 3; iCargo = 4; iPerfil = 5; iWhats = 6; }
+  if (!hasHeader) {
+    const width = Math.max(...grid.map((r) => r.length));
+    if (width >= 8) { iEmail = 0; iCpf = 1; iNome = 2; iFilial = 3; iSetor = 4; iCargo = 5; iPerfil = 6; iWhats = 7; }
+    else { iEmail = 0; iCpf = -1; iNome = 1; iFilial = 2; iSetor = 3; iCargo = 4; iPerfil = 5; iWhats = 6; }
+  }
 
   const at = (row: string[], idx: number) => (idx >= 0 && idx < row.length ? row[idx] : "");
   return dataRows
     .map((r) => ({
       email: at(r, iEmail),
+      cpf: at(r, iCpf),
       nome: at(r, iNome),
       filial: at(r, iFilial),
       setor: at(r, iSetor),
@@ -362,15 +368,22 @@ function parseCSV(text: string): ParsedRow[] {
       perfil: at(r, iPerfil),
       whatsapp: at(r, iWhats),
     }))
-    .filter((r) => r.email || r.nome);
+    .filter((r) => r.email || r.cpf || r.nome);
 }
 
 const CSV_TEMPLATE =
-  "e-mail corporativo;nome;filial;setor;cargo;perfil\n" +
+  "e-mail corporativo;cpf;nome;filial;setor;cargo;perfil;whatsapp\n" +
   "joao.silva@empresa.com;João Silva;Matriz;Produção;Operador de Máquinas;colaborador\n" +
   "ana.gestora@empresa.com;Ana Gestora;Matriz;Produção;Coordenadora de Produção;chefia\n" +
   "maria.souza@empresa.com;Maria Souza;Filial São Paulo;Recursos Humanos;Analista de RH;rh\n" +
   "carlos.lima@empresa.com;Carlos Lima;Matriz;Diretoria;Diretor Executivo;admin\n";
+
+const CSV_TEMPLATE_V2 =
+  "e-mail corporativo;cpf;nome;filial;setor;cargo;perfil;whatsapp\n" +
+  "joao.silva@empresa.com;12345678901;Joao Silva;Matriz;Producao;Operador de Maquinas;colaborador;+5511999999999\n" +
+  "ana.gestora@empresa.com;23456789012;Ana Gestora;Matriz;Producao;Coordenadora de Producao;chefia;+5511988888888\n" +
+  ";34567890123;Maria Souza;Filial Sao Paulo;Recursos Humanos;Analista de RH;rh;+5511977777777\n" +
+  "carlos.lima@empresa.com;45678901234;Carlos Lima;Matriz;Diretoria;Diretor Executivo;admin;+5511966666666\n";
 
 function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported: () => void }) {
   const companiesQ = trpc.pgr.listCompanies.useQuery();
@@ -414,7 +427,7 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
   }
 
   function downloadTemplate() {
-    const blob = new Blob(["﻿" + CSV_TEMPLATE], { type: "text/csv;charset=utf-8" });
+    const blob = new Blob(["﻿" + CSV_TEMPLATE_V2], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -1143,5 +1156,3 @@ function fmtDate(v: any) {
   if (!v) return "—";
   try { return new Date(v).toLocaleDateString("pt-BR"); } catch { return "—"; }
 }
-
-

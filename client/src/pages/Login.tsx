@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Eye, EyeOff, Mail, Lock, ArrowRight, ChevronLeft } from "lucide-react";
+import { Eye, EyeOff, Mail, Lock, ArrowRight, ChevronLeft, IdCard } from "lucide-react";
 
 const LOGO_URL = "/plataforma/logo-horizontal.webp";
 const PHOTO_URL =
@@ -14,7 +14,8 @@ const PHOTO_URL =
 export default function Login() {
   const [, navigate] = useLocation();
   const [step, setStep] = useState<"email" | "password">("email");
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
+  const [loginLabel, setLoginLabel] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [employeeName, setEmployeeName] = useState<string | null>(null);
@@ -23,8 +24,9 @@ export default function Login() {
     onSuccess: (data) => {
       setEmployeeName(data.employeeName ?? null);
       if (!data.hasSetPassword) {
-        navigate(`/primeiro-acesso?email=${encodeURIComponent(email)}`);
+        navigate(`/primeiro-acesso?identifier=${encodeURIComponent(identifier)}`);
       } else {
+        setLoginLabel(data.email || identifier);
         setStep("password");
       }
     },
@@ -114,7 +116,7 @@ export default function Login() {
             </h1>
             <p className="text-muted-foreground text-sm mt-1.5">
               {step === "email"
-                ? "Digite o e-mail cadastrado pelo RH da sua empresa."
+                ? "Digite o e-mail, CPF ou WhatsApp cadastrado pelo RH da sua empresa."
                 : "Digite sua senha para acessar a plataforma."}
             </p>
           </div>
@@ -122,21 +124,21 @@ export default function Login() {
           {/* ── STEP 1: Email ── */}
           {step === "email" ? (
             <form
-              onSubmit={(e) => { e.preventDefault(); checkEmail.mutate({ email }); }}
+              onSubmit={(e) => { e.preventDefault(); checkEmail.mutate({ identifier }); }}
               className="space-y-4"
             >
               <div className="space-y-1.5">
-                <Label htmlFor="email" className="text-sm font-medium">
-                  E-mail corporativo
+                <Label htmlFor="identifier" className="text-sm font-medium">
+                  E-mail, CPF ou WhatsApp
                 </Label>
                 <div className="relative">
-                  <Mail size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                  <IdCard size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
                   <Input
-                    id="email"
-                    type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="seu@empresa.com.br"
+                    id="identifier"
+                    type="text"
+                    value={identifier}
+                    onChange={(e) => setIdentifier(e.target.value)}
+                    placeholder="seu@empresa.com.br, CPF ou WhatsApp"
                     className="pl-9 h-11"
                     required
                     autoFocus
@@ -165,13 +167,13 @@ export default function Login() {
           ) : (
             /* ── STEP 2: Password ── */
             <form
-              onSubmit={(e) => { e.preventDefault(); login.mutate({ email, password }); }}
+              onSubmit={(e) => { e.preventDefault(); login.mutate({ identifier, password }); }}
               className="space-y-4"
             >
               {/* Email chip */}
               <div className="flex items-center gap-2 bg-muted/60 border border-border rounded-lg px-3 py-2.5 text-sm">
                 <Mail size={13} className="text-muted-foreground shrink-0" />
-                <span className="text-foreground truncate flex-1">{email}</span>
+                <span className="text-foreground truncate flex-1">{loginLabel || identifier}</span>
                 <button
                   type="button"
                   onClick={() => setStep("email")}
