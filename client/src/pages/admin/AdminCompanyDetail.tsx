@@ -3,13 +3,14 @@ import { useParams } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Building2, MapPin, Layers, Users, Plus, Trash2, ArrowLeft, Settings, Save } from "lucide-react";
+import { Building2, MapPin, Layers, Users, Plus, Trash2, ArrowLeft, Settings, Save, MessageSquare, Send } from "lucide-react";
 import { Link } from "wouter";
 import { toast } from "sonner";
 
@@ -22,8 +23,9 @@ export default function AdminCompanyDetail() {
   const { data: sectors, refetch: refetchSectors } = trpc.companies.sectors.useQuery({ companyId });
   const { data: employees } = trpc.companies.usersByCompany.useQuery({ companyId });
   const { data: engagement } = trpc.companies.sectorEngagement.useQuery({ companyId });
-  const { data: templateLibrary } = trpc.templateLibrary.list.useQuery();
+  const { data: templateLibrary } = trpc.templateLibrary.list.useQuery({ companyId, includeCompanySurveys: true } as any);
   const platformConfigQ = (trpc.companies as any).getPlatformConfig.useQuery({ companyId });
+  const commTemplatesQ = (trpc.companies as any).listCommunicationTemplates.useQuery({ companyId });
 
   const createBranch = trpc.companies.createBranch.useMutation({ onSuccess: () => { refetchBranches(); } });
   const deleteBranch = trpc.companies.deleteBranch.useMutation({ onSuccess: () => { refetchBranches(); } });
@@ -32,6 +34,14 @@ export default function AdminCompanyDetail() {
   const updatePlatformConfig = (trpc.companies as any).updatePlatformConfig.useMutation({
     onSuccess: () => { toast.success("Configurações salvas."); platformConfigQ.refetch(); },
     onError: (e: any) => toast.error(e?.message ?? "Erro ao salvar configurações."),
+  });
+  const upsertCommTemplate = (trpc.companies as any).upsertCommunicationTemplate.useMutation({
+    onSuccess: () => { toast.success("Template de mensagem salvo."); commTemplatesQ.refetch(); },
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao salvar template."),
+  });
+  const sendCommTest = (trpc.companies as any).sendCommunicationTemplateTest.useMutation({
+    onSuccess: (r: any) => toast.success(r?.preview ? "Simulação registrada em modo preview." : "Mensagem de teste enviada."),
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao enviar teste."),
   });
 
   const [branchForm, setBranchForm] = useState({ name: "", city: "", state: "" });
@@ -45,6 +55,9 @@ export default function AdminCompanyDetail() {
     communicationChannel: "email",
     requireWhatsappOnFirstAccess: false,
   });
+  const [selectedMessageKey, setSelectedMessageKey] = useState("welcome");
+  const [messageForm, setMessageForm] = useState({ title: "", body: "", isActive: true });
+  const [testPhone, setTestPhone] = useState("21970364911");
 
   useEffect(() => {
     const cfg = platformConfigQ.data as any;
@@ -61,6 +74,18 @@ export default function AdminCompanyDetail() {
   const surveyTemplates = ((templateLibrary as any)?.surveys ?? []) as any[];
   const drpsTemplates = surveyTemplates.filter((s) => s.category === "psicossocial");
   const aepTemplates = surveyTemplates.filter((s) => s.category === "aep");
+  const commTemplates = ((commTemplatesQ.data ?? []) as any[]);
+  const selectedMessage = commTemplates.find((t: any) => t.eventKey === selectedMessageKey) ?? commTemplates[0];
+
+  useEffect(() => {
+    if (!selectedMessage) return;
+    setSelectedMessageKey(selectedMessage.eventKey);
+    setMessageForm({
+      title: selectedMessage.title ?? "",
+      body: selectedMessage.body ?? "",
+      isActive: selectedMessage.isActive !== false,
+    });
+  }, [selectedMessage?.eventKey, selectedMessage?.title, selectedMessage?.body, selectedMessage?.isActive]);
 
   const getEngagementColor = (pct: number) => {
     if (pct >= 90) return "#22c55e";
@@ -258,7 +283,11 @@ export default function AdminCompanyDetail() {
                     <SelectTrigger><SelectValue placeholder="Usar seleção manual" /></SelectTrigger>
                     <SelectContent className="max-w-[90vw]">
                       <SelectItem value="__none__">Sem padrão definido</SelectItem>
-                      {drpsTemplates.map((t) => <SelectItem key={t.id} value={String(t.id)} className="whitespace-normal">{t.title}</SelectItem>)}
+                      {drpsTemplates.map((t) => (
+                        <SelectItem key={t.id} value={String(t.id)} className="whitespace-normal">
+                          {t.title} {t.source === "company" ? "(empresa)" : "(plataforma)"}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
@@ -268,7 +297,11 @@ export default function AdminCompanyDetail() {
                     <SelectTrigger><SelectValue placeholder="Usar seleção manual" /></SelectTrigger>
                     <SelectContent className="max-w-[90vw]">
                       <SelectItem value="__none__">Sem padrão definido</SelectItem>
-                      {aepTemplates.map((t) => <SelectItem key={t.id} value={String(t.id)} className="whitespace-normal">{t.title}</SelectItem>)}
+                      {aepTemplates.map((t) => (
+                        <SelectItem key={t.id} value={String(t.id)} className="whitespace-normal">
+                          {t.title} {t.source === "company" ? "(empresa)" : "(plataforma)"}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
@@ -322,6 +355,82 @@ export default function AdminCompanyDetail() {
                 >
                   <Save className="w-4 h-4" /> Salvar configurações
                 </Button>
+              </div>
+
+              <div className="border rounded-xl p-4 bg-slate-50/50 space-y-4">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <div>
+                    <h3 className="font-semibold text-sm flex items-center gap-2">
+                      <MessageSquare className="w-4 h-4 text-emerald-700" /> Templates de WhatsApp
+                    </h3>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Padronize textos por empresa. Variaveis: {"{{nome}}"}, {"{{empresa}}"}, {"{{titulo}}"} e {"{{link}}"}.
+                    </p>
+                  </div>
+                  {selectedMessage?.source === "company" ? (
+                    <Badge variant="outline" className="text-emerald-700 border-emerald-300">Personalizado</Badge>
+                  ) : (
+                    <Badge variant="outline">Padrao da plataforma</Badge>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div>
+                    <Label>Evento</Label>
+                    <Select value={selectedMessageKey} onValueChange={setSelectedMessageKey}>
+                      <SelectTrigger><SelectValue placeholder="Selecione" /></SelectTrigger>
+                      <SelectContent>
+                        {commTemplates.map((t: any) => (
+                          <SelectItem key={t.eventKey} value={t.eventKey}>{t.title}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="md:col-span-2">
+                    <Label>Titulo interno</Label>
+                    <Input value={messageForm.title} onChange={(e) => setMessageForm((f) => ({ ...f, title: e.target.value }))} />
+                  </div>
+                </div>
+
+                <div>
+                  <Label>Texto da mensagem</Label>
+                  <Textarea rows={5} value={messageForm.body} onChange={(e) => setMessageForm((f) => ({ ...f, body: e.target.value }))} />
+                </div>
+
+                {selectedMessage?.preview && (
+                  <div className="rounded-lg border bg-white p-3 text-xs text-slate-700">
+                    <div className="font-semibold mb-1">Previa com dados simulados</div>
+                    <div className="whitespace-pre-wrap">{selectedMessage.preview}</div>
+                  </div>
+                )}
+
+                <div className="flex flex-col md:flex-row md:items-end gap-3">
+                  <div className="flex-1">
+                    <Label>WhatsApp para teste</Label>
+                    <Input value={testPhone} onChange={(e) => setTestPhone(e.target.value)} placeholder="(21) 97036-4911" />
+                  </div>
+                  <Button
+                    variant="outline"
+                    className="gap-2"
+                    disabled={sendCommTest.isPending || !selectedMessageKey}
+                    onClick={() => sendCommTest.mutate({ companyId, eventKey: selectedMessageKey, phone: testPhone })}
+                  >
+                    <Send className="w-4 h-4" /> Enviar teste
+                  </Button>
+                  <Button
+                    className="gap-2"
+                    disabled={upsertCommTemplate.isPending || !selectedMessageKey || !messageForm.body.trim()}
+                    onClick={() => upsertCommTemplate.mutate({
+                      companyId,
+                      eventKey: selectedMessageKey,
+                      title: messageForm.title || selectedMessage?.title || selectedMessageKey,
+                      body: messageForm.body,
+                      isActive: messageForm.isActive,
+                    })}
+                  >
+                    <Save className="w-4 h-4" /> Salvar texto
+                  </Button>
+                </div>
               </div>
             </CardContent>
           </Card>

@@ -347,7 +347,7 @@ function parseCSV(text: string): ParsedRow[] {
   let iWhats = find("whats", "celular", "telefone");
 
   const firstHasEmail = grid[0].some((c) => c.includes("@"));
-  const hasHeader = iEmail !== -1 && !firstHasEmail;
+  const hasHeader = (iEmail !== -1 || iCpf !== -1 || iNome !== -1) && !firstHasEmail;
   const dataRows = hasHeader ? grid.slice(1) : grid;
   // Ordem padrão sem cabeçalho: email; nome; filial; setor; cargo; perfil; whatsapp
   if (!hasHeader) {
@@ -396,6 +396,10 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
   const [parsed, setParsed] = useState<ParsedRow[]>([]);
   const [preview, setPreview] = useState<any | null>(null);
   const [done, setDone] = useState<any | null>(null);
+  const platformConfigQ = (trpc.companies as any).getPlatformConfig.useQuery(
+    { companyId: companyId ?? 0 },
+    { enabled: !!companyId }
+  );
 
   // auto-select if only one company
   useMemo(() => {
@@ -403,6 +407,13 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
   }, [companies.length]);
 
   const selectedCompany = companies.find((c) => c.id === companyId);
+  const accessMethod = String((platformConfigQ.data as any)?.accessMethod ?? "email");
+  const loginColumnLabel = accessMethod === "cpf" ? "CPF" : accessMethod === "whatsapp" ? "CPF ou WhatsApp" : "E-mail Corporativo";
+  const csvTemplate = accessMethod === "cpf"
+    ? "cpf;nome;filial;setor;cargo;perfil\n12345678901;Joao Silva;Matriz;Producao;Operador de Maquinas;colaborador\n23456789012;Ana Gestora;Matriz;Producao;Coordenadora de Producao;chefia\n34567890123;Maria Souza;Filial Sao Paulo;Recursos Humanos;Analista de RH;rh\n"
+    : accessMethod === "whatsapp"
+    ? "cpf;whatsapp;nome;filial;setor;cargo;perfil\n12345678901;+5511999999999;Joao Silva;Matriz;Producao;Operador de Maquinas;colaborador\n23456789012;+5511988888888;Ana Gestora;Matriz;Producao;Coordenadora de Producao;chefia\n"
+    : CSV_TEMPLATE_V2;
 
   const importMut = trpc.admin.importCollaborators.useMutation();
 
@@ -427,6 +438,16 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
   }
 
   function downloadTemplate() {
+    if (accessMethod !== "email") {
+      const blob = new Blob(["\uFEFF" + csvTemplate], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = accessMethod === "cpf" ? "modelo-importacao-colaboradores-cpf.csv" : "modelo-importacao-colaboradores-whatsapp.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+      return;
+    }
     const blob = new Blob(["﻿" + CSV_TEMPLATE_V2], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -520,6 +541,9 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
                 <button onClick={downloadTemplate} className="text-xs text-primary inline-flex items-center gap-1 hover:underline">
                   <Download size={13} /> Baixar modelo
                 </button>
+              </div>
+              <div className="text-xs rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-blue-900">
+                Modelo desta empresa: <b>{loginColumnLabel}</b>. {accessMethod === "cpf" ? "O WhatsApp sera solicitado ao colaborador no primeiro acesso, quando configurado." : null}
               </div>
               <p className="text-xs text-muted-foreground">
                 <b>Colunas (nesta ordem):</b> <code>e-mail corporativo; nome; filial; setor; cargo; perfil</code>.

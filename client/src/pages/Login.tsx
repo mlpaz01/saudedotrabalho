@@ -19,10 +19,14 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [employeeName, setEmployeeName] = useState<string | null>(null);
+  const [accessHint, setAccessHint] = useState("Identificador de acesso");
 
   const checkEmail = trpc.auth.checkCorporateEmail.useMutation({
     onSuccess: (data) => {
       setEmployeeName(data.employeeName ?? null);
+      const method = String((data as any).accessMethod || (data as any).method || "email");
+      const label = method === "cpf" ? "CPF" : method === "whatsapp" ? "WhatsApp" : "e-mail corporativo";
+      setAccessHint(`Metodo configurado pela empresa: ${label}`);
       if (!data.hasSetPassword) {
         navigate(`/primeiro-acesso?identifier=${encodeURIComponent(identifier)}`);
       } else {
@@ -112,11 +116,11 @@ export default function Login() {
 
           <div className="mb-8">
             <h1 className="text-2xl font-bold text-foreground tracking-tight">
-              {step === "email" ? "Como você prefere entrar?" : `Olá${employeeName ? `, ${employeeName.split(" ")[0]}` : ""}!`}
+              {step === "email" ? "Acesse sua empresa" : `Olá${employeeName ? `, ${employeeName.split(" ")[0]}` : ""}!`}
             </h1>
             <p className="text-muted-foreground text-sm mt-1.5">
               {step === "email"
-                ? "Digite o e-mail, CPF ou WhatsApp cadastrado pelo RH da sua empresa."
+                ? "Use o identificador informado pelo RH. Por LGPD, a plataforma nao exibe uma lista publica de empresas."
                 : "Digite sua senha para acessar a plataforma."}
             </p>
           </div>
@@ -129,7 +133,7 @@ export default function Login() {
             >
               <div className="space-y-1.5">
                 <Label htmlFor="identifier" className="text-sm font-medium">
-                  E-mail, CPF ou WhatsApp
+                  {accessHint}
                 </Label>
                 <div className="relative">
                   <IdCard size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -138,7 +142,7 @@ export default function Login() {
                     type="text"
                     value={identifier}
                     onChange={(e) => setIdentifier(e.target.value)}
-                    placeholder="seu@empresa.com.br, CPF ou WhatsApp"
+                    placeholder="E-mail, CPF ou WhatsApp"
                     className="pl-9 h-11"
                     required
                     autoFocus
@@ -226,8 +230,8 @@ export default function Login() {
 
           {/* Footer note */}
           <p className="text-center text-xs text-muted-foreground mt-8 leading-relaxed">
-            Não encontrou seu e-mail?<br />
-            Entre em contato com o RH da sua empresa.
+            Nao conseguiu acessar?<br />
+            Confirme com o RH qual identificador sua empresa utiliza.
           </p>
         </div>
 

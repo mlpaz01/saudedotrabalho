@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLocation, useSearch } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
@@ -20,6 +20,12 @@ export default function SetPassword() {
   const [whatsapp, setWhatsapp] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [done, setDone] = useState(false);
+  const checkIdentifier = trpc.auth.checkCorporateEmail.useMutation();
+  const requireWhatsapp = !!(checkIdentifier.data as any)?.requireWhatsappOnFirstAccess && !(checkIdentifier.data as any)?.whatsappRegistered;
+
+  useEffect(() => {
+    if (identifier) checkIdentifier.mutate({ identifier });
+  }, [identifier]);
 
   const setPasswordMutation = trpc.auth.setPassword.useMutation({
     onSuccess: () => {
@@ -78,12 +84,13 @@ export default function SetPassword() {
               e.preventDefault();
               if (password !== confirm) { toast.error("As senhas não coincidem."); return; }
               if (password.length < 8) { toast.error("A senha deve ter pelo menos 8 caracteres."); return; }
+              if (requireWhatsapp && !whatsapp.trim()) { toast.error("Informe seu WhatsApp para concluir o primeiro acesso."); return; }
               setPasswordMutation.mutate({ identifier, password, whatsapp });
             }}
             className="space-y-5"
           >
             <div className="space-y-2">
-              <Label htmlFor="whatsapp">WhatsApp</Label>
+              <Label htmlFor="whatsapp">WhatsApp {requireWhatsapp ? "*" : ""}</Label>
               <div className="relative">
                 <Phone size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
                 <Input
@@ -93,9 +100,12 @@ export default function SetPassword() {
                   onChange={(e) => setWhatsapp(e.target.value)}
                   placeholder="(11) 99999-9999"
                   className="pl-10 h-11"
+                  required={requireWhatsapp}
                 />
               </div>
-              <p className="text-xs text-muted-foreground">Informe o número se sua empresa utiliza acesso por CPF ou WhatsApp.</p>
+              <p className="text-xs text-muted-foreground">
+                {requireWhatsapp ? "Obrigatorio para a configuracao de acesso da sua empresa." : "Informe o numero se sua empresa utiliza acesso por CPF ou WhatsApp."}
+              </p>
             </div>
 
             <div className="space-y-2">

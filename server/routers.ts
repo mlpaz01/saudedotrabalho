@@ -2357,6 +2357,77 @@ async function ensureAuthIdentityColumns(db: any) {
   try { await db.execute(drzSql`ALTER TABLE corporate_emails ADD COLUMN activation_expires_at TIMESTAMP NULL`); } catch (_) {}
 }
 
+async function ensureCommunicationTemplateTables(db: any) {
+  await execP(db, `CREATE TABLE IF NOT EXISTS communication_message_templates (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    company_id INT NULL,
+    channel VARCHAR(30) NOT NULL DEFAULT 'whatsapp',
+    event_key VARCHAR(80) NOT NULL,
+    title VARCHAR(160) NOT NULL,
+    body TEXT NOT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    updated_by INT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_comm_tpl_company_event_channel (company_id, event_key, channel),
+    INDEX idx_comm_tpl_company (company_id),
+    INDEX idx_comm_tpl_event (event_key)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`, []);
+}
+
+const DEFAULT_WHATSAPP_MESSAGE_TEMPLATES = [
+  {
+    eventKey: "welcome",
+    title: "Boas-vindas e primeiro acesso",
+    body: "Ola, {{nome}}. Voce foi cadastrado(a) na Plataforma Saude do Trabalho da empresa {{empresa}}. Acesse {{link}} para criar sua senha e acompanhar cursos, pesquisas e comunicados.",
+  },
+  {
+    eventKey: "password_recovery",
+    title: "Recuperacao de senha",
+    body: "Ola, {{nome}}. Recebemos uma solicitacao para recuperar sua senha na Plataforma Saude do Trabalho. Use o link seguro: {{link}}. Se nao foi voce, ignore esta mensagem.",
+  },
+  {
+    eventKey: "survey_invite",
+    title: "Convite DRPS/AEP",
+    body: "Ola, {{nome}}. A empresa {{empresa}} solicita sua participacao na pesquisa obrigatoria {{titulo}}. Responda pelo link: {{link}}.",
+  },
+  {
+    eventKey: "course_invite",
+    title: "Curso obrigatorio",
+    body: "Ola, {{nome}}. Voce possui o curso obrigatorio {{titulo}} pendente na Plataforma Saude do Trabalho. Acesse {{link}} para concluir.",
+  },
+  {
+    eventKey: "pending_reminder",
+    title: "Lembrete de pendencia",
+    body: "Ola, {{nome}}. Ha pendencias em aberto na Plataforma Saude do Trabalho da empresa {{empresa}}. Regularize pelo link: {{link}}.",
+  },
+  {
+    eventKey: "campaign_invite",
+    title: "Campanha preventiva",
+    body: "Ola, {{nome}}. A empresa {{empresa}} iniciou a campanha {{titulo}}. Acesse o conteudo pelo link: {{link}}.",
+  },
+  {
+    eventKey: "cipa_election",
+    title: "Eleicao da CIPA",
+    body: "Ola, {{nome}}. A votacao da CIPA esta disponivel para a empresa {{empresa}}. Participe pelo link: {{link}}.",
+  },
+  {
+    eventKey: "internal_notice",
+    title: "Comunicado interno",
+    body: "Ola, {{nome}}. Novo comunicado da empresa {{empresa}}: {{titulo}}. Consulte em {{link}}.",
+  },
+] as const;
+
+function fillTemplatePreview(body: string, companyName?: string) {
+  const values: Record<string, string> = {
+    nome: "Colaborador",
+    empresa: companyName || "Sua empresa",
+    titulo: "Pesquisa obrigatoria",
+    link: "https://dev.saudedotrabalho.com/plataforma",
+  };
+  return String(body || "").replace(/\{\{\s*(nome|empresa|titulo|link)\s*\}\}/gi, (_, key) => values[String(key).toLowerCase()] ?? "");
+}
+
 function normalizeCpf(value: unknown): string | null {
   const digits = String(value ?? "").replace(/\D/g, "");
   return digits.length === 11 ? digits : null;
@@ -3539,6 +3610,8 @@ export const appRouter = router({
           employeeName: record.employeeName,
           email: record.email,
           method,
+          accessMethod: record.access_method || "email",
+          communicationChannel: record.communication_channel || "email",
           requireWhatsappOnFirstAccess: Boolean(Number(record.require_whatsapp_on_first_access ?? 0)),
           whatsappRegistered: !!record.whatsapp_e164,
         };
@@ -5934,10 +6007,12 @@ export const appRouter = router({
         if (!isGlobal && myCid && input.companyId !== myCid) {
           throw new TRPCError({ code: "FORBIDDEN", message: "Sem permissao para importar nesta empresa." });
         }
-        const cr: any = await db.execute(drzSql`SELECT id, name FROM companies WHERE id = ${companyId} LIMIT 1`);
+        await ensureCompanyPlatformConfigColumns(db);
+        const cr: any = await db.execute(drzSql`SELECT id, name, access_method, require_whatsapp_on_first_access FROM companies WHERE id = ${companyId} LIMIT 1`);
         const crow = Array.isArray(cr) ? (cr[0]?.[0] ?? cr[0]) : cr;
         if (!crow) throw new TRPCError({ code: "NOT_FOUND", message: "Empresa nao encontrada." });
         const companyName: string = crow.name;
+        const companyAccessMethod = String(crow.access_method || "email").toLowerCase();
 
         const norm = (s?: string | null) => String(s ?? "").trim();
         const lc = (s?: string | null) => norm(s).toLowerCase();
@@ -5973,6 +6048,7 @@ export const appRouter = router({
         const results: any[] = [];
         let inserted = 0, updated = 0, skipped = 0, branchesCreated = 0, sectorsCreated = 0;
         const seenEmails = new Set<string>();
+        const seenCpfs = new Set<string>();
 
         for (const raw of input.rows) {
           const cpfNorm = normalizeCpf(raw.cpf);
@@ -5996,6 +6072,12 @@ export const appRouter = router({
             res.status = "invalid"; res.message = "Cargo é obrigatório"; skipped++; results.push(res); continue;
           }
 
+          if (companyAccessMethod === "cpf" && !cpfNorm) {
+            res.status = "invalid"; res.message = "CPF obrigatorio para empresa com login por CPF"; skipped++; results.push(res); continue;
+          }
+          if (companyAccessMethod === "whatsapp" && !cpfNorm && !whatsappNorm) {
+            res.status = "invalid"; res.message = "CPF ou WhatsApp obrigatorio para empresa com WhatsApp"; skipped++; results.push(res); continue;
+          }
           if (!email || !emailRe.test(email)) {
             res.status = "invalid"; res.message = "E-mail invalido"; skipped++; results.push(res); continue;
           }
@@ -6003,6 +6085,12 @@ export const appRouter = router({
             res.status = "duplicate"; res.message = "E-mail repetido na planilha"; skipped++; results.push(res); continue;
           }
           seenEmails.add(email);
+          if (cpfNorm) {
+            if (seenCpfs.has(cpfNorm)) {
+              res.status = "duplicate"; res.message = "CPF repetido na planilha"; skipped++; results.push(res); continue;
+            }
+            seenCpfs.add(cpfNorm);
+          }
 
           // resolve branch (filial)
           let branchId: number | null = null;
@@ -11413,6 +11501,80 @@ export const appRouter = router({
           input.companyId,
         ]);
         return { ok: true };
+      }),
+    listCommunicationTemplates: adminOrRhProcedure
+      .input(z.object({ companyId: z.number().int().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        const requestedId = input?.companyId;
+        const companyId = (role === "admin_global" || role === "super_admin") ? requestedId : (ctx.user as any).companyId;
+        if (!companyId) throw new TRPCError({ code: "BAD_REQUEST", message: "Empresa nao definida." });
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensureCommunicationTemplateTables(db);
+        const [[company]]: any = await execP(db, `SELECT name FROM companies WHERE id=? LIMIT 1`, [companyId]);
+        const [rows]: any = await execP(db, `
+          SELECT id, event_key, channel, title, body, is_active, updated_at
+          FROM communication_message_templates
+          WHERE company_id=? AND channel='whatsapp'
+          ORDER BY event_key`, [companyId]);
+        const byKey = new Map((rows ?? []).map((r: any) => [String(r.event_key), r]));
+        return DEFAULT_WHATSAPP_MESSAGE_TEMPLATES.map((tpl) => {
+          const saved: any = byKey.get(tpl.eventKey);
+          return {
+            id: saved?.id ? Number(saved.id) : null,
+            eventKey: tpl.eventKey,
+            channel: "whatsapp",
+            title: saved?.title ?? tpl.title,
+            body: saved?.body ?? tpl.body,
+            defaultBody: tpl.body,
+            isActive: saved ? !!Number(saved.is_active ?? 1) : true,
+            source: saved ? "company" : "platform_default",
+            preview: fillTemplatePreview(saved?.body ?? tpl.body, company?.name),
+            updatedAt: saved?.updated_at ?? null,
+          };
+        });
+      }),
+    upsertCommunicationTemplate: adminOrRhProcedure
+      .input(z.object({
+        companyId: z.number().int(),
+        eventKey: z.string().min(1),
+        title: z.string().min(1),
+        body: z.string().min(1),
+        isActive: z.boolean().default(true),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        if (role !== "admin_global" && role !== "super_admin") throw new TRPCError({ code: "FORBIDDEN" });
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensureCommunicationTemplateTables(db);
+        const uid = (ctx.user as any).id ?? (ctx.user as any).userId ?? null;
+        await execP(db, `
+          INSERT INTO communication_message_templates (company_id, channel, event_key, title, body, is_active, updated_by)
+          VALUES (?, 'whatsapp', ?, ?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE title=VALUES(title), body=VALUES(body), is_active=VALUES(is_active), updated_by=VALUES(updated_by)
+        `, [input.companyId, input.eventKey, input.title, input.body, input.isActive ? 1 : 0, uid]);
+        return { ok: true };
+      }),
+    sendCommunicationTemplateTest: adminOrRhProcedure
+      .input(z.object({ companyId: z.number().int(), eventKey: z.string().min(1), phone: z.string().min(8) }))
+      .mutation(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        if (role !== "admin_global" && role !== "super_admin") throw new TRPCError({ code: "FORBIDDEN" });
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensureCommunicationTemplateTables(db);
+        const [[company]]: any = await execP(db, `SELECT name FROM companies WHERE id=? LIMIT 1`, [input.companyId]);
+        const [rows]: any = await execP(db, `
+          SELECT title, body FROM communication_message_templates
+          WHERE company_id=? AND channel='whatsapp' AND event_key=? LIMIT 1`, [input.companyId, input.eventKey]);
+        const fallback = DEFAULT_WHATSAPP_MESSAGE_TEMPLATES.find((x) => x.eventKey === input.eventKey);
+        const tpl = rows?.[0] ?? fallback;
+        if (!tpl) throw new TRPCError({ code: "NOT_FOUND", message: "Template nao encontrado." });
+        const { normalizeE164BR, sendWhatsappText } = await import("./_core/whatsapp");
+        const phone = normalizeE164BR(input.phone);
+        if (!phone) throw new TRPCError({ code: "BAD_REQUEST", message: "WhatsApp invalido." });
+        const body = fillTemplatePreview((tpl as any).body, company?.name);
+        const r = await sendWhatsappText(phone, body, { companyId: input.companyId, userId: (ctx.user as any).id ?? null });
+        return { ok: !!r.ok, preview: !!r.preview, error: r.error ?? null, to: phone, body };
       }),
     updatePlus: adminOrRhProcedure
       .input(z.object({
@@ -18984,12 +19146,27 @@ Return only the JSON content object (no wrapper). Format per type:
 
   // ── Template Library (Phase 3 — Biblioteca da Consultoria) ─────────────────
   templateLibrary: router({
-    list: adminOrRhProcedure.query(async () => {
+    list: adminOrRhProcedure
+    .input(z.object({ companyId: z.number().int().optional(), includeCompanySurveys: z.boolean().optional() }).optional())
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return { surveys: [], modules: [], decompression: [] };
+      const role = (ctx.user as any).role;
+      const requestedId = input?.companyId;
+      const cid = (role === "admin_global" || role === "super_admin") ? requestedId : (ctx.user as any).companyId;
+      const includeCompany = input?.includeCompanySurveys !== false && !!cid;
 
-      const sr: any = await db.execute(drzSql`
+      const sr: any = includeCompany ? await execP(db, `
         SELECT s.id, s.title, s.description, s.category, s.is_anonymous AS isAnonymous,
+               s.is_template AS isTemplate, s.company_id AS companyId,
+               CASE WHEN s.is_template=1 THEN 'platform' ELSE 'company' END AS source,
+               (SELECT COUNT(*) FROM survey_questions q WHERE q.survey_id = s.id) AS questionCount
+        FROM surveys s
+        WHERE (s.is_template = 1 OR s.company_id = ?)
+          AND (s.is_template = 1 OR COALESCE(s.category, '') IN ('psicossocial','aep','nr01','nr-01','ergonomico','ergonomica'))
+        ORDER BY s.is_template DESC, s.title`, [cid]) : await db.execute(drzSql`
+        SELECT s.id, s.title, s.description, s.category, s.is_anonymous AS isAnonymous,
+               s.is_template AS isTemplate, s.company_id AS companyId, 'platform' AS source,
                (SELECT COUNT(*) FROM survey_questions q WHERE q.survey_id = s.id) AS questionCount
         FROM surveys s
         WHERE s.is_template = 1

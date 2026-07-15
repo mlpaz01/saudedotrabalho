@@ -128,6 +128,9 @@ export default function AdminRiskAssessments() {
   const assessments = showArchived
     ? allAssessments.filter((a) => a.status === "archived")
     : allAssessments.filter((a) => a.status !== "archived");
+  const platformConfig = platformConfigQ.data as any;
+  const lockedDrpsTemplateId = platformConfig?.drpsTemplateId ? Number(platformConfig.drpsTemplateId) : null;
+  const lockedAepTemplateId = platformConfig?.aepTemplateId ? Number(platformConfig.aepTemplateId) : null;
 
   return (
     <AppLayout>
@@ -226,7 +229,7 @@ export default function AdminRiskAssessments() {
                   {!form.aepOnly && (
                     <div className="min-w-0">
                       <Label>Template DRPS (quantitativo)</Label>
-                      <Select value={form.drpsTemplateId?.toString()} onValueChange={(v) => setForm((f) => ({ ...f, drpsTemplateId: Number(v) }))}>
+                      <Select value={(form.drpsTemplateId ?? lockedDrpsTemplateId ?? undefined)?.toString()} disabled={!!lockedDrpsTemplateId} onValueChange={(v) => setForm((f) => ({ ...f, drpsTemplateId: Number(v) }))}>
                         <SelectTrigger className="w-full"><SelectValue placeholder="Selecionar DRPS" className="truncate" /></SelectTrigger>
                         <SelectContent className="max-w-[90vw]">
                           {drpsTemplates.map((t) => (
@@ -234,11 +237,12 @@ export default function AdminRiskAssessments() {
                           ))}
                         </SelectContent>
                       </Select>
+                      {lockedDrpsTemplateId && <p className="text-[11px] text-rose-700 mt-1">Template padrao obrigatorio definido pelo SuperAdmin.</p>}
                     </div>
                   )}
                   <div className={`min-w-0 ${form.aepOnly ? "w-full" : ""}`}>
                     <Label>Template AEP (qualitativo)</Label>
-                    <Select value={form.aepTemplateId?.toString()} onValueChange={(v) => setForm((f) => ({ ...f, aepTemplateId: Number(v) }))}>
+                    <Select value={(form.aepTemplateId ?? lockedAepTemplateId ?? undefined)?.toString()} disabled={!!lockedAepTemplateId} onValueChange={(v) => setForm((f) => ({ ...f, aepTemplateId: Number(v) }))}>
                       <SelectTrigger className="w-full"><SelectValue placeholder="Selecionar AEP" className="truncate" /></SelectTrigger>
                       <SelectContent className="max-w-[90vw]">
                         {aepTemplates.map((t) => (
@@ -246,6 +250,7 @@ export default function AdminRiskAssessments() {
                         ))}
                       </SelectContent>
                     </Select>
+                    {lockedAepTemplateId && <p className="text-[11px] text-rose-700 mt-1">Template padrao obrigatorio definido pelo SuperAdmin.</p>}
                   </div>
                 </div>
 

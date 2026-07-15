@@ -410,11 +410,11 @@ function GseEditorDialog({
   return (
     <Dialog open={true} onOpenChange={(o) => !o && onClose()}>
       <DialogContent
-        className="!w-screen !h-screen !max-w-none !max-h-none !rounded-none !border-0 !p-0 flex flex-col gap-0 inset-0 translate-x-0 translate-y-0 top-0 left-0 right-0 bottom-0 overflow-hidden"
-        style={{ width: "100vw", height: "100vh", maxWidth: "100vw", maxHeight: "100vh" }}
+        className="!w-screen !h-[100dvh] !max-w-none !max-h-none !rounded-none !border-0 !p-0 flex flex-col gap-0 inset-0 translate-x-0 translate-y-0 top-0 left-0 right-0 bottom-0 overflow-hidden"
+        style={{ width: "100vw", height: "100dvh", maxWidth: "100vw", maxHeight: "100dvh" }}
       >
-        <DialogHeader className="border-b bg-slate-50/80 px-6 py-3 shrink-0">
-          <div className="flex items-start justify-between gap-4">
+        <DialogHeader className="border-b bg-slate-50/80 px-4 sm:px-6 py-3 shrink-0">
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
             <div className="flex-1 min-w-0">
               <DialogTitle className="flex items-center gap-2 text-base">
                 <Layers size={18} className="text-blue-600" />
@@ -436,7 +436,7 @@ function GseEditorDialog({
                 aiMut.mutate({ gseId });
               }}
               disabled={aiMut.isPending}
-              className="gap-1 border-purple-300 text-purple-700 hover:bg-purple-50 shrink-0"
+              className="gap-1 border-purple-300 text-purple-700 hover:bg-purple-50 shrink-0 w-full sm:w-auto"
               title="Usa GROQ/Llama 3.3 para sugerir riscos, EPC, EPI, ações 5W2H e treinamentos NR com base no nome/cargos/setores do GSE. Os itens são adicionados (não apagam o que já existe). Revise antes de salvar."
             >
               {aiMut.isPending ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
@@ -450,7 +450,7 @@ function GseEditorDialog({
         ) : (
           <>
             {/* Cabeçalho (meta do GSE) */}
-            <div className="border-b bg-white px-6 py-3 space-y-2 shrink-0">
+            <div className="border-b bg-white px-4 sm:px-6 py-3 space-y-2 shrink-0">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
                   <Label className="text-xs">Nome *</Label>
@@ -481,7 +481,7 @@ function GseEditorDialog({
             </div>
 
             {/* Abas */}
-            <div className="flex gap-1 border-b bg-white px-6 overflow-x-auto shrink-0">
+            <div className="flex gap-1 border-b bg-white px-4 sm:px-6 overflow-x-auto shrink-0">
               {TABS.map(t => {
                 const Ic = t.icon;
                 return (
@@ -690,14 +690,14 @@ function RiscosTab({
                 <span className="inline-flex items-center gap-1 text-slate-500"><AlertCircle size={13} /> Salve para gerar o detalhamento</span>
               )}
             </div>
-            <div className="flex justify-end items-center gap-2">
+            <div className="flex flex-wrap justify-end items-center gap-2 w-full sm:w-auto">
               {!r.id && (
-                <Button size="sm" variant="outline" onClick={() => onSaveAndDetail(i)} className="gap-1 text-blue-700 border-blue-300 hover:bg-blue-50">
+                <Button size="sm" variant="outline" onClick={() => onSaveAndDetail(i)} className="gap-1 text-blue-700 border-blue-300 hover:bg-blue-50 w-full sm:w-auto">
                   <Save size={12} /> Salvar GSE e detalhar
                 </Button>
               )}
             {r.id ? (
-              <Button size="sm" variant="outline" onClick={() => setDetalhandoRiscoId(r.id)} className="gap-1 text-blue-600 border-blue-200">
+              <Button size="sm" variant="outline" onClick={() => setDetalhandoRiscoId(r.id)} className="gap-1 text-blue-600 border-blue-200 w-full sm:w-auto">
                 <Cog size={12} /> Detalhamento Técnico
               </Button>
             ) : (
@@ -1071,8 +1071,8 @@ function DetalhamentoTecnicoDialog({
 
   return (
     <Dialog open onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="w-[calc(100vw-1rem)] sm:max-w-4xl max-h-[92vh] overflow-hidden flex flex-col">
-        <DialogHeader>
+      <DialogContent className="w-screen sm:w-[calc(100vw-1rem)] sm:max-w-4xl h-[100dvh] sm:h-auto sm:max-h-[92dvh] overflow-hidden flex flex-col rounded-none sm:rounded-lg">
+        <DialogHeader className="px-1 sm:px-0">
           <DialogTitle className="flex items-center gap-2"><Cog size={16} className="text-blue-600" /> Detalhamento Técnico do Risco</DialogTitle>
           <DialogDescription>
             Informações técnicas complementares para o Inventário de Riscos. Podem ser autopreenchidas pela IA e serão incorporadas ao PDF do PGR.
@@ -1083,7 +1083,7 @@ function DetalhamentoTecnicoDialog({
             {risk?.fonteGeradora ? <div className="text-slate-500"><b>Fonte:</b> {risk.fonteGeradora}</div> : null}
           </div>
         </DialogHeader>
-        <div className="flex-1 overflow-y-auto space-y-3 pr-1 pb-24 sm:pb-2">
+        <div className="flex-1 overflow-y-auto space-y-3 pr-1 pb-28 sm:pb-2">
           {similarQ.data && !dismissedSimilar && (
             <div className="flex items-center justify-between gap-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-sm">
               <span className="text-amber-800">
@@ -1102,7 +1102,7 @@ function DetalhamentoTecnicoDialog({
             {f.aiGenerated && <Badge variant="outline" className="text-indigo-700 border-indigo-300">Preenchido por IA — revise antes de salvar</Badge>}
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-sm">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 text-sm">
             <FieldT l="Intensidade / faixa" v={f.intensidade} on={(x: string) => setF({ ...f, intensidade: x })} />
             <FieldT l="Concentração" v={f.concentracao} on={(x: string) => setF({ ...f, concentracao: x })} />
             <FieldT l="Unidade de medida" v={f.unidade} on={(x: string) => setF({ ...f, unidade: x })} />
@@ -1118,7 +1118,7 @@ function DetalhamentoTecnicoDialog({
             <span>Necessita avaliação quantitativa (medição instrumental)</span>
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-sm">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 text-sm">
             <FieldT l="Data da medição" v={f.dataMedicao} on={(x: string) => setF({ ...f, dataMedicao: x })} type="date" />
             <FieldT l="Próxima medição" v={f.proximaMedicao} on={(x: string) => setF({ ...f, proximaMedicao: x })} type="date" />
             <FieldT l="Resultado da medição" v={f.resultadoMedicao} on={(x: string) => setF({ ...f, resultadoMedicao: x })} />
@@ -1137,7 +1137,7 @@ function DetalhamentoTecnicoDialog({
 
           <div className="border rounded-lg p-3 bg-emerald-50/40 space-y-2">
             <p className="text-xs font-semibold text-emerald-800">Risco residual (após implantação das medidas)</p>
-            <div className="grid grid-cols-3 gap-2 text-sm">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-sm">
               <FieldT l="Severidade" v={f.riscoResidualSeveridade} on={(x: string) => setF({ ...f, riscoResidualSeveridade: x })} />
               <FieldT l="Probabilidade" v={f.riscoResidualProbabilidade} on={(x: string) => setF({ ...f, riscoResidualProbabilidade: x })} />
               <FieldT l="Risco final" v={f.riscoResidualFinal} on={(x: string) => setF({ ...f, riscoResidualFinal: x })} />
@@ -1159,7 +1159,7 @@ function DetalhamentoTecnicoDialog({
             </label>
           </div>
         </div>
-        <DialogFooter className="border-t pt-3 sticky bottom-0 bg-white z-10 flex-col sm:flex-row gap-2">
+        <DialogFooter className="border-t pt-3 sticky bottom-0 bg-white z-10 flex-col sm:flex-row gap-2 pb-[calc(env(safe-area-inset-bottom)+0.75rem)]">
           <Button variant="outline" onClick={onClose} className="w-full sm:w-auto">Cancelar</Button>
           {nextRiskId && (
             <Button variant="outline" onClick={salvarESeguir} disabled={saveMut.isPending} className="gap-1 w-full sm:w-auto">
