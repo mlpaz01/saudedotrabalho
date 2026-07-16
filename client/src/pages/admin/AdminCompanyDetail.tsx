@@ -315,6 +315,7 @@ export default function AdminCompanyDetail() {
                     <SelectContent>
                       <SelectItem value="email">Login por e-mail</SelectItem>
                       <SelectItem value="cpf">Login por CPF</SelectItem>
+                      <SelectItem value="both">Login por e-mail + CPF</SelectItem>
                       <SelectItem value="whatsapp">WhatsApp como principal</SelectItem>
                     </SelectContent>
                   </Select>

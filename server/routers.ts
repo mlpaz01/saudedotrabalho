@@ -2333,7 +2333,7 @@ async function execP(db: any, text: string, params: any[] = []): Promise<[any[],
 const ACTIVE_EMPLOYEE_ROLES = ["user", "chefia", "cipa", "sesmt", "admin", "company_admin"] as const;
 
 function activeEmployeeWhere(alias = "u"): string {
-  return `${alias}.is_active=1 AND ${alias}.role IN (${ACTIVE_EMPLOYEE_ROLES.map((r) => `'${r}'`).join(",")})`;
+  return `${alias}.is_active=1 AND COALESCE(${alias}.employment_status,'active')='active' AND ${alias}.role IN (${ACTIVE_EMPLOYEE_ROLES.map((r) => `'${r}'`).join(",")})`;
 }
 
 async function ensureCompanyPlatformConfigColumns(db: any) {
@@ -2349,10 +2349,14 @@ async function ensureAuthIdentityColumns(db: any) {
   try { await db.execute(drzSql`ALTER TABLE users ADD INDEX idx_users_cpf (cpf)`); } catch (_) {}
   try { await db.execute(drzSql`ALTER TABLE users ADD COLUMN whatsapp_e164 VARCHAR(20) NULL`); } catch (_) {}
   try { await db.execute(drzSql`ALTER TABLE users ADD INDEX idx_users_whatsapp (whatsapp_e164)`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE users ADD COLUMN employment_status VARCHAR(30) NOT NULL DEFAULT 'active'`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE users ADD INDEX idx_users_employment_status (employment_status)`); } catch (_) {}
   try { await db.execute(drzSql`ALTER TABLE corporate_emails ADD COLUMN cpf VARCHAR(20) NULL`); } catch (_) {}
   try { await db.execute(drzSql`ALTER TABLE corporate_emails ADD INDEX idx_corporate_cpf (cpf)`); } catch (_) {}
   try { await db.execute(drzSql`ALTER TABLE corporate_emails ADD COLUMN whatsapp_e164 VARCHAR(20) NULL`); } catch (_) {}
   try { await db.execute(drzSql`ALTER TABLE corporate_emails ADD INDEX idx_corporate_whatsapp (whatsapp_e164)`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE corporate_emails ADD COLUMN employment_status VARCHAR(30) NOT NULL DEFAULT 'active'`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE corporate_emails ADD INDEX idx_corporate_employment_status (employment_status)`); } catch (_) {}
   try { await db.execute(drzSql`ALTER TABLE corporate_emails ADD COLUMN activation_token VARCHAR(128) NULL`); } catch (_) {}
   try { await db.execute(drzSql`ALTER TABLE corporate_emails ADD COLUMN activation_expires_at TIMESTAMP NULL`); } catch (_) {}
 }
@@ -2444,7 +2448,8 @@ function detectLoginMethod(identifier: string): "email" | "cpf" | "whatsapp" {
 function companyAllowsLoginMethod(configMethod: string | null | undefined, method: "email" | "cpf" | "whatsapp"): boolean {
   const cfg = String(configMethod || "email").toLowerCase();
   if (cfg === "email") return method === "email";
-  if (cfg === "cpf") return method === "email" || method === "cpf";
+  if (cfg === "cpf") return method === "cpf";
+  if (cfg === "both" || cfg === "ambos" || cfg === "email_cpf") return method === "email" || method === "cpf";
   if (cfg === "whatsapp") return method === "email" || method === "cpf" || method === "whatsapp";
   return method === "email";
 }
@@ -6052,7 +6057,8 @@ export const appRouter = router({
 
         for (const raw of input.rows) {
           const cpfNorm = normalizeCpf(raw.cpf);
-          let email = lc(raw.email);
+          const emailInput = lc(raw.email);
+          let email = emailInput;
           if (!email && cpfNorm) email = `cpf.${cpfNorm}@sem-email.saudedotrabalho.local`;
           const nome = norm(raw.nome);
           const filial = norm(raw.filial);
@@ -6074,6 +6080,9 @@ export const appRouter = router({
 
           if (companyAccessMethod === "cpf" && !cpfNorm) {
             res.status = "invalid"; res.message = "CPF obrigatorio para empresa com login por CPF"; skipped++; results.push(res); continue;
+          }
+          if ((companyAccessMethod === "both" || companyAccessMethod === "email_cpf" || companyAccessMethod === "ambos") && (!cpfNorm || !emailInput)) {
+            res.status = "invalid"; res.message = "CPF e e-mail obrigatorios quando ambos os metodos estao habilitados"; skipped++; results.push(res); continue;
           }
           if (companyAccessMethod === "whatsapp" && !cpfNorm && !whatsappNorm) {
             res.status = "invalid"; res.message = "CPF ou WhatsApp obrigatorio para empresa com WhatsApp"; skipped++; results.push(res); continue;
@@ -6147,10 +6156,10 @@ export const appRouter = router({
           }
 
           if (exrow) {
-            await db.execute(drzSql`UPDATE corporate_emails SET email = ${email}, company = ${companyName}, sector = ${setor || null}, employeeName = ${nome || null}, isActive = 1, company_id = ${companyId}, branch_id = ${branchId}, sector_id = ${sectorId}, role = ${role}, cpf = ${cpfNorm}, whatsapp_e164 = COALESCE(${whatsappNorm}, whatsapp_e164) WHERE id = ${exrow.id}`);
+            await db.execute(drzSql`UPDATE corporate_emails SET email = ${email}, company = ${companyName}, sector = ${setor || null}, employeeName = ${nome || null}, isActive = 1, employment_status = 'active', company_id = ${companyId}, branch_id = ${branchId}, sector_id = ${sectorId}, role = ${role}, cpf = ${cpfNorm}, whatsapp_e164 = COALESCE(${whatsappNorm}, whatsapp_e164) WHERE id = ${exrow.id}`);
             updated++; res.action = "updated";
             if (exrow.userId) {
-              await db.execute(drzSql`UPDATE users SET company_id = ${companyId}, branch_id = ${branchId}, sector_id = ${sectorId}, role = ${role}, position = ${cargo}, cpf = ${cpfNorm}, whatsapp_e164 = COALESCE(${whatsappNorm}, whatsapp_e164) WHERE id = ${exrow.userId}`);
+              await db.execute(drzSql`UPDATE users SET company_id = ${companyId}, branch_id = ${branchId}, sector_id = ${sectorId}, role = ${role}, position = ${cargo}, cpf = ${cpfNorm}, whatsapp_e164 = COALESCE(${whatsappNorm}, whatsapp_e164), employment_status = 'active', is_active = 1 WHERE id = ${exrow.userId}`);
             }
             // Bruno R5 #1: se o colaborador existe MAS nunca recebeu link de ativação,
             // dispara e-mail de boas-vindas mesmo no path "updated". Caso da Amanda:
@@ -6181,7 +6190,7 @@ export const appRouter = router({
             }
           } else {
             // ON DUPLICATE KEY UPDATE prevents race between concurrent imports on same email
-            await db.execute(drzSql`INSERT INTO corporate_emails (email, company, sector, employeeName, isActive, company_id, branch_id, sector_id, role, cpf, whatsapp_e164) VALUES (${email}, ${companyName}, ${setor || null}, ${nome || null}, 1, ${companyId}, ${branchId}, ${sectorId}, ${role}, ${cpfNorm}, ${whatsappNorm || null}) ON DUPLICATE KEY UPDATE company=${companyName}, sector=${setor || null}, employeeName=${nome || null}, isActive=1, company_id=${companyId}, branch_id=${branchId}, sector_id=${sectorId}, role=${role}, cpf=${cpfNorm}, whatsapp_e164=COALESCE(${whatsappNorm || null}, whatsapp_e164)`);
+            await db.execute(drzSql`INSERT INTO corporate_emails (email, company, sector, employeeName, isActive, employment_status, company_id, branch_id, sector_id, role, cpf, whatsapp_e164) VALUES (${email}, ${companyName}, ${setor || null}, ${nome || null}, 1, 'active', ${companyId}, ${branchId}, ${sectorId}, ${role}, ${cpfNorm}, ${whatsappNorm || null}) ON DUPLICATE KEY UPDATE company=${companyName}, sector=${setor || null}, employeeName=${nome || null}, isActive=1, employment_status='active', company_id=${companyId}, branch_id=${branchId}, sector_id=${sectorId}, role=${role}, cpf=${cpfNorm}, whatsapp_e164=COALESCE(${whatsappNorm || null}, whatsapp_e164)`);
             inserted++; res.action = "inserted";
             // Gera token de ativação + envia e-mail de primeiro acesso (Sprint 1.6).
             // Só para colaboradores NOVOS, em modo NÃO dry-run. Falha de e-mail
@@ -6211,7 +6220,7 @@ export const appRouter = router({
           const urRows = Array.isArray(ur) ? ((ur as any)[0] ?? []) : [];
           const urow = Array.isArray(urRows) ? (urRows[0] ?? null) : urRows ?? null;
           if (urow) {
-            await db.execute(drzSql`UPDATE users SET company_id = ${companyId}, branch_id = ${branchId}, sector_id = ${sectorId}, role = ${role}, position = ${cargo}, cpf = ${cpfNorm}, whatsapp_e164 = COALESCE(${whatsappNorm}, whatsapp_e164) WHERE id = ${urow.id}`);
+            await db.execute(drzSql`UPDATE users SET company_id = ${companyId}, branch_id = ${branchId}, sector_id = ${sectorId}, role = ${role}, position = ${cargo}, cpf = ${cpfNorm}, whatsapp_e164 = COALESCE(${whatsappNorm}, whatsapp_e164), employment_status = 'active', is_active = 1 WHERE id = ${urow.id}`);
             await db.execute(drzSql`UPDATE corporate_emails SET userId = ${urow.id} WHERE email = ${email} AND (userId IS NULL OR userId = 0)`);
           } else {
             // Bruno R5-P3 #2 — Cria o registro em `users` IMEDIATAMENTE no cadastro,
@@ -6221,8 +6230,8 @@ export const appRouter = router({
             try {
               const openIdGen = `corporate:${email}`;
               const insRes: any = await db.execute(drzSql`
-                INSERT INTO users (openId, name, email, loginMethod, role, company_id, branch_id, sector_id, position, cpf, whatsapp_e164, is_active)
-                VALUES (${openIdGen}, ${nome || email}, ${email}, ${'corporate'}, ${role}, ${companyId}, ${branchId}, ${sectorId}, ${cargo || null}, ${cpfNorm}, ${whatsappNorm || null}, 1)`);
+                INSERT INTO users (openId, name, email, loginMethod, role, company_id, branch_id, sector_id, position, cpf, whatsapp_e164, employment_status, is_active)
+                VALUES (${openIdGen}, ${nome || email}, ${email}, ${'corporate'}, ${role}, ${companyId}, ${branchId}, ${sectorId}, ${cargo || null}, ${cpfNorm}, ${whatsappNorm || null}, 'active', 1)`);
               const newUid = Number((insRes as any)[0]?.insertId ?? 0);
               if (newUid > 0) {
                 await db.execute(drzSql`UPDATE corporate_emails SET userId = ${newUid} WHERE email = ${email}`);
@@ -6264,6 +6273,8 @@ export const appRouter = router({
         name: z.string().optional(),
         email: z.string().email().optional(),
         role: z.enum(["user", "chefia", "rh", "admin"]).optional(),
+        cpf: z.string().nullable().optional(),
+        employmentStatus: z.enum(["active", "away", "terminated", "death", "retired", "other"]).optional(),
         branchId: z.number().nullable().optional(),
         sectorId: z.number().nullable().optional(),
         position: z.string().nullable().optional(),
@@ -6272,6 +6283,7 @@ export const appRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensureAuthIdentityColumns(db);
         const myRole = (ctx.user as any).role;
         const myCid = (ctx.user as any).companyId;
         const isGlobal = myRole === "admin_global" || myRole === "super_admin";
@@ -6329,11 +6341,29 @@ export const appRouter = router({
         if (input.position !== undefined) {
           await db.execute(drzSql`UPDATE users SET position = ${input.position} WHERE id = ${input.userId}`);
         }
+        if (input.cpf !== undefined) {
+          const cpfNorm = normalizeCpf(input.cpf);
+          if (input.cpf && !cpfNorm) throw new TRPCError({ code: "BAD_REQUEST", message: "CPF invalido." });
+          if (cpfNorm) {
+            const dup: any = await db.execute(drzSql`SELECT id FROM users WHERE cpf = ${cpfNorm} AND id <> ${input.userId} LIMIT 1`);
+            const duprow = Array.isArray(dup) ? (dup[0]?.[0] ?? dup[0]) : dup;
+            if (duprow) throw new TRPCError({ code: "BAD_REQUEST", message: "CPF ja cadastrado para outro colaborador." });
+          }
+          await db.execute(drzSql`UPDATE users SET cpf = ${cpfNorm} WHERE id = ${input.userId}`);
+          await db.execute(drzSql`UPDATE corporate_emails SET cpf = ${cpfNorm} WHERE userId = ${input.userId} OR email = ${String(urow.email ?? "").toLowerCase()}`);
+        }
         if (input.whatsapp !== undefined) {
           const { ensureWhatsappTables, normalizeE164BR } = await import("./_core/whatsapp");
           await ensureWhatsappTables();
           const norm = normalizeE164BR(input.whatsapp);
           await db.execute(drzSql`UPDATE users SET whatsapp_e164 = ${norm} WHERE id = ${input.userId}`);
+          await db.execute(drzSql`UPDATE corporate_emails SET whatsapp_e164 = ${norm} WHERE userId = ${input.userId} OR email = ${String(urow.email ?? "").toLowerCase()}`);
+        }
+        if (input.employmentStatus !== undefined) {
+          const status = input.employmentStatus;
+          const allowCorporateAccess = status === "active" || status === "away" || status === "other";
+          await db.execute(drzSql`UPDATE users SET employment_status = ${status}, is_active = 1 WHERE id = ${input.userId}`);
+          await db.execute(drzSql`UPDATE corporate_emails SET employment_status = ${status}, isActive = ${allowCorporateAccess ? 1 : 0} WHERE userId = ${input.userId} OR email = ${String(urow.email ?? "").toLowerCase()}`);
         }
         return { ok: true };
       }),
@@ -6341,6 +6371,7 @@ export const appRouter = router({
       .input(z.object({ userId: z.number() }))
       .mutation(async ({ ctx, input }) => {
         const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensureAuthIdentityColumns(db);
         const myRole = (ctx.user as any).role;
         const myCid = (ctx.user as any).companyId;
         const isGlobal = myRole === "admin_global" || myRole === "super_admin";
@@ -6349,11 +6380,64 @@ export const appRouter = router({
         if (!urow) throw new TRPCError({ code: "NOT_FOUND", message: "Colaborador nao encontrado." });
         if (!isGlobal && urow.company_id !== myCid) throw new TRPCError({ code: "FORBIDDEN", message: "Sem permissao." });
         if (urow.id === ctx.user.id) throw new TRPCError({ code: "BAD_REQUEST", message: "Voce nao pode remover a si mesmo." });
-        // soft-delete: removes from roster/analytics and blocks future login; reversible
-        await db.execute(drzSql`UPDATE users SET is_active = 0 WHERE id = ${input.userId}`);
+        // Status funcional preserva historico e remove o colaborador dos indicadores ativos.
+        await db.execute(drzSql`UPDATE users SET employment_status = 'terminated', is_active = 1 WHERE id = ${input.userId}`);
         const em = String(urow.email ?? "").toLowerCase();
-        await db.execute(drzSql`UPDATE corporate_emails SET isActive = 0 WHERE userId = ${input.userId} OR email = ${em}`);
+        await db.execute(drzSql`UPDATE corporate_emails SET employment_status = 'terminated', isActive = 0 WHERE userId = ${input.userId} OR email = ${em}`);
         return { ok: true };
+      }),
+
+    bulkUpdateCollaboratorStatus: adminOrRhProcedure
+      .input(z.object({
+        companyId: z.number().optional(),
+        dryRun: z.boolean().default(false),
+        rows: z.array(z.object({
+          cpf: z.string(),
+          statusCode: z.string(),
+        })),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensureAuthIdentityColumns(db);
+        const myRole = (ctx.user as any).role;
+        const myCid = (ctx.user as any).companyId;
+        const isGlobal = myRole === "admin_global" || myRole === "super_admin";
+        const companyId = isGlobal ? input.companyId ?? null : myCid ?? null;
+        if (!companyId) throw new TRPCError({ code: "BAD_REQUEST", message: "Selecione a empresa." });
+        if (!isGlobal && input.companyId && input.companyId !== myCid) throw new TRPCError({ code: "FORBIDDEN" });
+
+        const statusByCode: Record<string, string> = {
+          "1": "active", ativo: "active", active: "active",
+          "2": "terminated", desligado: "terminated", terminated: "terminated",
+          "3": "away", afastado: "away", away: "away",
+          "4": "death", obito: "death", "óbito": "death", death: "death",
+          "5": "retired", aposentado: "retired", retired: "retired",
+        };
+        const labelByStatus: Record<string, string> = {
+          active: "Ativo", terminated: "Desligado", away: "Afastado", death: "Obito", retired: "Aposentado", other: "Outro",
+        };
+        const results: any[] = [];
+        let updated = 0, skipped = 0;
+        for (const row of input.rows) {
+          const cpf = normalizeCpf(row.cpf);
+          const key = String(row.statusCode ?? "").trim().toLowerCase();
+          const status = statusByCode[key] ?? null;
+          const res: any = { cpf: cpf ?? row.cpf, statusCode: row.statusCode, status, statusLabel: status ? labelByStatus[status] : "", result: "ok", message: "" };
+          if (!cpf) { res.result = "invalid"; res.message = "CPF invalido"; skipped++; results.push(res); continue; }
+          if (!status) { res.result = "invalid"; res.message = "Codigo de status invalido"; skipped++; results.push(res); continue; }
+          const [[u]]: any = await execP(db, `SELECT id, email FROM users WHERE company_id=? AND cpf=? LIMIT 1`, [companyId, cpf]);
+          if (!u) { res.result = "not_found"; res.message = "Colaborador nao encontrado pelo CPF"; skipped++; results.push(res); continue; }
+          res.userId = Number(u.id);
+          res.email = u.email;
+          if (!input.dryRun) {
+            const allowCorporateAccess = status === "active" || status === "away" || status === "other";
+            await execP(db, `UPDATE users SET employment_status=?, is_active=1 WHERE id=?`, [status, Number(u.id)]);
+            await execP(db, `UPDATE corporate_emails SET employment_status=?, isActive=? WHERE userId=? OR cpf=?`, [status, allowCorporateAccess ? 1 : 0, Number(u.id), cpf]);
+          }
+          updated++;
+          results.push(res);
+        }
+        return { ok: true, dryRun: input.dryRun, summary: { total: input.rows.length, updated, skipped }, results };
       }),
 
 
@@ -10811,13 +10895,17 @@ export const appRouter = router({
 
   
 
-    hierarchyTree: adminOrRhProcedure.query(async ({ ctx }) => {
+    hierarchyTree: adminOrRhProcedure
+    .input(z.object({ includeAllStatuses: z.boolean().optional() }).optional())
+    .query(async ({ ctx, input }) => {
       const role = (ctx.user as any).role;
       const cid = (ctx.user as any).companyId ?? null;
       const scope = role === "admin_global" || role === "super_admin" ? null : cid;
       console.log("[hierarchyTree] role=", role, "cid=", cid, "scope=", scope);
       try {
-        const r = await getHierarchyTreeForCompany(scope);
+        const db = await getDb();
+        if (db) await ensureAuthIdentityColumns(db);
+        const r = await getHierarchyTreeForCompany(scope, { includeAllStatuses: !!input?.includeAllStatuses });
         console.log("[hierarchyTree] returned", Array.isArray(r) ? r.length : typeof r, "companies");
         if (Array.isArray(r) && r.length > 0) {
           console.log("[hierarchyTree] first co:", JSON.stringify(r[0]).substring(0, 300));
@@ -11483,7 +11571,7 @@ export const appRouter = router({
         companyId: z.number().int(),
         drpsTemplateId: z.number().int().nullable().optional(),
         aepTemplateId: z.number().int().nullable().optional(),
-        accessMethod: z.enum(["email", "cpf", "whatsapp"]).default("email"),
+        accessMethod: z.enum(["email", "cpf", "both", "whatsapp"]).default("email"),
         communicationChannel: z.enum(["email", "whatsapp", "both"]).default("email"),
         requireWhatsappOnFirstAccess: z.boolean().default(false),
       }))
@@ -20353,15 +20441,21 @@ Return only the JSON content object (no wrapper). Format per type:
         }),
 
       grantException: adminOrRhProcedure
-        .input(z.object({ assessmentId: z.number().int(), userId: z.number().int(), note: z.string().min(1) }))
+        .input(z.object({ assessmentId: z.number().int(), userId: z.number().int().optional(), cpf: z.string().optional(), note: z.string().min(1) }))
         .mutation(async ({ ctx, input }) => {
           const cid = (ctx.user as any).companyId;
           const db = await getDb();
           if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          await ensureAuthIdentityColumns(db);
           const [[a]]: any = await execP(db, `SELECT company_id FROM risk_assessments WHERE id=?`, [input.assessmentId]);
           if (!a || Number(a.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
-          const [[u]]: any = await execP(db, `SELECT id FROM users WHERE id=? AND company_id=?`, [input.userId, cid]);
-          if (!u) throw new TRPCError({ code: "FORBIDDEN", message: "Colaborador de outra empresa rejeitado." });
+          const cpf = normalizeCpf(input.cpf);
+          const [[u]]: any = input.userId
+            ? await execP(db, `SELECT id FROM users WHERE id=? AND company_id=?`, [input.userId, cid])
+            : cpf
+            ? await execP(db, `SELECT id FROM users WHERE cpf=? AND company_id=? LIMIT 1`, [cpf, cid])
+            : [[]];
+          if (!u) throw new TRPCError({ code: "NOT_FOUND", message: "Colaborador nao encontrado pelo CPF nesta empresa." });
           await db.execute(drzSql`CREATE TABLE IF NOT EXISTS aep_exceptions (
             id INT AUTO_INCREMENT PRIMARY KEY,
             assessment_id INT NOT NULL, user_id INT NOT NULL, granted_by INT NOT NULL,
@@ -20371,7 +20465,7 @@ Return only the JSON content object (no wrapper). Format per type:
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
           await db.execute(drzSql`
             INSERT INTO aep_exceptions (assessment_id, user_id, granted_by, note)
-            VALUES (${input.assessmentId}, ${input.userId}, ${ctx.user.id}, ${input.note})
+            VALUES (${input.assessmentId}, ${Number(u.id)}, ${ctx.user.id}, ${input.note})
             ON DUPLICATE KEY UPDATE note=${input.note}, granted_by=${ctx.user.id}`);
           return { ok: true };
         }),
@@ -27512,7 +27606,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           sesmt_rh: `'sesmt','rh','admin','company_admin'`,
           managers: `'manager','sector_lead','chefia','admin','company_admin'`,
         };
-        let usersSql = `SELECT id FROM users WHERE company_id=? AND is_active=1`;
+        let usersSql = `SELECT id FROM users WHERE company_id=? AND is_active=1 AND COALESCE(employment_status,'active')='active'`;
         const rolesIn = roleFilter[input.audience];
         if (rolesIn) usersSql += ` AND role IN (${rolesIn})`;
         const [users] = await execP(db, usersSql, [cid]) as any;
@@ -27573,7 +27667,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
 
         // Resolve audiência — SP3 #4: granular por role
         // SP8 — traz whatsapp_e164 também (necessário pra canal whatsapp)
-        let usersSql = `SELECT id, name, email, whatsapp_e164 FROM users WHERE company_id=? AND is_active=1`;
+        let usersSql = `SELECT id, name, email, whatsapp_e164 FROM users WHERE company_id=? AND is_active=1 AND COALESCE(employment_status,'active')='active'`;
         const params: any[] = [cid];
         const roleFilter: Record<string, string | null> = {
           todos:          null,
@@ -28356,6 +28450,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         .query(async ({ ctx, input }) => {
           const cid = (ctx.user as any).companyId;
           const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+          await ensureAuthIdentityColumns(db);
           const [[ed]]: any = await execP(db, `SELECT * FROM sipat_editions WHERE id=? AND company_id=?`, [input.editionId, cid]);
           if (!ed) throw new TRPCError({ code: "NOT_FOUND" });
 
@@ -28940,16 +29035,22 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
       }),
       // Vincula um membro eleito a um usuário da plataforma e concede o perfil "Integrante da CIPA".
       linkMemberToUser: adminOrRhProcedure
-        .input(z.object({ memberId: z.number().int(), userId: z.number().int() }))
+        .input(z.object({ memberId: z.number().int(), userId: z.number().int().optional(), cpf: z.string().optional() }))
         .mutation(async ({ ctx, input }) => {
           const cid = (ctx.user as any).companyId;
           const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+          await ensureAuthIdentityColumns(db);
           const [[m]]: any = await execP(db, `SELECT id FROM cipa_members WHERE id=? AND company_id=?`, [input.memberId, cid]);
           if (!m) throw new TRPCError({ code: "NOT_FOUND" });
-          const [[u]]: any = await execP(db, `SELECT id FROM users WHERE id=? AND company_id=?`, [input.userId, cid]);
+          const cpf = normalizeCpf(input.cpf);
+          const [[u]]: any = input.userId
+            ? await execP(db, `SELECT id FROM users WHERE id=? AND company_id=?`, [input.userId, cid])
+            : cpf
+            ? await execP(db, `SELECT id FROM users WHERE cpf=? AND company_id=? LIMIT 1`, [cpf, cid])
+            : [[]];
           if (!u) throw new TRPCError({ code: "NOT_FOUND", message: "Usuário não encontrado nesta empresa." });
-          await execP(db, `UPDATE cipa_members SET user_id=? WHERE id=?`, [input.userId, input.memberId]);
-          await execP(db, `UPDATE users SET role='cipa' WHERE id=?`, [input.userId]);
+          await execP(db, `UPDATE cipa_members SET user_id=? WHERE id=?`, [Number(u.id), input.memberId]);
+          await execP(db, `UPDATE users SET role='cipa' WHERE id=?`, [Number(u.id)]);
           return { ok: true };
         }),
       encerrarMandatoMembro: adminOrRhProcedure.input(z.object({ memberId: z.number().int() })).mutation(async ({ input }) => {
@@ -29525,7 +29626,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         const cid = (ctx.user as any).companyId;
         const db = await getDb(); if (!db || !cid) return null;
         await ensureFaTables(db);
-        const [[emp]]: any = await execP(db, `SELECT COUNT(*) AS c FROM users WHERE company_id=? AND role='user' AND COALESCE(is_active,1)=1`, [cid]);
+        const [[emp]]: any = await execP(db, `SELECT COUNT(*) AS c FROM users u WHERE u.company_id=? AND u.role='user' AND ${activeEmployeeWhere("u")}`, [cid]);
         const [[contents]]: any = await execP(db, `SELECT COUNT(*) AS c, SUM(is_required=1) AS required_count FROM firstaid_learning_contents WHERE company_id=? AND is_active=1`, [cid]);
         const [[trained]]: any = await execP(db, `
           SELECT COUNT(DISTINCT x.user_id) AS c FROM (

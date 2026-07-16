@@ -25,7 +25,7 @@ export default function Login() {
     onSuccess: (data) => {
       setEmployeeName(data.employeeName ?? null);
       const method = String((data as any).accessMethod || (data as any).method || "email");
-      const label = method === "cpf" ? "CPF" : method === "whatsapp" ? "WhatsApp" : "e-mail corporativo";
+      const label = method === "cpf" ? "CPF" : method === "both" ? "e-mail corporativo ou CPF" : method === "whatsapp" ? "WhatsApp" : "e-mail corporativo";
       setAccessHint(`Metodo configurado pela empresa: ${label}`);
       if (!data.hasSetPassword) {
         navigate(`/primeiro-acesso?identifier=${encodeURIComponent(identifier)}`);

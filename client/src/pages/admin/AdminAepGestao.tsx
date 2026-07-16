@@ -30,7 +30,7 @@ function deviceLabel(ua?: string | null): string {
 export default function AdminAepGestao({ assessmentId }: { assessmentId: number }) {
   const [, setLocation] = useLocation();
   const [grantOpen, setGrantOpen] = useState(false);
-  const [grantUserId, setGrantUserId] = useState("");
+  const [grantCpf, setGrantCpf] = useState("");
   const [grantNote, setGrantNote] = useState("");
   const [invalidateTarget, setInvalidateTarget] = useState<{ responseId: number; name: string } | null>(null);
   const [invalidateReason, setInvalidateReason] = useState("");
@@ -39,7 +39,7 @@ export default function AdminAepGestao({ assessmentId }: { assessmentId: number 
   const exceptionsQ = trpc.riskAssessment.aep.listExceptions.useQuery({ assessmentId });
 
   const grantMut = trpc.riskAssessment.aep.grantException.useMutation({
-    onSuccess: () => { toast.success("Exceção concedida."); setGrantOpen(false); setGrantUserId(""); setGrantNote(""); exceptionsQ.refetch(); },
+    onSuccess: () => { toast.success("Exceção concedida."); setGrantOpen(false); setGrantCpf(""); setGrantNote(""); exceptionsQ.refetch(); },
     onError: (e: any) => toast.error(e?.message ?? "Erro ao conceder exceção"),
   });
   const revokeMut = trpc.riskAssessment.aep.revokeException.useMutation({
@@ -143,8 +143,8 @@ export default function AdminAepGestao({ assessmentId }: { assessmentId: number 
                 </DialogHeader>
                 <div className="space-y-3">
                   <div>
-                    <Label>ID do colaborador</Label>
-                    <Input value={grantUserId} onChange={(e) => setGrantUserId(e.target.value)} placeholder="Ex.: 56046" />
+                    <Label>CPF do colaborador</Label>
+                    <Input value={grantCpf} onChange={(e) => setGrantCpf(e.target.value)} placeholder="000.000.000-00" />
                   </div>
                   <div>
                     <Label>Justificativa</Label>
@@ -154,8 +154,8 @@ export default function AdminAepGestao({ assessmentId }: { assessmentId: number 
                 </div>
                 <DialogFooter>
                   <Button variant="outline" onClick={() => setGrantOpen(false)}>Cancelar</Button>
-                  <Button disabled={grantMut.isPending || !grantUserId || !grantNote}
-                    onClick={() => grantMut.mutate({ assessmentId, userId: Number(grantUserId), note: grantNote })}>
+                  <Button disabled={grantMut.isPending || !grantCpf || !grantNote}
+                    onClick={() => grantMut.mutate({ assessmentId, cpf: grantCpf, note: grantNote } as any)}>
                     {grantMut.isPending && <Loader2 className="animate-spin mr-1.5" size={14} />} Conceder
                   </Button>
                 </DialogFooter>

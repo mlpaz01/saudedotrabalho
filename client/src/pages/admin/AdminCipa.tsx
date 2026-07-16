@@ -283,7 +283,7 @@ function MembersTab() {
   const endMut = (trpc.cipa as any).encerrarMandatoMembro.useMutation({ onSuccess: () => { q.refetch(); toast.success("Mandato encerrado."); } });
   const linkMut = (trpc.cipa as any).linkMemberToUser.useMutation({ onSuccess: () => { q.refetch(); toast.success("Acesso concedido (perfil Integrante da CIPA)."); }, onError: (e: any) => toast.error(e?.message ?? "Erro") });
   const [linking, setLinking] = useState<number | null>(null);
-  const [userId, setUserId] = useState("");
+  const [cpf, setCpf] = useState("");
   return (
     <div className="mt-4 bg-white border rounded-xl p-5">
       <h3 className="font-bold mb-3">Integrantes ativos</h3>
@@ -299,8 +299,8 @@ function MembersTab() {
                 {m.user_id ? <span className="text-emerald-700 text-xs">✓ vinculado</span> : (
                   linking === m.id ? (
                     <div className="flex gap-1">
-                      <input value={userId} onChange={e => setUserId(e.target.value)} placeholder="ID do usuário" className="border rounded px-1.5 py-1 text-xs w-24" />
-                      <button onClick={() => { if (userId) linkMut.mutate({ memberId: m.id, userId: Number(userId) }); setLinking(null); setUserId(""); }} className="text-xs text-blue-600">Salvar</button>
+                      <input value={cpf} onChange={e => setCpf(e.target.value)} placeholder="CPF" className="border rounded px-1.5 py-1 text-xs w-28" />
+                      <button onClick={() => { if (cpf) linkMut.mutate({ memberId: m.id, cpf }); setLinking(null); setCpf(""); }} className="text-xs text-blue-600">Salvar</button>
                     </div>
                   ) : <button onClick={() => setLinking(m.id)} className="text-xs text-blue-600 hover:underline">Vincular usuário</button>
                 )}

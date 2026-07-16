@@ -51,6 +51,7 @@ import { ENV } from "./_core/env";
 
 
 let _db: ReturnType<typeof drizzle> | null = null;
+let _employmentStatusColumnsReady = false;
 
 
 
@@ -74,6 +75,15 @@ export async function getDb() {
 
   return _db;
 
+}
+
+async function ensureEmploymentStatusColumns(db: any) {
+  if (_employmentStatusColumnsReady || !db) return;
+  try { await db.execute(sql.raw("ALTER TABLE users ADD COLUMN employment_status VARCHAR(30) NOT NULL DEFAULT 'active'")); } catch (_) {}
+  try { await db.execute(sql.raw("ALTER TABLE users ADD INDEX idx_users_employment_status (employment_status)")); } catch (_) {}
+  try { await db.execute(sql.raw("ALTER TABLE corporate_emails ADD COLUMN employment_status VARCHAR(30) NOT NULL DEFAULT 'active'")); } catch (_) {}
+  try { await db.execute(sql.raw("ALTER TABLE corporate_emails ADD INDEX idx_corporate_employment_status (employment_status)")); } catch (_) {}
+  _employmentStatusColumnsReady = true;
 }
 
 
@@ -563,12 +573,13 @@ export async function getAdminStats() {
   const db = await getDb();
 
   if (!db) return null;
+  await ensureEmploymentStatusColumns(db);
 
 
 
-  const totalUsers = await db.select({ count: sql<number>`count(*)` }).from(corporateEmails).where(eq(corporateEmails.isActive, true));
+  const totalUsers = await db.select({ count: sql<number>`count(*)` }).from(corporateEmails).where(and(eq(corporateEmails.isActive, true), sql`COALESCE(${corporateEmails.employmentStatus}, 'active') = 'active'`));
 
-  const activeUsers = await db.select({ count: sql<number>`count(*)` }).from(corporateEmails).where(and(eq(corporateEmails.isActive, true), eq(corporateEmails.hasSetPassword, true)));
+  const activeUsers = await db.select({ count: sql<number>`count(*)` }).from(corporateEmails).where(and(eq(corporateEmails.isActive, true), eq(corporateEmails.hasSetPassword, true), sql`COALESCE(${corporateEmails.employmentStatus}, 'active') = 'active'`));
 
   const totalCerts = await db.select({ count: sql<number>`count(*)` }).from(certificates);
 
@@ -2151,6 +2162,7 @@ export async function getManagerDashboard(companyId: number | null) {
   const db = await getDb();
 
   if (!db) return null;
+  await ensureEmploymentStatusColumns(db);
 
   const now = new Date();
 
@@ -2161,8 +2173,8 @@ export async function getManagerDashboard(companyId: number | null) {
   // R5-P9 #3: alinhado com tela Colaboradores (users WHERE is_active=1). Antes contava
   // corporate_emails (incluía registros sem cadastro real), gerando divergência ex.: 18 vs 12.
   const empCountRaw = companyId
-    ? await db.execute(sql.raw(`SELECT COUNT(*) AS c FROM users WHERE company_id=${companyId} AND is_active=1`))
-    : await db.execute(sql.raw(`SELECT COUNT(*) AS c FROM users WHERE is_active=1`));
+    ? await db.execute(sql.raw(`SELECT COUNT(*) AS c FROM users WHERE company_id=${companyId} AND is_active=1 AND COALESCE(employment_status,'active')='active'`))
+    : await db.execute(sql.raw(`SELECT COUNT(*) AS c FROM users WHERE is_active=1 AND COALESCE(employment_status,'active')='active'`));
   const empCountRows: any = Array.isArray((empCountRaw as any)[0]) ? (empCountRaw as any)[0] : (empCountRaw as any);
   const totalEmployees = Number(empCountRows[0]?.c ?? 0);
 
@@ -2646,7 +2658,7 @@ export async function getSuperAdminOverview() {
 
     .from(corporateEmails)
 
-    .where(eq(corporateEmails.isActive, true));
+    .where(and(eq(corporateEmails.isActive, true), sql`COALESCE(${corporateEmails.employmentStatus}, 'active') = 'active'`));
 
   const canceled30d = await db
 
@@ -4066,9 +4078,10 @@ export async function listAIDecompressionGenerationsForCompany(companyId: number
  * Shape: [{ company, branches: [{ branch, sectors: [{ sector, users: [...] }] }] }]
  * Each user includes course/survey/lastAccess stats so the UI can render counters.
  */
-export async function getHierarchyTreeForCompany(companyId: number | null) {
+export async function getHierarchyTreeForCompany(companyId: number | null, opts: { includeAllStatuses?: boolean } = {}) {
   const db = await getDb();
   if (!db) return [];
+  await ensureEmploymentStatusColumns(db);
 
   // 1) Companies (scope)
   const companiesRows = companyId
@@ -4092,11 +4105,16 @@ export async function getHierarchyTreeForCompany(companyId: number | null) {
   );
   const sectorsRows = Array.isArray((sectorsRaw as any)[0]) ? (sectorsRaw as any)[0] : Array.isArray(sectorsRaw) ? sectorsRaw : [];
 
+  const userStatusWhere = opts.includeAllStatuses
+    ? `u.is_active = 1`
+    : `u.is_active = 1 AND COALESCE(u.employment_status, 'active') = 'active'`;
+
   const usersRaw = await db.execute(
     sql.raw(`SELECT u.id, u.name, u.email, u.role, u.lastSignedIn,
                     u.company_id AS companyId, u.branch_id AS branchId, u.sector_id AS sectorId,
-                    u.position AS position,
+                    u.position AS position, u.cpf AS cpf,
                     u.whatsapp_e164 AS whatsapp,
+                    COALESCE(u.employment_status, 'active') AS employmentStatus,
                     ce.employeeName AS cargoName,
                     (SELECT COUNT(*) FROM user_progress p WHERE p.userId = u.id) AS coursesStarted,
                     (SELECT COUNT(*) FROM user_progress p WHERE p.userId = u.id AND p.isCompleted = 1) AS coursesCompleted,
@@ -4105,7 +4123,7 @@ export async function getHierarchyTreeForCompany(companyId: number | null) {
                     (SELECT wi.score FROM wellbeing_index wi WHERE wi.user_id = u.id ORDER BY wi.snapshot_month DESC LIMIT 1) AS wellbeingScore
              FROM users u
              LEFT JOIN corporate_emails ce ON ce.userId = u.id
-             WHERE u.company_id IN (${companyIdsCsv}) AND u.is_active = 1
+             WHERE u.company_id IN (${companyIdsCsv}) AND ${userStatusWhere}
              ORDER BY u.name`)
   );
   const usersRows = Array.isArray((usersRaw as any)[0]) ? (usersRaw as any)[0] : Array.isArray(usersRaw) ? usersRaw : [];
@@ -4223,7 +4241,9 @@ function formatUserStatsRow(u: any, totalModules: number, totalSurveys: number) 
     id: Number(u.id),
     name: u.name || u.cargoName || "(sem nome)",
     email: u.email,
+    cpf: u.cpf ?? null,
     role: u.role,
+    employmentStatus: u.employmentStatus ?? "active",
     branchId: u.branchId != null ? Number(u.branchId) : null,
     sectorId: u.sectorId != null ? Number(u.sectorId) : null,
     cargo: u.cargoName ?? null,
@@ -4754,8 +4774,9 @@ export async function previewCampaignRecipients(opts: {
 }) {
   const db = await getDb();
   if (!db) return [];
+  await ensureEmploymentStatusColumns(db);
 
-  const where: string[] = [`u.company_id = ${opts.companyId}`];
+  const where: string[] = [`u.company_id = ${opts.companyId}`, `u.is_active = 1`, `COALESCE(u.employment_status,'active') = 'active'`];
   if (opts.branchId != null) where.push(`u.branch_id = ${opts.branchId}`);
   if (opts.sectorId != null) where.push(`u.sector_id = ${opts.sectorId}`);
   where.push(`u.email IS NOT NULL AND u.email <> ''`);
@@ -4974,6 +4995,3 @@ export async function getSurveysForCompanyShort(companyId: number) {
   );
   return _rows(raw);
 }
-
-
-

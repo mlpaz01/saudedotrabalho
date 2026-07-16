@@ -29,6 +29,7 @@ export const users = mysqlTable("users", {
   position: varchar("position", { length: 120 }),
   cpf: varchar("cpf", { length: 20 }),
   whatsappE164: varchar("whatsapp_e164", { length: 20 }),
+  employmentStatus: varchar("employment_status", { length: 30 }).default("active").notNull(),
   isActive: tinyint("is_active").default(1).notNull(),
 });
 
@@ -54,6 +55,7 @@ export const corporateEmails = mysqlTable("corporate_emails", {
   role: varchar("role", { length: 30 }).default("user"),
   cpf: varchar("cpf", { length: 20 }),
   whatsappE164: varchar("whatsapp_e164", { length: 20 }),
+  employmentStatus: varchar("employment_status", { length: 30 }).default("active").notNull(),
   activationToken: varchar("activation_token", { length: 128 }),
   activationExpiresAt: timestamp("activation_expires_at"),
 });
