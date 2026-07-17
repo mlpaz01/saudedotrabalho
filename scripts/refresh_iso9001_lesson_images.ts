@@ -5,8 +5,9 @@ import mysql from "mysql2/promise";
 
 const MODULE_ID = Number(process.env.ISO_MODULE_ID || 176);
 const COURSE_SLUG = "iso9001-2015-amd1-2024-interpretacao";
-const IMAGE_DIR = path.join(process.cwd(), "uploads", "images", COURSE_SLUG, "lessons");
-const IMAGE_URL_PREFIX = `/uploads/images/${COURSE_SLUG}/lessons`;
+const IMAGE_VARIANT = process.env.IMAGE_VARIANT || "lessons-notext";
+const IMAGE_DIR = path.join(process.cwd(), "uploads", "images", COURSE_SLUG, IMAGE_VARIANT);
+const IMAGE_URL_PREFIX = `/uploads/images/${COURSE_SLUG}/${IMAGE_VARIANT}`;
 const OPENROUTER_IMAGE_MODEL = "google/gemini-2.5-flash-image";
 
 type LessonRow = {
@@ -38,7 +39,7 @@ function slugify(input: string) {
 }
 
 function fallbackImageUrl(prompt: string, seed: number) {
-  const encoded = encodeURIComponent(`premium corporate e-learning illustration, ${prompt}, realistic professional quality management, no logos, no readable text`);
+  const encoded = encodeURIComponent(`premium corporate e-learning illustration, ${prompt}, realistic professional quality management, absolutely no text, no words, no letters, no logos, no signage`);
   return `https://image.pollinations.ai/prompt/${encoded}?width=1024&height=576&seed=${seed}&nologo=true`;
 }
 
@@ -95,13 +96,27 @@ async function openrouterImage(prompt: string, filename: string): Promise<string
 }
 
 function lessonPrompt(lesson: LessonRow) {
+  const visualThemes = [
+    "quality management classroom with process flow cards represented only by blank geometric shapes",
+    "professional training scene with people discussing a clean process map made of unlabeled colored blocks",
+    "modern office workshop with abstract risk matrix using plain color squares and no characters",
+    "corporate team reviewing customer journey represented by icons and blank sticky notes",
+    "quality control workspace with measurement tools, calibration equipment and blank labels",
+    "supply chain meeting with packages, checklists shown as empty shapes and supplier evaluation icons",
+    "operational control scene with factory and service workflow represented by arrows without words",
+    "performance dashboard room with abstract charts only, no numbers and no labels",
+    "continuous improvement workshop with root cause diagram shown as blank lines and circles",
+    "management review meeting with executives, abstract charts and empty document sheets",
+  ];
+  const theme = visualThemes[(Number(lesson.orderIndex || 1) - 1) % visualThemes.length];
   return [
-    `unique illustration for lesson "${lesson.title}"`,
-    `course module "${lesson.unitTitle}"`,
-    "Brazilian corporate quality management training",
-    "ISO 9001 interpretation, process management, evidence, customer focus, risk-based thinking",
-    "premium realistic e-learning visual, varied scene, modern workplace, diverse adults",
-    "no brand logo, no certificate mockup, no readable ISO standard text, no watermark",
+    theme,
+    "Brazilian corporate quality management training environment",
+    "ISO 9001 interpretation represented through abstract icons, process thinking, evidence and improvement",
+    "premium realistic e-learning visual, varied camera angle, modern workplace, diverse adults",
+    "clean composition with empty screens, blank papers and abstract symbols only",
+    "STRICTLY NO TEXT anywhere in the image",
+    "no words, no letters, no numbers, no captions, no titles, no subtitles, no signage, no UI text, no logo, no watermark",
   ].join(", ");
 }
 
