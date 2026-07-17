@@ -52,6 +52,7 @@ import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let _employmentStatusColumnsReady = false;
+const ISO_COURSE_ACCESS_ROLES = ["admin", "company_admin", "rh", "sesmt", "admin_global", "super_admin"];
 
 
 
@@ -3151,9 +3152,11 @@ export async function getVisibleModulesForUser(userId: number) {
   ));
 
   // Platform-level modules (no specific company — visible to all)
+  const canSeeIsoCourses = ISO_COURSE_ACCESS_ROLES.includes(String(user.role ?? ""));
   const platform = await db.select().from(modules).where(and(
     sql`${modules.createdByCompanyId} IS NULL`,
     eq(modules.isActive, true),
+    canSeeIsoCourses ? sql`1=1` : sql`COALESCE(${modules.templateCategory}, '') <> 'iso'`,
   ));
 
   let enrolled: any[] = [];

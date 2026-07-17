@@ -2342,6 +2342,25 @@ function firstDbRow(result: any): any | null {
   return rows ?? null;
 }
 
+const ISO_COURSE_ACCESS_ROLES = new Set(["admin", "company_admin", "rh", "sesmt", "admin_global", "super_admin"]);
+
+async function assertCourseAccessForUser(db: any, user: any, moduleId: number) {
+  const mr: any = await db.execute(drzSql`
+    SELECT id, title, description, image_url, durationMinutes, template_category
+    FROM modules
+    WHERE id=${moduleId} AND isActive=1
+    LIMIT 1
+  `);
+  const mod = firstDbRow(mr);
+  if (!mod) throw new TRPCError({ code: "NOT_FOUND" });
+  const category = String(mod.template_category ?? "").toLowerCase();
+  const role = String(user?.role ?? "");
+  if (category === "iso" && !ISO_COURSE_ACCESS_ROLES.has(role)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Curso restrito aos perfis Admin, RH e SESMT." });
+  }
+  return mod;
+}
+
 async function ensureCompanyPlatformConfigColumns(db: any) {
   try { await db.execute(drzSql`ALTER TABLE companies ADD COLUMN drps_template_id INT NULL`); } catch (_) {}
   try { await db.execute(drzSql`ALTER TABLE companies ADD COLUMN aep_template_id INT NULL`); } catch (_) {}
@@ -4681,7 +4700,7 @@ export const appRouter = router({
 
 
 
-      .query(async ({ input }) => {
+      .query(async ({ ctx, input }) => {
 
 
 
@@ -4700,6 +4719,8 @@ export const appRouter = router({
 
 
         if (!mod) throw new TRPCError({ code: "NOT_FOUND" });
+        const db = await getDb();
+        if (db) await assertCourseAccessForUser(db, ctx.user, input.id);
 
 
 
@@ -10521,7 +10542,7 @@ export const appRouter = router({
 
 
 
-      .query(async ({ input }) => {
+      .query(async ({ ctx, input }) => {
 
 
 
@@ -10530,6 +10551,8 @@ export const appRouter = router({
 
 
 
+        const db = await getDb();
+        if (db) await assertCourseAccessForUser(db, ctx.user, input.moduleId);
         return listLessonsByModule(input.moduleId);
 
 
@@ -10620,6 +10643,8 @@ export const appRouter = router({
 
 
 
+        const db = await getDb();
+        if (db) await assertCourseAccessForUser(db, ctx.user, input.moduleId);
         const allProgressBefore = await getModuleLessonProgressForUser(ctx.user.id, input.moduleId);
 
 
@@ -17937,13 +17962,7 @@ export const appRouter = router({
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
 
 
-        const mr: any = await db.execute(drzSql`SELECT id, title, description, image_url, durationMinutes FROM modules WHERE id=${input.moduleId} LIMIT 1`);
-
-
-        const mod = (mr as any)[0]?.[0];
-
-
-        if (!mod) throw new TRPCError({ code: "NOT_FOUND" });
+        const mod = await assertCourseAccessForUser(db, ctx.user, input.moduleId);
 
 
         const ur: any = await db.execute(drzSql`SELECT id, title, description, icon, order_index FROM units WHERE module_id=${input.moduleId} ORDER BY order_index ASC`);
@@ -18071,6 +18090,8 @@ export const appRouter = router({
 
         if (!lesson) throw new TRPCError({ code: "NOT_FOUND" });
 
+        await assertCourseAccessForUser(db, ctx.user, Number(lesson.moduleId));
+
 
         const br: any = await db.execute(drzSql`SELECT id, block_type, content, order_index, xp_reward FROM lesson_blocks WHERE lesson_id=${input.lessonId} ORDER BY order_index ASC`);
 
@@ -18147,13 +18168,21 @@ export const appRouter = router({
         // Fetch block xp
 
 
-        const br: any = await db.execute(drzSql`SELECT xp_reward, block_type FROM lesson_blocks WHERE id=${input.blockId} LIMIT 1`);
+        const br: any = await db.execute(drzSql`
+          SELECT lb.xp_reward, lb.block_type, l.moduleId
+          FROM lesson_blocks lb
+          INNER JOIN lessons l ON l.id = lb.lesson_id
+          WHERE lb.id=${input.blockId} AND lb.lesson_id=${input.lessonId}
+          LIMIT 1
+        `);
 
 
         const block = (br as any)[0]?.[0];
 
 
         if (!block) throw new TRPCError({ code: "NOT_FOUND" });
+
+        await assertCourseAccessForUser(db, ctx.user, Number(block.moduleId));
 
 
 
@@ -18306,6 +18335,7 @@ export const appRouter = router({
         let moduleId = 0;
         const lr: any = await db.execute(drzSql`SELECT moduleId FROM lessons WHERE id=${input.lessonId} LIMIT 1`);
         moduleId = Number((lr as any)[0]?.[0]?.moduleId ?? 0);
+        if (moduleId) await assertCourseAccessForUser(db, ctx.user, moduleId);
         if (moduleId) {
           const cr: any = await db.execute(drzSql`
             SELECT COUNT(*) AS total,
