@@ -2336,6 +2336,12 @@ function activeEmployeeWhere(alias = "u"): string {
   return `${alias}.is_active=1 AND COALESCE(${alias}.employment_status,'active')='active' AND ${alias}.role IN (${ACTIVE_EMPLOYEE_ROLES.map((r) => `'${r}'`).join(",")})`;
 }
 
+function firstDbRow(result: any): any | null {
+  const rows = Array.isArray(result) ? result[0] : result;
+  if (Array.isArray(rows)) return rows[0] ?? null;
+  return rows ?? null;
+}
+
 async function ensureCompanyPlatformConfigColumns(db: any) {
   try { await db.execute(drzSql`ALTER TABLE companies ADD COLUMN drps_template_id INT NULL`); } catch (_) {}
   try { await db.execute(drzSql`ALTER TABLE companies ADD COLUMN aep_template_id INT NULL`); } catch (_) {}
@@ -6288,7 +6294,7 @@ export const appRouter = router({
         const myCid = (ctx.user as any).companyId;
         const isGlobal = myRole === "admin_global" || myRole === "super_admin";
         const ur: any = await db.execute(drzSql`SELECT id, email, company_id FROM users WHERE id = ${input.userId} LIMIT 1`);
-        const urow = Array.isArray(ur) ? (ur[0]?.[0] ?? ur[0]) : ur;
+        const urow = firstDbRow(ur);
         if (!urow) throw new TRPCError({ code: "NOT_FOUND", message: "Colaborador nao encontrado." });
         if (!isGlobal && urow.company_id !== myCid) throw new TRPCError({ code: "FORBIDDEN", message: "Sem permissao." });
 
@@ -6299,14 +6305,14 @@ export const appRouter = router({
         // validate branch/sector against the user's company
         if (input.branchId != null) {
           const br: any = await db.execute(drzSql`SELECT company_id FROM branches WHERE id = ${input.branchId} LIMIT 1`);
-          const brow = Array.isArray(br) ? (br[0]?.[0] ?? br[0]) : br;
+          const brow = firstDbRow(br);
           if (!brow || (urow.company_id && brow.company_id !== urow.company_id)) {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Filial invalida para esta empresa." });
           }
         }
         if (input.sectorId != null) {
           const sr: any = await db.execute(drzSql`SELECT company_id, branch_id FROM sectors WHERE id = ${input.sectorId} LIMIT 1`);
-          const srow = Array.isArray(sr) ? (sr[0]?.[0] ?? sr[0]) : sr;
+          const srow = firstDbRow(sr);
           if (!srow || (urow.company_id && srow.company_id !== urow.company_id)) {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Setor invalido para esta empresa." });
           }
@@ -6319,7 +6325,7 @@ export const appRouter = router({
         if (input.email && input.email.toLowerCase() !== String(urow.email ?? "").toLowerCase()) {
           const newEmail = input.email.toLowerCase();
           const dup: any = await db.execute(drzSql`SELECT id FROM corporate_emails WHERE email = ${newEmail} AND (userId IS NULL OR userId <> ${input.userId}) LIMIT 1`);
-          const duprow = Array.isArray(dup) ? (dup[0]?.[0] ?? dup[0]) : dup;
+          const duprow = firstDbRow(dup);
           if (duprow) throw new TRPCError({ code: "BAD_REQUEST", message: "E-mail ja cadastrado para outro colaborador." });
           await db.execute(drzSql`UPDATE corporate_emails SET email = ${newEmail} WHERE userId = ${input.userId} OR email = ${String(urow.email ?? "").toLowerCase()}`);
           await db.execute(drzSql`UPDATE users SET email = ${newEmail} WHERE id = ${input.userId}`);
@@ -6345,8 +6351,8 @@ export const appRouter = router({
           const cpfNorm = normalizeCpf(input.cpf);
           if (input.cpf && !cpfNorm) throw new TRPCError({ code: "BAD_REQUEST", message: "CPF invalido." });
           if (cpfNorm) {
-            const dup: any = await db.execute(drzSql`SELECT id FROM users WHERE cpf = ${cpfNorm} AND id <> ${input.userId} LIMIT 1`);
-            const duprow = Array.isArray(dup) ? (dup[0]?.[0] ?? dup[0]) : dup;
+            const dup: any = await db.execute(drzSql`SELECT id FROM users WHERE cpf = ${cpfNorm} AND company_id = ${urow.company_id} AND id <> ${input.userId} LIMIT 1`);
+            const duprow = firstDbRow(dup);
             if (duprow) throw new TRPCError({ code: "BAD_REQUEST", message: "CPF ja cadastrado para outro colaborador." });
           }
           await db.execute(drzSql`UPDATE users SET cpf = ${cpfNorm} WHERE id = ${input.userId}`);
@@ -11663,6 +11669,36 @@ export const appRouter = router({
         const body = fillTemplatePreview((tpl as any).body, company?.name);
         const r = await sendWhatsappText(phone, body, { companyId: input.companyId, userId: (ctx.user as any).id ?? null });
         return { ok: !!r.ok, preview: !!r.preview, error: r.error ?? null, to: phone, body };
+      }),
+    sendCommunicationJourneyTest: adminOrRhProcedure
+      .input(z.object({ companyId: z.number().int(), phone: z.string().min(8) }))
+      .mutation(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        if (role !== "admin_global" && role !== "super_admin") throw new TRPCError({ code: "FORBIDDEN" });
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensureCommunicationTemplateTables(db);
+        const [[company]]: any = await execP(db, `SELECT name FROM companies WHERE id=? LIMIT 1`, [input.companyId]);
+        const [rows]: any = await execP(db, `
+          SELECT event_key, title, body, is_active
+          FROM communication_message_templates
+          WHERE company_id=? AND channel='whatsapp'`, [input.companyId]);
+        const byKey = new Map((rows ?? []).map((r: any) => [String(r.event_key), r]));
+        const { normalizeE164BR, sendWhatsappText } = await import("./_core/whatsapp");
+        const phone = normalizeE164BR(input.phone);
+        if (!phone) throw new TRPCError({ code: "BAD_REQUEST", message: "WhatsApp invalido." });
+        const sent: any[] = [];
+        for (const fallback of DEFAULT_WHATSAPP_MESSAGE_TEMPLATES) {
+          const saved: any = byKey.get(fallback.eventKey);
+          if (saved && Number(saved.is_active ?? 1) === 0) {
+            sent.push({ eventKey: fallback.eventKey, title: saved.title ?? fallback.title, skipped: true, reason: "Template inativo" });
+            continue;
+          }
+          const title = saved?.title ?? fallback.title;
+          const body = fillTemplatePreview(saved?.body ?? fallback.body, company?.name);
+          const r = await sendWhatsappText(phone, body, { companyId: input.companyId, userId: (ctx.user as any).id ?? null });
+          sent.push({ eventKey: fallback.eventKey, title, ok: !!r.ok, preview: !!r.preview, error: r.error ?? null, body });
+        }
+        return { ok: sent.every((x) => x.skipped || x.ok), to: phone, preview: sent.some((x) => x.preview), sent };
       }),
     updatePlus: adminOrRhProcedure
       .input(z.object({

@@ -43,6 +43,10 @@ export default function AdminCompanyDetail() {
     onSuccess: (r: any) => toast.success(r?.preview ? "Simulação registrada em modo preview." : "Mensagem de teste enviada."),
     onError: (e: any) => toast.error(e?.message ?? "Erro ao enviar teste."),
   });
+  const sendJourneyTest = (trpc.companies as any).sendCommunicationJourneyTest.useMutation({
+    onSuccess: (r: any) => toast.success(r?.preview ? `Jornada simulada em preview: ${r?.sent?.length ?? 0} mensagem(ns).` : `Jornada enviada: ${r?.sent?.length ?? 0} mensagem(ns).`),
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao simular jornada."),
+  });
 
   const [branchForm, setBranchForm] = useState({ name: "", city: "", state: "" });
   const [sectorForm, setSectorForm] = useState({ name: "", branchId: "" });
@@ -417,6 +421,14 @@ export default function AdminCompanyDetail() {
                     onClick={() => sendCommTest.mutate({ companyId, eventKey: selectedMessageKey, phone: testPhone })}
                   >
                     <Send className="w-4 h-4" /> Enviar teste
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="gap-2"
+                    disabled={sendJourneyTest.isPending || !testPhone.trim()}
+                    onClick={() => sendJourneyTest.mutate({ companyId, phone: testPhone })}
+                  >
+                    <MessageSquare className="w-4 h-4" /> Simular jornada completa
                   </Button>
                   <Button
                     className="gap-2"
