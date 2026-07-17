@@ -486,7 +486,22 @@ async function main() {
           [moduleId, unitId, lessonOrder, item.title, item.focus, content, item.minutes, item.minutes, imageUrl],
         );
         const lessonId = Number(lessonResult.insertId);
-        const blocks = lessonBlocks(unit, item, imageUrl);
+        const isFinalLesson = unitIndex === units.length - 1 && item === unit.lessons[unit.lessons.length - 1];
+        const blocks = [
+          ...lessonBlocks(unit, item, imageUrl),
+          ...(isFinalLesson
+            ? finalExam.map((examItem, examIndex) => ({
+                type: "multiple_choice",
+                data: {
+                  question: `Avaliação final ${examIndex + 1}/20 — ${examItem.question}`,
+                  options: examItem.options,
+                  correctIndex: examItem.correctIndex,
+                  explanation: examItem.explanation,
+                },
+                xp: 10,
+              }))
+            : []),
+        ];
         for (let i = 0; i < blocks.length; i++) {
           await conn.execute(
             "INSERT INTO lesson_blocks (lesson_id, block_type, content, order_index, xp_reward) VALUES (?, ?, ?, ?, ?)",
