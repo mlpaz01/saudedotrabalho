@@ -3310,6 +3310,134 @@ function encryptSmtpPass(plain: string): string {
   return iv.toString("hex") + ":" + encrypted.toString("hex");
 }
 
+function encryptIntegrationSecret(plain: string): string {
+  return encryptSmtpPass(plain);
+}
+
+function decryptIntegrationSecret(encrypted: string): string {
+  return decryptSmtpPass(encrypted);
+}
+
+function rowsOf<T = any>(result: any): T[] {
+  return Array.isArray(result?.[0]) ? result[0] : Array.isArray(result) ? result : [];
+}
+
+async function ensureTotvsRmTables() {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
+  await db.execute(drzSql`
+    CREATE TABLE IF NOT EXISTS totvs_rm_connections (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      company_id INT NOT NULL,
+      rm_version VARCHAR(40) NOT NULL DEFAULT '12.1.2602.181',
+      base_url VARCHAR(500) NOT NULL,
+      integration_mode VARCHAR(20) NOT NULL DEFAULT 'rest',
+      auth_type VARCHAR(20) NOT NULL DEFAULT 'basic',
+      username VARCHAR(255) NULL,
+      password_encrypted TEXT NULL,
+      coligada VARCHAR(30) NULL,
+      filial VARCHAR(30) NULL,
+      rest_healthcheck_path VARCHAR(300) NOT NULL DEFAULT '/RMSRestDataServer/rest',
+      rest_employee_path VARCHAR(300) NULL,
+      soap_wsdl_path VARCHAR(300) NULL,
+      soap_dataserver VARCHAR(160) NULL,
+      field_map_json TEXT NULL,
+      status_map_json TEXT NULL,
+      sync_schedule VARCHAR(30) NOT NULL DEFAULT 'manual',
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+      last_test_at TIMESTAMP NULL,
+      last_test_ok TINYINT(1) NULL,
+      last_test_status INT NULL,
+      last_test_error TEXT NULL,
+      last_sync_at TIMESTAMP NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_totvs_rm_company (company_id),
+      INDEX idx_totvs_rm_company (company_id),
+      INDEX idx_totvs_rm_active (is_active)
+    )
+  `);
+  await db.execute(drzSql`
+    CREATE TABLE IF NOT EXISTS totvs_rm_sync_logs (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      connection_id INT NULL,
+      company_id INT NOT NULL,
+      run_type VARCHAR(30) NOT NULL DEFAULT 'test',
+      status VARCHAR(30) NOT NULL,
+      started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      finished_at TIMESTAMP NULL,
+      summary_json TEXT NULL,
+      error_message TEXT NULL,
+      created_by_user_id INT NULL,
+      created_by_email VARCHAR(255) NULL,
+      INDEX idx_totvs_rm_logs_company (company_id),
+      INDEX idx_totvs_rm_logs_connection (connection_id),
+      INDEX idx_totvs_rm_logs_started (started_at)
+    )
+  `);
+}
+
+function parseJsonField(value: any, fallback: any) {
+  if (!value) return fallback;
+  try {
+    return typeof value === "string" ? JSON.parse(value) : value;
+  } catch {
+    return fallback;
+  }
+}
+
+function cleanBaseUrl(input: string) {
+  return input.trim().replace(/\/+$/, "");
+}
+
+function joinUrl(baseUrl: string, path: string) {
+  const base = cleanBaseUrl(baseUrl);
+  const suffix = (path || "").trim();
+  if (!suffix) return base;
+  return `${base}/${suffix.replace(/^\/+/, "")}`;
+}
+
+async function testTotvsRmHttpConnection(cfg: any) {
+  const targetPath = String(cfg.integration_mode || "rest") === "soap"
+    ? String(cfg.soap_wsdl_path || "/wsDataServer/IwsDataServer?wsdl")
+    : String(cfg.rest_healthcheck_path || "/RMSRestDataServer/rest");
+  const url = joinUrl(String(cfg.base_url || ""), targetPath);
+  const headers: Record<string, string> = {
+    "Accept": String(cfg.integration_mode || "rest") === "soap" ? "text/xml, application/xml, */*" : "application/json, text/plain, */*",
+    "User-Agent": "SaudeDoTrabalho-TOTVS-RM-Connector/1.0",
+  };
+  if (cfg.auth_type === "basic" && cfg.username && cfg.password_encrypted) {
+    const pass = decryptIntegrationSecret(String(cfg.password_encrypted));
+    headers.Authorization = `Basic ${Buffer.from(`${cfg.username}:${pass}`).toString("base64")}`;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  const started = Date.now();
+  try {
+    const response = await fetch(url, { method: "GET", headers, signal: controller.signal });
+    const body = await response.text().catch(() => "");
+    return {
+      ok: response.ok || response.status === 401 || response.status === 403,
+      httpOk: response.ok,
+      status: response.status,
+      url,
+      elapsedMs: Date.now() - started,
+      message: response.ok
+        ? "RM respondeu ao endpoint configurado."
+        : response.status === 401 || response.status === 403
+          ? "RM respondeu, mas recusou autenticação/permissão. URL está alcançável; revise usuário, senha e permissões."
+          : `RM respondeu com HTTP ${response.status}.`,
+      sample: body.slice(0, 500),
+    };
+  } catch (error: any) {
+    const msg = error?.name === "AbortError" ? "Tempo limite de conexão com o RM." : (error?.message || String(error));
+    return { ok: false, httpOk: false, status: null, url, elapsedMs: Date.now() - started, message: msg, sample: "" };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export const appRouter = router({
 
 
@@ -13924,6 +14052,241 @@ export const appRouter = router({
       }),
 
     // ─── Bruno R5-P3 #6 — Faixas de preço editáveis (Super Admin) ─────────
+    listTotvsRmConnections: superAdminProcedure.query(async () => {
+      await ensureTotvsRmTables();
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const r: any = await db.execute(drzSql`
+        SELECT c.id AS company_id, c.name AS company_name, c.cnpj,
+               trc.id, trc.rm_version, trc.base_url, trc.integration_mode, trc.auth_type,
+               trc.username, trc.coligada, trc.filial, trc.rest_healthcheck_path,
+               trc.rest_employee_path, trc.soap_wsdl_path, trc.soap_dataserver,
+               trc.sync_schedule, trc.is_active, trc.last_test_at, trc.last_test_ok,
+               trc.last_test_status, trc.last_test_error, trc.last_sync_at,
+               (trc.password_encrypted IS NOT NULL AND trc.password_encrypted <> '') AS has_password
+          FROM companies c
+          LEFT JOIN totvs_rm_connections trc ON trc.company_id = c.id
+         ORDER BY c.name ASC
+      `);
+      return rowsOf(r).map((row: any) => ({
+        ...row,
+        is_active: row.is_active == null ? null : Boolean(row.is_active),
+        last_test_ok: row.last_test_ok == null ? null : Boolean(row.last_test_ok),
+        has_password: Boolean(row.has_password),
+      }));
+    }),
+
+    getTotvsRmConnection: superAdminProcedure
+      .input(z.object({ companyId: z.number().int() }))
+      .query(async ({ input }) => {
+        await ensureTotvsRmTables();
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const r: any = await db.execute(drzSql`
+          SELECT trc.*, c.name AS company_name,
+                 (trc.password_encrypted IS NOT NULL AND trc.password_encrypted <> '') AS has_password
+            FROM totvs_rm_connections trc
+            JOIN companies c ON c.id = trc.company_id
+           WHERE trc.company_id=${input.companyId}
+           LIMIT 1
+        `);
+        const row: any = rowsOf(r)[0];
+        if (!row) return null;
+        return {
+          ...row,
+          field_map: parseJsonField(row.field_map_json, {}),
+          status_map: parseJsonField(row.status_map_json, {}),
+          is_active: Boolean(row.is_active),
+          last_test_ok: row.last_test_ok == null ? null : Boolean(row.last_test_ok),
+          has_password: Boolean(row.has_password),
+          password_encrypted: undefined,
+        };
+      }),
+
+    saveTotvsRmConnection: superAdminProcedure
+      .input(z.object({
+        companyId: z.number().int(),
+        rmVersion: z.string().default("12.1.2602.181"),
+        baseUrl: z.string().min(6),
+        integrationMode: z.enum(["rest", "soap", "hybrid"]).default("rest"),
+        authType: z.enum(["basic", "none"]).default("basic"),
+        username: z.string().optional(),
+        password: z.string().optional(),
+        coligada: z.string().optional(),
+        filial: z.string().optional(),
+        restHealthcheckPath: z.string().optional(),
+        restEmployeePath: z.string().optional(),
+        soapWsdlPath: z.string().optional(),
+        soapDataServer: z.string().optional(),
+        syncSchedule: z.enum(["manual", "daily", "weekly"]).default("manual"),
+        isActive: z.boolean().default(true),
+        fieldMap: z.record(z.string(), z.string()).optional(),
+        statusMap: z.record(z.string(), z.string()).optional(),
+      }))
+      .mutation(async ({ input }) => {
+        await ensureTotvsRmTables();
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const existing: any = await db.execute(drzSql`SELECT id, password_encrypted FROM totvs_rm_connections WHERE company_id=${input.companyId} LIMIT 1`);
+        const old = rowsOf(existing)[0] as any;
+        const passwordEncrypted = input.password?.trim()
+          ? encryptIntegrationSecret(input.password.trim())
+          : old?.password_encrypted || null;
+        if (input.authType === "basic" && !passwordEncrypted) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Senha é obrigatória na primeira configuração Basic." });
+        }
+        const fieldMap = JSON.stringify(input.fieldMap ?? {
+          cpf: "CPF",
+          name: "NOME",
+          email: "EMAIL",
+          whatsapp: "TELEFONE",
+          branch: "FILIAL",
+          sector: "SECAO",
+          position: "FUNCAO",
+          admissionDate: "DATAADMISSAO",
+          terminationDate: "DATADEMISSAO",
+          status: "SITUACAO",
+          registration: "CHAPA",
+        });
+        const statusMap = JSON.stringify(input.statusMap ?? {
+          active: "A",
+          away: "F,L,M",
+          terminated: "D",
+          death: "O",
+        });
+        if (old?.id) {
+          await db.execute(drzSql`
+            UPDATE totvs_rm_connections SET
+              rm_version=${input.rmVersion || "12.1.2602.181"},
+              base_url=${cleanBaseUrl(input.baseUrl)},
+              integration_mode=${input.integrationMode},
+              auth_type=${input.authType},
+              username=${input.username || null},
+              password_encrypted=${passwordEncrypted},
+              coligada=${input.coligada || null},
+              filial=${input.filial || null},
+              rest_healthcheck_path=${input.restHealthcheckPath || "/RMSRestDataServer/rest"},
+              rest_employee_path=${input.restEmployeePath || null},
+              soap_wsdl_path=${input.soapWsdlPath || "/wsDataServer/IwsDataServer?wsdl"},
+              soap_dataserver=${input.soapDataServer || null},
+              field_map_json=${fieldMap},
+              status_map_json=${statusMap},
+              sync_schedule=${input.syncSchedule},
+              is_active=${input.isActive ? 1 : 0}
+            WHERE company_id=${input.companyId}
+          `);
+        } else {
+          await db.execute(drzSql`
+            INSERT INTO totvs_rm_connections
+              (company_id, rm_version, base_url, integration_mode, auth_type, username, password_encrypted,
+               coligada, filial, rest_healthcheck_path, rest_employee_path, soap_wsdl_path, soap_dataserver,
+               field_map_json, status_map_json, sync_schedule, is_active)
+            VALUES
+              (${input.companyId}, ${input.rmVersion || "12.1.2602.181"}, ${cleanBaseUrl(input.baseUrl)}, ${input.integrationMode}, ${input.authType},
+               ${input.username || null}, ${passwordEncrypted}, ${input.coligada || null}, ${input.filial || null},
+               ${input.restHealthcheckPath || "/RMSRestDataServer/rest"}, ${input.restEmployeePath || null},
+               ${input.soapWsdlPath || "/wsDataServer/IwsDataServer?wsdl"}, ${input.soapDataServer || null},
+               ${fieldMap}, ${statusMap}, ${input.syncSchedule}, ${input.isActive ? 1 : 0})
+          `);
+        }
+        return { ok: true };
+      }),
+
+    testTotvsRmConnection: superAdminProcedure
+      .input(z.object({ companyId: z.number().int() }))
+      .mutation(async ({ ctx, input }) => {
+        await ensureTotvsRmTables();
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const r: any = await db.execute(drzSql`SELECT * FROM totvs_rm_connections WHERE company_id=${input.companyId} LIMIT 1`);
+        const cfg: any = rowsOf(r)[0];
+        if (!cfg) throw new TRPCError({ code: "NOT_FOUND", message: "Conector TOTVS RM não configurado para esta empresa." });
+        const started = new Date();
+        const result = await testTotvsRmHttpConnection(cfg);
+        const status = result.ok ? "success" : "failed";
+        const summary = JSON.stringify({
+          rmVersion: cfg.rm_version,
+          integrationMode: cfg.integration_mode,
+          url: result.url,
+          httpStatus: result.status,
+          elapsedMs: result.elapsedMs,
+          message: result.message,
+          sample: result.sample,
+        });
+        await db.execute(drzSql`
+          UPDATE totvs_rm_connections
+             SET last_test_at=NOW(),
+                 last_test_ok=${result.ok ? 1 : 0},
+                 last_test_status=${result.status ?? null},
+                 last_test_error=${result.ok ? null : result.message}
+           WHERE id=${cfg.id}
+        `);
+        await db.execute(drzSql`
+          INSERT INTO totvs_rm_sync_logs
+            (connection_id, company_id, run_type, status, started_at, finished_at, summary_json, error_message, created_by_user_id, created_by_email)
+          VALUES
+            (${cfg.id}, ${input.companyId}, 'test', ${status}, ${started}, NOW(), ${summary}, ${result.ok ? null : result.message},
+             ${(ctx.user as any).id ?? null}, ${(ctx.user as any).email ?? null})
+        `);
+        return result;
+      }),
+
+    listTotvsRmLogs: superAdminProcedure
+      .input(z.object({ companyId: z.number().int().optional(), limit: z.number().int().min(1).max(100).default(30) }).optional())
+      .query(async ({ input }) => {
+        await ensureTotvsRmTables();
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const limit = input?.limit ?? 30;
+        const r: any = input?.companyId
+          ? await db.execute(drzSql`
+              SELECT l.*, c.name AS company_name
+                FROM totvs_rm_sync_logs l
+                LEFT JOIN companies c ON c.id=l.company_id
+               WHERE l.company_id=${input.companyId}
+               ORDER BY l.started_at DESC
+               LIMIT ${limit}`)
+          : await db.execute(drzSql`
+              SELECT l.*, c.name AS company_name
+                FROM totvs_rm_sync_logs l
+                LEFT JOIN companies c ON c.id=l.company_id
+               ORDER BY l.started_at DESC
+               LIMIT ${limit}`);
+        return rowsOf(r).map((row: any) => ({ ...row, summary: parseJsonField(row.summary_json, null) }));
+      }),
+
+    runTotvsRmDryRun: superAdminProcedure
+      .input(z.object({ companyId: z.number().int() }))
+      .mutation(async ({ ctx, input }) => {
+        await ensureTotvsRmTables();
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const r: any = await db.execute(drzSql`SELECT * FROM totvs_rm_connections WHERE company_id=${input.companyId} LIMIT 1`);
+        const cfg: any = rowsOf(r)[0];
+        if (!cfg) throw new TRPCError({ code: "NOT_FOUND", message: "Conector TOTVS RM não configurado para esta empresa." });
+        if (!cfg.rest_employee_path && cfg.integration_mode !== "soap") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Informe o caminho REST de colaboradores para executar a prévia." });
+        }
+        const summary = {
+          message: "Prévia estrutural pronta. A coleta real será executada após configurar o endpoint de colaboradores/DataServer do RM do cliente.",
+          rmVersion: cfg.rm_version,
+          mode: cfg.integration_mode,
+          expectedIdentifier: "CPF + empresa/coligada",
+          willUpdate: ["branches", "sectors", "corporate_emails", "users"],
+          willNotDeleteHistory: true,
+          fieldMap: parseJsonField(cfg.field_map_json, {}),
+          statusMap: parseJsonField(cfg.status_map_json, {}),
+        };
+        await db.execute(drzSql`
+          INSERT INTO totvs_rm_sync_logs
+            (connection_id, company_id, run_type, status, started_at, finished_at, summary_json, created_by_user_id, created_by_email)
+          VALUES
+            (${cfg.id}, ${input.companyId}, 'dry_run', 'pending_mapping', NOW(), NOW(), ${JSON.stringify(summary)},
+             ${(ctx.user as any).id ?? null}, ${(ctx.user as any).email ?? null})
+        `);
+        return { ok: true, summary };
+      }),
+
     crmListPricingFaixas: superAdminProcedure.query(async () => {
       const { loadFaixas } = await import("./_core/crm");
       return loadFaixas();
