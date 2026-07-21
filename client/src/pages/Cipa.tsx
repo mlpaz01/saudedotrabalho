@@ -79,6 +79,7 @@ function CipaLearningSection() {
       markMut.mutate({ contentId: item.id, percentWatched: completed ? 100 : Math.max(item.percent || 0, 10), timeSpentSeconds: completed ? 60 : 15, completed });
     }
   }
+  const formatDate = (value?: string | null) => value ? value.slice(0, 10).split("-").reverse().join("/") : null;
   return (
     <section className="bg-white border rounded-xl p-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -104,8 +105,17 @@ function CipaLearningSection() {
                 </div>
                 {it.description && <p className="text-xs text-slate-500 mt-1 line-clamp-2">{it.description}</p>}
               </div>
-              {it.isCompleted ? <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-semibold">Concluído</span> : <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-semibold">Pendente</span>}
+              <div className="flex flex-col items-end gap-1">
+                {it.isRequired && <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-semibold">Obrigatorio</span>}
+                {it.isCompleted ? <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-semibold">Concluido</span> : <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-semibold">Pendente</span>}
+              </div>
             </div>
+            {(it.dueDate || it.certificateDueDate) && (
+              <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-500">
+                {it.dueDate && <span className="rounded bg-slate-50 border px-2 py-0.5">Conclusao ate {formatDate(it.dueDate)}</span>}
+                {it.certificateDueDate && <span className="rounded bg-slate-50 border px-2 py-0.5">Certificado ate {formatDate(it.certificateDueDate)}</span>}
+              </div>
+            )}
             <div className="mt-3 h-2 rounded-full bg-slate-100 overflow-hidden"><div className="h-full bg-emerald-600" style={{ width: `${Math.max(0, Math.min(100, Math.round(it.percent || 0)))}%` }} /></div>
             <div className="mt-3 flex flex-wrap gap-2">
               {it.contentType === "course" && it.moduleId && <a href={`/cursos/${it.moduleId}`} className="px-3 py-1.5 rounded bg-emerald-600 text-white text-xs font-semibold">Iniciar curso</a>}

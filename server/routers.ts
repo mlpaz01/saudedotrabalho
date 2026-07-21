@@ -6179,12 +6179,14 @@ export const appRouter = router({
         const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
         const roleLabel: Record<string, string> = {
           user: "Colaborador", chefia: "Chefia / Gestor",
-          rh: "RH / Saude", admin: "Administrador",
+          rh: "RH / Saude", sesmt: "SESMT", cipa: "CIPA", admin: "Administrador",
           company_admin: "Admin Empresa", admin_global: "Admin Global", super_admin: "Super Admin",
         };
         const mapRole = (p?: string | null): string => {
           const v = lc(p);
           if (!v) return "user";
+          if (v.includes("cipa") || v.includes("cipeiro")) return "cipa";
+          if (v.includes("sesmt")) return "sesmt";
           if (["chefia", "gestor", "gerente", "lider", "líder", "coordenador", "supervisor"].some(k => v.includes(k))) return "chefia";
           if (v.includes("admin") || v.includes("administrad") || v.includes("diretor")) return "admin";
           if (v.includes("rh") || v.includes("recursos humanos") || v.includes("psico") || v.includes("saude") || v.includes("saúde") || v.includes("medic") || v.includes("médic") || v.includes("enferm") || v.includes("seguranca") || v.includes("segurança")) return "rh";
@@ -6215,6 +6217,7 @@ export const appRouter = router({
           const emailInput = lc(raw.email);
           let email = emailInput;
           if (!email && cpfNorm) email = `cpf.${cpfNorm}@sem-email.saudedotrabalho.local`;
+          const hasRealEmail = !!emailInput;
           const nome = norm(raw.nome);
           const filial = norm(raw.filial);
           const setor = norm(raw.setor);
@@ -6225,7 +6228,7 @@ export const appRouter = router({
           let role = mapRole(raw.perfil);
           if (role === "admin" && !canAssignAdmin) role = "rh"; // clamp for RH importers
           const res: any = {
-            email, nome, cpf: cpfNorm ?? "", role, roleLabel: roleLabel[role] ?? role,
+            email, nome, cpf: cpfNorm ?? "", whatsapp: whatsappNorm ?? "", role, roleLabel: roleLabel[role] ?? role,
             filial, setor, cargo, status: "ok", branchAction: "none", sectorAction: "none", message: "",
           };
           // Cargo é obrigatório (NR-01) — sem ele PGR/AEP/EPI ficam sem base.
@@ -6299,8 +6302,8 @@ export const appRouter = router({
           // BUGFIX: use ?? null (not ?? ex[0]) — empty array [] is truthy, causing new rows
           // to hit the UPDATE branch and never be INSERT-ed.
           const ex: any = cpfNorm
-            ? await db.execute(drzSql`SELECT id, userId FROM corporate_emails WHERE email = ${email} OR cpf = ${cpfNorm} LIMIT 1`)
-            : await db.execute(drzSql`SELECT id, userId FROM corporate_emails WHERE email = ${email} LIMIT 1`);
+            ? await db.execute(drzSql`SELECT id, userId FROM corporate_emails WHERE company_id = ${companyId} AND (email = ${email} OR cpf = ${cpfNorm}) LIMIT 1`)
+            : await db.execute(drzSql`SELECT id, userId FROM corporate_emails WHERE company_id = ${companyId} AND email = ${email} LIMIT 1`);
           const exRows = Array.isArray(ex) ? ((ex as any)[0] ?? []) : [];
           const exrow = Array.isArray(exRows) ? (exRows[0] ?? null) : exRows ?? null;
 
@@ -6322,7 +6325,7 @@ export const appRouter = router({
             const exTok: any = await db.execute(drzSql`SELECT activation_token, hasSetPassword FROM corporate_emails WHERE id = ${exrow.id}`);
             const exTokRows = Array.isArray(exTok) ? ((exTok as any)[0] ?? []) : [];
             const exTokRow = Array.isArray(exTokRows) ? (exTokRows[0] ?? null) : null;
-            if (exTokRow && !exTokRow.activation_token && !exTokRow.hasSetPassword) {
+            if (hasRealEmail && exTokRow && !exTokRow.activation_token && !exTokRow.hasSetPassword) {
               try {
                 const { randomBytes } = await import("crypto");
                 const actToken = randomBytes(32).toString("hex");
@@ -6350,7 +6353,7 @@ export const appRouter = router({
             // Gera token de ativação + envia e-mail de primeiro acesso (Sprint 1.6).
             // Só para colaboradores NOVOS, em modo NÃO dry-run. Falha de e-mail
             // NÃO derruba o import — registra em res.emailWarning.
-            try {
+            if (hasRealEmail) try {
               const { randomBytes } = await import("crypto");
               const actToken = randomBytes(32).toString("hex");
               const actExp = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 19).replace("T", " ");
@@ -6427,7 +6430,7 @@ export const appRouter = router({
         userId: z.number(),
         name: z.string().optional(),
         email: z.string().email().optional(),
-        role: z.enum(["user", "chefia", "rh", "admin"]).optional(),
+        role: z.enum(["user", "chefia", "rh", "sesmt", "cipa", "admin"]).optional(),
         cpf: z.string().nullable().optional(),
         employmentStatus: z.enum(["active", "away", "terminated", "death", "retired", "other"]).optional(),
         branchId: z.number().nullable().optional(),
@@ -6473,10 +6476,10 @@ export const appRouter = router({
         // email change (keep users + corporate_emails in sync, enforce uniqueness)
         if (input.email && input.email.toLowerCase() !== String(urow.email ?? "").toLowerCase()) {
           const newEmail = input.email.toLowerCase();
-          const dup: any = await db.execute(drzSql`SELECT id FROM corporate_emails WHERE email = ${newEmail} AND (userId IS NULL OR userId <> ${input.userId}) LIMIT 1`);
+          const dup: any = await db.execute(drzSql`SELECT id FROM corporate_emails WHERE company_id = ${urow.company_id} AND email = ${newEmail} AND (userId IS NULL OR userId <> ${input.userId}) LIMIT 1`);
           const duprow = firstDbRow(dup);
           if (duprow) throw new TRPCError({ code: "BAD_REQUEST", message: "E-mail ja cadastrado para outro colaborador." });
-          await db.execute(drzSql`UPDATE corporate_emails SET email = ${newEmail} WHERE userId = ${input.userId} OR email = ${String(urow.email ?? "").toLowerCase()}`);
+          await db.execute(drzSql`UPDATE corporate_emails SET email = ${newEmail} WHERE userId = ${input.userId} OR (company_id = ${urow.company_id} AND email = ${String(urow.email ?? "").toLowerCase()})`);
           await db.execute(drzSql`UPDATE users SET email = ${newEmail} WHERE id = ${input.userId}`);
         }
 
@@ -6505,20 +6508,20 @@ export const appRouter = router({
             if (duprow) throw new TRPCError({ code: "BAD_REQUEST", message: "CPF ja cadastrado para outro colaborador." });
           }
           await db.execute(drzSql`UPDATE users SET cpf = ${cpfNorm} WHERE id = ${input.userId}`);
-          await db.execute(drzSql`UPDATE corporate_emails SET cpf = ${cpfNorm} WHERE userId = ${input.userId} OR email = ${String(urow.email ?? "").toLowerCase()}`);
+          await db.execute(drzSql`UPDATE corporate_emails SET cpf = ${cpfNorm} WHERE userId = ${input.userId} OR (company_id = ${urow.company_id} AND email = ${String(urow.email ?? "").toLowerCase()})`);
         }
         if (input.whatsapp !== undefined) {
           const { ensureWhatsappTables, normalizeE164BR } = await import("./_core/whatsapp");
           await ensureWhatsappTables();
           const norm = normalizeE164BR(input.whatsapp);
           await db.execute(drzSql`UPDATE users SET whatsapp_e164 = ${norm} WHERE id = ${input.userId}`);
-          await db.execute(drzSql`UPDATE corporate_emails SET whatsapp_e164 = ${norm} WHERE userId = ${input.userId} OR email = ${String(urow.email ?? "").toLowerCase()}`);
+          await db.execute(drzSql`UPDATE corporate_emails SET whatsapp_e164 = ${norm} WHERE userId = ${input.userId} OR (company_id = ${urow.company_id} AND email = ${String(urow.email ?? "").toLowerCase()})`);
         }
         if (input.employmentStatus !== undefined) {
           const status = input.employmentStatus;
           const allowCorporateAccess = status === "active" || status === "away" || status === "other";
           await db.execute(drzSql`UPDATE users SET employment_status = ${status}, is_active = 1 WHERE id = ${input.userId}`);
-          await db.execute(drzSql`UPDATE corporate_emails SET employment_status = ${status}, isActive = ${allowCorporateAccess ? 1 : 0} WHERE userId = ${input.userId} OR email = ${String(urow.email ?? "").toLowerCase()}`);
+          await db.execute(drzSql`UPDATE corporate_emails SET employment_status = ${status}, isActive = ${allowCorporateAccess ? 1 : 0} WHERE userId = ${input.userId} OR (company_id = ${urow.company_id} AND email = ${String(urow.email ?? "").toLowerCase()})`);
         }
         return { ok: true };
       }),
@@ -8264,7 +8267,14 @@ export const appRouter = router({
 
 
 
-        validityDays: z.number().nullish(), isMandatory: z.boolean().optional(), profession: z.string().nullish() }))
+        validityDays: z.number().nullish(),
+        isMandatory: z.boolean().optional(),
+        profession: z.string().nullish(),
+        mandatoryTargetRoles: z.array(z.enum(["cipa", "sesmt", "colaboradores"])).optional(),
+        trainingStartDate: z.string().nullish(),
+        trainingDueDate: z.string().nullish(),
+        certificateDueDate: z.string().nullish(),
+      }))
 
 
 
@@ -8282,7 +8292,11 @@ export const appRouter = router({
 
 
 
-        await createModule(input);
+        await createModule({
+          ...input,
+          isMandatory: input.isMandatory || !!input.mandatoryTargetRoles?.length,
+          mandatoryTargetRoles: input.mandatoryTargetRoles?.join(",") || null,
+        });
 
 
 
@@ -8417,7 +8431,14 @@ export const appRouter = router({
 
 
 
-        validityDays: z.number().nullish(), isMandatory: z.boolean().optional(), profession: z.string().nullish() }))
+        validityDays: z.number().nullish(),
+        isMandatory: z.boolean().optional(),
+        profession: z.string().nullish(),
+        mandatoryTargetRoles: z.array(z.enum(["cipa", "sesmt", "colaboradores"])).optional(),
+        trainingStartDate: z.string().nullish(),
+        trainingDueDate: z.string().nullish(),
+        certificateDueDate: z.string().nullish(),
+      }))
 
 
 
@@ -8435,7 +8456,12 @@ export const appRouter = router({
 
 
 
-        const { id, ...data } = input;
+        const { id, mandatoryTargetRoles, ...rest } = input;
+        const data: any = { ...rest };
+        if (mandatoryTargetRoles !== undefined) {
+          data.mandatoryTargetRoles = mandatoryTargetRoles.join(",") || null;
+          data.isMandatory = Boolean(rest.isMandatory || mandatoryTargetRoles.length);
+        }
 
 
 
@@ -29624,6 +29650,10 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         score DECIMAL(5,2) NULL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         UNIQUE KEY uq_user_content (content_id, user_id), INDEX idx_user (user_id), INDEX idx_content (content_id)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+      try { await db.execute(drzSql`ALTER TABLE modules ADD COLUMN mandatory_target_roles VARCHAR(160) NULL`); } catch (_) {}
+      try { await db.execute(drzSql`ALTER TABLE modules ADD COLUMN training_start_date VARCHAR(10) NULL`); } catch (_) {}
+      try { await db.execute(drzSql`ALTER TABLE modules ADD COLUMN training_due_date VARCHAR(10) NULL`); } catch (_) {}
+      try { await db.execute(drzSql`ALTER TABLE modules ADD COLUMN certificate_due_date VARCHAR(10) NULL`); } catch (_) {}
       done = true;
     }
     const contentInput = z.object({
@@ -29720,6 +29750,54 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           const completed = isCourse ? Boolean(Number(r.course_completed ?? 0)) : Boolean(r.completed_at);
           return { id: Number(r.id), contentType: String(r.content_type), moduleId: r.module_id == null ? null : Number(r.module_id), title: String(r.title || r.module_title || ""), description: r.description || r.module_description || null, url: r.url ?? null, fileUrl: r.file_url ?? null, fileName: r.file_name ?? null, provider: r.provider ?? null, isRequired: Boolean(Number(r.is_required ?? 0)), durationMinutes: Number(r.module_duration ?? 0), percent, isCompleted: completed, certificate: r.certificate_id ? { code: r.certificate_code, url: r.certificate_url ?? null } : null };
         });
+        if (String((ctx.user as any).role ?? "") === "cipa") {
+          const [autoRows]: any = await execP(db, `
+            SELECT m.id, m.title, m.description, m.durationMinutes,
+              m.training_start_date, m.training_due_date, m.certificate_due_date,
+              up.percentWatched AS course_percent, up.isCompleted AS course_completed,
+              cert.id AS certificate_id, cert.certificateCode AS certificate_code, cert.pdfUrl AS certificate_url
+            FROM modules m
+            LEFT JOIN user_progress up ON up.userId=? AND up.moduleId=m.id
+            LEFT JOIN certificates cert ON cert.userId=? AND cert.moduleId=m.id
+            WHERE m.isActive=1
+              AND COALESCE(m.is_mandatory,0)=1
+              AND FIND_IN_SET('cipa', COALESCE(m.mandatory_target_roles,'')) > 0
+              AND (
+                m.created_by_company_id IS NULL
+                OR m.created_by_company_id=?
+                OR EXISTS (
+                  SELECT 1 FROM company_content_enrollments cce
+                  WHERE cce.company_id=? AND cce.content_type='module' AND cce.content_id=m.id AND cce.is_active=1
+                )
+              )
+            ORDER BY m.orderIndex, m.id`, [userId, userId, cid, cid]);
+          const existingModuleIds = new Set(list.filter((i: any) => i.moduleId != null).map((i: any) => Number(i.moduleId)));
+          for (const r of autoRows ?? []) {
+            const moduleId = Number(r.id);
+            if (existingModuleIds.has(moduleId)) continue;
+            const percent = Number(r.course_percent ?? 0);
+            const completed = Boolean(Number(r.course_completed ?? 0));
+            list.push({
+              id: `mandatory-module-${moduleId}`,
+              contentType: "course",
+              moduleId,
+              title: String(r.title ?? ""),
+              description: r.description ?? null,
+              url: null,
+              fileUrl: null,
+              fileName: null,
+              provider: "Gestao de Cursos",
+              isRequired: true,
+              durationMinutes: Number(r.durationMinutes ?? 0),
+              percent,
+              isCompleted: completed,
+              trainingStartDate: r.training_start_date ?? null,
+              dueDate: r.training_due_date ?? null,
+              certificateDueDate: r.certificate_due_date ?? null,
+              certificate: r.certificate_id ? { code: r.certificate_code, url: r.certificate_url ?? null } : null,
+            });
+          }
+        }
         return { summary: { total: list.length, completed: list.filter((i: any) => i.isCompleted).length, required: list.filter((i: any) => i.isRequired).length, pendingRequired: list.filter((i: any) => i.isRequired && !i.isCompleted).length, certificates: list.filter((i: any) => i.certificate).length }, courses: list.filter((i: any) => i.contentType === "course"), resources: list.filter((i: any) => i.contentType !== "course") };
       }),
       markProgress: protectedProcedure.input(z.object({ contentId: z.number().int(), percentWatched: z.number().min(0).max(100).optional(), timeSpentSeconds: z.number().int().min(0).optional(), completed: z.boolean().optional() })).mutation(async ({ ctx, input }) => {

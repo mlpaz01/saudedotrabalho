@@ -364,7 +364,7 @@ function splitCsvLine(line: string, delim: string): string[] {
   return out.map((s) => s.trim());
 }
 
-function parseCSV(text: string): ParsedRow[] {
+function parseCSV(text: string, accessMethod: string = "email"): ParsedRow[] {
   const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n").filter((l) => l.trim().length > 0);
   if (lines.length === 0) return [];
   const delim = lines[0].split(";").length > lines[0].split(",").length ? ";" : ",";
@@ -388,11 +388,20 @@ function parseCSV(text: string): ParsedRow[] {
   const firstHasEmail = grid[0].some((c) => c.includes("@"));
   const hasHeader = (iEmail !== -1 || iCpf !== -1 || iNome !== -1) && !firstHasEmail;
   const dataRows = hasHeader ? grid.slice(1) : grid;
-  // Ordem padrão sem cabeçalho: email; nome; filial; setor; cargo; perfil; whatsapp
+  // Ordem padrao sem cabecalho, respeitando o metodo de acesso da empresa.
   if (!hasHeader) {
     const width = Math.max(...grid.map((r) => r.length));
-    if (width >= 8) { iEmail = 0; iCpf = 1; iNome = 2; iFilial = 3; iSetor = 4; iCargo = 5; iPerfil = 6; iWhats = 7; }
-    else { iEmail = 0; iCpf = -1; iNome = 1; iFilial = 2; iSetor = 3; iCargo = 4; iPerfil = 5; iWhats = 6; }
+    if (accessMethod === "cpf") {
+      iEmail = -1; iCpf = 0; iNome = 1; iFilial = 2; iSetor = 3; iCargo = 4; iPerfil = 5; iWhats = 6;
+    } else if (accessMethod === "whatsapp") {
+      iEmail = -1; iCpf = 0; iWhats = 1; iNome = 2; iFilial = 3; iSetor = 4; iCargo = 5; iPerfil = 6;
+    } else if (accessMethod === "both") {
+      iEmail = 0; iCpf = 1; iNome = 2; iFilial = 3; iSetor = 4; iCargo = 5; iPerfil = 6; iWhats = 7;
+    } else if (width >= 8) {
+      iEmail = 0; iCpf = 1; iNome = 2; iFilial = 3; iSetor = 4; iCargo = 5; iPerfil = 6; iWhats = 7;
+    } else {
+      iEmail = 0; iCpf = -1; iNome = 1; iFilial = 2; iSetor = 3; iCargo = 4; iPerfil = 5; iWhats = 6;
+    }
   }
 
   const at = (row: string[], idx: number) => (idx >= 0 && idx < row.length ? row[idx] : "");
@@ -463,7 +472,7 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
     reader.onload = () => {
       const text = String(reader.result ?? "");
       setRaw(text);
-      const p = parseCSV(text);
+      const p = parseCSV(text, accessMethod);
       setParsed(p);
       setPreview(null);
       setDone(null);
@@ -472,7 +481,7 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
   }
 
   function onPasteParse() {
-    const p = parseCSV(raw);
+    const p = parseCSV(raw, accessMethod);
     setParsed(p);
     setPreview(null);
     setDone(null);
@@ -518,6 +527,7 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
   }
 
   const previewRows = (preview?.results ?? []) as any[];
+  const previewIdentityLabel = accessMethod === "cpf" ? "CPF" : accessMethod === "whatsapp" ? "CPF/WhatsApp" : accessMethod === "both" ? "E-mail / CPF" : "E-mail";
   const okCount = previewRows.filter((r) => r.status === "ok").length;
   const badCount = previewRows.length - okCount;
 
@@ -633,7 +643,7 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
                       <table className="w-full text-xs">
                         <thead className="bg-muted sticky top-0">
                           <tr>
-                            <th className="text-left px-2 py-1.5">E-mail</th>
+                            <th className="text-left px-2 py-1.5">{previewIdentityLabel}</th>
                             <th className="text-left px-2 py-1.5">Nome</th>
                             <th className="text-left px-2 py-1.5">Filial</th>
                             <th className="text-left px-2 py-1.5">Setor</th>
@@ -645,7 +655,7 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
                         <tbody>
                           {previewRows.map((r, i) => (
                             <tr key={i} className={`border-t ${r.status !== "ok" ? "bg-rose-50" : ""}`}>
-                              <td className="px-2 py-1">{r.email || "—"}</td>
+                              <td className="px-2 py-1">{accessMethod === "cpf" ? (r.cpf || "-") : accessMethod === "whatsapp" ? (r.cpf || r.whatsapp || "-") : accessMethod === "both" ? (r.email || r.cpf || "-") : (r.email || "-")}</td>
                               <td className="px-2 py-1">{r.nome || "—"}</td>
                               <td className="px-2 py-1">{r.filial || "—"}{r.branchAction === "create" && <span className="text-sky-600"> (nova)</span>}</td>
                               <td className="px-2 py-1">{r.setor || "—"}{r.sectorAction === "create" && <span className="text-sky-600"> (novo)</span>}</td>
@@ -990,6 +1000,8 @@ function AssignmentDialog({ user, onClose, onSaved }: { user: any; onClose: () =
               <option value="user">Colaborador</option>
               <option value="chefia">Chefia / Gestor</option>
               <option value="rh">RH / Saúde</option>
+              <option value="sesmt">SESMT</option>
+              <option value="cipa">CIPA</option>
               <option value="admin">Administrador</option>
             </select>
           </div>

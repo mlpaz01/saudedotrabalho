@@ -52,7 +52,23 @@ import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let _employmentStatusColumnsReady = false;
+let _moduleAudienceColumnsReady = false;
 const ISO_COURSE_ACCESS_ROLES = ["admin", "company_admin", "rh", "sesmt", "admin_global", "super_admin"];
+const COURSE_AUDIENCE_ROLE_GROUPS: Record<string, string[]> = {
+  cipa: ["cipa"],
+  sesmt: ["sesmt"],
+  colaboradores: ["user", "chefia"],
+};
+
+function moduleTargetsRole(targets: unknown, role: unknown) {
+  const roleValue = String(role ?? "");
+  if (!roleValue) return false;
+  const targetList = String(targets ?? "")
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean);
+  return targetList.some((target) => (COURSE_AUDIENCE_ROLE_GROUPS[target] ?? [target]).includes(roleValue));
+}
 
 
 
@@ -85,6 +101,15 @@ async function ensureEmploymentStatusColumns(db: any) {
   try { await db.execute(sql.raw("ALTER TABLE corporate_emails ADD COLUMN employment_status VARCHAR(30) NOT NULL DEFAULT 'active'")); } catch (_) {}
   try { await db.execute(sql.raw("ALTER TABLE corporate_emails ADD INDEX idx_corporate_employment_status (employment_status)")); } catch (_) {}
   _employmentStatusColumnsReady = true;
+}
+
+async function ensureModuleAudienceColumns(db: any) {
+  if (_moduleAudienceColumnsReady || !db) return;
+  try { await db.execute(sql.raw("ALTER TABLE modules ADD COLUMN mandatory_target_roles VARCHAR(160) NULL")); } catch (_) {}
+  try { await db.execute(sql.raw("ALTER TABLE modules ADD COLUMN training_start_date VARCHAR(10) NULL")); } catch (_) {}
+  try { await db.execute(sql.raw("ALTER TABLE modules ADD COLUMN training_due_date VARCHAR(10) NULL")); } catch (_) {}
+  try { await db.execute(sql.raw("ALTER TABLE modules ADD COLUMN certificate_due_date VARCHAR(10) NULL")); } catch (_) {}
+  _moduleAudienceColumnsReady = true;
 }
 
 
@@ -310,6 +335,7 @@ export async function listModules() {
   const db = await getDb();
 
   if (!db) return [];
+  await ensureModuleAudienceColumns(db);
 
   // Only return active + published courses to collaborators
   return db.select().from(modules)
@@ -324,6 +350,7 @@ export async function listModules() {
 export async function listModulesAdmin() {
   const db = await getDb();
   if (!db) return [];
+  await ensureModuleAudienceColumns(db);
   return db.select().from(modules).orderBy(modules.orderIndex);
 }
 
@@ -334,6 +361,7 @@ export async function getModuleById(id: number) {
   const db = await getDb();
 
   if (!db) return undefined;
+  await ensureModuleAudienceColumns(db);
 
   const result = await db.select().from(modules).where(eq(modules.id, id)).limit(1);
 
@@ -348,6 +376,7 @@ export async function updateModule(id: number, data: Partial<typeof modules.$inf
   const db = await getDb();
 
   if (!db) return;
+  await ensureModuleAudienceColumns(db);
 
   await db.update(modules).set(data).where(eq(modules.id, id));
 
@@ -1511,12 +1540,20 @@ export async function createModule(data: {
   isActive?: boolean;
 
   publishStatus?: string;
+  validityDays?: number | null;
+  isMandatory?: boolean;
+  profession?: string | null;
+  mandatoryTargetRoles?: string | null;
+  trainingStartDate?: string | null;
+  trainingDueDate?: string | null;
+  certificateDueDate?: string | null;
 
 }) {
 
   const db = await getDb();
 
   if (!db) throw new Error("DB not available");
+  await ensureModuleAudienceColumns(db);
 
   await db.insert(modules).values({
 
@@ -1531,6 +1568,13 @@ export async function createModule(data: {
     isActive: data.isActive ?? true,
 
     publishStatus: data.publishStatus ?? "published",
+    validityDays: data.validityDays ?? null,
+    isMandatory: data.isMandatory ?? false,
+    profession: data.profession ?? null,
+    mandatoryTargetRoles: data.mandatoryTargetRoles ?? null,
+    trainingStartDate: data.trainingStartDate ?? null,
+    trainingDueDate: data.trainingDueDate ?? null,
+    certificateDueDate: data.certificateDueDate ?? null,
 
   });
 
@@ -1557,12 +1601,20 @@ export async function adminUpdateModule(id: number, data: Partial<{
   certSignerName: string;
 
   certSignerRole: string;
+  validityDays: number | null;
+  isMandatory: boolean;
+  profession: string | null;
+  mandatoryTargetRoles: string | null;
+  trainingStartDate: string | null;
+  trainingDueDate: string | null;
+  certificateDueDate: string | null;
 
 }>) {
 
   const db = await getDb();
 
   if (!db) throw new Error("DB not available");
+  await ensureModuleAudienceColumns(db);
 
   await db.update(modules).set(data).where(eq(modules.id, id));
 
@@ -3173,10 +3225,22 @@ export async function getVisibleModulesForUser(userId: number) {
 
   }
 
+  const mandatoryForRole = await db.select().from(modules).where(and(
+    eq(modules.isActive, true),
+    eq(modules.isMandatory, true),
+    sql`COALESCE(${modules.mandatoryTargetRoles}, '') <> ''`,
+  ));
+
   // Dedup by id
   const map = new Map<number, any>();
 
   for (const m of [...enrolled, ...own, ...platform]) map.set(m.id, m);
+  for (const m of mandatoryForRole) {
+    const ownerCid = (m as any).createdByCompanyId ?? null;
+    if (ownerCid != null && Number(ownerCid) !== Number(cid) && !filteredIds.includes(Number(m.id))) continue;
+    if (String((m as any).templateCategory ?? "").toLowerCase() === "iso" && !canSeeIsoCourses) continue;
+    if (moduleTargetsRole((m as any).mandatoryTargetRoles, user.role)) map.set(m.id, m);
+  }
 
   return Array.from(map.values()).sort((a, b) => { const oi = (a.orderIndex ?? 0) - (b.orderIndex ?? 0); return oi !== 0 ? oi : (b.id - a.id); });
 
