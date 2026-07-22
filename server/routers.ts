@@ -2558,6 +2558,110 @@ const PSYCHOSOCIAL_FACTOR_ORDER = [
   "remoto",
 ];
 
+async function getAcolhimentoEligibilityForUser(db: any, userId: number) {
+  if (!db || !userId) {
+    return {
+      eligible: false,
+      message: "Acolhimento psicologico indisponivel: usuario nao identificado.",
+    };
+  }
+
+  const [[userRow]]: any = await execP(db, `
+    SELECT id, company_id, sector_id, role, is_active, employment_status
+    FROM users
+    WHERE id=?
+    LIMIT 1`, [userId]).catch(() => [[null]]);
+
+  if (!userRow) {
+    return {
+      eligible: false,
+      message: "Acolhimento psicologico indisponivel: colaborador nao localizado.",
+    };
+  }
+
+  const role = String(userRow.role || "");
+  if (role === "psicologo" || role === "super_admin" || role === "admin_global") {
+    return {
+      eligible: false,
+      message: "Este perfil nao e elegivel para solicitar acolhimento como colaborador.",
+    };
+  }
+
+  if (Number(userRow.is_active ?? 0) !== 1 || String(userRow.employment_status || "active") !== "active") {
+    return {
+      eligible: false,
+      message: "Acolhimento psicologico disponivel apenas para colaboradores ativos.",
+    };
+  }
+
+  const companyId = Number(userRow.company_id ?? 0);
+  const sectorId = userRow.sector_id ? Number(userRow.sector_id) : null;
+  if (!companyId) {
+    return {
+      eligible: false,
+      message: "Acolhimento psicologico indisponivel: empresa nao identificada.",
+    };
+  }
+
+  const [[wellbeing]]: any = await execP(db, `
+    SELECT score, burnout_risk, status_label, snapshot_month
+    FROM wellbeing_index
+    WHERE user_id=? AND company_id=?
+    ORDER BY snapshot_month DESC
+    LIMIT 1`, [userId, companyId]).catch(() => [[null]]);
+
+  if (wellbeing) {
+    const score = Number(wellbeing.score);
+    const burnout = String(wellbeing.burnout_risk || "").toLowerCase();
+    const status = normalizeTextKey(wellbeing.status_label || "");
+    if (Number.isFinite(score) && score < 60) {
+      return {
+        eligible: true,
+        reason: "wellbeing_index",
+        level: score < 40 ? "critico" : "alto",
+        message: "Voce pode agendar uma conversa confidencial com um(a) psicologo(a). A liberacao ocorreu por indicador de alerta na Visao 360.",
+      };
+    }
+    if (["alto", "critico", "alta", "critica"].includes(burnout) || status.includes("alerta") || status.includes("critico")) {
+      return {
+        eligible: true,
+        reason: "wellbeing_index",
+        level: burnout || "alto",
+        message: "Voce pode agendar uma conversa confidencial com um(a) psicologo(a). A liberacao ocorreu por indicador de alerta na Visao 360.",
+      };
+    }
+  }
+
+  if (sectorId) {
+    const [[sectorRisk]]: any = await execP(db, `
+      SELECT ri.risco_final, pf.name AS factor_name, ra.cycle_name
+      FROM risk_assessments ra
+      INNER JOIN risk_inventory_items ri ON ri.assessment_id=ra.id
+      LEFT JOIN psychosocial_factors pf ON pf.id=ri.factor_id
+      WHERE ra.company_id=?
+        AND ri.sector_id=?
+        AND ra.status IN ('analyzing','review','closed','active')
+        AND LOWER(COALESCE(ri.risco_final,'')) IN ('alta','alto','critica','critico','crítica','crítico')
+      ORDER BY COALESCE(ra.end_date, ra.start_date) DESC, ra.id DESC,
+        FIELD(LOWER(COALESCE(ri.risco_final,'')), 'critica','crítico','critico','alta','alto')
+      LIMIT 1`, [companyId, sectorId]).catch(() => [[null]]);
+
+    if (sectorRisk) {
+      return {
+        eligible: true,
+        reason: "sector_psychosocial_risk",
+        level: String(sectorRisk.risco_final || "").toLowerCase(),
+        message: "Voce pode agendar uma conversa confidencial com um(a) psicologo(a). A liberacao ocorreu por risco psicossocial alto ou critico no seu setor.",
+      };
+    }
+  }
+
+  return {
+    eligible: false,
+    message: "Agendamento psicologico disponivel apenas para colaboradores com indicador de alerta/critico na Visao 360 ou pertencentes a setor com risco psicossocial alto/critico.",
+  };
+}
+
 function normalizeFactorCode(value: unknown): string {
   return normalizeTextKey(value).replace(/\s+/g, "_");
 }
@@ -25520,24 +25624,10 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
 
   // ─── Appointment Scheduling ───────────────────────────────────────────────
   scheduling: router({
-    /**
-     * R5-P10 #4 — Elegibilidade do colaborador/chefia para o Programa de Acolhimento.
-     * Antes a procedure não existia → o front exibia tela de bloqueio para todos.
-     * Regra: qualquer usuário autenticado da empresa pode agendar,
-     * exceto o próprio psicólogo (ele é o profissional, não paciente).
-     */
     myEligibility: protectedProcedure.query(async ({ ctx }) => {
-      const role = String((ctx.user as any).role || "");
-      if (role === "psicologo") {
-        return {
-          eligible: false,
-          message: "Este perfil é de profissional. Use 'Gestão de Atendimentos' no menu lateral para administrar a agenda.",
-        };
-      }
-      return {
-        eligible: true,
-        message: "Você pode agendar uma conversa confidencial com um(a) psicólogo(a). Tudo permanece sob sigilo.",
-      };
+      const db2 = await getDb();
+      if (!db2) throw new Error("DB unavailable");
+      return getAcolhimentoEligibilityForUser(db2, Number((ctx.user as any).id ?? 0));
     }),
 
     /**
@@ -25872,6 +25962,13 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         const adminRoles = ['admin','rh','admin_global','super_admin','sesmt','super_admin'];
         const isAdminRole = adminRoles.includes((ctx.user as any).role ?? '');
         const collaboratorId = (input.collaboratorId && isAdminRole) ? input.collaboratorId : ctx.user.id;
+        const eligibility = await getAcolhimentoEligibilityForUser(db2, Number(collaboratorId));
+        if (!eligibility.eligible) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: eligibility.message || "Colaborador sem criterio ativo para agendamento de acolhimento psicologico.",
+          });
+        }
 
         // R5-P12 #3 — limite de 1 consulta ativa por SEMANA por colaborador (qualquer psicólogo).
         // Semana = segunda a domingo da data escolhida. Bloqueia antes de confirmar.

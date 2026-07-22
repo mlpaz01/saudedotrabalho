@@ -20,17 +20,24 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [employeeName, setEmployeeName] = useState<string | null>(null);
   const [accessHint, setAccessHint] = useState("Identificador de acesso");
+  const [loginMethod, setLoginMethod] = useState("email");
 
   const checkEmail = trpc.auth.checkCorporateEmail.useMutation({
     onSuccess: (data) => {
       setEmployeeName(data.employeeName ?? null);
-      const method = String((data as any).accessMethod || (data as any).method || "email");
+      const method = String((data as any).accessMethod || (data as any).method || "email").toLowerCase();
+      const resolvedMethod = String((data as any).method || method).toLowerCase();
+      setLoginMethod(resolvedMethod);
       const label = method === "cpf" ? "CPF" : method === "both" ? "e-mail corporativo ou CPF" : method === "whatsapp" ? "WhatsApp" : "e-mail corporativo";
       setAccessHint(`Metodo configurado pela empresa: ${label}`);
       if (!data.hasSetPassword) {
         navigate(`/primeiro-acesso?identifier=${encodeURIComponent(identifier)}`);
       } else {
-        setLoginLabel(data.email || identifier);
+        const internalEmail = String(data.email || "").includes("@sem-email.saudedotrabalho.local");
+        const displayIdentifier = resolvedMethod === "cpf" || resolvedMethod === "whatsapp" || internalEmail
+          ? identifier
+          : data.email || identifier;
+        setLoginLabel(displayIdentifier);
         setStep("password");
       }
     },
@@ -176,7 +183,11 @@ export default function Login() {
             >
               {/* Email chip */}
               <div className="flex items-center gap-2 bg-muted/60 border border-border rounded-lg px-3 py-2.5 text-sm">
-                <Mail size={13} className="text-muted-foreground shrink-0" />
+                {loginMethod === "cpf" || loginMethod === "whatsapp" ? (
+                  <IdCard size={13} className="text-muted-foreground shrink-0" />
+                ) : (
+                  <Mail size={13} className="text-muted-foreground shrink-0" />
+                )}
                 <span className="text-foreground truncate flex-1">{loginLabel || identifier}</span>
                 <button
                   type="button"
