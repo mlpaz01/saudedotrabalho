@@ -90,6 +90,7 @@ const adminSections: NavSection[] = [
       { label: "Setores", href: "/admin/setores", notRoles: ["chefia", "sesmt", "psicologo"], icon: <Wrench size={16} /> },
       { label: "Colaboradores", href: "/admin/usuarios", notRoles: ["chefia", "sesmt", "psicologo"], icon: <Users size={16} /> },
       { label: "Campanhas", href: "/admin/campanhas", notRoles: ["sesmt", "psicologo"], icon: <Mail size={16} />, feature: "campaigns" },
+      { label: "Atas Corporativas", href: "/admin/atas-corporativas", notRoles: ["psicologo"], icon: <FileText size={16} /> },
       { label: "Lembretes", href: "/admin/lembretes", notRoles: ["chefia", "sesmt", "psicologo"], icon: <Bell size={16} /> },
       // Bruno R5-P6 #3 — Chefia REMOVIDA dos Agendamentos (atendimento psicológico é exclusivo da Psicóloga/RH/Admin)
       { label: "Agendamentos", href: "/admin/agenda", notRoles: ["sesmt", "chefia"], icon: <CalendarClock size={16} /> },
@@ -163,6 +164,7 @@ const superAdminNav: NavItem[] = [
   { label: "Clientes", href: "/super-admin/clientes", notRoles: ["sesmt", "psicologo"], icon: <Building2 size={16} /> },
   { label: "Catalogo Master", href: "/super-admin/catalogo", notRoles: ["sesmt", "psicologo"], icon: <Library size={16} /> },
   { label: "Horários de acesso", href: "/super-admin/horarios", notRoles: ["sesmt", "psicologo"], icon: <Clock size={16} /> },
+  { label: "Integrações", href: "/super-admin/integracoes", notRoles: ["sesmt", "psicologo"], icon: <Link2 size={16} /> },
   { label: "CRM / Financeiro", href: "/super-admin/crm", notRoles: ["sesmt", "psicologo"], icon: <Briefcase size={16} /> },
 ];
 
@@ -191,6 +193,7 @@ const ITEM_LABELS: Record<string, string> = {
   "Setores": "Setores",
   "Colaboradores": "Colaboradores",
   "Campanhas": "Campanhas",
+  "Atas Corporativas": "Atas Corporativas",
   "Lembretes": "Lembretes",
   "Agendamentos": "Agendamentos",
   "Vencimentos": "Vencimentos",
@@ -213,6 +216,7 @@ const ITEM_LABELS: Record<string, string> = {
   "Painel Super Admin": "Painel Super Admin",
   "Clientes": "Clientes",
   "Catalogo Master": "Catálogo Master",
+  "Integrações": "Integrações",
 };
 
 const SECTION_LABELS: Record<string, string> = {
@@ -796,4 +800,3 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     </>
   );
 }
-

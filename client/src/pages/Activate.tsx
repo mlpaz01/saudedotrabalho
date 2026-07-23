@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Eye, EyeOff, Lock, CheckCircle2, AlertCircle } from "lucide-react";
+import { Eye, EyeOff, Lock, CheckCircle2, AlertCircle, Phone } from "lucide-react";
 
 const LOGO_URL = "/logo.png";
 
@@ -17,6 +17,7 @@ export default function Activate() {
 
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [whatsapp, setWhatsapp] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [done, setDone] = useState(false);
 
@@ -167,10 +168,28 @@ export default function Activate() {
               e.preventDefault();
               if (password !== confirm) { toast.error("As senhas não coincidem."); return; }
               if (password.length < 8) { toast.error("A senha deve ter pelo menos 8 caracteres."); return; }
-              activate.mutate({ token, password });
+              activate.mutate({ token, password, whatsapp });
             }}
             className="space-y-5"
           >
+            {(validate.data as any)?.requireWhatsappOnFirstAccess && !(validate.data as any)?.whatsappRegistered && (
+              <div className="space-y-2">
+                <Label htmlFor="whatsapp">WhatsApp</Label>
+                <div className="relative">
+                  <Phone size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    id="whatsapp"
+                    type="tel"
+                    value={whatsapp}
+                    onChange={(e) => setWhatsapp(e.target.value)}
+                    placeholder="(11) 99999-9999"
+                    className="pl-10 h-11"
+                    required
+                  />
+                </div>
+              </div>
+            )}
+
             <div className="space-y-2">
               <Label htmlFor="password">Nova Senha</Label>
               <div className="relative">

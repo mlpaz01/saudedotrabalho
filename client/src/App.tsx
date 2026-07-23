@@ -64,9 +64,11 @@ import SuperAdminClients from "@/pages/superadmin/SuperAdminClients";
 import SuperAdminCatalog from "@/pages/superadmin/SuperAdminCatalog";
 import SuperAdminAccessHours from "@/pages/superadmin/SuperAdminAccessHours";
 import SuperAdminCrm from "@/pages/superadmin/SuperAdminCrm";
+import SuperAdminIntegrations from "@/pages/superadmin/SuperAdminIntegrations";
 import IntermediadorDashboard from "@/pages/IntermediadorDashboard";
 import Cipa from "@/pages/Cipa";
 import AdminCipa from "@/pages/admin/AdminCipa";
+import AdminCorporateMinutes from "@/pages/admin/AdminCorporateMinutes";
 import AdminFirstAid from "@/pages/admin/AdminFirstAid";
 import CampanhasIndex, { CampanhaDetail } from "@/pages/Campanhas";
 import Configurador from "@/pages/admin/Configurador";
@@ -275,6 +277,7 @@ function Router() {
       <Route path="/admin/sipat" component={() => <ProtectedRoute component={AdminSipat} adminOnly />} />
       {/* P15 #4 — Módulo CIPA */}
       <Route path="/admin/cipa" component={() => <CipaAdminRoute component={AdminCipa} />} />
+      <Route path="/admin/atas-corporativas" component={() => <ProtectedRoute component={AdminCorporateMinutes} adminOnly />} />
       {/* P17 #7 — Rota do colaborador pra CIPA (link "CIPA" do employeeNav) */}
       <Route path="/cipa" component={() => <ProtectedRoute component={Cipa} />} />
       {/* P15 #5 — Kit de Primeiros Socorros (NR-07) */}
@@ -302,6 +305,7 @@ function Router() {
       <Route path="/super-admin/clientes" component={() => <SuperAdminRoute component={SuperAdminClients} />} />
       <Route path="/super-admin/catalogo" component={() => <SuperAdminRoute component={SuperAdminCatalog} />} />
       <Route path="/super-admin/horarios" component={() => <SuperAdminRoute component={SuperAdminAccessHours} />} />
+      <Route path="/super-admin/integracoes" component={() => <SuperAdminRoute component={SuperAdminIntegrations} />} />
       <Route path="/super-admin/crm" component={() => <SuperAdminRoute component={SuperAdminCrm} />} />
       <Route path="/intermediador" component={() => <IntermediadorRoute component={IntermediadorDashboard} />} />
       <Route path="/campanhas" component={() => <ProtectedRoute component={CampanhasIndex} />} />

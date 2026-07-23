@@ -27,6 +27,10 @@ export const users = mysqlTable("users", {
   sectorId: int("sector_id"),
   // Cargo do colaborador — usado por PGR/AEP/EPI/Treinamentos. Migração: ALTER TABLE users ADD COLUMN position VARCHAR(120) NULL.
   position: varchar("position", { length: 120 }),
+  cpf: varchar("cpf", { length: 20 }),
+  whatsappE164: varchar("whatsapp_e164", { length: 20 }),
+  employmentStatus: varchar("employment_status", { length: 30 }).default("active").notNull(),
+  isActive: tinyint("is_active").default(1).notNull(),
 });
 
 export type User = typeof users.$inferSelect;
@@ -48,6 +52,12 @@ export const corporateEmails = mysqlTable("corporate_emails", {
   companyId: int("company_id"),
   branchId: int("branch_id"),
   sectorId: int("sector_id"),
+  role: varchar("role", { length: 30 }).default("user"),
+  cpf: varchar("cpf", { length: 20 }),
+  whatsappE164: varchar("whatsapp_e164", { length: 20 }),
+  employmentStatus: varchar("employment_status", { length: 30 }).default("active").notNull(),
+  activationToken: varchar("activation_token", { length: 128 }),
+  activationExpiresAt: timestamp("activation_expires_at"),
 });
 
 export type CorporateEmail = typeof corporateEmails.$inferSelect;
@@ -72,6 +82,10 @@ export const modules = mysqlTable("modules", {
   validityDays: int("validity_days"),
   isMandatory: boolean("is_mandatory").default(false),
   profession: varchar("profession", { length: 100 }),
+  mandatoryTargetRoles: varchar("mandatory_target_roles", { length: 160 }),
+  trainingStartDate: varchar("training_start_date", { length: 10 }),
+  trainingDueDate: varchar("training_due_date", { length: 10 }),
+  certificateDueDate: varchar("certificate_due_date", { length: 10 }),
   isCatalogMaster: boolean("is_catalog_master").default(false).notNull(),
   createdByCompanyId: int("created_by_company_id"),
   clonedFromModuleId: int("cloned_from_module_id"),

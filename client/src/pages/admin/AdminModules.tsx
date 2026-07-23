@@ -10,6 +10,7 @@ import {
   Plus, Pencil, Trash2, BookOpen, Video, Award, ChevronDown,
   ChevronUp, Eye, EyeOff, GripVertical, X, Check, Search,
   MoreVertical, Sparkles, Clock, Code2, LayoutGrid, List,
+  ShieldCheck,
 } from "lucide-react";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -117,6 +118,10 @@ type ModuleForm = {
   title: string; description: string; durationMinutes: string;
   orderIndex: string; isActive: boolean;
   certTitle: string; certBody: string; certSignerName: string; certSignerRole: string;
+  mandatoryTargetRoles: string[];
+  trainingStartDate: string;
+  trainingDueDate: string;
+  certificateDueDate: string;
 };
 type LessonForm = {
   title: string; description: string; videoUrl: string;
@@ -128,6 +133,10 @@ const emptyModuleForm: ModuleForm = {
   certTitle: "Certificado de Conclusão",
   certBody: "Certificamos que o(a) participante concluiu com êxito o módulo de treinamento em saúde mental e bem-estar corporativo.",
   certSignerName: "", certSignerRole: "",
+  mandatoryTargetRoles: [],
+  trainingStartDate: "",
+  trainingDueDate: "",
+  certificateDueDate: "",
 };
 const emptyLessonForm: LessonForm = {
   title: "", description: "", videoUrl: "", durationMinutes: "0", orderIndex: "0", isActive: true,
@@ -313,6 +322,10 @@ export default function AdminModules() {
       certBody: (mod as any).certBody ?? "Certificamos que o(a) participante concluiu com êxito o módulo de treinamento em saúde mental e bem-estar corporativo.",
       certSignerName: (mod as any).certSignerName ?? "",
       certSignerRole: (mod as any).certSignerRole ?? "",
+      mandatoryTargetRoles: String((mod as any).mandatoryTargetRoles ?? "").split(",").map((v) => v.trim()).filter(Boolean),
+      trainingStartDate: (mod as any).trainingStartDate ?? "",
+      trainingDueDate: (mod as any).trainingDueDate ?? "",
+      certificateDueDate: (mod as any).certificateDueDate ?? "",
     });
     setModuleDialogOpen(true);
   }
@@ -323,9 +336,23 @@ export default function AdminModules() {
       orderIndex: parseInt(moduleForm.orderIndex) || 0, isActive: moduleForm.isActive,
       certTitle: moduleForm.certTitle || undefined, certBody: moduleForm.certBody || undefined,
       certSignerName: moduleForm.certSignerName || undefined, certSignerRole: moduleForm.certSignerRole || undefined,
+      isMandatory: moduleForm.mandatoryTargetRoles.length > 0,
+      mandatoryTargetRoles: moduleForm.mandatoryTargetRoles as any,
+      trainingStartDate: moduleForm.trainingStartDate || undefined,
+      trainingDueDate: moduleForm.trainingDueDate || undefined,
+      certificateDueDate: moduleForm.certificateDueDate || undefined,
     };
     if (editingModuleId !== null) updateModuleMutation.mutate({ id: editingModuleId, ...payload });
     else createModuleMutation.mutate(payload);
+  }
+
+  function toggleMandatoryTarget(target: string) {
+    setModuleForm((current) => {
+      const selected = current.mandatoryTargetRoles.includes(target)
+        ? current.mandatoryTargetRoles.filter((item) => item !== target)
+        : [...current.mandatoryTargetRoles, target];
+      return { ...current, mandatoryTargetRoles: selected };
+    });
   }
 
   function openCreateLesson(moduleId: number) {
@@ -754,6 +781,7 @@ export default function AdminModules() {
           <Tabs defaultValue="info">
             <TabsList className="w-full">
               <TabsTrigger value="info" className="flex-1 gap-2"><BookOpen size={14} /> Informações</TabsTrigger>
+              <TabsTrigger value="audience" className="flex-1 gap-2"><ShieldCheck size={14} /> Obrigatoriedade</TabsTrigger>
               <TabsTrigger value="cert" className="flex-1 gap-2"><Award size={14} /> Certificado</TabsTrigger>
             </TabsList>
             <TabsContent value="info" className="space-y-4 pt-4">
@@ -784,6 +812,46 @@ export default function AdminModules() {
                   onChange={e => setModuleForm({ ...moduleForm, isActive: e.target.checked })} className="w-4 h-4 accent-primary" />
                 <label htmlFor="moduleActive" className="text-sm cursor-pointer">Módulo ativo (visível para os funcionários)</label>
               </div>
+            </TabsContent>
+            <TabsContent value="audience" className="space-y-4 pt-4">
+              <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 text-sm text-emerald-900">
+                Defina quais perfis receberao este curso automaticamente como capacitacao obrigatoria. Para CIPA, o curso tambem aparece na aba CIPA do colaborador.
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium block">Publico-alvo obrigatorio</label>
+                {[
+                  ["cipa", "Obrigatorio para integrantes da CIPA"],
+                  ["sesmt", "Obrigatorio para integrantes do SESMT"],
+                  ["colaboradores", "Obrigatorio para colaboradores e chefias"],
+                ].map(([value, label]) => (
+                  <label key={value} className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm cursor-pointer hover:bg-muted/40">
+                    <input
+                      type="checkbox"
+                      className="w-4 h-4 accent-primary"
+                      checked={moduleForm.mandatoryTargetRoles.includes(value)}
+                      onChange={() => toggleMandatoryTarget(value)}
+                    />
+                    <span>{label}</span>
+                  </label>
+                ))}
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                  <label className="text-sm font-medium mb-1 block">Prazo para inicio</label>
+                  <Input type="date" value={moduleForm.trainingStartDate} onChange={e => setModuleForm({ ...moduleForm, trainingStartDate: e.target.value })} />
+                </div>
+                <div>
+                  <label className="text-sm font-medium mb-1 block">Prazo maximo de conclusao</label>
+                  <Input type="date" value={moduleForm.trainingDueDate} onChange={e => setModuleForm({ ...moduleForm, trainingDueDate: e.target.value })} />
+                </div>
+                <div>
+                  <label className="text-sm font-medium mb-1 block">Data limite do certificado</label>
+                  <Input type="date" value={moduleForm.certificateDueDate} onChange={e => setModuleForm({ ...moduleForm, certificateDueDate: e.target.value })} />
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Cursos obrigatorios alimentam Meus Cursos e, quando marcados para CIPA, tambem aparecem automaticamente na capacitacao do cipeiro.
+              </p>
             </TabsContent>
             <TabsContent value="cert" className="space-y-4 pt-4">
               <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">

@@ -18,6 +18,7 @@ type Filters = {
   sectorId: number | null;
   courseStatus: "all" | "0-25" | "25-75" | "75-99" | "100";
   surveyPending: "all" | "yes" | "no";
+  employmentStatus: "active" | "away" | "terminated" | "death" | "retired" | "other" | "all";
 };
 
 const DEFAULT_FILTERS: Filters = {
@@ -25,7 +26,21 @@ const DEFAULT_FILTERS: Filters = {
   sectorId: null,
   courseStatus: "all",
   surveyPending: "all",
+  employmentStatus: "active",
 };
+
+const EMPLOYMENT_STATUS_OPTIONS = [
+  { value: "active", label: "Ativo" },
+  { value: "away", label: "Afastado" },
+  { value: "terminated", label: "Desligado" },
+  { value: "death", label: "Obito" },
+  { value: "retired", label: "Aposentado" },
+  { value: "other", label: "Outro" },
+] as const;
+
+function employmentStatusLabel(value: string | null | undefined) {
+  return EMPLOYMENT_STATUS_OPTIONS.find((s) => s.value === value)?.label ?? "Ativo";
+}
 
 export default function AdminUsers() {
   const [, setLocation] = useLocation();
@@ -37,11 +52,12 @@ export default function AdminUsers() {
   const [assigningUser, setAssigningUser] = useState<any | null>(null);
   const [deletingUser, setDeletingUser] = useState<any | null>(null);
   const [showImport, setShowImport] = useState(false);
+  const [showStatusImport, setShowStatusImport] = useState(false);
 
   // Clicar / pesquisar um colaborador leva direto à Visão 360º (ficha central).
   const openCollaborator = (id: number) => setLocation(`/admin/colaboradores/${id}`);
 
-  const treeQuery = trpc.lessons.hierarchyTree.useQuery();
+  const treeQuery = trpc.lessons.hierarchyTree.useQuery({ includeAllStatuses: true } as any);
 
   const tree = treeQuery.data ?? [];
 
@@ -78,9 +94,10 @@ export default function AdminUsers() {
   function passesUserFilter(u: any): boolean {
     if (search.trim()) {
       const q = search.toLowerCase();
-      if (!String(u.name ?? "").toLowerCase().includes(q) && !String(u.email ?? "").toLowerCase().includes(q))
+      if (!String(u.name ?? "").toLowerCase().includes(q) && !String(u.email ?? "").toLowerCase().includes(q) && !String(u.cpf ?? "").toLowerCase().includes(q))
         return false;
     }
+    if (filters.employmentStatus !== "all" && String(u.employmentStatus ?? "active") !== filters.employmentStatus) return false;
     if (filters.courseStatus !== "all") {
       const p = u.completionPercent;
       if (filters.courseStatus === "100" && p < 100) return false;
@@ -171,6 +188,9 @@ export default function AdminUsers() {
               <Button size="sm" onClick={() => setShowImport(true)}>
                 <Upload size={14} className="mr-1" /> Importar CSV
               </Button>
+              <Button size="sm" variant="outline" onClick={() => setShowStatusImport(true)}>
+                <Upload size={14} className="mr-1" /> Status em massa
+              </Button>
               <Button size="sm" variant="outline" onClick={expandAll}>Expandir todos</Button>
               <Button size="sm" variant="outline" onClick={collapseAll}>Recolher todos</Button>
             </div>
@@ -183,7 +203,7 @@ export default function AdminUsers() {
             <div className="relative flex-1 min-w-[240px]">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
               <Input
-                placeholder="Buscar por nome ou e-mail..."
+                placeholder="Buscar por nome, e-mail ou CPF..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="pl-9"
@@ -234,7 +254,20 @@ export default function AdminUsers() {
               <option value="yes">Pendente</option>
               <option value="no">Respondida</option>
             </select>
-            {(filters.branchId || filters.sectorId || filters.courseStatus !== "all" || filters.surveyPending !== "all" || search) && (
+            <select
+              className="border border-border rounded-md px-3 py-2 text-sm bg-white"
+              value={filters.employmentStatus}
+              onChange={(e) => setFilters((f) => ({ ...f, employmentStatus: e.target.value as any }))}
+            >
+              <option value="active">Status: Ativo</option>
+              <option value="away">Status: Afastado</option>
+              <option value="terminated">Status: Desligado</option>
+              <option value="death">Status: Obito</option>
+              <option value="retired">Status: Aposentado</option>
+              <option value="other">Status: Outro</option>
+              <option value="all">Status: todos</option>
+            </select>
+            {(filters.branchId || filters.sectorId || filters.courseStatus !== "all" || filters.surveyPending !== "all" || filters.employmentStatus !== "active" || search) && (
               <Button size="sm" variant="ghost" onClick={() => { setFilters(DEFAULT_FILTERS); setSearch(""); }}>
                 <X size={14} className="mr-1" /> Limpar
               </Button>
@@ -296,12 +329,18 @@ export default function AdminUsers() {
           onImported={() => { treeQuery.refetch(); }}
         />
       )}
+      {showStatusImport && (
+        <StatusImportDialog
+          onClose={() => setShowStatusImport(false)}
+          onImported={() => { treeQuery.refetch(); }}
+        />
+      )}
     </AppLayout>
   );
 }
 
 // ----- CSV import -----------------------------------------------------------
-type ParsedRow = { email: string; nome: string; filial: string; setor: string; cargo: string; perfil: string; whatsapp: string };
+type ParsedRow = { email: string; cpf: string; nome: string; filial: string; setor: string; cargo: string; perfil: string; whatsapp: string };
 
 function stripAccents(s: string) {
   return s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
@@ -325,7 +364,7 @@ function splitCsvLine(line: string, delim: string): string[] {
   return out.map((s) => s.trim());
 }
 
-function parseCSV(text: string): ParsedRow[] {
+function parseCSV(text: string, accessMethod: string = "email"): ParsedRow[] {
   const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n").filter((l) => l.trim().length > 0);
   if (lines.length === 0) return [];
   const delim = lines[0].split(";").length > lines[0].split(",").length ? ";" : ",";
@@ -335,6 +374,7 @@ function parseCSV(text: string): ParsedRow[] {
   const header = grid[0].map(stripAccents);
   const find = (...keys: string[]) => header.findIndex((h) => keys.some((k) => h.includes(k)));
   let iEmail = find("mail");
+  let iCpf = find("cpf", "documento");
   let iNome = find("nome");
   let iFilial = find("filial", "unidade");
   let iSetor = find("setor", "departamento", "depto");
@@ -346,15 +386,29 @@ function parseCSV(text: string): ParsedRow[] {
   let iWhats = find("whats", "celular", "telefone");
 
   const firstHasEmail = grid[0].some((c) => c.includes("@"));
-  const hasHeader = iEmail !== -1 && !firstHasEmail;
+  const hasHeader = (iEmail !== -1 || iCpf !== -1 || iNome !== -1) && !firstHasEmail;
   const dataRows = hasHeader ? grid.slice(1) : grid;
-  // Ordem padrão sem cabeçalho: email; nome; filial; setor; cargo; perfil; whatsapp
-  if (!hasHeader) { iEmail = 0; iNome = 1; iFilial = 2; iSetor = 3; iCargo = 4; iPerfil = 5; iWhats = 6; }
+  // Ordem padrao sem cabecalho, respeitando o metodo de acesso da empresa.
+  if (!hasHeader) {
+    const width = Math.max(...grid.map((r) => r.length));
+    if (accessMethod === "cpf") {
+      iEmail = -1; iCpf = 0; iNome = 1; iFilial = 2; iSetor = 3; iCargo = 4; iPerfil = 5; iWhats = 6;
+    } else if (accessMethod === "whatsapp") {
+      iEmail = -1; iCpf = 0; iWhats = 1; iNome = 2; iFilial = 3; iSetor = 4; iCargo = 5; iPerfil = 6;
+    } else if (accessMethod === "both") {
+      iEmail = 0; iCpf = 1; iNome = 2; iFilial = 3; iSetor = 4; iCargo = 5; iPerfil = 6; iWhats = 7;
+    } else if (width >= 8) {
+      iEmail = 0; iCpf = 1; iNome = 2; iFilial = 3; iSetor = 4; iCargo = 5; iPerfil = 6; iWhats = 7;
+    } else {
+      iEmail = 0; iCpf = -1; iNome = 1; iFilial = 2; iSetor = 3; iCargo = 4; iPerfil = 5; iWhats = 6;
+    }
+  }
 
   const at = (row: string[], idx: number) => (idx >= 0 && idx < row.length ? row[idx] : "");
   return dataRows
     .map((r) => ({
       email: at(r, iEmail),
+      cpf: at(r, iCpf),
       nome: at(r, iNome),
       filial: at(r, iFilial),
       setor: at(r, iSetor),
@@ -362,15 +416,22 @@ function parseCSV(text: string): ParsedRow[] {
       perfil: at(r, iPerfil),
       whatsapp: at(r, iWhats),
     }))
-    .filter((r) => r.email || r.nome);
+    .filter((r) => r.email || r.cpf || r.nome);
 }
 
 const CSV_TEMPLATE =
-  "e-mail corporativo;nome;filial;setor;cargo;perfil\n" +
+  "e-mail corporativo;cpf;nome;filial;setor;cargo;perfil;whatsapp\n" +
   "joao.silva@empresa.com;João Silva;Matriz;Produção;Operador de Máquinas;colaborador\n" +
   "ana.gestora@empresa.com;Ana Gestora;Matriz;Produção;Coordenadora de Produção;chefia\n" +
   "maria.souza@empresa.com;Maria Souza;Filial São Paulo;Recursos Humanos;Analista de RH;rh\n" +
   "carlos.lima@empresa.com;Carlos Lima;Matriz;Diretoria;Diretor Executivo;admin\n";
+
+const CSV_TEMPLATE_V2 =
+  "e-mail corporativo;cpf;nome;filial;setor;cargo;perfil;whatsapp\n" +
+  "joao.silva@empresa.com;12345678901;Joao Silva;Matriz;Producao;Operador de Maquinas;colaborador;+5511999999999\n" +
+  "ana.gestora@empresa.com;23456789012;Ana Gestora;Matriz;Producao;Coordenadora de Producao;chefia;+5511988888888\n" +
+  ";34567890123;Maria Souza;Filial Sao Paulo;Recursos Humanos;Analista de RH;rh;+5511977777777\n" +
+  "carlos.lima@empresa.com;45678901234;Carlos Lima;Matriz;Diretoria;Diretor Executivo;admin;+5511966666666\n";
 
 function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported: () => void }) {
   const companiesQ = trpc.pgr.listCompanies.useQuery();
@@ -383,6 +444,10 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
   const [parsed, setParsed] = useState<ParsedRow[]>([]);
   const [preview, setPreview] = useState<any | null>(null);
   const [done, setDone] = useState<any | null>(null);
+  const platformConfigQ = (trpc.companies as any).getPlatformConfig.useQuery(
+    { companyId: companyId ?? 0 },
+    { enabled: !!companyId }
+  );
 
   // auto-select if only one company
   useMemo(() => {
@@ -390,6 +455,15 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
   }, [companies.length]);
 
   const selectedCompany = companies.find((c) => c.id === companyId);
+  const accessMethod = String((platformConfigQ.data as any)?.accessMethod ?? "email");
+  const loginColumnLabel = accessMethod === "cpf" ? "CPF" : accessMethod === "both" ? "E-mail Corporativo + CPF" : accessMethod === "whatsapp" ? "CPF ou WhatsApp" : "E-mail Corporativo";
+  const csvTemplate = accessMethod === "cpf"
+    ? "cpf;nome;filial;setor;cargo;perfil;whatsapp\n12345678901;Joao Silva;Matriz;Producao;Operador de Maquinas;colaborador;\n23456789012;Ana Gestora;Matriz;Producao;Coordenadora de Producao;chefia;+5511988888888\n34567890123;Maria Souza;Filial Sao Paulo;Recursos Humanos;Analista de RH;rh;\n"
+    : accessMethod === "both"
+    ? "e-mail corporativo;cpf;nome;filial;setor;cargo;perfil;whatsapp\njoao.silva@empresa.com;12345678901;Joao Silva;Matriz;Producao;Operador de Maquinas;colaborador;\nana.gestora@empresa.com;23456789012;Ana Gestora;Matriz;Producao;Coordenadora de Producao;chefia;+5511988888888\n"
+    : accessMethod === "whatsapp"
+    ? "cpf;whatsapp;nome;filial;setor;cargo;perfil\n12345678901;+5511999999999;Joao Silva;Matriz;Producao;Operador de Maquinas;colaborador\n23456789012;+5511988888888;Ana Gestora;Matriz;Producao;Coordenadora de Producao;chefia\n"
+    : CSV_TEMPLATE_V2;
 
   const importMut = trpc.admin.importCollaborators.useMutation();
 
@@ -398,7 +472,7 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
     reader.onload = () => {
       const text = String(reader.result ?? "");
       setRaw(text);
-      const p = parseCSV(text);
+      const p = parseCSV(text, accessMethod);
       setParsed(p);
       setPreview(null);
       setDone(null);
@@ -407,14 +481,24 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
   }
 
   function onPasteParse() {
-    const p = parseCSV(raw);
+    const p = parseCSV(raw, accessMethod);
     setParsed(p);
     setPreview(null);
     setDone(null);
   }
 
   function downloadTemplate() {
-    const blob = new Blob(["﻿" + CSV_TEMPLATE], { type: "text/csv;charset=utf-8" });
+    if (accessMethod !== "email") {
+      const blob = new Blob(["\uFEFF" + csvTemplate], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = accessMethod === "cpf" ? "modelo-importacao-colaboradores-cpf.csv" : accessMethod === "both" ? "modelo-importacao-colaboradores-email-cpf.csv" : "modelo-importacao-colaboradores-whatsapp.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+      return;
+    }
+    const blob = new Blob(["﻿" + CSV_TEMPLATE_V2], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -443,6 +527,7 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
   }
 
   const previewRows = (preview?.results ?? []) as any[];
+  const previewIdentityLabel = accessMethod === "cpf" ? "CPF" : accessMethod === "whatsapp" ? "CPF/WhatsApp" : accessMethod === "both" ? "E-mail / CPF" : "E-mail";
   const okCount = previewRows.filter((r) => r.status === "ok").length;
   const badCount = previewRows.length - okCount;
 
@@ -508,8 +593,11 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
                   <Download size={13} /> Baixar modelo
                 </button>
               </div>
+              <div className="text-xs rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-blue-900">
+                Modelo desta empresa: <b>{loginColumnLabel}</b>. {accessMethod === "cpf" ? "WhatsApp e opcional na importacao e pode ser exigido no primeiro acesso." : accessMethod === "both" ? "E-mail e CPF devem ser preenchidos para permitir os dois metodos." : null}
+              </div>
               <p className="text-xs text-muted-foreground">
-                <b>Colunas (nesta ordem):</b> <code>e-mail corporativo; nome; filial; setor; cargo; perfil</code>.
+                <b>Colunas do modelo atual:</b> <code>{csvTemplate.split("\n")[0]}</code>.
                 <br />
                 <b>Cargo é obrigatório</b> — é usado pelo PGR/AEP/EPI/treinamentos. Aceita variações de cabeçalho: <code>cargo</code>, <code>função</code>, <code>position</code>.
                 <br />
@@ -521,7 +609,7 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
               </p>
               <textarea
                 className="w-full border rounded-md px-3 py-2 text-sm font-mono h-28 bg-white"
-                placeholder="email;nome;filial;setor;cargo;perfil"
+                placeholder={csvTemplate.split("\n")[0]}
                 value={raw}
                 onChange={(e) => setRaw(e.target.value)}
               />
@@ -555,7 +643,7 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
                       <table className="w-full text-xs">
                         <thead className="bg-muted sticky top-0">
                           <tr>
-                            <th className="text-left px-2 py-1.5">E-mail</th>
+                            <th className="text-left px-2 py-1.5">{previewIdentityLabel}</th>
                             <th className="text-left px-2 py-1.5">Nome</th>
                             <th className="text-left px-2 py-1.5">Filial</th>
                             <th className="text-left px-2 py-1.5">Setor</th>
@@ -567,7 +655,7 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
                         <tbody>
                           {previewRows.map((r, i) => (
                             <tr key={i} className={`border-t ${r.status !== "ok" ? "bg-rose-50" : ""}`}>
-                              <td className="px-2 py-1">{r.email || "—"}</td>
+                              <td className="px-2 py-1">{accessMethod === "cpf" ? (r.cpf || "-") : accessMethod === "whatsapp" ? (r.cpf || r.whatsapp || "-") : accessMethod === "both" ? (r.email || r.cpf || "-") : (r.email || "-")}</td>
                               <td className="px-2 py-1">{r.nome || "—"}</td>
                               <td className="px-2 py-1">{r.filial || "—"}{r.branchAction === "create" && <span className="text-sky-600"> (nova)</span>}</td>
                               <td className="px-2 py-1">{r.setor || "—"}{r.sectorAction === "create" && <span className="text-sky-600"> (novo)</span>}</td>
@@ -741,6 +829,11 @@ function UserRow({ u, onClick, onEditAssignment, onDelete }: { u: any; onClick: 
     wb >= 60 ? "text-amber-700 bg-amber-50" :
     wb >= 40 ? "text-orange-700 bg-orange-50" :
     "text-rose-700 bg-rose-50";
+  const status = String(u.employmentStatus ?? "active");
+  const statusClass =
+    status === "active" ? "bg-emerald-50 text-emerald-700" :
+    status === "away" ? "bg-amber-50 text-amber-700" :
+    "bg-slate-100 text-slate-700";
   return (
     <div className="w-full px-3 py-2 rounded-md border border-transparent hover:border-primary/20 hover:bg-primary/5 transition flex items-center gap-3 group">
       <button
@@ -753,10 +846,13 @@ function UserRow({ u, onClick, onEditAssignment, onDelete }: { u: any; onClick: 
         </div>
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium text-foreground truncate">{u.name}</div>
-          <div className="text-xs text-muted-foreground truncate">{u.cargo ?? u.email}</div>
+          <div className="text-xs text-muted-foreground truncate">{u.cargo ?? u.email}{u.cpf ? ` - CPF ${u.cpf}` : ""}</div>
         </div>
       </button>
       <div className="flex items-center gap-3 text-xs">
+        <span className={`px-2 py-1 rounded-md font-semibold hidden sm:inline ${statusClass}`}>
+          {employmentStatusLabel(status)}
+        </span>
         <span
           title={wb == null ? "Indice de bem-estar ainda nao calculado" : `Indice de bem-estar: ${wb}/100`}
           className={`px-2 py-1 rounded-md font-semibold flex items-center gap-1 ${wbColor}`}
@@ -785,7 +881,7 @@ function UserRow({ u, onClick, onEditAssignment, onDelete }: { u: any; onClick: 
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onEditAssignment(); }}
-            title="Editar colaborador (nome, e-mail, perfil, filial, setor)"
+            title="Editar colaborador (nome, CPF, WhatsApp, status, perfil, filial, setor)"
             className="p-1.5 rounded-md hover:bg-primary/15 text-muted-foreground hover:text-primary"
           >
             <Pencil size={13} />
@@ -812,7 +908,9 @@ function AssignmentDialog({ user, onClose, onSaved }: { user: any; onClose: () =
   );
   const [name, setName] = useState<string>(user?.name ?? "");
   const [email, setEmail] = useState<string>(user?.email ?? "");
+  const [cpf, setCpf] = useState<string>(user?.cpf ?? "");
   const [role, setRole] = useState<string>(user?.role ?? "user");
+  const [employmentStatus, setEmploymentStatus] = useState<string>(user?.employmentStatus ?? "active");
   const [branchId, setBranchId] = useState<number | null>(user?.branchId ?? null);
   const [sectorId, setSectorId] = useState<number | null>(user?.sectorId ?? null);
   // SP3 #1 — Cargo na edição (campo já existe no banco/importer; faltava na UI)
@@ -845,7 +943,9 @@ function AssignmentDialog({ user, onClose, onSaved }: { user: any; onClose: () =
       userId: user.id,
       name: name.trim(),
       email: email.trim().toLowerCase(),
+      cpf: cpf.trim() || null,
       role: role as any,
+      employmentStatus: employmentStatus as any,
       branchId: branchId,
       sectorId: sectorId,
       position: position.trim() || null,
@@ -869,6 +969,28 @@ function AssignmentDialog({ user, onClose, onSaved }: { user: any; onClose: () =
             <Input className="mt-2" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email@empresa.com" />
           </div>
           <div>
+            <Label>CPF</Label>
+            <Input className="mt-2" value={cpf} onChange={(e) => setCpf(e.target.value)} placeholder="000.000.000-00" />
+            <p className="text-xs text-muted-foreground mt-1">
+              Identificador operacional para importacoes, excecoes, CIPA e liberacoes.
+            </p>
+          </div>
+          <div>
+            <Label>Status do colaborador</Label>
+            <select
+              className="w-full mt-2 border rounded-md px-3 py-2 text-sm bg-white"
+              value={employmentStatus}
+              onChange={(e) => setEmploymentStatus(e.target.value)}
+            >
+              {EMPLOYMENT_STATUS_OPTIONS.map((s) => (
+                <option key={s.value} value={s.value}>{s.label}</option>
+              ))}
+            </select>
+            <p className="text-xs text-muted-foreground mt-1">
+              Afastados e desligados preservam historico, mas deixam de contar como pendencia ativa.
+            </p>
+          </div>
+          <div>
             <Label>Perfil de acesso</Label>
             <select
               className="w-full mt-2 border rounded-md px-3 py-2 text-sm bg-white"
@@ -878,6 +1000,8 @@ function AssignmentDialog({ user, onClose, onSaved }: { user: any; onClose: () =
               <option value="user">Colaborador</option>
               <option value="chefia">Chefia / Gestor</option>
               <option value="rh">RH / Saúde</option>
+              <option value="sesmt">SESMT</option>
+              <option value="cipa">CIPA</option>
               <option value="admin">Administrador</option>
             </select>
           </div>
@@ -964,7 +1088,7 @@ function AssignmentDialog({ user, onClose, onSaved }: { user: any; onClose: () =
 
 function DeleteCollaboratorDialog({ user, onClose, onDeleted }: { user: any; onClose: () => void; onDeleted: () => void }) {
   const mut = trpc.admin.deleteCollaborator.useMutation({
-    onSuccess: () => { toast.success("Colaborador removido"); onDeleted(); },
+    onSuccess: () => { toast.success("Colaborador marcado como desligado"); onDeleted(); },
     onError: (e) => toast.error(e.message),
   });
   return (
@@ -972,12 +1096,12 @@ function DeleteCollaboratorDialog({ user, onClose, onDeleted }: { user: any; onC
       <DialogContent>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-rose-600">
-            <AlertTriangle size={18} /> Remover colaborador
+            <AlertTriangle size={18} /> Desligar colaborador
           </DialogTitle>
         </DialogHeader>
         <div className="space-y-3 mt-2 text-sm">
           <p>
-            Tem certeza que deseja remover <b>{user.name}</b> ({user.email})?
+            Tem certeza que deseja marcar <b>{user.name}</b> ({user.email}) como desligado?
           </p>
           <p className="text-muted-foreground text-xs">
             O colaborador deixará de aparecer na lista e não poderá mais acessar a plataforma. O histórico (cursos,
@@ -993,9 +1117,156 @@ function DeleteCollaboratorDialog({ user, onClose, onDeleted }: { user: any; onC
             className="px-3 py-2 bg-rose-600 text-white rounded-md text-sm inline-flex items-center gap-1 disabled:opacity-60"
           >
             {mut.isPending ? <Loader2 size={14} className="animate-spin" /> : <X size={14} />}
-            {mut.isPending ? "Removendo..." : "Remover"}
+            {mut.isPending ? "Salvando..." : "Marcar como desligado"}
           </button>
         </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+type ParsedStatusRow = { cpf: string; statusCode: string };
+
+function parseStatusCSV(text: string): ParsedStatusRow[] {
+  const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n").filter((l) => l.trim().length > 0);
+  if (lines.length === 0) return [];
+  const delim = lines[0].split(";").length >= lines[0].split(",").length ? ";" : ",";
+  const grid = lines.map((l) => splitCsvLine(l, delim));
+  const header = grid[0].map(stripAccents);
+  const iCpfHeader = header.findIndex((h) => h.includes("cpf"));
+  const iStatusHeader = header.findIndex((h) => h.includes("status") || h.includes("codigo") || h.includes("cod"));
+  const hasHeader = iCpfHeader !== -1 || iStatusHeader !== -1;
+  const iCpf = hasHeader ? Math.max(iCpfHeader, 0) : 0;
+  const iStatus = hasHeader ? (iStatusHeader >= 0 ? iStatusHeader : 1) : 1;
+  const rows = hasHeader ? grid.slice(1) : grid;
+  return rows.map((r) => ({
+    cpf: r[iCpf] ?? "",
+    statusCode: r[iStatus] ?? "",
+  })).filter((r) => r.cpf || r.statusCode);
+}
+
+function StatusImportDialog({ onClose, onImported }: { onClose: () => void; onImported: () => void }) {
+  const companiesQ = trpc.pgr.listCompanies.useQuery();
+  const companies = (companiesQ.data ?? []) as any[];
+  const isMulti = companies.length > 1;
+  const [companyId, setCompanyId] = useState<number | null>(null);
+  const [raw, setRaw] = useState("cpf;codigo_status\n12345678901;3\n23456789012;2\n34567890123;1\n");
+  const [parsed, setParsed] = useState<ParsedStatusRow[]>([]);
+  const [preview, setPreview] = useState<any | null>(null);
+  const [done, setDone] = useState<any | null>(null);
+  const mut = (trpc.admin as any).bulkUpdateCollaboratorStatus.useMutation();
+
+  useMemo(() => {
+    if (!isMulti && companies.length === 1 && companyId == null) setCompanyId(companies[0].id);
+  }, [companies.length]);
+
+  const selectedCompany = companies.find((c) => c.id === companyId);
+
+  function readFile(file: File) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result ?? "");
+      setRaw(text);
+      setParsed(parseStatusCSV(text));
+      setPreview(null);
+      setDone(null);
+    };
+    reader.readAsText(file, "utf-8");
+  }
+
+  function parseNow() {
+    setParsed(parseStatusCSV(raw));
+    setPreview(null);
+    setDone(null);
+  }
+
+  async function runPreview() {
+    if (!companyId) { toast.error("Selecione a empresa."); return; }
+    const rows = parsed.length ? parsed : parseStatusCSV(raw);
+    if (!rows.length) { toast.error("Nenhuma linha encontrada."); return; }
+    const r = await mut.mutateAsync({ companyId, dryRun: true, rows });
+    setPreview(r);
+  }
+
+  async function runImport() {
+    if (!companyId) return;
+    const rows = parsed.length ? parsed : parseStatusCSV(raw);
+    const r = await mut.mutateAsync({ companyId, dryRun: false, rows });
+    setDone(r);
+    onImported();
+    toast.success(`Status atualizado: ${r.summary.updated} colaborador(es).`);
+  }
+
+  const results = (preview?.results ?? done?.results ?? []) as any[];
+
+  return (
+    <Dialog open={true} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Upload size={18} /> Atualizar status em massa
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 mt-2">
+          <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 space-y-2">
+            <Label className="text-amber-900">Empresa</Label>
+            {isMulti ? (
+              <select className="w-full border rounded-md px-3 py-2 text-sm bg-white" value={companyId ?? ""} onChange={(e) => setCompanyId(e.target.value ? Number(e.target.value) : null)}>
+                <option value="">-- selecione a empresa --</option>
+                {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            ) : (
+              <div className="text-sm font-medium text-amber-900">{selectedCompany?.name ?? "Carregando..."}</div>
+            )}
+          </div>
+
+          <div className="text-xs rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-blue-900">
+            Layout: <code>cpf;codigo_status</code>. Codigos: 1 Ativo, 2 Desligado, 3 Afastado, 4 Obito, 5 Aposentado.
+          </div>
+          <textarea className="w-full border rounded-md px-3 py-2 text-sm font-mono h-28 bg-white" value={raw} onChange={(e) => setRaw(e.target.value)} />
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="px-3 py-2 border rounded-md text-sm cursor-pointer hover:bg-muted inline-flex items-center gap-1">
+              <Upload size={13} /> Escolher arquivo .csv
+              <input type="file" accept=".csv,text/csv" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) readFile(f); }} />
+            </label>
+            <Button size="sm" variant="outline" onClick={parseNow}>Ler dados</Button>
+            <Button size="sm" variant="outline" onClick={runPreview} disabled={!companyId || mut.isPending}>
+              {mut.isPending && !done ? <Loader2 size={14} className="mr-1 animate-spin" /> : null}
+              Pre-visualizar
+            </Button>
+          </div>
+
+          {results.length > 0 && (
+            <div className="border rounded-md overflow-auto max-h-64">
+              <table className="w-full text-xs">
+                <thead className="bg-muted sticky top-0">
+                  <tr>
+                    <th className="text-left px-2 py-1.5">CPF</th>
+                    <th className="text-left px-2 py-1.5">Status</th>
+                    <th className="text-left px-2 py-1.5">Resultado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {results.map((r, i) => (
+                    <tr key={i} className={`border-t ${r.result !== "ok" ? "bg-rose-50" : ""}`}>
+                      <td className="px-2 py-1">{r.cpf}</td>
+                      <td className="px-2 py-1">{r.statusLabel || r.statusCode}</td>
+                      <td className="px-2 py-1">{r.result === "ok" ? "Atualizar" : r.message}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <DialogFooter className="gap-2">
+            <Button variant="ghost" onClick={onClose}>Cancelar</Button>
+            <Button onClick={runImport} disabled={!companyId || !preview || mut.isPending}>
+              {mut.isPending && preview ? <Loader2 size={14} className="mr-1 animate-spin" /> : null}
+              Aplicar atualizacao
+            </Button>
+          </DialogFooter>
+        </div>
       </DialogContent>
     </Dialog>
   );
@@ -1143,5 +1414,3 @@ function fmtDate(v: any) {
   if (!v) return "—";
   try { return new Date(v).toLocaleDateString("pt-BR"); } catch { return "—"; }
 }
-
-

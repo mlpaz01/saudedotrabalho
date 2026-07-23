@@ -1951,10 +1951,19 @@ async function loadAssessmentForPDF(db: any, assessmentId: number, companyId: nu
     };
   }
 
+  const coverage = await loadRiskCycleSectorCoverage(db, assessmentId, companyId).catch(() => null);
+  const completeSectorIds = coverage?.completeSectorIds ?? new Set<number>();
+  const invForPdf = !ra.sector_id && completeSectorIds.size > 0
+    ? inv.filter((it: any) => it.sector_id == null || completeSectorIds.has(Number(it.sector_id)))
+    : inv;
+  const actForPdf = !ra.sector_id && completeSectorIds.size > 0
+    ? act.filter((it: any) => it.sector_id == null || completeSectorIds.has(Number(it.sector_id)))
+    : act;
+
   let sectorGroups: any[] = [];
   if (!ra.sector_id) {
     const sids = Array.from(new Set(
-      [...inv, ...act].map((x: any) => x.sector_id).filter((s: any) => s != null).map((s: any) => Number(s))
+      [...invForPdf, ...actForPdf].map((x: any) => x.sector_id).filter((s: any) => s != null).map((s: any) => Number(s))
     )).sort((x, y) => x - y);
     for (const sid of sids) {
       const snR: any = await db.execute(drzSql`SELECT name FROM sectors WHERE id=${sid} LIMIT 1`);
@@ -1983,8 +1992,8 @@ async function loadAssessmentForPDF(db: any, assessmentId: number, companyId: nu
           drpsResponses: Number((sDrps as any)[0]?.[0]?.c ?? 0),
           aepResponses: Number((sAep as any)[0]?.[0]?.c ?? 0),
         },
-        inventory: inv.filter((it: any) => Number(it.sector_id) === sid).map(mapInvRow),
-        actions: act.filter((ac: any) => Number(ac.sector_id) === sid).map(mapActRow),
+        inventory: invForPdf.filter((it: any) => Number(it.sector_id) === sid).map(mapInvRow),
+        actions: actForPdf.filter((ac: any) => Number(ac.sector_id) === sid).map(mapActRow),
       });
     }
   }
@@ -2011,7 +2020,7 @@ async function loadAssessmentForPDF(db: any, assessmentId: number, companyId: nu
       drpsInvalidResponses: Number((drpsInvalidCount as any)[0]?.[0]?.c ?? 0),
       aepInvalidResponses: Number((aepInvalidCount as any)[0]?.[0]?.c ?? 0),
     },
-    inventory: inv.map((it: any) => ({
+    inventory: invForPdf.map((it: any) => ({
       factorCode: it.factor_code,
       factorName: it.factor_name,
       description: it.factor_description,
@@ -2023,7 +2032,7 @@ async function loadAssessmentForPDF(db: any, assessmentId: number, companyId: nu
       drpsScoreAvg: it.drps_score_avg != null ? Number(it.drps_score_avg) : null,
       drpsResponsesCount: it.drps_responses_count,
     })),
-    actions: act.map((ac: any) => ({
+    actions: actForPdf.map((ac: any) => ({
       factorCode: ac.factor_code,
       factorName: ac.factor_name,
       actionDescription: ac.action_description,
@@ -2324,7 +2333,32 @@ async function execP(db: any, text: string, params: any[] = []): Promise<[any[],
 const ACTIVE_EMPLOYEE_ROLES = ["user", "chefia", "cipa", "sesmt", "admin", "company_admin"] as const;
 
 function activeEmployeeWhere(alias = "u"): string {
-  return `${alias}.is_active=1 AND ${alias}.role IN (${ACTIVE_EMPLOYEE_ROLES.map((r) => `'${r}'`).join(",")})`;
+  return `${alias}.is_active=1 AND COALESCE(${alias}.employment_status,'active')='active' AND ${alias}.role IN (${ACTIVE_EMPLOYEE_ROLES.map((r) => `'${r}'`).join(",")})`;
+}
+
+function firstDbRow(result: any): any | null {
+  const rows = Array.isArray(result) ? result[0] : result;
+  if (Array.isArray(rows)) return rows[0] ?? null;
+  return rows ?? null;
+}
+
+const ISO_COURSE_ACCESS_ROLES = new Set(["admin", "company_admin", "rh", "sesmt", "admin_global", "super_admin"]);
+
+async function assertCourseAccessForUser(db: any, user: any, moduleId: number) {
+  const mr: any = await db.execute(drzSql`
+    SELECT id, title, description, image_url, durationMinutes, template_category
+    FROM modules
+    WHERE id=${moduleId} AND isActive=1
+    LIMIT 1
+  `);
+  const mod = firstDbRow(mr);
+  if (!mod) throw new TRPCError({ code: "NOT_FOUND" });
+  const category = String(mod.template_category ?? "").toLowerCase();
+  const role = String(user?.role ?? "");
+  if (category === "iso" && !ISO_COURSE_ACCESS_ROLES.has(role)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Curso restrito aos perfis Admin, RH e SESMT." });
+  }
+  return mod;
 }
 
 async function ensureCompanyPlatformConfigColumns(db: any) {
@@ -2333,6 +2367,165 @@ async function ensureCompanyPlatformConfigColumns(db: any) {
   try { await db.execute(drzSql`ALTER TABLE companies ADD COLUMN access_method VARCHAR(30) NOT NULL DEFAULT 'email'`); } catch (_) {}
   try { await db.execute(drzSql`ALTER TABLE companies ADD COLUMN communication_channel VARCHAR(30) NOT NULL DEFAULT 'email'`); } catch (_) {}
   try { await db.execute(drzSql`ALTER TABLE companies ADD COLUMN require_whatsapp_on_first_access TINYINT(1) NOT NULL DEFAULT 0`); } catch (_) {}
+}
+
+async function ensureAuthIdentityColumns(db: any) {
+  try { await db.execute(drzSql`ALTER TABLE users ADD COLUMN cpf VARCHAR(20) NULL`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE users ADD INDEX idx_users_cpf (cpf)`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE users ADD COLUMN whatsapp_e164 VARCHAR(20) NULL`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE users ADD INDEX idx_users_whatsapp (whatsapp_e164)`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE users ADD COLUMN employment_status VARCHAR(30) NOT NULL DEFAULT 'active'`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE users ADD INDEX idx_users_employment_status (employment_status)`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE corporate_emails ADD COLUMN cpf VARCHAR(20) NULL`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE corporate_emails ADD INDEX idx_corporate_cpf (cpf)`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE corporate_emails ADD COLUMN whatsapp_e164 VARCHAR(20) NULL`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE corporate_emails ADD INDEX idx_corporate_whatsapp (whatsapp_e164)`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE corporate_emails ADD COLUMN employment_status VARCHAR(30) NOT NULL DEFAULT 'active'`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE corporate_emails ADD INDEX idx_corporate_employment_status (employment_status)`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE corporate_emails ADD COLUMN activation_token VARCHAR(128) NULL`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE corporate_emails ADD COLUMN activation_expires_at TIMESTAMP NULL`); } catch (_) {}
+}
+
+async function ensureCommunicationTemplateTables(db: any) {
+  await execP(db, `CREATE TABLE IF NOT EXISTS communication_message_templates (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    company_id INT NULL,
+    channel VARCHAR(30) NOT NULL DEFAULT 'whatsapp',
+    event_key VARCHAR(80) NOT NULL,
+    title VARCHAR(160) NOT NULL,
+    body TEXT NOT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    updated_by INT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_comm_tpl_company_event_channel (company_id, event_key, channel),
+    INDEX idx_comm_tpl_company (company_id),
+    INDEX idx_comm_tpl_event (event_key)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`, []);
+}
+
+const DEFAULT_WHATSAPP_MESSAGE_TEMPLATES = [
+  {
+    eventKey: "welcome",
+    title: "Boas-vindas e primeiro acesso",
+    body: "Ola, {{nome}}. Voce foi cadastrado(a) na Plataforma Saude do Trabalho da empresa {{empresa}}. Acesse {{link}} para criar sua senha e acompanhar cursos, pesquisas e comunicados.",
+  },
+  {
+    eventKey: "password_recovery",
+    title: "Recuperacao de senha",
+    body: "Ola, {{nome}}. Recebemos uma solicitacao para recuperar sua senha na Plataforma Saude do Trabalho. Use o link seguro: {{link}}. Se nao foi voce, ignore esta mensagem.",
+  },
+  {
+    eventKey: "survey_invite",
+    title: "Convite DRPS/AEP",
+    body: "Ola, {{nome}}. A empresa {{empresa}} solicita sua participacao na pesquisa obrigatoria {{titulo}}. Responda pelo link: {{link}}.",
+  },
+  {
+    eventKey: "course_invite",
+    title: "Curso obrigatorio",
+    body: "Ola, {{nome}}. Voce possui o curso obrigatorio {{titulo}} pendente na Plataforma Saude do Trabalho. Acesse {{link}} para concluir.",
+  },
+  {
+    eventKey: "pending_reminder",
+    title: "Lembrete de pendencia",
+    body: "Ola, {{nome}}. Ha pendencias em aberto na Plataforma Saude do Trabalho da empresa {{empresa}}. Regularize pelo link: {{link}}.",
+  },
+  {
+    eventKey: "campaign_invite",
+    title: "Campanha preventiva",
+    body: "Ola, {{nome}}. A empresa {{empresa}} iniciou a campanha {{titulo}}. Acesse o conteudo pelo link: {{link}}.",
+  },
+  {
+    eventKey: "cipa_election",
+    title: "Eleicao da CIPA",
+    body: "Ola, {{nome}}. A votacao da CIPA esta disponivel para a empresa {{empresa}}. Participe pelo link: {{link}}.",
+  },
+  {
+    eventKey: "internal_notice",
+    title: "Comunicado interno",
+    body: "Ola, {{nome}}. Novo comunicado da empresa {{empresa}}: {{titulo}}. Consulte em {{link}}.",
+  },
+] as const;
+
+function fillTemplatePreview(body: string, companyName?: string) {
+  const values: Record<string, string> = {
+    nome: "Colaborador",
+    empresa: companyName || "Sua empresa",
+    titulo: "Pesquisa obrigatoria",
+    link: "https://dev.saudedotrabalho.com/plataforma",
+  };
+  return String(body || "").replace(/\{\{\s*(nome|empresa|titulo|link)\s*\}\}/gi, (_, key) => values[String(key).toLowerCase()] ?? "");
+}
+
+function normalizeCpf(value: unknown): string | null {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  return digits.length === 11 ? digits : null;
+}
+
+function detectLoginMethod(identifier: string): "email" | "cpf" | "whatsapp" {
+  const v = String(identifier ?? "").trim();
+  if (v.includes("@")) return "email";
+  const digits = v.replace(/\D/g, "");
+  if (digits.length === 11) return "cpf";
+  return "whatsapp";
+}
+
+function companyAllowsLoginMethod(configMethod: string | null | undefined, method: "email" | "cpf" | "whatsapp"): boolean {
+  const cfg = String(configMethod || "email").toLowerCase();
+  if (cfg === "email") return method === "email";
+  if (cfg === "cpf") return method === "cpf";
+  if (cfg === "both" || cfg === "ambos" || cfg === "email_cpf") return method === "email" || method === "cpf";
+  if (cfg === "whatsapp") return method === "email" || method === "cpf" || method === "whatsapp";
+  return method === "email";
+}
+
+async function findCorporateIdentity(db: any, identifier: string) {
+  await ensureAuthIdentityColumns(db);
+  await ensureCompanyPlatformConfigColumns(db);
+  let method = detectLoginMethod(identifier);
+  let rows: any[] = [];
+  if (method === "email") {
+    const email = String(identifier).trim().toLowerCase();
+    const [r]: any = await execP(db, `
+      SELECT ce.*, c.access_method, c.communication_channel, c.require_whatsapp_on_first_access
+      FROM corporate_emails ce LEFT JOIN companies c ON c.id=ce.company_id
+      WHERE LOWER(ce.email)=? AND ce.isActive=1 LIMIT 1`, [email]);
+    rows = r ?? [];
+  } else if (method === "cpf") {
+    const cpf = normalizeCpf(identifier);
+    if (!cpf) return { record: null, method };
+    const [r]: any = await execP(db, `
+      SELECT ce.*, c.access_method, c.communication_channel, c.require_whatsapp_on_first_access
+      FROM corporate_emails ce LEFT JOIN companies c ON c.id=ce.company_id
+      WHERE ce.cpf=? AND ce.isActive=1 LIMIT 1`, [cpf]);
+    rows = r ?? [];
+    if (!rows.length) {
+      const { normalizeE164BR } = await import("./_core/whatsapp");
+      const phone = normalizeE164BR(identifier);
+      if (phone) {
+        const [wr]: any = await execP(db, `
+          SELECT ce.*, c.access_method, c.communication_channel, c.require_whatsapp_on_first_access
+          FROM corporate_emails ce LEFT JOIN companies c ON c.id=ce.company_id
+          WHERE ce.whatsapp_e164=? AND ce.isActive=1 LIMIT 1`, [phone]);
+        rows = wr ?? [];
+        if (rows.length) method = "whatsapp";
+      }
+    }
+  } else {
+    const { normalizeE164BR } = await import("./_core/whatsapp");
+    const phone = normalizeE164BR(identifier);
+    if (!phone) return { record: null, method };
+    const [r]: any = await execP(db, `
+      SELECT ce.*, c.access_method, c.communication_channel, c.require_whatsapp_on_first_access
+      FROM corporate_emails ce LEFT JOIN companies c ON c.id=ce.company_id
+      WHERE ce.whatsapp_e164=? AND ce.isActive=1 LIMIT 1`, [phone]);
+    rows = r ?? [];
+  }
+  const record = rows[0] ?? null;
+  if (record && !companyAllowsLoginMethod(record.access_method, method)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Este método de acesso não está habilitado para a sua empresa." });
+  }
+  return { record, method };
 }
 
 function normalizeTextKey(value: unknown): string {
@@ -2364,6 +2557,110 @@ const PSYCHOSOCIAL_FACTOR_ORDER = [
   "comunicacao",
   "remoto",
 ];
+
+async function getAcolhimentoEligibilityForUser(db: any, userId: number) {
+  if (!db || !userId) {
+    return {
+      eligible: false,
+      message: "Acolhimento psicologico indisponivel: usuario nao identificado.",
+    };
+  }
+
+  const [[userRow]]: any = await execP(db, `
+    SELECT id, company_id, sector_id, role, is_active, employment_status
+    FROM users
+    WHERE id=?
+    LIMIT 1`, [userId]).catch(() => [[null]]);
+
+  if (!userRow) {
+    return {
+      eligible: false,
+      message: "Acolhimento psicologico indisponivel: colaborador nao localizado.",
+    };
+  }
+
+  const role = String(userRow.role || "");
+  if (role === "psicologo" || role === "super_admin" || role === "admin_global") {
+    return {
+      eligible: false,
+      message: "Este perfil nao e elegivel para solicitar acolhimento como colaborador.",
+    };
+  }
+
+  if (Number(userRow.is_active ?? 0) !== 1 || String(userRow.employment_status || "active") !== "active") {
+    return {
+      eligible: false,
+      message: "Acolhimento psicologico disponivel apenas para colaboradores ativos.",
+    };
+  }
+
+  const companyId = Number(userRow.company_id ?? 0);
+  const sectorId = userRow.sector_id ? Number(userRow.sector_id) : null;
+  if (!companyId) {
+    return {
+      eligible: false,
+      message: "Acolhimento psicologico indisponivel: empresa nao identificada.",
+    };
+  }
+
+  const [[wellbeing]]: any = await execP(db, `
+    SELECT score, burnout_risk, status_label, snapshot_month
+    FROM wellbeing_index
+    WHERE user_id=? AND company_id=?
+    ORDER BY snapshot_month DESC
+    LIMIT 1`, [userId, companyId]).catch(() => [[null]]);
+
+  if (wellbeing) {
+    const score = Number(wellbeing.score);
+    const burnout = String(wellbeing.burnout_risk || "").toLowerCase();
+    const status = normalizeTextKey(wellbeing.status_label || "");
+    if (Number.isFinite(score) && score < 60) {
+      return {
+        eligible: true,
+        reason: "wellbeing_index",
+        level: score < 40 ? "critico" : "alto",
+        message: "Voce pode agendar uma conversa confidencial com um(a) psicologo(a). A liberacao ocorreu por indicador de alerta na Visao 360.",
+      };
+    }
+    if (["alto", "critico", "alta", "critica"].includes(burnout) || status.includes("alerta") || status.includes("critico")) {
+      return {
+        eligible: true,
+        reason: "wellbeing_index",
+        level: burnout || "alto",
+        message: "Voce pode agendar uma conversa confidencial com um(a) psicologo(a). A liberacao ocorreu por indicador de alerta na Visao 360.",
+      };
+    }
+  }
+
+  if (sectorId) {
+    const [[sectorRisk]]: any = await execP(db, `
+      SELECT ri.risco_final, pf.name AS factor_name, ra.cycle_name
+      FROM risk_assessments ra
+      INNER JOIN risk_inventory_items ri ON ri.assessment_id=ra.id
+      LEFT JOIN psychosocial_factors pf ON pf.id=ri.factor_id
+      WHERE ra.company_id=?
+        AND ri.sector_id=?
+        AND ra.status IN ('analyzing','review','closed','active')
+        AND LOWER(COALESCE(ri.risco_final,'')) IN ('alta','alto','critica','critico','crítica','crítico')
+      ORDER BY COALESCE(ra.end_date, ra.start_date) DESC, ra.id DESC,
+        FIELD(LOWER(COALESCE(ri.risco_final,'')), 'critica','crítico','critico','alta','alto')
+      LIMIT 1`, [companyId, sectorId]).catch(() => [[null]]);
+
+    if (sectorRisk) {
+      return {
+        eligible: true,
+        reason: "sector_psychosocial_risk",
+        level: String(sectorRisk.risco_final || "").toLowerCase(),
+        message: "Voce pode agendar uma conversa confidencial com um(a) psicologo(a). A liberacao ocorreu por risco psicossocial alto ou critico no seu setor.",
+      };
+    }
+  }
+
+  return {
+    eligible: false,
+    message: "Agendamento psicologico disponivel apenas para colaboradores com indicador de alerta/critico na Visao 360 ou pertencentes a setor com risco psicossocial alto/critico.",
+  };
+}
 
 function normalizeFactorCode(value: unknown): string {
   return normalizeTextKey(value).replace(/\s+/g, "_");
@@ -2642,6 +2939,126 @@ async function computePrioritariosForSector(db: any, cid: number, targetSectorId
   const seenP = new Set<number>();
   const prioritariosDedup = prioritarios.filter(p => seenP.has(p.moduleId) ? false : (seenP.add(p.moduleId), true));
   return { prioritarios: prioritariosDedup, lastCycle };
+}
+
+async function loadRiskCycleSectorCoverage(db: any, assessmentId: number, companyId: number) {
+  const [[assessment]]: any = await execP(db, `
+    SELECT id, company_id, branch_id, sector_id, cycle_name, drps_survey_id, aep_survey_id
+    FROM risk_assessments
+    WHERE id=? LIMIT 1`, [assessmentId]);
+  if (!assessment) throw new TRPCError({ code: "NOT_FOUND" });
+  if (Number(assessment.company_id) !== Number(companyId)) throw new TRPCError({ code: "FORBIDDEN" });
+
+  const sectorWhere: string[] = ["s.company_id=?", "COALESCE(s.is_active,1)=1"];
+  const sectorParams: any[] = [companyId];
+  if (assessment.branch_id != null) { sectorWhere.push("s.branch_id=?"); sectorParams.push(Number(assessment.branch_id)); }
+  if (assessment.sector_id != null) { sectorWhere.push("s.id=?"); sectorParams.push(Number(assessment.sector_id)); }
+
+  const [sectorRows]: any = await execP(db, `
+    SELECT s.id AS sectorId, s.name AS sectorName, s.branch_id AS branchId, b.name AS branchName,
+           COUNT(DISTINCT u.id) AS activeEmployees
+    FROM sectors s
+    LEFT JOIN branches b ON b.id=s.branch_id
+    LEFT JOIN users u ON u.sector_id=s.id AND u.company_id=s.company_id AND ${activeEmployeeWhere("u")}
+    WHERE ${sectorWhere.join(" AND ")}
+    GROUP BY s.id, s.name, s.branch_id, b.name
+    ORDER BY b.name, s.name`, sectorParams);
+
+  const countBySector = async (surveyId: any) => {
+    const map = new Map<number, number>();
+    if (!surveyId) return map;
+    const [rows]: any = await execP(db, `
+      SELECT sector_id AS sectorId, COUNT(*) AS c
+      FROM survey_responses
+      WHERE survey_id=? AND sector_id IS NOT NULL AND (status IS NULL OR status <> 'invalid')
+      GROUP BY sector_id`, [surveyId]);
+    for (const r of rows as any[]) map.set(Number(r.sectorId), Number(r.c ?? 0));
+    return map;
+  };
+
+  const drpsMap = await countBySector(assessment.drps_survey_id);
+  const aepMap = await countBySector(assessment.aep_survey_id);
+  const sectors = (sectorRows as any[]).map((s: any) => {
+    const sectorId = Number(s.sectorId);
+    const drpsResponses = drpsMap.get(sectorId) ?? 0;
+    const aepResponses = aepMap.get(sectorId) ?? 0;
+    const hasCompleteCrossing = drpsResponses > 0 && aepResponses > 0;
+    return {
+      sectorId,
+      sectorName: String(s.sectorName ?? `Setor ${sectorId}`),
+      branchId: s.branchId == null ? null : Number(s.branchId),
+      branchName: s.branchName ? String(s.branchName) : null,
+      activeEmployees: Number(s.activeEmployees ?? 0),
+      drpsResponses,
+      aepResponses,
+      hasCompleteCrossing,
+      status: hasCompleteCrossing ? "completo" : (drpsResponses === 0 && aepResponses === 0 ? "sem_respostas" : "pendente"),
+    };
+  });
+  const completeSectorIds = new Set(sectors.filter((s: any) => s.hasCompleteCrossing).map((s: any) => Number(s.sectorId)));
+  return {
+    assessment: {
+      id: Number(assessment.id),
+      cycleName: String(assessment.cycle_name ?? ""),
+      branchId: assessment.branch_id == null ? null : Number(assessment.branch_id),
+      sectorId: assessment.sector_id == null ? null : Number(assessment.sector_id),
+      drpsSurveyId: assessment.drps_survey_id == null ? null : Number(assessment.drps_survey_id),
+      aepSurveyId: assessment.aep_survey_id == null ? null : Number(assessment.aep_survey_id),
+    },
+    sectors,
+    completeSectorIds,
+    summary: {
+      sectorsTotal: sectors.length,
+      sectorsComplete: sectors.filter((s: any) => s.hasCompleteCrossing).length,
+      sectorsPending: sectors.filter((s: any) => !s.hasCompleteCrossing).length,
+      activeEmployees: sectors.reduce((sum: number, s: any) => sum + Number(s.activeEmployees ?? 0), 0),
+      drpsResponses: sectors.reduce((sum: number, s: any) => sum + Number(s.drpsResponses ?? 0), 0),
+      aepResponses: sectors.reduce((sum: number, s: any) => sum + Number(s.aepResponses ?? 0), 0),
+    },
+  };
+}
+
+async function loadPendingRiskSurveyTargets(db: any, companyId: number, input: { assessmentId: number; target: "drps" | "aep"; branchId?: number | null; sectorId?: number | null }) {
+  const [[a]]: any = await execP(db, `
+    SELECT company_id, drps_survey_id, aep_survey_id
+    FROM risk_assessments WHERE id=? LIMIT 1`, [input.assessmentId]);
+  if (!a || Number(a.company_id) !== Number(companyId)) throw new TRPCError({ code: "FORBIDDEN" });
+  const surveyId = input.target === "drps" ? a.drps_survey_id : a.aep_survey_id;
+  if (!surveyId) return [];
+  const roleFilter = input.target === "aep"
+    ? "AND u.role IN ('chefia','sector_lead','manager','admin','company_admin','rh','sesmt')"
+    : "";
+  const where: string[] = [`u.company_id=?`, activeEmployeeWhere("u"), `u.email IS NOT NULL`, `u.email <> ''`];
+  const params: any[] = [companyId];
+  if (input.branchId) { where.push("u.branch_id=?"); params.push(input.branchId); }
+  if (input.sectorId) { where.push("u.sector_id=?"); params.push(input.sectorId); }
+  params.push(surveyId, surveyId);
+  const [rows]: any = await execP(db, `
+    SELECT u.id AS userId, u.name, u.email, u.role, u.branch_id AS branchId, u.sector_id AS sectorId,
+           b.name AS branchName, s.name AS sectorName
+    FROM users u
+    LEFT JOIN branches b ON b.id=u.branch_id
+    LEFT JOIN sectors s ON s.id=u.sector_id
+    WHERE ${where.join(" AND ")} ${roleFilter}
+      AND NOT EXISTS (
+        SELECT 1 FROM survey_responses sr
+        WHERE sr.survey_id=? AND sr.user_id=u.id AND (sr.status IS NULL OR sr.status <> 'invalid')
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM survey_user_completions suc
+        WHERE suc.survey_id=? AND suc.user_id=u.id
+      )
+    ORDER BY b.name, s.name, u.name`, params);
+  return (rows ?? []).map((r: any) => ({
+    userId: Number(r.userId),
+    name: r.name ? String(r.name) : String(r.email),
+    email: String(r.email),
+    role: String(r.role ?? ""),
+    branchId: r.branchId == null ? null : Number(r.branchId),
+    branchName: r.branchName ? String(r.branchName) : null,
+    sectorId: r.sectorId == null ? null : Number(r.sectorId),
+    sectorName: r.sectorName ? String(r.sectorName) : null,
+  }));
 }
 
 /** Cursos prioritários de UM colaborador específico que ele ainda NÃO concluiu — base do e-mail personalizado. */
@@ -2997,6 +3414,134 @@ function encryptSmtpPass(plain: string): string {
   return iv.toString("hex") + ":" + encrypted.toString("hex");
 }
 
+function encryptIntegrationSecret(plain: string): string {
+  return encryptSmtpPass(plain);
+}
+
+function decryptIntegrationSecret(encrypted: string): string {
+  return decryptSmtpPass(encrypted);
+}
+
+function rowsOf<T = any>(result: any): T[] {
+  return Array.isArray(result?.[0]) ? result[0] : Array.isArray(result) ? result : [];
+}
+
+async function ensureTotvsRmTables() {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
+  await db.execute(drzSql`
+    CREATE TABLE IF NOT EXISTS totvs_rm_connections (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      company_id INT NOT NULL,
+      rm_version VARCHAR(40) NOT NULL DEFAULT '12.1.2602.181',
+      base_url VARCHAR(500) NOT NULL,
+      integration_mode VARCHAR(20) NOT NULL DEFAULT 'rest',
+      auth_type VARCHAR(20) NOT NULL DEFAULT 'basic',
+      username VARCHAR(255) NULL,
+      password_encrypted TEXT NULL,
+      coligada VARCHAR(30) NULL,
+      filial VARCHAR(30) NULL,
+      rest_healthcheck_path VARCHAR(300) NOT NULL DEFAULT '/RMSRestDataServer/rest',
+      rest_employee_path VARCHAR(300) NULL,
+      soap_wsdl_path VARCHAR(300) NULL,
+      soap_dataserver VARCHAR(160) NULL,
+      field_map_json TEXT NULL,
+      status_map_json TEXT NULL,
+      sync_schedule VARCHAR(30) NOT NULL DEFAULT 'manual',
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+      last_test_at TIMESTAMP NULL,
+      last_test_ok TINYINT(1) NULL,
+      last_test_status INT NULL,
+      last_test_error TEXT NULL,
+      last_sync_at TIMESTAMP NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_totvs_rm_company (company_id),
+      INDEX idx_totvs_rm_company (company_id),
+      INDEX idx_totvs_rm_active (is_active)
+    )
+  `);
+  await db.execute(drzSql`
+    CREATE TABLE IF NOT EXISTS totvs_rm_sync_logs (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      connection_id INT NULL,
+      company_id INT NOT NULL,
+      run_type VARCHAR(30) NOT NULL DEFAULT 'test',
+      status VARCHAR(30) NOT NULL,
+      started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      finished_at TIMESTAMP NULL,
+      summary_json TEXT NULL,
+      error_message TEXT NULL,
+      created_by_user_id INT NULL,
+      created_by_email VARCHAR(255) NULL,
+      INDEX idx_totvs_rm_logs_company (company_id),
+      INDEX idx_totvs_rm_logs_connection (connection_id),
+      INDEX idx_totvs_rm_logs_started (started_at)
+    )
+  `);
+}
+
+function parseJsonField(value: any, fallback: any) {
+  if (!value) return fallback;
+  try {
+    return typeof value === "string" ? JSON.parse(value) : value;
+  } catch {
+    return fallback;
+  }
+}
+
+function cleanBaseUrl(input: string) {
+  return input.trim().replace(/\/+$/, "");
+}
+
+function joinUrl(baseUrl: string, path: string) {
+  const base = cleanBaseUrl(baseUrl);
+  const suffix = (path || "").trim();
+  if (!suffix) return base;
+  return `${base}/${suffix.replace(/^\/+/, "")}`;
+}
+
+async function testTotvsRmHttpConnection(cfg: any) {
+  const targetPath = String(cfg.integration_mode || "rest") === "soap"
+    ? String(cfg.soap_wsdl_path || "/wsDataServer/IwsDataServer?wsdl")
+    : String(cfg.rest_healthcheck_path || "/RMSRestDataServer/rest");
+  const url = joinUrl(String(cfg.base_url || ""), targetPath);
+  const headers: Record<string, string> = {
+    "Accept": String(cfg.integration_mode || "rest") === "soap" ? "text/xml, application/xml, */*" : "application/json, text/plain, */*",
+    "User-Agent": "SaudeDoTrabalho-TOTVS-RM-Connector/1.0",
+  };
+  if (cfg.auth_type === "basic" && cfg.username && cfg.password_encrypted) {
+    const pass = decryptIntegrationSecret(String(cfg.password_encrypted));
+    headers.Authorization = `Basic ${Buffer.from(`${cfg.username}:${pass}`).toString("base64")}`;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  const started = Date.now();
+  try {
+    const response = await fetch(url, { method: "GET", headers, signal: controller.signal });
+    const body = await response.text().catch(() => "");
+    return {
+      ok: response.ok || response.status === 401 || response.status === 403,
+      httpOk: response.ok,
+      status: response.status,
+      url,
+      elapsedMs: Date.now() - started,
+      message: response.ok
+        ? "RM respondeu ao endpoint configurado."
+        : response.status === 401 || response.status === 403
+          ? "RM respondeu, mas recusou autenticação/permissão. URL está alcançável; revise usuário, senha e permissões."
+          : `RM respondeu com HTTP ${response.status}.`,
+      sample: body.slice(0, 500),
+    };
+  } catch (error: any) {
+    const msg = error?.name === "AbortError" ? "Tempo limite de conexão com o RM." : (error?.message || String(error));
+    return { ok: false, httpOk: false, status: null, url, elapsedMs: Date.now() - started, message: msg, sample: "" };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export const appRouter = router({
 
 
@@ -3282,7 +3827,7 @@ export const appRouter = router({
 
 
 
-      .input(z.object({ email: z.string().email() }))
+      .input(z.object({ identifier: z.string().optional(), email: z.string().optional() }))
 
 
 
@@ -3300,7 +3845,11 @@ export const appRouter = router({
 
 
 
-        const record = await getCorporateEmailByEmail(input.email);
+        const identifier = String(input.identifier || input.email || "").trim();
+        if (!identifier) throw new TRPCError({ code: "BAD_REQUEST", message: "Informe e-mail, CPF ou WhatsApp." });
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const { record, method } = await findCorporateIdentity(db, identifier);
 
 
 
@@ -3318,7 +3867,16 @@ export const appRouter = router({
 
 
 
-        return { hasSetPassword: record.hasSetPassword, employeeName: record.employeeName };
+        return {
+          hasSetPassword: Boolean(Number(record.hasSetPassword ?? 0)),
+          employeeName: record.employeeName,
+          email: record.email,
+          method,
+          accessMethod: record.access_method || "email",
+          communicationChannel: record.communication_channel || "email",
+          requireWhatsappOnFirstAccess: Boolean(Number(record.require_whatsapp_on_first_access ?? 0)),
+          whatsappRegistered: !!record.whatsapp_e164,
+        };
 
 
 
@@ -3363,7 +3921,7 @@ export const appRouter = router({
 
 
 
-      .input(z.object({ email: z.string().email(), password: z.string().min(8) }))
+      .input(z.object({ identifier: z.string().optional(), email: z.string().optional().default(""), password: z.string().min(8), whatsapp: z.string().optional() }))
 
 
 
@@ -3373,6 +3931,44 @@ export const appRouter = router({
 
 
       .mutation(async ({ input }) => {
+        {
+        const identifier = String(input.identifier || input.email || "").trim();
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const { record } = await findCorporateIdentity(db, identifier);
+        if (!record) throw new TRPCError({ code: "NOT_FOUND", message: "Cadastro nÃ£o encontrado." });
+        if (Number(record.hasSetPassword ?? 0) === 1) throw new TRPCError({ code: "BAD_REQUEST", message: "Senha jÃ¡ definida. Use o login normal." });
+        const { normalizeE164BR } = await import("./_core/whatsapp");
+        const whatsappNorm = normalizeE164BR(input.whatsapp) || record.whatsapp_e164 || null;
+        if (Number(record.require_whatsapp_on_first_access ?? 0) === 1 && !whatsappNorm) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Informe seu WhatsApp para concluir o primeiro acesso." });
+        }
+        const hash = await bcrypt.hash(input.password, 10);
+        let userId = Number(record.userId ?? 0);
+        if (!userId) {
+          const openId = `corporate:${record.email}`;
+          const [ins]: any = await execP(db, `
+            INSERT INTO users (openId, name, email, loginMethod, role, company_id, branch_id, sector_id, cpf, whatsapp_e164, is_active)
+            VALUES (?, ?, ?, 'corporate', ?, ?, ?, ?, ?, ?, 1)
+            ON DUPLICATE KEY UPDATE
+              name=VALUES(name), email=VALUES(email), role=VALUES(role), company_id=VALUES(company_id),
+              branch_id=VALUES(branch_id), sector_id=VALUES(sector_id), cpf=VALUES(cpf),
+              whatsapp_e164=COALESCE(VALUES(whatsapp_e164), whatsapp_e164), is_active=1`,
+            [openId, record.employeeName || record.email, record.email, record.role || "user", record.company_id ?? null,
+             record.branch_id ?? null, record.sector_id ?? null, record.cpf ?? null, whatsappNorm]);
+          const [[u]]: any = await execP(db, `SELECT id FROM users WHERE openId=? LIMIT 1`, [openId]);
+          userId = Number(u?.id ?? (ins as any)?.insertId ?? 0);
+        } else {
+          await execP(db, `UPDATE users SET cpf=COALESCE(?, cpf), whatsapp_e164=COALESCE(?, whatsapp_e164), is_active=1 WHERE id=?`,
+            [record.cpf ?? null, whatsappNorm, userId]);
+        }
+        await execP(db, `
+          UPDATE corporate_emails
+          SET passwordHash=?, hasSetPassword=1, userId=?, whatsapp_e164=COALESCE(?, whatsapp_e164),
+              activation_token=NULL, activation_expires_at=NULL, lastAccessAt=NOW()
+          WHERE id=?`, [hash, userId, whatsappNorm, record.id]);
+        return { success: true };
+        }
 
 
 
@@ -3528,7 +4124,7 @@ export const appRouter = router({
 
 
 
-      .input(z.object({ email: z.string().email(), password: z.string() }))
+      .input(z.object({ identifier: z.string().optional(), email: z.string().optional().default(""), password: z.string() }))
 
 
 
@@ -3538,6 +4134,38 @@ export const appRouter = router({
 
 
       .mutation(async ({ input, ctx }) => {
+        {
+        const identifier = String(input.identifier || input.email || "").trim();
+        const db0 = await getDb();
+        if (!db0) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const { record } = await findCorporateIdentity(db0, identifier);
+        if (!record || Number(record.hasSetPassword ?? 0) !== 1 || !record.passwordHash) {
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "Identificador ou senha invÃ¡lidos." });
+        }
+        const valid0 = await bcrypt.compare(input.password, record.passwordHash);
+        if (!valid0) throw new TRPCError({ code: "UNAUTHORIZED", message: "Identificador ou senha invÃ¡lidos." });
+        let [[user0]]: any = await execP(db0, `SELECT * FROM users WHERE id=? LIMIT 1`, [record.userId ?? 0]);
+        if (!user0) {
+          [[user0]] = await execP(db0, `SELECT * FROM users WHERE email=? LIMIT 1`, [record.email]);
+        }
+        if (!user0) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "UsuÃ¡rio nÃ£o encontrado." });
+        if (user0.role !== "super_admin" && user0.role !== "admin_global") {
+          const { isCompanyAccessAllowed } = await import("./_core/business_hours");
+          const chk = await isCompanyAccessAllowed((user0 as any).company_id ?? (user0 as any).companyId);
+          if (!chk.allowed) throw new TRPCError({ code: "FORBIDDEN", message: chk.message ?? "Acesso fora do expediente autorizado." });
+        }
+        await execP(db0, `UPDATE corporate_emails SET lastAccessAt=NOW() WHERE id=?`, [record.id]);
+        await execP(db0, `UPDATE users SET lastSignedIn=NOW() WHERE id=?`, [user0.id]).catch(() => undefined);
+        const token0 = await sdk.createSessionToken(user0.openId, {
+          name: user0.name ?? user0.email ?? "",
+          expiresInMs: 30 * 24 * 60 * 60 * 1000,
+        });
+        const cookieOptions0 = getSessionCookieOptions(ctx.req);
+        ctx.res.cookie(COOKIE_NAME, token0, { ...cookieOptions0, maxAge: 30 * 24 * 60 * 60 * 1000 });
+        const meta0 = getReqMeta(ctx);
+        await logAudit({ userId: user0.id, userEmail: user0.email, action: 'login', ipAddress: meta0.ip, userAgent: meta0.ua });
+        return { success: true, user: { id: user0.id, name: user0.name, email: user0.email, role: user0.role } };
+        }
 
 
 
@@ -3890,9 +4518,12 @@ export const appRouter = router({
       .query(async ({ input }) => {
         const db = await getDb();
         if (!db) return { valid: false };
+        await ensureAuthIdentityColumns(db);
         const r: any = await db.execute(drzSql`
-          SELECT email, employeeName, activation_expires_at, hasSetPassword
-          FROM corporate_emails WHERE activation_token = ${input.token} LIMIT 1`);
+          SELECT ce.email, ce.employeeName, ce.activation_expires_at, ce.hasSetPassword, ce.whatsapp_e164,
+                 c.require_whatsapp_on_first_access
+          FROM corporate_emails ce LEFT JOIN companies c ON c.id=ce.company_id
+          WHERE ce.activation_token = ${input.token} LIMIT 1`);
         const rec = (r as any)[0]?.[0];
         if (!rec) return { valid: false };
         // R5-P10 #12 — sinaliza ao front que a conta já está ativa pra redirecionar
@@ -3900,37 +4531,52 @@ export const appRouter = router({
         if (rec.hasSetPassword) return { valid: false, alreadyActive: true, reason: "Conta já ativada." };
         const exp = rec.activation_expires_at ? new Date(rec.activation_expires_at) : null;
         if (exp && exp < new Date()) return { valid: false, reason: "Link expirado." };
-        return { valid: true, email: rec.email, employeeName: rec.employeeName };
+        return {
+          valid: true,
+          email: rec.email,
+          employeeName: rec.employeeName,
+          requireWhatsappOnFirstAccess: Boolean(Number(rec.require_whatsapp_on_first_access ?? 0)),
+          whatsappRegistered: !!rec.whatsapp_e164,
+        };
       }),
 
     activateAccount: publicProcedure
-      .input(z.object({ token: z.string().min(20), password: z.string().min(8) }))
+      .input(z.object({ token: z.string().min(20), password: z.string().min(8), whatsapp: z.string().optional() }))
       .mutation(async ({ input }) => {
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensureAuthIdentityColumns(db);
         const r: any = await db.execute(drzSql`
-          SELECT id, email, employeeName, company_id, branch_id, sector_id, role,
-                 activation_expires_at, hasSetPassword
-          FROM corporate_emails WHERE activation_token = ${input.token} LIMIT 1`);
+          SELECT ce.id, ce.email, ce.employeeName, ce.company_id, ce.branch_id, ce.sector_id, ce.role, ce.cpf, ce.whatsapp_e164,
+                 ce.activation_expires_at, ce.hasSetPassword, c.require_whatsapp_on_first_access
+          FROM corporate_emails ce LEFT JOIN companies c ON c.id=ce.company_id
+          WHERE ce.activation_token = ${input.token} LIMIT 1`);
         const rec = (r as any)[0]?.[0];
         if (!rec) throw new TRPCError({ code: "NOT_FOUND", message: "Link inválido." });
         if (rec.hasSetPassword) throw new TRPCError({ code: "BAD_REQUEST", message: "Conta já ativada." });
         const exp = rec.activation_expires_at ? new Date(rec.activation_expires_at) : null;
         if (exp && exp < new Date()) throw new TRPCError({ code: "BAD_REQUEST", message: "Link expirado. Solicite reenvio ao RH." });
+        const { normalizeE164BR } = await import("./_core/whatsapp");
+        const whatsappNorm = normalizeE164BR(input.whatsapp) || rec.whatsapp_e164 || null;
+        if (Number(rec.require_whatsapp_on_first_access ?? 0) === 1 && !whatsappNorm) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Informe seu WhatsApp para concluir a ativaÃ§Ã£o." });
+        }
         const hash = await bcrypt.hash(input.password, 10);
         const ur: any = await db.execute(drzSql`SELECT id FROM users WHERE email=${rec.email} LIMIT 1`);
         let userId = (ur as any)[0]?.[0]?.id;
         if (!userId) {
           const ins: any = await db.execute(drzSql`
-            INSERT INTO users (openId, name, email, loginMethod, role, company_id, branch_id, sector_id)
+            INSERT INTO users (openId, name, email, loginMethod, role, company_id, branch_id, sector_id, cpf, whatsapp_e164, is_active)
             VALUES (${"corp-" + rec.email}, ${rec.employeeName ?? rec.email}, ${rec.email}, ${"corporate"},
-                    ${rec.role}, ${rec.company_id}, ${rec.branch_id}, ${rec.sector_id})`);
+                    ${rec.role}, ${rec.company_id}, ${rec.branch_id}, ${rec.sector_id}, ${rec.cpf ?? null}, ${whatsappNorm}, 1)`);
           userId = Number((ins as any)[0]?.insertId ?? 0);
+        } else {
+          await db.execute(drzSql`UPDATE users SET cpf=COALESCE(${rec.cpf ?? null}, cpf), whatsapp_e164=COALESCE(${whatsappNorm}, whatsapp_e164), is_active=1 WHERE id=${userId}`);
         }
         await db.execute(drzSql`
           UPDATE corporate_emails
           SET passwordHash=${hash}, hasSetPassword=1, activation_token=NULL,
-              activation_expires_at=NULL, userId=${userId}, lastAccessAt=NOW()
+              activation_expires_at=NULL, userId=${userId}, whatsapp_e164=COALESCE(${whatsappNorm}, whatsapp_e164), lastAccessAt=NOW()
           WHERE id=${rec.id}`);
         return { ok: true };
       }),
@@ -4286,7 +4932,7 @@ export const appRouter = router({
 
 
 
-      .query(async ({ input }) => {
+      .query(async ({ ctx, input }) => {
 
 
 
@@ -4305,6 +4951,8 @@ export const appRouter = router({
 
 
         if (!mod) throw new TRPCError({ code: "NOT_FOUND" });
+        const db = await getDb();
+        if (db) await assertCourseAccessForUser(db, ctx.user, input.id);
 
 
 
@@ -5603,6 +6251,7 @@ export const appRouter = router({
         rows: z.array(z.object({
           email: z.string(),
           nome: z.string().optional().nullable(),
+          cpf: z.string().optional().nullable(),
           filial: z.string().optional().nullable(),
           setor: z.string().optional().nullable(),
           cargo: z.string().optional().nullable(),
@@ -5612,6 +6261,7 @@ export const appRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensureAuthIdentityColumns(db);
         const myRole = (ctx.user as any).role;
         const myCid = (ctx.user as any).companyId;
         const isGlobal = myRole === "admin_global" || myRole === "super_admin";
@@ -5621,22 +6271,26 @@ export const appRouter = router({
         if (!isGlobal && myCid && input.companyId !== myCid) {
           throw new TRPCError({ code: "FORBIDDEN", message: "Sem permissao para importar nesta empresa." });
         }
-        const cr: any = await db.execute(drzSql`SELECT id, name FROM companies WHERE id = ${companyId} LIMIT 1`);
+        await ensureCompanyPlatformConfigColumns(db);
+        const cr: any = await db.execute(drzSql`SELECT id, name, access_method, require_whatsapp_on_first_access FROM companies WHERE id = ${companyId} LIMIT 1`);
         const crow = Array.isArray(cr) ? (cr[0]?.[0] ?? cr[0]) : cr;
         if (!crow) throw new TRPCError({ code: "NOT_FOUND", message: "Empresa nao encontrada." });
         const companyName: string = crow.name;
+        const companyAccessMethod = String(crow.access_method || "email").toLowerCase();
 
         const norm = (s?: string | null) => String(s ?? "").trim();
         const lc = (s?: string | null) => norm(s).toLowerCase();
         const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
         const roleLabel: Record<string, string> = {
           user: "Colaborador", chefia: "Chefia / Gestor",
-          rh: "RH / Saude", admin: "Administrador",
+          rh: "RH / Saude", sesmt: "SESMT", cipa: "CIPA", admin: "Administrador",
           company_admin: "Admin Empresa", admin_global: "Admin Global", super_admin: "Super Admin",
         };
         const mapRole = (p?: string | null): string => {
           const v = lc(p);
           if (!v) return "user";
+          if (v.includes("cipa") || v.includes("cipeiro")) return "cipa";
+          if (v.includes("sesmt")) return "sesmt";
           if (["chefia", "gestor", "gerente", "lider", "líder", "coordenador", "supervisor"].some(k => v.includes(k))) return "chefia";
           if (v.includes("admin") || v.includes("administrad") || v.includes("diretor")) return "admin";
           if (v.includes("rh") || v.includes("recursos humanos") || v.includes("psico") || v.includes("saude") || v.includes("saúde") || v.includes("medic") || v.includes("médic") || v.includes("enferm") || v.includes("seguranca") || v.includes("segurança")) return "rh";
@@ -5660,9 +6314,14 @@ export const appRouter = router({
         const results: any[] = [];
         let inserted = 0, updated = 0, skipped = 0, branchesCreated = 0, sectorsCreated = 0;
         const seenEmails = new Set<string>();
+        const seenCpfs = new Set<string>();
 
         for (const raw of input.rows) {
-          const email = lc(raw.email);
+          const cpfNorm = normalizeCpf(raw.cpf);
+          const emailInput = lc(raw.email);
+          let email = emailInput;
+          if (!email && cpfNorm) email = `cpf.${cpfNorm}@sem-email.saudedotrabalho.local`;
+          const hasRealEmail = !!emailInput;
           const nome = norm(raw.nome);
           const filial = norm(raw.filial);
           const setor = norm(raw.setor);
@@ -5673,7 +6332,7 @@ export const appRouter = router({
           let role = mapRole(raw.perfil);
           if (role === "admin" && !canAssignAdmin) role = "rh"; // clamp for RH importers
           const res: any = {
-            email, nome, role, roleLabel: roleLabel[role] ?? role,
+            email, nome, cpf: cpfNorm ?? "", whatsapp: whatsappNorm ?? "", role, roleLabel: roleLabel[role] ?? role,
             filial, setor, cargo, status: "ok", branchAction: "none", sectorAction: "none", message: "",
           };
           // Cargo é obrigatório (NR-01) — sem ele PGR/AEP/EPI ficam sem base.
@@ -5681,6 +6340,15 @@ export const appRouter = router({
             res.status = "invalid"; res.message = "Cargo é obrigatório"; skipped++; results.push(res); continue;
           }
 
+          if (companyAccessMethod === "cpf" && !cpfNorm) {
+            res.status = "invalid"; res.message = "CPF obrigatorio para empresa com login por CPF"; skipped++; results.push(res); continue;
+          }
+          if ((companyAccessMethod === "both" || companyAccessMethod === "email_cpf" || companyAccessMethod === "ambos") && (!cpfNorm || !emailInput)) {
+            res.status = "invalid"; res.message = "CPF e e-mail obrigatorios quando ambos os metodos estao habilitados"; skipped++; results.push(res); continue;
+          }
+          if (companyAccessMethod === "whatsapp" && !cpfNorm && !whatsappNorm) {
+            res.status = "invalid"; res.message = "CPF ou WhatsApp obrigatorio para empresa com WhatsApp"; skipped++; results.push(res); continue;
+          }
           if (!email || !emailRe.test(email)) {
             res.status = "invalid"; res.message = "E-mail invalido"; skipped++; results.push(res); continue;
           }
@@ -5688,6 +6356,12 @@ export const appRouter = router({
             res.status = "duplicate"; res.message = "E-mail repetido na planilha"; skipped++; results.push(res); continue;
           }
           seenEmails.add(email);
+          if (cpfNorm) {
+            if (seenCpfs.has(cpfNorm)) {
+              res.status = "duplicate"; res.message = "CPF repetido na planilha"; skipped++; results.push(res); continue;
+            }
+            seenCpfs.add(cpfNorm);
+          }
 
           // resolve branch (filial)
           let branchId: number | null = null;
@@ -5731,7 +6405,9 @@ export const appRouter = router({
           // existing corporate email?
           // BUGFIX: use ?? null (not ?? ex[0]) — empty array [] is truthy, causing new rows
           // to hit the UPDATE branch and never be INSERT-ed.
-          const ex: any = await db.execute(drzSql`SELECT id, userId FROM corporate_emails WHERE email = ${email} LIMIT 1`);
+          const ex: any = cpfNorm
+            ? await db.execute(drzSql`SELECT id, userId FROM corporate_emails WHERE company_id = ${companyId} AND (email = ${email} OR cpf = ${cpfNorm}) LIMIT 1`)
+            : await db.execute(drzSql`SELECT id, userId FROM corporate_emails WHERE company_id = ${companyId} AND email = ${email} LIMIT 1`);
           const exRows = Array.isArray(ex) ? ((ex as any)[0] ?? []) : [];
           const exrow = Array.isArray(exRows) ? (exRows[0] ?? null) : exRows ?? null;
 
@@ -5742,10 +6418,10 @@ export const appRouter = router({
           }
 
           if (exrow) {
-            await db.execute(drzSql`UPDATE corporate_emails SET company = ${companyName}, sector = ${setor || null}, employeeName = ${nome || null}, isActive = 1, company_id = ${companyId}, branch_id = ${branchId}, sector_id = ${sectorId}, role = ${role} WHERE id = ${exrow.id}`);
+            await db.execute(drzSql`UPDATE corporate_emails SET email = ${email}, company = ${companyName}, sector = ${setor || null}, employeeName = ${nome || null}, isActive = 1, employment_status = 'active', company_id = ${companyId}, branch_id = ${branchId}, sector_id = ${sectorId}, role = ${role}, cpf = ${cpfNorm}, whatsapp_e164 = COALESCE(${whatsappNorm}, whatsapp_e164) WHERE id = ${exrow.id}`);
             updated++; res.action = "updated";
             if (exrow.userId) {
-              await db.execute(drzSql`UPDATE users SET company_id = ${companyId}, branch_id = ${branchId}, sector_id = ${sectorId}, role = ${role}, position = ${cargo}, whatsapp_e164 = COALESCE(${whatsappNorm}, whatsapp_e164) WHERE id = ${exrow.userId}`);
+              await db.execute(drzSql`UPDATE users SET company_id = ${companyId}, branch_id = ${branchId}, sector_id = ${sectorId}, role = ${role}, position = ${cargo}, cpf = ${cpfNorm}, whatsapp_e164 = COALESCE(${whatsappNorm}, whatsapp_e164), employment_status = 'active', is_active = 1 WHERE id = ${exrow.userId}`);
             }
             // Bruno R5 #1: se o colaborador existe MAS nunca recebeu link de ativação,
             // dispara e-mail de boas-vindas mesmo no path "updated". Caso da Amanda:
@@ -5753,7 +6429,7 @@ export const appRouter = router({
             const exTok: any = await db.execute(drzSql`SELECT activation_token, hasSetPassword FROM corporate_emails WHERE id = ${exrow.id}`);
             const exTokRows = Array.isArray(exTok) ? ((exTok as any)[0] ?? []) : [];
             const exTokRow = Array.isArray(exTokRows) ? (exTokRows[0] ?? null) : null;
-            if (exTokRow && !exTokRow.activation_token && !exTokRow.hasSetPassword) {
+            if (hasRealEmail && exTokRow && !exTokRow.activation_token && !exTokRow.hasSetPassword) {
               try {
                 const { randomBytes } = await import("crypto");
                 const actToken = randomBytes(32).toString("hex");
@@ -5776,12 +6452,12 @@ export const appRouter = router({
             }
           } else {
             // ON DUPLICATE KEY UPDATE prevents race between concurrent imports on same email
-            await db.execute(drzSql`INSERT INTO corporate_emails (email, company, sector, employeeName, isActive, company_id, branch_id, sector_id, role) VALUES (${email}, ${companyName}, ${setor || null}, ${nome || null}, 1, ${companyId}, ${branchId}, ${sectorId}, ${role}) ON DUPLICATE KEY UPDATE company=${companyName}, sector=${setor || null}, employeeName=${nome || null}, isActive=1, company_id=${companyId}, branch_id=${branchId}, sector_id=${sectorId}, role=${role}`);
+            await db.execute(drzSql`INSERT INTO corporate_emails (email, company, sector, employeeName, isActive, employment_status, company_id, branch_id, sector_id, role, cpf, whatsapp_e164) VALUES (${email}, ${companyName}, ${setor || null}, ${nome || null}, 1, 'active', ${companyId}, ${branchId}, ${sectorId}, ${role}, ${cpfNorm}, ${whatsappNorm || null}) ON DUPLICATE KEY UPDATE company=${companyName}, sector=${setor || null}, employeeName=${nome || null}, isActive=1, employment_status='active', company_id=${companyId}, branch_id=${branchId}, sector_id=${sectorId}, role=${role}, cpf=${cpfNorm}, whatsapp_e164=COALESCE(${whatsappNorm || null}, whatsapp_e164)`);
             inserted++; res.action = "inserted";
             // Gera token de ativação + envia e-mail de primeiro acesso (Sprint 1.6).
             // Só para colaboradores NOVOS, em modo NÃO dry-run. Falha de e-mail
             // NÃO derruba o import — registra em res.emailWarning.
-            try {
+            if (hasRealEmail) try {
               const { randomBytes } = await import("crypto");
               const actToken = randomBytes(32).toString("hex");
               const actExp = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 19).replace("T", " ");
@@ -5806,7 +6482,7 @@ export const appRouter = router({
           const urRows = Array.isArray(ur) ? ((ur as any)[0] ?? []) : [];
           const urow = Array.isArray(urRows) ? (urRows[0] ?? null) : urRows ?? null;
           if (urow) {
-            await db.execute(drzSql`UPDATE users SET company_id = ${companyId}, branch_id = ${branchId}, sector_id = ${sectorId}, role = ${role}, position = ${cargo}, whatsapp_e164 = COALESCE(${whatsappNorm}, whatsapp_e164) WHERE id = ${urow.id}`);
+            await db.execute(drzSql`UPDATE users SET company_id = ${companyId}, branch_id = ${branchId}, sector_id = ${sectorId}, role = ${role}, position = ${cargo}, cpf = ${cpfNorm}, whatsapp_e164 = COALESCE(${whatsappNorm}, whatsapp_e164), employment_status = 'active', is_active = 1 WHERE id = ${urow.id}`);
             await db.execute(drzSql`UPDATE corporate_emails SET userId = ${urow.id} WHERE email = ${email} AND (userId IS NULL OR userId = 0)`);
           } else {
             // Bruno R5-P3 #2 — Cria o registro em `users` IMEDIATAMENTE no cadastro,
@@ -5816,8 +6492,8 @@ export const appRouter = router({
             try {
               const openIdGen = `corporate:${email}`;
               const insRes: any = await db.execute(drzSql`
-                INSERT INTO users (openId, name, email, loginMethod, role, company_id, branch_id, sector_id, position, whatsapp_e164, is_active)
-                VALUES (${openIdGen}, ${nome || email}, ${email}, ${'corporate'}, ${role}, ${companyId}, ${branchId}, ${sectorId}, ${cargo || null}, ${whatsappNorm || null}, 1)`);
+                INSERT INTO users (openId, name, email, loginMethod, role, company_id, branch_id, sector_id, position, cpf, whatsapp_e164, employment_status, is_active)
+                VALUES (${openIdGen}, ${nome || email}, ${email}, ${'corporate'}, ${role}, ${companyId}, ${branchId}, ${sectorId}, ${cargo || null}, ${cpfNorm}, ${whatsappNorm || null}, 'active', 1)`);
               const newUid = Number((insRes as any)[0]?.insertId ?? 0);
               if (newUid > 0) {
                 await db.execute(drzSql`UPDATE corporate_emails SET userId = ${newUid} WHERE email = ${email}`);
@@ -5858,7 +6534,9 @@ export const appRouter = router({
         userId: z.number(),
         name: z.string().optional(),
         email: z.string().email().optional(),
-        role: z.enum(["user", "chefia", "rh", "admin"]).optional(),
+        role: z.enum(["user", "chefia", "rh", "sesmt", "cipa", "admin"]).optional(),
+        cpf: z.string().nullable().optional(),
+        employmentStatus: z.enum(["active", "away", "terminated", "death", "retired", "other"]).optional(),
         branchId: z.number().nullable().optional(),
         sectorId: z.number().nullable().optional(),
         position: z.string().nullable().optional(),
@@ -5867,11 +6545,12 @@ export const appRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensureAuthIdentityColumns(db);
         const myRole = (ctx.user as any).role;
         const myCid = (ctx.user as any).companyId;
         const isGlobal = myRole === "admin_global" || myRole === "super_admin";
         const ur: any = await db.execute(drzSql`SELECT id, email, company_id FROM users WHERE id = ${input.userId} LIMIT 1`);
-        const urow = Array.isArray(ur) ? (ur[0]?.[0] ?? ur[0]) : ur;
+        const urow = firstDbRow(ur);
         if (!urow) throw new TRPCError({ code: "NOT_FOUND", message: "Colaborador nao encontrado." });
         if (!isGlobal && urow.company_id !== myCid) throw new TRPCError({ code: "FORBIDDEN", message: "Sem permissao." });
 
@@ -5882,14 +6561,14 @@ export const appRouter = router({
         // validate branch/sector against the user's company
         if (input.branchId != null) {
           const br: any = await db.execute(drzSql`SELECT company_id FROM branches WHERE id = ${input.branchId} LIMIT 1`);
-          const brow = Array.isArray(br) ? (br[0]?.[0] ?? br[0]) : br;
+          const brow = firstDbRow(br);
           if (!brow || (urow.company_id && brow.company_id !== urow.company_id)) {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Filial invalida para esta empresa." });
           }
         }
         if (input.sectorId != null) {
           const sr: any = await db.execute(drzSql`SELECT company_id, branch_id FROM sectors WHERE id = ${input.sectorId} LIMIT 1`);
-          const srow = Array.isArray(sr) ? (sr[0]?.[0] ?? sr[0]) : sr;
+          const srow = firstDbRow(sr);
           if (!srow || (urow.company_id && srow.company_id !== urow.company_id)) {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Setor invalido para esta empresa." });
           }
@@ -5901,10 +6580,10 @@ export const appRouter = router({
         // email change (keep users + corporate_emails in sync, enforce uniqueness)
         if (input.email && input.email.toLowerCase() !== String(urow.email ?? "").toLowerCase()) {
           const newEmail = input.email.toLowerCase();
-          const dup: any = await db.execute(drzSql`SELECT id FROM corporate_emails WHERE email = ${newEmail} AND (userId IS NULL OR userId <> ${input.userId}) LIMIT 1`);
-          const duprow = Array.isArray(dup) ? (dup[0]?.[0] ?? dup[0]) : dup;
+          const dup: any = await db.execute(drzSql`SELECT id FROM corporate_emails WHERE company_id = ${urow.company_id} AND email = ${newEmail} AND (userId IS NULL OR userId <> ${input.userId}) LIMIT 1`);
+          const duprow = firstDbRow(dup);
           if (duprow) throw new TRPCError({ code: "BAD_REQUEST", message: "E-mail ja cadastrado para outro colaborador." });
-          await db.execute(drzSql`UPDATE corporate_emails SET email = ${newEmail} WHERE userId = ${input.userId} OR email = ${String(urow.email ?? "").toLowerCase()}`);
+          await db.execute(drzSql`UPDATE corporate_emails SET email = ${newEmail} WHERE userId = ${input.userId} OR (company_id = ${urow.company_id} AND email = ${String(urow.email ?? "").toLowerCase()})`);
           await db.execute(drzSql`UPDATE users SET email = ${newEmail} WHERE id = ${input.userId}`);
         }
 
@@ -5924,11 +6603,29 @@ export const appRouter = router({
         if (input.position !== undefined) {
           await db.execute(drzSql`UPDATE users SET position = ${input.position} WHERE id = ${input.userId}`);
         }
+        if (input.cpf !== undefined) {
+          const cpfNorm = normalizeCpf(input.cpf);
+          if (input.cpf && !cpfNorm) throw new TRPCError({ code: "BAD_REQUEST", message: "CPF invalido." });
+          if (cpfNorm) {
+            const dup: any = await db.execute(drzSql`SELECT id FROM users WHERE cpf = ${cpfNorm} AND company_id = ${urow.company_id} AND id <> ${input.userId} LIMIT 1`);
+            const duprow = firstDbRow(dup);
+            if (duprow) throw new TRPCError({ code: "BAD_REQUEST", message: "CPF ja cadastrado para outro colaborador." });
+          }
+          await db.execute(drzSql`UPDATE users SET cpf = ${cpfNorm} WHERE id = ${input.userId}`);
+          await db.execute(drzSql`UPDATE corporate_emails SET cpf = ${cpfNorm} WHERE userId = ${input.userId} OR (company_id = ${urow.company_id} AND email = ${String(urow.email ?? "").toLowerCase()})`);
+        }
         if (input.whatsapp !== undefined) {
           const { ensureWhatsappTables, normalizeE164BR } = await import("./_core/whatsapp");
           await ensureWhatsappTables();
           const norm = normalizeE164BR(input.whatsapp);
           await db.execute(drzSql`UPDATE users SET whatsapp_e164 = ${norm} WHERE id = ${input.userId}`);
+          await db.execute(drzSql`UPDATE corporate_emails SET whatsapp_e164 = ${norm} WHERE userId = ${input.userId} OR (company_id = ${urow.company_id} AND email = ${String(urow.email ?? "").toLowerCase()})`);
+        }
+        if (input.employmentStatus !== undefined) {
+          const status = input.employmentStatus;
+          const allowCorporateAccess = status === "active" || status === "away" || status === "other";
+          await db.execute(drzSql`UPDATE users SET employment_status = ${status}, is_active = 1 WHERE id = ${input.userId}`);
+          await db.execute(drzSql`UPDATE corporate_emails SET employment_status = ${status}, isActive = ${allowCorporateAccess ? 1 : 0} WHERE userId = ${input.userId} OR (company_id = ${urow.company_id} AND email = ${String(urow.email ?? "").toLowerCase()})`);
         }
         return { ok: true };
       }),
@@ -5936,6 +6633,7 @@ export const appRouter = router({
       .input(z.object({ userId: z.number() }))
       .mutation(async ({ ctx, input }) => {
         const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensureAuthIdentityColumns(db);
         const myRole = (ctx.user as any).role;
         const myCid = (ctx.user as any).companyId;
         const isGlobal = myRole === "admin_global" || myRole === "super_admin";
@@ -5944,11 +6642,64 @@ export const appRouter = router({
         if (!urow) throw new TRPCError({ code: "NOT_FOUND", message: "Colaborador nao encontrado." });
         if (!isGlobal && urow.company_id !== myCid) throw new TRPCError({ code: "FORBIDDEN", message: "Sem permissao." });
         if (urow.id === ctx.user.id) throw new TRPCError({ code: "BAD_REQUEST", message: "Voce nao pode remover a si mesmo." });
-        // soft-delete: removes from roster/analytics and blocks future login; reversible
-        await db.execute(drzSql`UPDATE users SET is_active = 0 WHERE id = ${input.userId}`);
+        // Status funcional preserva historico e remove o colaborador dos indicadores ativos.
+        await db.execute(drzSql`UPDATE users SET employment_status = 'terminated', is_active = 1 WHERE id = ${input.userId}`);
         const em = String(urow.email ?? "").toLowerCase();
-        await db.execute(drzSql`UPDATE corporate_emails SET isActive = 0 WHERE userId = ${input.userId} OR email = ${em}`);
+        await db.execute(drzSql`UPDATE corporate_emails SET employment_status = 'terminated', isActive = 0 WHERE userId = ${input.userId} OR email = ${em}`);
         return { ok: true };
+      }),
+
+    bulkUpdateCollaboratorStatus: adminOrRhProcedure
+      .input(z.object({
+        companyId: z.number().optional(),
+        dryRun: z.boolean().default(false),
+        rows: z.array(z.object({
+          cpf: z.string(),
+          statusCode: z.string(),
+        })),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensureAuthIdentityColumns(db);
+        const myRole = (ctx.user as any).role;
+        const myCid = (ctx.user as any).companyId;
+        const isGlobal = myRole === "admin_global" || myRole === "super_admin";
+        const companyId = isGlobal ? input.companyId ?? null : myCid ?? null;
+        if (!companyId) throw new TRPCError({ code: "BAD_REQUEST", message: "Selecione a empresa." });
+        if (!isGlobal && input.companyId && input.companyId !== myCid) throw new TRPCError({ code: "FORBIDDEN" });
+
+        const statusByCode: Record<string, string> = {
+          "1": "active", ativo: "active", active: "active",
+          "2": "terminated", desligado: "terminated", terminated: "terminated",
+          "3": "away", afastado: "away", away: "away",
+          "4": "death", obito: "death", "óbito": "death", death: "death",
+          "5": "retired", aposentado: "retired", retired: "retired",
+        };
+        const labelByStatus: Record<string, string> = {
+          active: "Ativo", terminated: "Desligado", away: "Afastado", death: "Obito", retired: "Aposentado", other: "Outro",
+        };
+        const results: any[] = [];
+        let updated = 0, skipped = 0;
+        for (const row of input.rows) {
+          const cpf = normalizeCpf(row.cpf);
+          const key = String(row.statusCode ?? "").trim().toLowerCase();
+          const status = statusByCode[key] ?? null;
+          const res: any = { cpf: cpf ?? row.cpf, statusCode: row.statusCode, status, statusLabel: status ? labelByStatus[status] : "", result: "ok", message: "" };
+          if (!cpf) { res.result = "invalid"; res.message = "CPF invalido"; skipped++; results.push(res); continue; }
+          if (!status) { res.result = "invalid"; res.message = "Codigo de status invalido"; skipped++; results.push(res); continue; }
+          const [[u]]: any = await execP(db, `SELECT id, email FROM users WHERE company_id=? AND cpf=? LIMIT 1`, [companyId, cpf]);
+          if (!u) { res.result = "not_found"; res.message = "Colaborador nao encontrado pelo CPF"; skipped++; results.push(res); continue; }
+          res.userId = Number(u.id);
+          res.email = u.email;
+          if (!input.dryRun) {
+            const allowCorporateAccess = status === "active" || status === "away" || status === "other";
+            await execP(db, `UPDATE users SET employment_status=?, is_active=1 WHERE id=?`, [status, Number(u.id)]);
+            await execP(db, `UPDATE corporate_emails SET employment_status=?, isActive=? WHERE userId=? OR cpf=?`, [status, allowCorporateAccess ? 1 : 0, Number(u.id), cpf]);
+          }
+          updated++;
+          results.push(res);
+        }
+        return { ok: true, dryRun: input.dryRun, summary: { total: input.rows.length, updated, skipped }, results };
       }),
 
 
@@ -7620,7 +8371,14 @@ export const appRouter = router({
 
 
 
-        validityDays: z.number().nullish(), isMandatory: z.boolean().optional(), profession: z.string().nullish() }))
+        validityDays: z.number().nullish(),
+        isMandatory: z.boolean().optional(),
+        profession: z.string().nullish(),
+        mandatoryTargetRoles: z.array(z.enum(["cipa", "sesmt", "colaboradores"])).optional(),
+        trainingStartDate: z.string().nullish(),
+        trainingDueDate: z.string().nullish(),
+        certificateDueDate: z.string().nullish(),
+      }))
 
 
 
@@ -7638,7 +8396,11 @@ export const appRouter = router({
 
 
 
-        await createModule(input);
+        await createModule({
+          ...input,
+          isMandatory: input.isMandatory || !!input.mandatoryTargetRoles?.length,
+          mandatoryTargetRoles: input.mandatoryTargetRoles?.join(",") || null,
+        });
 
 
 
@@ -7773,7 +8535,14 @@ export const appRouter = router({
 
 
 
-        validityDays: z.number().nullish(), isMandatory: z.boolean().optional(), profession: z.string().nullish() }))
+        validityDays: z.number().nullish(),
+        isMandatory: z.boolean().optional(),
+        profession: z.string().nullish(),
+        mandatoryTargetRoles: z.array(z.enum(["cipa", "sesmt", "colaboradores"])).optional(),
+        trainingStartDate: z.string().nullish(),
+        trainingDueDate: z.string().nullish(),
+        certificateDueDate: z.string().nullish(),
+      }))
 
 
 
@@ -7791,7 +8560,12 @@ export const appRouter = router({
 
 
 
-        const { id, ...data } = input;
+        const { id, mandatoryTargetRoles, ...rest } = input;
+        const data: any = { ...rest };
+        if (mandatoryTargetRoles !== undefined) {
+          data.mandatoryTargetRoles = mandatoryTargetRoles.join(",") || null;
+          data.isMandatory = Boolean(rest.isMandatory || mandatoryTargetRoles.length);
+        }
 
 
 
@@ -10026,7 +10800,7 @@ export const appRouter = router({
 
 
 
-      .query(async ({ input }) => {
+      .query(async ({ ctx, input }) => {
 
 
 
@@ -10035,6 +10809,8 @@ export const appRouter = router({
 
 
 
+        const db = await getDb();
+        if (db) await assertCourseAccessForUser(db, ctx.user, input.moduleId);
         return listLessonsByModule(input.moduleId);
 
 
@@ -10125,6 +10901,8 @@ export const appRouter = router({
 
 
 
+        const db = await getDb();
+        if (db) await assertCourseAccessForUser(db, ctx.user, input.moduleId);
         const allProgressBefore = await getModuleLessonProgressForUser(ctx.user.id, input.moduleId);
 
 
@@ -10406,13 +11184,17 @@ export const appRouter = router({
 
   
 
-    hierarchyTree: adminOrRhProcedure.query(async ({ ctx }) => {
+    hierarchyTree: adminOrRhProcedure
+    .input(z.object({ includeAllStatuses: z.boolean().optional() }).optional())
+    .query(async ({ ctx, input }) => {
       const role = (ctx.user as any).role;
       const cid = (ctx.user as any).companyId ?? null;
       const scope = role === "admin_global" || role === "super_admin" ? null : cid;
       console.log("[hierarchyTree] role=", role, "cid=", cid, "scope=", scope);
       try {
-        const r = await getHierarchyTreeForCompany(scope);
+        const db = await getDb();
+        if (db) await ensureAuthIdentityColumns(db);
+        const r = await getHierarchyTreeForCompany(scope, { includeAllStatuses: !!input?.includeAllStatuses });
         console.log("[hierarchyTree] returned", Array.isArray(r) ? r.length : typeof r, "companies");
         if (Array.isArray(r) && r.length > 0) {
           console.log("[hierarchyTree] first co:", JSON.stringify(r[0]).substring(0, 300));
@@ -11078,7 +11860,7 @@ export const appRouter = router({
         companyId: z.number().int(),
         drpsTemplateId: z.number().int().nullable().optional(),
         aepTemplateId: z.number().int().nullable().optional(),
-        accessMethod: z.enum(["email", "cpf", "whatsapp"]).default("email"),
+        accessMethod: z.enum(["email", "cpf", "both", "whatsapp"]).default("email"),
         communicationChannel: z.enum(["email", "whatsapp", "both"]).default("email"),
         requireWhatsappOnFirstAccess: z.boolean().default(false),
       }))
@@ -11096,6 +11878,110 @@ export const appRouter = router({
           input.companyId,
         ]);
         return { ok: true };
+      }),
+    listCommunicationTemplates: adminOrRhProcedure
+      .input(z.object({ companyId: z.number().int().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        const requestedId = input?.companyId;
+        const companyId = (role === "admin_global" || role === "super_admin") ? requestedId : (ctx.user as any).companyId;
+        if (!companyId) throw new TRPCError({ code: "BAD_REQUEST", message: "Empresa nao definida." });
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensureCommunicationTemplateTables(db);
+        const [[company]]: any = await execP(db, `SELECT name FROM companies WHERE id=? LIMIT 1`, [companyId]);
+        const [rows]: any = await execP(db, `
+          SELECT id, event_key, channel, title, body, is_active, updated_at
+          FROM communication_message_templates
+          WHERE company_id=? AND channel='whatsapp'
+          ORDER BY event_key`, [companyId]);
+        const byKey = new Map((rows ?? []).map((r: any) => [String(r.event_key), r]));
+        return DEFAULT_WHATSAPP_MESSAGE_TEMPLATES.map((tpl) => {
+          const saved: any = byKey.get(tpl.eventKey);
+          return {
+            id: saved?.id ? Number(saved.id) : null,
+            eventKey: tpl.eventKey,
+            channel: "whatsapp",
+            title: saved?.title ?? tpl.title,
+            body: saved?.body ?? tpl.body,
+            defaultBody: tpl.body,
+            isActive: saved ? !!Number(saved.is_active ?? 1) : true,
+            source: saved ? "company" : "platform_default",
+            preview: fillTemplatePreview(saved?.body ?? tpl.body, company?.name),
+            updatedAt: saved?.updated_at ?? null,
+          };
+        });
+      }),
+    upsertCommunicationTemplate: adminOrRhProcedure
+      .input(z.object({
+        companyId: z.number().int(),
+        eventKey: z.string().min(1),
+        title: z.string().min(1),
+        body: z.string().min(1),
+        isActive: z.boolean().default(true),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        if (role !== "admin_global" && role !== "super_admin") throw new TRPCError({ code: "FORBIDDEN" });
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensureCommunicationTemplateTables(db);
+        const uid = (ctx.user as any).id ?? (ctx.user as any).userId ?? null;
+        await execP(db, `
+          INSERT INTO communication_message_templates (company_id, channel, event_key, title, body, is_active, updated_by)
+          VALUES (?, 'whatsapp', ?, ?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE title=VALUES(title), body=VALUES(body), is_active=VALUES(is_active), updated_by=VALUES(updated_by)
+        `, [input.companyId, input.eventKey, input.title, input.body, input.isActive ? 1 : 0, uid]);
+        return { ok: true };
+      }),
+    sendCommunicationTemplateTest: adminOrRhProcedure
+      .input(z.object({ companyId: z.number().int(), eventKey: z.string().min(1), phone: z.string().min(8) }))
+      .mutation(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        if (role !== "admin_global" && role !== "super_admin") throw new TRPCError({ code: "FORBIDDEN" });
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensureCommunicationTemplateTables(db);
+        const [[company]]: any = await execP(db, `SELECT name FROM companies WHERE id=? LIMIT 1`, [input.companyId]);
+        const [rows]: any = await execP(db, `
+          SELECT title, body FROM communication_message_templates
+          WHERE company_id=? AND channel='whatsapp' AND event_key=? LIMIT 1`, [input.companyId, input.eventKey]);
+        const fallback = DEFAULT_WHATSAPP_MESSAGE_TEMPLATES.find((x) => x.eventKey === input.eventKey);
+        const tpl = rows?.[0] ?? fallback;
+        if (!tpl) throw new TRPCError({ code: "NOT_FOUND", message: "Template nao encontrado." });
+        const { normalizeE164BR, sendWhatsappText } = await import("./_core/whatsapp");
+        const phone = normalizeE164BR(input.phone);
+        if (!phone) throw new TRPCError({ code: "BAD_REQUEST", message: "WhatsApp invalido." });
+        const body = fillTemplatePreview((tpl as any).body, company?.name);
+        const r = await sendWhatsappText(phone, body, { companyId: input.companyId, userId: (ctx.user as any).id ?? null });
+        return { ok: !!r.ok, preview: !!r.preview, error: r.error ?? null, to: phone, body };
+      }),
+    sendCommunicationJourneyTest: adminOrRhProcedure
+      .input(z.object({ companyId: z.number().int(), phone: z.string().min(8) }))
+      .mutation(async ({ ctx, input }) => {
+        const role = (ctx.user as any).role;
+        if (role !== "admin_global" && role !== "super_admin") throw new TRPCError({ code: "FORBIDDEN" });
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensureCommunicationTemplateTables(db);
+        const [[company]]: any = await execP(db, `SELECT name FROM companies WHERE id=? LIMIT 1`, [input.companyId]);
+        const [rows]: any = await execP(db, `
+          SELECT event_key, title, body, is_active
+          FROM communication_message_templates
+          WHERE company_id=? AND channel='whatsapp'`, [input.companyId]);
+        const byKey = new Map((rows ?? []).map((r: any) => [String(r.event_key), r]));
+        const { normalizeE164BR, sendWhatsappText } = await import("./_core/whatsapp");
+        const phone = normalizeE164BR(input.phone);
+        if (!phone) throw new TRPCError({ code: "BAD_REQUEST", message: "WhatsApp invalido." });
+        const sent: any[] = [];
+        for (const fallback of DEFAULT_WHATSAPP_MESSAGE_TEMPLATES) {
+          const saved: any = byKey.get(fallback.eventKey);
+          if (saved && Number(saved.is_active ?? 1) === 0) {
+            sent.push({ eventKey: fallback.eventKey, title: saved.title ?? fallback.title, skipped: true, reason: "Template inativo" });
+            continue;
+          }
+          const title = saved?.title ?? fallback.title;
+          const body = fillTemplatePreview(saved?.body ?? fallback.body, company?.name);
+          const r = await sendWhatsappText(phone, body, { companyId: input.companyId, userId: (ctx.user as any).id ?? null });
+          sent.push({ eventKey: fallback.eventKey, title, ok: !!r.ok, preview: !!r.preview, error: r.error ?? null, body });
+        }
+        return { ok: sent.every((x) => x.skipped || x.ok), to: phone, preview: sent.some((x) => x.preview), sent };
       }),
     updatePlus: adminOrRhProcedure
       .input(z.object({
@@ -13296,6 +14182,241 @@ export const appRouter = router({
       }),
 
     // ─── Bruno R5-P3 #6 — Faixas de preço editáveis (Super Admin) ─────────
+    listTotvsRmConnections: superAdminProcedure.query(async () => {
+      await ensureTotvsRmTables();
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const r: any = await db.execute(drzSql`
+        SELECT c.id AS company_id, c.name AS company_name, c.cnpj,
+               trc.id, trc.rm_version, trc.base_url, trc.integration_mode, trc.auth_type,
+               trc.username, trc.coligada, trc.filial, trc.rest_healthcheck_path,
+               trc.rest_employee_path, trc.soap_wsdl_path, trc.soap_dataserver,
+               trc.sync_schedule, trc.is_active, trc.last_test_at, trc.last_test_ok,
+               trc.last_test_status, trc.last_test_error, trc.last_sync_at,
+               (trc.password_encrypted IS NOT NULL AND trc.password_encrypted <> '') AS has_password
+          FROM companies c
+          LEFT JOIN totvs_rm_connections trc ON trc.company_id = c.id
+         ORDER BY c.name ASC
+      `);
+      return rowsOf(r).map((row: any) => ({
+        ...row,
+        is_active: row.is_active == null ? null : Boolean(row.is_active),
+        last_test_ok: row.last_test_ok == null ? null : Boolean(row.last_test_ok),
+        has_password: Boolean(row.has_password),
+      }));
+    }),
+
+    getTotvsRmConnection: superAdminProcedure
+      .input(z.object({ companyId: z.number().int() }))
+      .query(async ({ input }) => {
+        await ensureTotvsRmTables();
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const r: any = await db.execute(drzSql`
+          SELECT trc.*, c.name AS company_name,
+                 (trc.password_encrypted IS NOT NULL AND trc.password_encrypted <> '') AS has_password
+            FROM totvs_rm_connections trc
+            JOIN companies c ON c.id = trc.company_id
+           WHERE trc.company_id=${input.companyId}
+           LIMIT 1
+        `);
+        const row: any = rowsOf(r)[0];
+        if (!row) return null;
+        return {
+          ...row,
+          field_map: parseJsonField(row.field_map_json, {}),
+          status_map: parseJsonField(row.status_map_json, {}),
+          is_active: Boolean(row.is_active),
+          last_test_ok: row.last_test_ok == null ? null : Boolean(row.last_test_ok),
+          has_password: Boolean(row.has_password),
+          password_encrypted: undefined,
+        };
+      }),
+
+    saveTotvsRmConnection: superAdminProcedure
+      .input(z.object({
+        companyId: z.number().int(),
+        rmVersion: z.string().default("12.1.2602.181"),
+        baseUrl: z.string().min(6),
+        integrationMode: z.enum(["rest", "soap", "hybrid"]).default("rest"),
+        authType: z.enum(["basic", "none"]).default("basic"),
+        username: z.string().optional(),
+        password: z.string().optional(),
+        coligada: z.string().optional(),
+        filial: z.string().optional(),
+        restHealthcheckPath: z.string().optional(),
+        restEmployeePath: z.string().optional(),
+        soapWsdlPath: z.string().optional(),
+        soapDataServer: z.string().optional(),
+        syncSchedule: z.enum(["manual", "daily", "weekly"]).default("manual"),
+        isActive: z.boolean().default(true),
+        fieldMap: z.record(z.string(), z.string()).optional(),
+        statusMap: z.record(z.string(), z.string()).optional(),
+      }))
+      .mutation(async ({ input }) => {
+        await ensureTotvsRmTables();
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const existing: any = await db.execute(drzSql`SELECT id, password_encrypted FROM totvs_rm_connections WHERE company_id=${input.companyId} LIMIT 1`);
+        const old = rowsOf(existing)[0] as any;
+        const passwordEncrypted = input.password?.trim()
+          ? encryptIntegrationSecret(input.password.trim())
+          : old?.password_encrypted || null;
+        if (input.authType === "basic" && !passwordEncrypted) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Senha é obrigatória na primeira configuração Basic." });
+        }
+        const fieldMap = JSON.stringify(input.fieldMap ?? {
+          cpf: "CPF",
+          name: "NOME",
+          email: "EMAIL",
+          whatsapp: "TELEFONE",
+          branch: "FILIAL",
+          sector: "SECAO",
+          position: "FUNCAO",
+          admissionDate: "DATAADMISSAO",
+          terminationDate: "DATADEMISSAO",
+          status: "SITUACAO",
+          registration: "CHAPA",
+        });
+        const statusMap = JSON.stringify(input.statusMap ?? {
+          active: "A",
+          away: "F,L,M",
+          terminated: "D",
+          death: "O",
+        });
+        if (old?.id) {
+          await db.execute(drzSql`
+            UPDATE totvs_rm_connections SET
+              rm_version=${input.rmVersion || "12.1.2602.181"},
+              base_url=${cleanBaseUrl(input.baseUrl)},
+              integration_mode=${input.integrationMode},
+              auth_type=${input.authType},
+              username=${input.username || null},
+              password_encrypted=${passwordEncrypted},
+              coligada=${input.coligada || null},
+              filial=${input.filial || null},
+              rest_healthcheck_path=${input.restHealthcheckPath || "/RMSRestDataServer/rest"},
+              rest_employee_path=${input.restEmployeePath || null},
+              soap_wsdl_path=${input.soapWsdlPath || "/wsDataServer/IwsDataServer?wsdl"},
+              soap_dataserver=${input.soapDataServer || null},
+              field_map_json=${fieldMap},
+              status_map_json=${statusMap},
+              sync_schedule=${input.syncSchedule},
+              is_active=${input.isActive ? 1 : 0}
+            WHERE company_id=${input.companyId}
+          `);
+        } else {
+          await db.execute(drzSql`
+            INSERT INTO totvs_rm_connections
+              (company_id, rm_version, base_url, integration_mode, auth_type, username, password_encrypted,
+               coligada, filial, rest_healthcheck_path, rest_employee_path, soap_wsdl_path, soap_dataserver,
+               field_map_json, status_map_json, sync_schedule, is_active)
+            VALUES
+              (${input.companyId}, ${input.rmVersion || "12.1.2602.181"}, ${cleanBaseUrl(input.baseUrl)}, ${input.integrationMode}, ${input.authType},
+               ${input.username || null}, ${passwordEncrypted}, ${input.coligada || null}, ${input.filial || null},
+               ${input.restHealthcheckPath || "/RMSRestDataServer/rest"}, ${input.restEmployeePath || null},
+               ${input.soapWsdlPath || "/wsDataServer/IwsDataServer?wsdl"}, ${input.soapDataServer || null},
+               ${fieldMap}, ${statusMap}, ${input.syncSchedule}, ${input.isActive ? 1 : 0})
+          `);
+        }
+        return { ok: true };
+      }),
+
+    testTotvsRmConnection: superAdminProcedure
+      .input(z.object({ companyId: z.number().int() }))
+      .mutation(async ({ ctx, input }) => {
+        await ensureTotvsRmTables();
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const r: any = await db.execute(drzSql`SELECT * FROM totvs_rm_connections WHERE company_id=${input.companyId} LIMIT 1`);
+        const cfg: any = rowsOf(r)[0];
+        if (!cfg) throw new TRPCError({ code: "NOT_FOUND", message: "Conector TOTVS RM não configurado para esta empresa." });
+        const started = new Date();
+        const result = await testTotvsRmHttpConnection(cfg);
+        const status = result.ok ? "success" : "failed";
+        const summary = JSON.stringify({
+          rmVersion: cfg.rm_version,
+          integrationMode: cfg.integration_mode,
+          url: result.url,
+          httpStatus: result.status,
+          elapsedMs: result.elapsedMs,
+          message: result.message,
+          sample: result.sample,
+        });
+        await db.execute(drzSql`
+          UPDATE totvs_rm_connections
+             SET last_test_at=NOW(),
+                 last_test_ok=${result.ok ? 1 : 0},
+                 last_test_status=${result.status ?? null},
+                 last_test_error=${result.ok ? null : result.message}
+           WHERE id=${cfg.id}
+        `);
+        await db.execute(drzSql`
+          INSERT INTO totvs_rm_sync_logs
+            (connection_id, company_id, run_type, status, started_at, finished_at, summary_json, error_message, created_by_user_id, created_by_email)
+          VALUES
+            (${cfg.id}, ${input.companyId}, 'test', ${status}, ${started}, NOW(), ${summary}, ${result.ok ? null : result.message},
+             ${(ctx.user as any).id ?? null}, ${(ctx.user as any).email ?? null})
+        `);
+        return result;
+      }),
+
+    listTotvsRmLogs: superAdminProcedure
+      .input(z.object({ companyId: z.number().int().optional(), limit: z.number().int().min(1).max(100).default(30) }).optional())
+      .query(async ({ input }) => {
+        await ensureTotvsRmTables();
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const limit = input?.limit ?? 30;
+        const r: any = input?.companyId
+          ? await db.execute(drzSql`
+              SELECT l.*, c.name AS company_name
+                FROM totvs_rm_sync_logs l
+                LEFT JOIN companies c ON c.id=l.company_id
+               WHERE l.company_id=${input.companyId}
+               ORDER BY l.started_at DESC
+               LIMIT ${limit}`)
+          : await db.execute(drzSql`
+              SELECT l.*, c.name AS company_name
+                FROM totvs_rm_sync_logs l
+                LEFT JOIN companies c ON c.id=l.company_id
+               ORDER BY l.started_at DESC
+               LIMIT ${limit}`);
+        return rowsOf(r).map((row: any) => ({ ...row, summary: parseJsonField(row.summary_json, null) }));
+      }),
+
+    runTotvsRmDryRun: superAdminProcedure
+      .input(z.object({ companyId: z.number().int() }))
+      .mutation(async ({ ctx, input }) => {
+        await ensureTotvsRmTables();
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const r: any = await db.execute(drzSql`SELECT * FROM totvs_rm_connections WHERE company_id=${input.companyId} LIMIT 1`);
+        const cfg: any = rowsOf(r)[0];
+        if (!cfg) throw new TRPCError({ code: "NOT_FOUND", message: "Conector TOTVS RM não configurado para esta empresa." });
+        if (!cfg.rest_employee_path && cfg.integration_mode !== "soap") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Informe o caminho REST de colaboradores para executar a prévia." });
+        }
+        const summary = {
+          message: "Prévia estrutural pronta. A coleta real será executada após configurar o endpoint de colaboradores/DataServer do RM do cliente.",
+          rmVersion: cfg.rm_version,
+          mode: cfg.integration_mode,
+          expectedIdentifier: "CPF + empresa/coligada",
+          willUpdate: ["branches", "sectors", "corporate_emails", "users"],
+          willNotDeleteHistory: true,
+          fieldMap: parseJsonField(cfg.field_map_json, {}),
+          statusMap: parseJsonField(cfg.status_map_json, {}),
+        };
+        await db.execute(drzSql`
+          INSERT INTO totvs_rm_sync_logs
+            (connection_id, company_id, run_type, status, started_at, finished_at, summary_json, created_by_user_id, created_by_email)
+          VALUES
+            (${cfg.id}, ${input.companyId}, 'dry_run', 'pending_mapping', NOW(), NOW(), ${JSON.stringify(summary)},
+             ${(ctx.user as any).id ?? null}, ${(ctx.user as any).email ?? null})
+        `);
+        return { ok: true, summary };
+      }),
+
     crmListPricingFaixas: superAdminProcedure.query(async () => {
       const { loadFaixas } = await import("./_core/crm");
       return loadFaixas();
@@ -17334,13 +18455,7 @@ export const appRouter = router({
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
 
 
-        const mr: any = await db.execute(drzSql`SELECT id, title, description, image_url, durationMinutes FROM modules WHERE id=${input.moduleId} LIMIT 1`);
-
-
-        const mod = (mr as any)[0]?.[0];
-
-
-        if (!mod) throw new TRPCError({ code: "NOT_FOUND" });
+        const mod = await assertCourseAccessForUser(db, ctx.user, input.moduleId);
 
 
         const ur: any = await db.execute(drzSql`SELECT id, title, description, icon, order_index FROM units WHERE module_id=${input.moduleId} ORDER BY order_index ASC`);
@@ -17468,6 +18583,8 @@ export const appRouter = router({
 
         if (!lesson) throw new TRPCError({ code: "NOT_FOUND" });
 
+        await assertCourseAccessForUser(db, ctx.user, Number(lesson.moduleId));
+
 
         const br: any = await db.execute(drzSql`SELECT id, block_type, content, order_index, xp_reward FROM lesson_blocks WHERE lesson_id=${input.lessonId} ORDER BY order_index ASC`);
 
@@ -17544,13 +18661,21 @@ export const appRouter = router({
         // Fetch block xp
 
 
-        const br: any = await db.execute(drzSql`SELECT xp_reward, block_type FROM lesson_blocks WHERE id=${input.blockId} LIMIT 1`);
+        const br: any = await db.execute(drzSql`
+          SELECT lb.xp_reward, lb.block_type, l.moduleId
+          FROM lesson_blocks lb
+          INNER JOIN lessons l ON l.id = lb.lesson_id
+          WHERE lb.id=${input.blockId} AND lb.lesson_id=${input.lessonId}
+          LIMIT 1
+        `);
 
 
         const block = (br as any)[0]?.[0];
 
 
         if (!block) throw new TRPCError({ code: "NOT_FOUND" });
+
+        await assertCourseAccessForUser(db, ctx.user, Number(block.moduleId));
 
 
 
@@ -17703,6 +18828,7 @@ export const appRouter = router({
         let moduleId = 0;
         const lr: any = await db.execute(drzSql`SELECT moduleId FROM lessons WHERE id=${input.lessonId} LIMIT 1`);
         moduleId = Number((lr as any)[0]?.[0]?.moduleId ?? 0);
+        if (moduleId) await assertCourseAccessForUser(db, ctx.user, moduleId);
         if (moduleId) {
           const cr: any = await db.execute(drzSql`
             SELECT COUNT(*) AS total,
@@ -18667,12 +19793,27 @@ Return only the JSON content object (no wrapper). Format per type:
 
   // ── Template Library (Phase 3 — Biblioteca da Consultoria) ─────────────────
   templateLibrary: router({
-    list: adminOrRhProcedure.query(async () => {
+    list: adminOrRhProcedure
+    .input(z.object({ companyId: z.number().int().optional(), includeCompanySurveys: z.boolean().optional() }).optional())
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return { surveys: [], modules: [], decompression: [] };
+      const role = (ctx.user as any).role;
+      const requestedId = input?.companyId;
+      const cid = (role === "admin_global" || role === "super_admin") ? requestedId : (ctx.user as any).companyId;
+      const includeCompany = input?.includeCompanySurveys !== false && !!cid;
 
-      const sr: any = await db.execute(drzSql`
+      const sr: any = includeCompany ? await execP(db, `
         SELECT s.id, s.title, s.description, s.category, s.is_anonymous AS isAnonymous,
+               s.is_template AS isTemplate, s.company_id AS companyId,
+               CASE WHEN s.is_template=1 THEN 'platform' ELSE 'company' END AS source,
+               (SELECT COUNT(*) FROM survey_questions q WHERE q.survey_id = s.id) AS questionCount
+        FROM surveys s
+        WHERE (s.is_template = 1 OR s.company_id = ?)
+          AND (s.is_template = 1 OR COALESCE(s.category, '') IN ('psicossocial','aep','nr01','nr-01','ergonomico','ergonomica'))
+        ORDER BY s.is_template DESC, s.title`, [cid]) : await db.execute(drzSql`
+        SELECT s.id, s.title, s.description, s.category, s.is_anonymous AS isAnonymous,
+               s.is_template AS isTemplate, s.company_id AS companyId, 'platform' AS source,
                (SELECT COUNT(*) FROM survey_questions q WHERE q.survey_id = s.id) AS questionCount
         FROM surveys s
         WHERE s.is_template = 1
@@ -18964,6 +20105,85 @@ Return only the JSON content object (no wrapper). Format per type:
 
     // Visão consolidada por Filial -> Setor -> Ciclos, com inventário e plano de ação
     // de cada ciclo. Usado pela página "Análise de Risco — Visão por Filial e Setor".
+    cycleSectorCoverage: adminOrRhProcedure
+      .input(z.object({ assessmentId: z.number().int() }))
+      .query(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb();
+        if (!db || !cid) return { assessment: null, sectors: [], summary: { sectorsTotal: 0, sectorsComplete: 0, sectorsPending: 0, activeEmployees: 0, drpsResponses: 0, aepResponses: 0 } };
+        const data = await loadRiskCycleSectorCoverage(db, input.assessmentId, cid);
+        return { assessment: data.assessment, sectors: data.sectors, summary: data.summary };
+      }),
+
+    pendingSurveyTargets: adminOrRhProcedure
+      .input(z.object({
+        assessmentId: z.number().int(),
+        target: z.enum(["drps", "aep"]),
+        branchId: z.number().int().nullable().optional(),
+        sectorId: z.number().int().nullable().optional(),
+      }))
+      .query(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb();
+        if (!db || !cid) return [];
+        return loadPendingRiskSurveyTargets(db, cid, input);
+      }),
+
+    sendPendingSurveyReminder: adminOrRhProcedure
+      .input(z.object({
+        assessmentId: z.number().int(),
+        target: z.enum(["drps", "aep"]),
+        branchId: z.number().int().nullable().optional(),
+        sectorId: z.number().int().nullable().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb();
+        if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+        const [[a]]: any = await execP(db, `
+          SELECT id, cycle_name, company_id, drps_survey_id, aep_survey_id
+          FROM risk_assessments WHERE id=? LIMIT 1`, [input.assessmentId]);
+        if (!a || Number(a.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
+        const surveyId = input.target === "drps" ? a.drps_survey_id : a.aep_survey_id;
+        if (!surveyId) throw new TRPCError({ code: "BAD_REQUEST", message: "Pesquisa nao vinculada ao ciclo." });
+        const pending = await loadPendingRiskSurveyTargets(db, cid, input);
+        if (!pending.length) return { ok: true, sent: 0, failed: 0, campaignId: null };
+        const subject = `${input.target.toUpperCase()} pendente - ${a.cycle_name}`;
+        const body = `Ola {{name}},\n\nVoce possui a pesquisa ${input.target.toUpperCase()} pendente no ciclo ${a.cycle_name}.\n\nAcesse a plataforma para responder:\n{{link}}\n\nEsta cobranca e automatica e faz parte do acompanhamento metodologico da NR-01.`;
+        const campaignId = await createEmailCampaign({
+          companyId: cid,
+          createdByUserId: Number((ctx.user as any).id ?? 0),
+          name: `Cobranca ${input.target.toUpperCase()} - ${a.cycle_name}`,
+          campaignType: "survey_pending",
+          targetSurveyId: Number(surveyId),
+          targetModuleId: null,
+          filterJson: { assessmentId: input.assessmentId, target: input.target, branchId: input.branchId ?? null, sectorId: input.sectorId ?? null },
+          emailSubject: subject,
+          emailBody: body,
+          scheduleType: "now",
+          recipients: pending.map((p: any) => ({ userId: p.userId, email: p.email, name: p.name })),
+        });
+        await updateEmailCampaignStatus(campaignId, "sending");
+        const data = await getEmailCampaign(campaignId);
+        let sent = 0, failed = 0, preview = false;
+        const link = `${getEmailLinkBaseUrl()}/plataforma/pesquisas/${surveyId}/responder`;
+        for (const r of data?.recipients ?? []) {
+          const vars = { name: r.name || String(r.email).split("@")[0], link, survey_title: input.target.toUpperCase(), course_title: "", courses_list: "" };
+          const result = await sendEmail({ to: r.email, toName: r.name ?? undefined, subject: fillTemplate(subject, vars), html: plainToHtml(fillTemplate(body, vars)) });
+          if (result.preview) preview = true;
+          if (result.ok) {
+            sent++;
+            await updateEmailCampaignRecipient(r.id, result.preview ? "preview_sent" : "sent");
+          } else {
+            failed++;
+            await updateEmailCampaignRecipient(r.id, "failed", result.error || "unknown error");
+          }
+        }
+        await bumpEmailCampaignCounters(campaignId, { sent, failed });
+        await updateEmailCampaignStatus(campaignId, failed > 0 && sent === 0 ? "failed" : "sent", true);
+        return { ok: true, sent, failed, preview, campaignId };
+      }),
+
     getConsolidatedView: adminOrRhProcedure
       .input(z.object({}).optional())
       .query(async ({ ctx }) => {
@@ -19309,16 +20529,41 @@ Return only the JSON content object (no wrapper). Format per type:
         const fr: any = await db.execute(drzSql`SELECT id, code, name, axis_order FROM psychosocial_factors ORDER BY axis_order, id`);
         const factorRows = dedupePsychosocialFactorRows(((fr as any)[0] ?? []) as any[]);
 
-        const sectorKeys = Object.keys(aggBySector);
+        const coverage = await loadRiskCycleSectorCoverage(db, input.assessmentId, cid);
+        const rawSectorKeys = Object.keys(aggBySector);
+        const sectorKeys = a.sector_id == null
+          ? rawSectorKeys.filter((sk) => coverage.completeSectorIds.has(Number(sk)))
+          : rawSectorKeys;
+        const skippedSectorIds = a.sector_id == null
+          ? rawSectorKeys.filter((sk) => !coverage.completeSectorIds.has(Number(sk))).map((sk) => Number(sk))
+          : [];
         // Modo POR SETOR quando a avaliação é da empresa/filial (sem setor fixo) e há
         // respostas marcadas por setor. Caso contrário, mantém o modo consolidado.
-        const perSector = a.sector_id == null && sectorKeys.length > 0;
+        const perSector = a.sector_id == null && rawSectorKeys.length > 0;
 
         let updated = 0;
         if (perSector) {
           // Remove os itens-semente consolidados (sector_id NULL) e faz upsert por setor.
           // O upsert preserva 'probabilidade' editada manualmente entre reexecuções.
           await db.execute(drzSql`DELETE FROM risk_inventory_items WHERE assessment_id=${input.assessmentId} AND sector_id IS NULL`);
+          if (skippedSectorIds.length > 0) {
+            const skippedCsv = skippedSectorIds.map((n) => Number(n)).filter(Boolean).join(",");
+            if (skippedCsv) {
+              await db.execute(drzSql.raw(`DELETE FROM risk_inventory_items WHERE assessment_id=${input.assessmentId} AND sector_id IN (${skippedCsv})`));
+            }
+          }
+          if (sectorKeys.length === 0) {
+            return {
+              ok: true,
+              updated: 0,
+              factorsWithData: Object.keys(aggAll).length,
+              perSector,
+              sectors: rawSectorKeys.length,
+              sectorsComplete: 0,
+              skippedSectors: skippedSectorIds.length,
+              blockedByIncompleteCrossing: true,
+            };
+          }
           for (const sk of sectorKeys) {
             const sid = Number(sk);
             const bid = sectorBranch[sk] ?? null;
@@ -19338,6 +20583,18 @@ Return only the JSON content object (no wrapper). Format per type:
             }
           }
         } else {
+          if (a.sector_id != null && !coverage.completeSectorIds.has(Number(a.sector_id))) {
+            return {
+              ok: true,
+              updated: 0,
+              factorsWithData: Object.keys(aggAll).length,
+              perSector: false,
+              sectors: 1,
+              sectorsComplete: 0,
+              skippedSectors: 1,
+              blockedByIncompleteCrossing: true,
+            };
+          }
           // Consolidado: atualiza os itens-semente existentes (sector_id NULL).
           const ir: any = await db.execute(drzSql`
             SELECT ii.id, ii.factor_id, ii.probabilidade, f.code
@@ -19360,7 +20617,16 @@ Return only the JSON content object (no wrapper). Format per type:
         // Mark assessment as analyzing
         await db.execute(drzSql`UPDATE risk_assessments SET status='analyzing' WHERE id=${input.assessmentId}`);
 
-        return { ok: true, updated, factorsWithData: Object.keys(aggAll).length, perSector, sectors: sectorKeys.length };
+        return {
+          ok: true,
+          updated,
+          factorsWithData: Object.keys(aggAll).length,
+          perSector,
+          sectors: sectorKeys.length,
+          sectorsComplete: coverage.summary.sectorsComplete,
+          skippedSectors: skippedSectorIds.length,
+          blockedByIncompleteCrossing: false,
+        };
       }),
 
     updateInventoryItem: adminOrRhProcedure
@@ -19410,7 +20676,7 @@ Return only the JSON content object (no wrapper). Format per type:
         const cid = (ctx.user as any).companyId;
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const ar: any = await db.execute(drzSql`SELECT company_id, start_date FROM risk_assessments WHERE id=${input.assessmentId} LIMIT 1`);
+        const ar: any = await db.execute(drzSql`SELECT company_id, start_date, sector_id FROM risk_assessments WHERE id=${input.assessmentId} LIMIT 1`);
         const a = (ar as any)[0]?.[0];
         if (!a) throw new TRPCError({ code: "NOT_FOUND" });
         if (a.company_id !== cid) throw new TRPCError({ code: "FORBIDDEN" });
@@ -19421,7 +20687,12 @@ Return only the JSON content object (no wrapper). Format per type:
           INNER JOIN psychosocial_factors f ON f.id = ii.factor_id
           WHERE ii.assessment_id=${input.assessmentId}
           ORDER BY f.axis_order`);
-        const items = dedupeRiskRows(((ir as any)[0] ?? []) as any[], "inventory");
+        const coverage = await loadRiskCycleSectorCoverage(db, input.assessmentId, cid);
+        const allItems = dedupeRiskRows(((ir as any)[0] ?? []) as any[], "inventory");
+        const items = a.sector_id == null
+          ? allItems.filter((it: any) => it.sector_id != null && coverage.completeSectorIds.has(Number(it.sector_id)))
+          : (coverage.completeSectorIds.has(Number(a.sector_id)) ? allItems : []);
+        const skippedSectors = a.sector_id == null ? coverage.summary.sectorsPending : (items.length ? 0 : 1);
         const courseLinks = await loadRiskCourseLinks(db);
 
         // Remove existing plan items
@@ -19460,7 +20731,7 @@ Return only the JSON content object (no wrapper). Format per type:
                     'programado', ${JSON.stringify(progress)})`);
           created++;
         }
-        return { ok: true, created };
+        return { ok: true, created, skippedSectors, sectorsComplete: coverage.summary.sectorsComplete };
       }),
 
     updateActionPlanItem: adminOrRhProcedure
@@ -19729,15 +21000,21 @@ Return only the JSON content object (no wrapper). Format per type:
         }),
 
       grantException: adminOrRhProcedure
-        .input(z.object({ assessmentId: z.number().int(), userId: z.number().int(), note: z.string().min(1) }))
+        .input(z.object({ assessmentId: z.number().int(), userId: z.number().int().optional(), cpf: z.string().optional(), note: z.string().min(1) }))
         .mutation(async ({ ctx, input }) => {
           const cid = (ctx.user as any).companyId;
           const db = await getDb();
           if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          await ensureAuthIdentityColumns(db);
           const [[a]]: any = await execP(db, `SELECT company_id FROM risk_assessments WHERE id=?`, [input.assessmentId]);
           if (!a || Number(a.company_id) !== Number(cid)) throw new TRPCError({ code: "FORBIDDEN" });
-          const [[u]]: any = await execP(db, `SELECT id FROM users WHERE id=? AND company_id=?`, [input.userId, cid]);
-          if (!u) throw new TRPCError({ code: "FORBIDDEN", message: "Colaborador de outra empresa rejeitado." });
+          const cpf = normalizeCpf(input.cpf);
+          const [[u]]: any = input.userId
+            ? await execP(db, `SELECT id FROM users WHERE id=? AND company_id=?`, [input.userId, cid])
+            : cpf
+            ? await execP(db, `SELECT id FROM users WHERE cpf=? AND company_id=? LIMIT 1`, [cpf, cid])
+            : [[]];
+          if (!u) throw new TRPCError({ code: "NOT_FOUND", message: "Colaborador nao encontrado pelo CPF nesta empresa." });
           await db.execute(drzSql`CREATE TABLE IF NOT EXISTS aep_exceptions (
             id INT AUTO_INCREMENT PRIMARY KEY,
             assessment_id INT NOT NULL, user_id INT NOT NULL, granted_by INT NOT NULL,
@@ -19747,7 +21024,7 @@ Return only the JSON content object (no wrapper). Format per type:
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
           await db.execute(drzSql`
             INSERT INTO aep_exceptions (assessment_id, user_id, granted_by, note)
-            VALUES (${input.assessmentId}, ${input.userId}, ${ctx.user.id}, ${input.note})
+            VALUES (${input.assessmentId}, ${Number(u.id)}, ${ctx.user.id}, ${input.note})
             ON DUPLICATE KEY UPDATE note=${input.note}, granted_by=${ctx.user.id}`);
           return { ok: true };
         }),
@@ -23278,6 +24555,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         to: z.string().optional(),
         branchId: z.number().optional(),
         sectorId: z.number().optional(),
+        cycleId: z.number().optional(),
       }).optional())
       .query(async ({ ctx, input }) => {
         const cid = Number((ctx.user as any).companyId) || 0;
@@ -23293,7 +24571,11 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
 
         const branchFilter = input?.branchId ? `AND u.branch_id = ${Number(input.branchId)}` : '';
         const sectorFilter = input?.sectorId ? `AND u.sector_id = ${Number(input.sectorId)}` : '';
+        const cycleFilter = input?.cycleId ? `AND ra.id = ${Number(input.cycleId)}` : '';
         const companyFilter = isGlobal ? '' : `AND u.company_id = ${cid}`;
+        const surveyCycleFilter = input?.cycleId
+          ? `AND s.id IN (SELECT drps_survey_id FROM risk_assessments WHERE id=${Number(input.cycleId)} UNION SELECT aep_survey_id FROM risk_assessments WHERE id=${Number(input.cycleId)})`
+          : '';
 
         // P18 #23 (cont.) — "colaboradores ativos" padronizado com o painel de Conformidade:
         // is_active=1 e exclui cargos administrativos/técnicos (admin/RH/SESMT/psicólogo).
@@ -23310,11 +24592,11 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         const survRespR: any = await db.execute(drzSql.raw(`
           SELECT COUNT(DISTINCT sr.user_id) AS identificados, SUM(CASE WHEN sr.user_id IS NULL THEN 1 ELSE 0 END) AS anonimas
           FROM survey_responses sr INNER JOIN surveys s ON s.id=sr.survey_id
-          WHERE (sr.status IS NULL OR sr.status <> 'invalid') ${isGlobal ? '' : `AND s.company_id = ${cid}`}`));
+          WHERE (sr.status IS NULL OR sr.status <> 'invalid') ${isGlobal ? '' : `AND s.company_id = ${cid}`} ${surveyCycleFilter}`));
         // Contagens brutas pros cards "Pesquisas Ativas" / "Respostas de Pesquisas" (não fazem
         // parte da taxa unificada, mas o client ainda os exibe separadamente).
-        const surveysR: any = await db.execute(drzSql.raw(`SELECT COUNT(*) AS c FROM surveys s WHERE s.status='active' ${isGlobal ? '' : `AND s.company_id = ${cid}`}`));
-        const responsesR: any = await db.execute(drzSql.raw(`SELECT COUNT(*) AS c FROM survey_responses r INNER JOIN surveys s ON s.id=r.survey_id WHERE (r.status IS NULL OR r.status <> 'invalid') ${isGlobal ? '' : `AND s.company_id = ${cid}`}`));
+        const surveysR: any = await db.execute(drzSql.raw(`SELECT COUNT(*) AS c FROM surveys s WHERE s.status='active' ${isGlobal ? '' : `AND s.company_id = ${cid}`} ${surveyCycleFilter}`));
+        const responsesR: any = await db.execute(drzSql.raw(`SELECT COUNT(*) AS c FROM survey_responses r INNER JOIN surveys s ON s.id=r.survey_id WHERE (r.status IS NULL OR r.status <> 'invalid') ${isGlobal ? '' : `AND s.company_id = ${cid}`} ${surveyCycleFilter}`));
         const activeSurveys = Number(surveysR[0]?.[0]?.c ?? surveysR?.[0]?.c ?? 0);
         const totalResponses = Number(responsesR[0]?.[0]?.c ?? responsesR?.[0]?.c ?? 0);
 
@@ -23334,7 +24616,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           SELECT ri.risco_final AS level, COUNT(*) AS c
           FROM risk_inventory_items ri
           INNER JOIN risk_assessments ra ON ra.id = ri.assessment_id
-          WHERE 1=1 ${isGlobal ? '' : `AND ra.company_id = ${cid}`}
+          WHERE 1=1 ${isGlobal ? '' : `AND ra.company_id = ${cid}`} ${cycleFilter}
           GROUP BY ri.risco_final
         `));
         const riskRows: any[] = (riskR[0] ?? riskR) as any[];
@@ -23561,19 +24843,28 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
       }),
 
     // === Surveys ===
-    surveyResponseRate: adminOrRhProcedure.query(async ({ ctx }) => {
+    surveyResponseRate: adminOrRhProcedure
+      .input(z.object({ cycleId: z.number().optional(), branchId: z.number().optional(), sectorId: z.number().optional() }).optional())
+      .query(async ({ ctx, input }) => {
       const cid = Number((ctx.user as any).companyId) || 0;
       const role = (ctx.user as any).role;
       const isGlobal = role === 'admin_global';
       const db = await getDb();
       if (!db) return [];
+      const cycleSurveyFilter = input?.cycleId
+        ? `AND s.id IN (SELECT drps_survey_id FROM risk_assessments WHERE id=${Number(input.cycleId)} UNION SELECT aep_survey_id FROM risk_assessments WHERE id=${Number(input.cycleId)})`
+        : '';
+      const responseBranchFilter = input?.branchId ? `AND r.branch_id = ${Number(input.branchId)}` : '';
+      const responseSectorFilter = input?.sectorId ? `AND r.sector_id = ${Number(input.sectorId)}` : '';
+      const userBranchFilter = input?.branchId ? `AND u.branch_id = ${Number(input.branchId)}` : '';
+      const userSectorFilter = input?.sectorId ? `AND u.sector_id = ${Number(input.sectorId)}` : '';
       const r: any = await db.execute(drzSql.raw(`
         SELECT s.id, s.title, s.category, s.status,
           COUNT(DISTINCT CASE WHEN r.status IS NULL OR r.status <> 'invalid' THEN r.id END) AS responses,
-          (SELECT COUNT(*) FROM users u WHERE ${activeEmployeeWhere("u")} ${isGlobal ? '' : `AND u.company_id = ${cid}`}) AS eligibleUsers
+          (SELECT COUNT(*) FROM users u WHERE ${activeEmployeeWhere("u")} ${isGlobal ? '' : `AND u.company_id = ${cid}`} ${userBranchFilter} ${userSectorFilter}) AS eligibleUsers
         FROM surveys s
-        LEFT JOIN survey_responses r ON r.survey_id = s.id
-        WHERE 1=1 ${isGlobal ? '' : `AND (s.company_id = ${cid} OR s.is_template = 1)`}
+        LEFT JOIN survey_responses r ON r.survey_id = s.id ${responseBranchFilter} ${responseSectorFilter}
+        WHERE 1=1 ${isGlobal ? '' : `AND (s.company_id = ${cid} OR s.is_template = 1)`} ${cycleSurveyFilter}
         GROUP BY s.id, s.title, s.category, s.status
         ORDER BY responses DESC
         LIMIT 20
@@ -23630,7 +24921,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
       }),
 
     surveyTrendOverTime: adminOrRhProcedure
-      .input(z.object({ days: z.number().optional() }).optional())
+      .input(z.object({ days: z.number().optional(), cycleId: z.number().optional() }).optional())
       .query(async ({ ctx, input }) => {
         const cid = Number((ctx.user as any).companyId) || 0;
         const role = (ctx.user as any).role;
@@ -23638,12 +24929,15 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         const db = await getDb();
         if (!db) return [];
         const days = Number(input?.days ?? 30);
+        const cycleSurveyFilter = input?.cycleId
+          ? `AND s.id IN (SELECT drps_survey_id FROM risk_assessments WHERE id=${Number(input.cycleId)} UNION SELECT aep_survey_id FROM risk_assessments WHERE id=${Number(input.cycleId)})`
+          : '';
         const r: any = await db.execute(drzSql.raw(`
           SELECT DATE(r.submitted_at) AS day, COUNT(*) AS responses
           FROM survey_responses r
           INNER JOIN surveys s ON s.id = r.survey_id
           WHERE r.submitted_at >= DATE_SUB(NOW(), INTERVAL ${days} DAY)
-            ${isGlobal ? '' : `AND s.company_id = ${cid}`}
+            ${isGlobal ? '' : `AND s.company_id = ${cid}`} ${cycleSurveyFilter}
           GROUP BY DATE(r.submitted_at)
           ORDER BY day ASC
         `));
@@ -23765,25 +25059,28 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
     }),
 
     // === Risk Psychosocial ===
-    riskMatrixByCompany: adminOrRhProcedure.query(async ({ ctx }) => {
+    riskMatrixByCompany: adminOrRhProcedure
+      .input(z.object({ cycleId: z.number().optional() }).optional())
+      .query(async ({ ctx, input }) => {
       const cid = Number((ctx.user as any).companyId) || 0;
       const role = (ctx.user as any).role;
       const isGlobal = role === 'admin_global';
       const db = await getDb();
       if (!db) return { totalAssessments: 0, byLevel: [], bySector: [] };
+      const cycleFilter = input?.cycleId ? `AND ra.id = ${Number(input.cycleId)}` : '';
       const totalsR: any = await db.execute(drzSql.raw(`
         SELECT COUNT(DISTINCT ra.id) AS totalAssessments,
           COUNT(ri.id) AS totalItems
         FROM risk_assessments ra
         LEFT JOIN risk_inventory_items ri ON ri.assessment_id = ra.id
-        WHERE 1=1 ${isGlobal ? '' : `AND ra.company_id = ${cid}`}
+        WHERE 1=1 ${isGlobal ? '' : `AND ra.company_id = ${cid}`} ${cycleFilter}
       `));
       const tRow = (totalsR[0]?.[0]) ?? totalsR[0] ?? {};
       const byLevelR: any = await db.execute(drzSql.raw(`
         SELECT ri.risco_final AS level, COUNT(*) AS c
         FROM risk_inventory_items ri
         INNER JOIN risk_assessments ra ON ra.id = ri.assessment_id
-        WHERE 1=1 ${isGlobal ? '' : `AND ra.company_id = ${cid}`}
+        WHERE 1=1 ${isGlobal ? '' : `AND ra.company_id = ${cid}`} ${cycleFilter}
         GROUP BY ri.risco_final
       `));
       const byLevelRows: any[] = (byLevelR[0] ?? byLevelR) as any[];
@@ -23795,7 +25092,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           SUM(CASE WHEN ri.risco_final='medio' THEN 1 ELSE 0 END) AS medio,
           SUM(CASE WHEN ri.risco_final='baixo' THEN 1 ELSE 0 END) AS baixo
         FROM sectors s
-        LEFT JOIN risk_assessments ra ON ra.sector_id = s.id
+        LEFT JOIN risk_assessments ra ON ra.sector_id = s.id ${input?.cycleId ? `AND ra.id = ${Number(input.cycleId)}` : ''}
         LEFT JOIN risk_inventory_items ri ON ri.assessment_id = ra.id
         WHERE 1=1 ${isGlobal ? '' : `AND s.company_id = ${cid}`}
         GROUP BY s.id, s.name
@@ -23817,12 +25114,15 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
       };
     }),
 
-    topCriticalFactors: adminOrRhProcedure.query(async ({ ctx }) => {
+    topCriticalFactors: adminOrRhProcedure
+      .input(z.object({ cycleId: z.number().optional() }).optional())
+      .query(async ({ ctx, input }) => {
       const cid = Number((ctx.user as any).companyId) || 0;
       const role = (ctx.user as any).role;
       const isGlobal = role === 'admin_global';
       const db = await getDb();
       if (!db) return [];
+      const cycleFilter = input?.cycleId ? `AND ra.id = ${Number(input.cycleId)}` : '';
       const r: any = await db.execute(drzSql.raw(`
         SELECT f.id, f.code, f.name,
           COUNT(ri.id) AS occurrences,
@@ -23832,7 +25132,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         FROM psychosocial_factors f
         LEFT JOIN risk_inventory_items ri ON ri.factor_id = f.id
         LEFT JOIN risk_assessments ra ON ra.id = ri.assessment_id
-        WHERE 1=1 ${isGlobal ? '' : `AND (ra.company_id = ${cid} OR ra.company_id IS NULL)`}
+        WHERE 1=1 ${isGlobal ? '' : `AND (ra.company_id = ${cid} OR ra.company_id IS NULL)`} ${cycleFilter}
         GROUP BY f.id, f.code, f.name
         HAVING occurrences > 0
         ORDER BY critico DESC, alto DESC, occurrences DESC
@@ -23848,12 +25148,15 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
       }));
     }),
 
-    riskEvolution: adminOrRhProcedure.query(async ({ ctx }) => {
+    riskEvolution: adminOrRhProcedure
+      .input(z.object({ cycleId: z.number().optional() }).optional())
+      .query(async ({ ctx, input }) => {
       const cid = Number((ctx.user as any).companyId) || 0;
       const role = (ctx.user as any).role;
       const isGlobal = role === 'admin_global';
       const db = await getDb();
       if (!db) return [];
+      const cycleFilter = input?.cycleId ? `AND ra.id = ${Number(input.cycleId)}` : '';
       const r: any = await db.execute(drzSql.raw(`
         SELECT ra.id, ra.cycle_name, ra.start_date, ra.end_date, ra.status,
           s.id AS sectorId, s.name AS sectorName,
@@ -23862,7 +25165,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         FROM risk_assessments ra
         LEFT JOIN sectors s ON s.id = ra.sector_id
         LEFT JOIN risk_inventory_items ri ON ri.assessment_id = ra.id
-        WHERE 1=1 ${isGlobal ? '' : `AND ra.company_id = ${cid}`}
+        WHERE 1=1 ${isGlobal ? '' : `AND ra.company_id = ${cid}`} ${cycleFilter}
         GROUP BY ra.id, ra.cycle_name, ra.start_date, ra.end_date, ra.status, s.id, s.name
         ORDER BY ra.start_date ASC, ra.id ASC
       `));
@@ -23887,17 +25190,20 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
       const role = (ctx.user as any).role;
       const isGlobal = role === 'admin_global';
       const db = await getDb();
-      if (!db) return { branches: [], sectors: [], modules: [] };
+      if (!db) return { branches: [], sectors: [], modules: [], cycles: [] };
       const branchesR: any = await db.execute(drzSql.raw(`SELECT id, name FROM branches WHERE is_active=1 ${isGlobal ? '' : `AND company_id=${cid}`} ORDER BY name`));
       const sectorsR: any = await db.execute(drzSql.raw(`SELECT id, name, branch_id FROM sectors WHERE is_active=1 ${isGlobal ? '' : `AND company_id=${cid}`} ORDER BY name`));
       const modulesR: any = await db.execute(drzSql.raw(`SELECT id, title FROM modules WHERE isActive=1 ORDER BY orderIndex LIMIT 50`));
+      const cyclesR: any = await db.execute(drzSql.raw(`SELECT id, cycle_name, status, start_date, end_date FROM risk_assessments WHERE 1=1 ${isGlobal ? '' : `AND company_id=${cid}`} ORDER BY COALESCE(end_date, start_date) DESC, id DESC LIMIT 100`));
       const br = (branchesR[0] ?? branchesR) as any[];
       const sr = (sectorsR[0] ?? sectorsR) as any[];
       const mr = (modulesR[0] ?? modulesR) as any[];
+      const cr = (cyclesR[0] ?? cyclesR) as any[];
       return {
         branches: (Array.isArray(br)?br:[]).map((r: any) => ({ id: Number(r.id), name: String(r.name) })),
         sectors: (Array.isArray(sr)?sr:[]).map((r: any) => ({ id: Number(r.id), name: String(r.name), branchId: r.branch_id ? Number(r.branch_id) : null })),
         modules: (Array.isArray(mr)?mr:[]).map((r: any) => ({ id: Number(r.id), title: String(r.title) })),
+        cycles: (Array.isArray(cr)?cr:[]).map((r: any) => ({ id: Number(r.id), name: String(r.cycle_name ?? ""), status: r.status ? String(r.status) : null, startDate: r.start_date ?? null, endDate: r.end_date ?? null })),
       };
     }),
 
@@ -24318,24 +25624,10 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
 
   // ─── Appointment Scheduling ───────────────────────────────────────────────
   scheduling: router({
-    /**
-     * R5-P10 #4 — Elegibilidade do colaborador/chefia para o Programa de Acolhimento.
-     * Antes a procedure não existia → o front exibia tela de bloqueio para todos.
-     * Regra: qualquer usuário autenticado da empresa pode agendar,
-     * exceto o próprio psicólogo (ele é o profissional, não paciente).
-     */
     myEligibility: protectedProcedure.query(async ({ ctx }) => {
-      const role = String((ctx.user as any).role || "");
-      if (role === "psicologo") {
-        return {
-          eligible: false,
-          message: "Este perfil é de profissional. Use 'Gestão de Atendimentos' no menu lateral para administrar a agenda.",
-        };
-      }
-      return {
-        eligible: true,
-        message: "Você pode agendar uma conversa confidencial com um(a) psicólogo(a). Tudo permanece sob sigilo.",
-      };
+      const db2 = await getDb();
+      if (!db2) throw new Error("DB unavailable");
+      return getAcolhimentoEligibilityForUser(db2, Number((ctx.user as any).id ?? 0));
     }),
 
     /**
@@ -24670,6 +25962,13 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         const adminRoles = ['admin','rh','admin_global','super_admin','sesmt','super_admin'];
         const isAdminRole = adminRoles.includes((ctx.user as any).role ?? '');
         const collaboratorId = (input.collaboratorId && isAdminRole) ? input.collaboratorId : ctx.user.id;
+        const eligibility = await getAcolhimentoEligibilityForUser(db2, Number(collaboratorId));
+        if (!eligibility.eligible) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: eligibility.message || "Colaborador sem criterio ativo para agendamento de acolhimento psicologico.",
+          });
+        }
 
         // R5-P12 #3 — limite de 1 consulta ativa por SEMANA por colaborador (qualquer psicólogo).
         // Semana = segunda a domingo da data escolhida. Bloqueia antes de confirmar.
@@ -26859,7 +28158,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           sesmt_rh: `'sesmt','rh','admin','company_admin'`,
           managers: `'manager','sector_lead','chefia','admin','company_admin'`,
         };
-        let usersSql = `SELECT id FROM users WHERE company_id=? AND is_active=1`;
+        let usersSql = `SELECT id FROM users WHERE company_id=? AND is_active=1 AND COALESCE(employment_status,'active')='active'`;
         const rolesIn = roleFilter[input.audience];
         if (rolesIn) usersSql += ` AND role IN (${rolesIn})`;
         const [users] = await execP(db, usersSql, [cid]) as any;
@@ -26920,7 +28219,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
 
         // Resolve audiência — SP3 #4: granular por role
         // SP8 — traz whatsapp_e164 também (necessário pra canal whatsapp)
-        let usersSql = `SELECT id, name, email, whatsapp_e164 FROM users WHERE company_id=? AND is_active=1`;
+        let usersSql = `SELECT id, name, email, whatsapp_e164 FROM users WHERE company_id=? AND is_active=1 AND COALESCE(employment_status,'active')='active'`;
         const params: any[] = [cid];
         const roleFilter: Record<string, string | null> = {
           todos:          null,
@@ -27703,6 +29002,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         .query(async ({ ctx, input }) => {
           const cid = (ctx.user as any).companyId;
           const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+          await ensureAuthIdentityColumns(db);
           const [[ed]]: any = await execP(db, `SELECT * FROM sipat_editions WHERE id=? AND company_id=?`, [input.editionId, cid]);
           if (!ed) throw new TRPCError({ code: "NOT_FOUND" });
 
@@ -27805,6 +29105,155 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
   })(), // close IIFE — Bruno R5-P5/Fase3 #8.1
 
   // ─── P15 #4 — Módulo CIPA (Comissão Interna de Prevenção de Acidentes) ────
+  corporateMinutes: (() => {
+    let _corpMinutesDdlDone = false;
+    async function ensureCorporateMinutesTables(db: any) {
+      if (_corpMinutesDdlDone || !db) return;
+      await db.execute(drzSql`CREATE TABLE IF NOT EXISTS corporate_meetings (
+        id INT AUTO_INCREMENT PRIMARY KEY, company_id INT NOT NULL, title VARCHAR(255) NOT NULL,
+        meeting_date DATE NOT NULL, meeting_type VARCHAR(80) NULL, branch_id INT NULL, sector_id INT NULL,
+        participants_text TEXT NULL, description TEXT NULL, decisions_text TEXT NULL,
+        status VARCHAR(30) NOT NULL DEFAULT 'registrada', is_active TINYINT(1) NOT NULL DEFAULT 1,
+        created_by_user_id INT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_company_date (company_id, meeting_date), INDEX idx_company_status (company_id, status, is_active)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+      await db.execute(drzSql`CREATE TABLE IF NOT EXISTS corporate_meeting_actions (
+        id INT AUTO_INCREMENT PRIMARY KEY, meeting_id INT NOT NULL, company_id INT NOT NULL,
+        description TEXT NOT NULL, responsible_name VARCHAR(255) NULL, responsible_user_id INT NULL,
+        due_date DATE NULL, status VARCHAR(30) NOT NULL DEFAULT 'pendente', completed_at TIMESTAMP NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX idx_meeting (meeting_id), INDEX idx_company_due (company_id, due_date, status)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+      await db.execute(drzSql`CREATE TABLE IF NOT EXISTS corporate_meeting_attachments (
+        id INT AUTO_INCREMENT PRIMARY KEY, meeting_id INT NOT NULL, company_id INT NOT NULL,
+        kind VARCHAR(40) NOT NULL DEFAULT 'documento', title VARCHAR(255) NULL, file_url VARCHAR(500) NOT NULL,
+        file_name VARCHAR(255) NULL, mime_type VARCHAR(120) NULL, file_size INT NULL, uploaded_by_user_id INT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX idx_meeting (meeting_id), INDEX idx_company_kind (company_id, kind)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+      _corpMinutesDdlDone = true;
+    }
+    function assertCanManageCorporateMinutes(ctx: any) {
+      const role = (ctx.user as any)?.role;
+      if (!["admin", "rh", "sesmt", "company_admin", "admin_global", "super_admin", "chefia", "cipa"].includes(role)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Perfil sem permissao para Atas Corporativas." });
+      }
+    }
+    async function generateCorporateMeetingPdf(db: any, cid: number, meetingId: number) {
+      const puppeteer = (await import("puppeteer")).default;
+      const fs = await import("fs/promises");
+      const path = await import("path");
+      const esc = (s: unknown) => String(s ?? "").replace(/[<>&"]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;","\"":"&quot;"}[c] as string));
+      const pre = (v: unknown) => esc(v || "-").replace(/\n/g, "<br>");
+      const [[meeting]]: any = await execP(db, `SELECT m.*, b.name AS branch_name, s.name AS sector_name FROM corporate_meetings m LEFT JOIN branches b ON b.id=m.branch_id LEFT JOIN sectors s ON s.id=m.sector_id WHERE m.id=? AND m.company_id=? AND m.is_active=1`, [meetingId, cid]);
+      if (!meeting) throw new TRPCError({ code: "NOT_FOUND", message: "Ata nao encontrada." });
+      const [[co]]: any = await execP(db, `SELECT name, cnpj FROM companies WHERE id=?`, [cid]).catch(() => [[{ name: "", cnpj: "" }]]);
+      const [actions]: any = await execP(db, `SELECT * FROM corporate_meeting_actions WHERE meeting_id=? AND company_id=? ORDER BY due_date IS NULL, due_date, id`, [meetingId, cid]);
+      const [attachments]: any = await execP(db, `SELECT * FROM corporate_meeting_attachments WHERE meeting_id=? AND company_id=? ORDER BY kind, created_at`, [meetingId, cid]);
+      const today = new Date().toLocaleDateString("pt-BR", { day: "2-digit", month: "long", year: "numeric" });
+      const actionRows = (actions ?? []).map((a: any) => `<tr><td>${pre(a.description)}</td><td>${esc(a.responsible_name || "-")}</td><td>${a.due_date ? new Date(a.due_date).toLocaleDateString("pt-BR") : "-"}</td><td>${esc(a.status)}</td></tr>`).join("");
+      const attachmentRows = (attachments ?? []).map((a: any) => `<tr><td>${esc(a.kind)}</td><td>${esc(a.title || a.file_name || "-")}</td><td>${esc(a.mime_type || "-")}</td><td>${Number(a.file_size || 0).toLocaleString("pt-BR")} bytes</td></tr>`).join("");
+      const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>@page{size:A4;margin:18mm}body{font-family:Arial,sans-serif;color:#0f172a;font-size:10pt}h1{margin:0 0 4px;font-size:22pt;color:#0e2c46}h2{margin:18px 0 8px;font-size:13pt;border-bottom:1px solid #dbeafe;padding-bottom:4px}.meta,.footer{color:#64748b;font-size:9pt}.box{border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;margin:10px 0}table{width:100%;border-collapse:collapse}th,td{border:1px solid #e2e8f0;padding:6px;vertical-align:top}th{background:#eff6ff;text-align:left}.footer{position:fixed;left:18mm;right:18mm;bottom:8mm;border-top:1px solid #e2e8f0;padding-top:4px}</style></head><body>
+        <h1>Ata de Reuniao Corporativa</h1><div class="meta">Empresa: <b>${esc(co?.name || "")}</b> - CNPJ: ${esc(co?.cnpj || "-")} - Emissao: ${today}</div>
+        <div class="box"><b>Titulo:</b> ${esc(meeting.title)}<br><b>Data:</b> ${meeting.meeting_date ? new Date(meeting.meeting_date).toLocaleDateString("pt-BR") : "-"}<br><b>Tipo:</b> ${esc(meeting.meeting_type || "-")}<br><b>Filial/Setor:</b> ${esc(meeting.branch_name || "-")} / ${esc(meeting.sector_name || "-")}<br><b>Participantes:</b><br>${pre(meeting.participants_text)}</div>
+        <h2>1. Descricao da reuniao</h2><div>${pre(meeting.description)}</div><h2>2. Decisoes e deliberacoes</h2><div>${pre(meeting.decisions_text)}</div>
+        <h2>3. Plano de acao</h2><table><thead><tr><th>Acao</th><th>Responsavel</th><th>Prazo</th><th>Status</th></tr></thead><tbody>${actionRows || `<tr><td colspan="4">Nenhuma acao registrada.</td></tr>`}</tbody></table>
+        <h2>4. Evidencias e anexos</h2><table><thead><tr><th>Tipo</th><th>Documento</th><th>MIME</th><th>Tamanho</th></tr></thead><tbody>${attachmentRows || `<tr><td colspan="4">Nenhum anexo registrado.</td></tr>`}</tbody></table>
+        <h2>5. Rastreabilidade</h2><div>Registro preservado na Plataforma Saude do Trabalho com data, usuario responsavel, anexos e historico de acoes.</div><div class="footer">Plataforma Saude do Trabalho - Documento gerado automaticamente - ${today}</div></body></html>`;
+      const outDir = "/var/www/saudedotrabalho/uploads/corporate_meetings";
+      await fs.mkdir(outDir, { recursive: true });
+      const fileName = `ata_corporativa_${meetingId}_${Date.now()}.pdf`;
+      const outPath = path.join(outDir, fileName);
+      const browser = await puppeteer.launch({ executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium-browser", headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+      try { const page = await browser.newPage(); await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 15000 }); await page.pdf({ path: outPath, format: "A4", printBackground: true }); }
+      finally { await browser.close(); }
+      return `/uploads/corporate_meetings/${fileName}`;
+    }
+    return router({
+      list: protectedProcedure.input(z.object({ search: z.string().optional(), status: z.string().optional() }).optional()).query(async ({ ctx, input }) => {
+        assertCanManageCorporateMinutes(ctx);
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) return [];
+        await ensureCorporateMinutesTables(db);
+        const where = ["m.company_id=?", "m.is_active=1"]; const params: any[] = [cid];
+        if (input?.status && input.status !== "todos") { where.push("m.status=?"); params.push(input.status); }
+        if (input?.search) { where.push("(m.title LIKE ? OR m.description LIKE ? OR m.decisions_text LIKE ?)"); params.push(`%${input.search}%`, `%${input.search}%`, `%${input.search}%`); }
+        const [rows]: any = await execP(db, `SELECT m.*, b.name AS branch_name, s.name AS sector_name,(SELECT COUNT(*) FROM corporate_meeting_actions a WHERE a.meeting_id=m.id) AS actions_count,(SELECT COUNT(*) FROM corporate_meeting_actions a WHERE a.meeting_id=m.id AND a.status<>'concluida' AND a.due_date<CURDATE()) AS overdue_count,(SELECT COUNT(*) FROM corporate_meeting_attachments at WHERE at.meeting_id=m.id) AS attachments_count FROM corporate_meetings m LEFT JOIN branches b ON b.id=m.branch_id LEFT JOIN sectors s ON s.id=m.sector_id WHERE ${where.join(" AND ")} ORDER BY m.meeting_date DESC, m.id DESC`, params);
+        return rows ?? [];
+      }),
+      get: protectedProcedure.input(z.object({ id: z.number().int() })).query(async ({ ctx, input }) => {
+        assertCanManageCorporateMinutes(ctx);
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) return null;
+        await ensureCorporateMinutesTables(db);
+        const [[meeting]]: any = await execP(db, `SELECT * FROM corporate_meetings WHERE id=? AND company_id=? AND is_active=1`, [input.id, cid]);
+        if (!meeting) return null;
+        const [actions]: any = await execP(db, `SELECT * FROM corporate_meeting_actions WHERE meeting_id=? AND company_id=? ORDER BY due_date IS NULL, due_date, id`, [input.id, cid]);
+        const [attachments]: any = await execP(db, `SELECT * FROM corporate_meeting_attachments WHERE meeting_id=? AND company_id=? ORDER BY created_at DESC`, [input.id, cid]);
+        return { ...meeting, actions: actions ?? [], attachments: attachments ?? [] };
+      }),
+      upsert: protectedProcedure.input(z.object({ id: z.number().optional(), title: z.string().min(1), meetingDate: z.string(), meetingType: z.string().optional(), branchId: z.number().int().nullable().optional(), sectorId: z.number().int().nullable().optional(), participantsText: z.string().optional(), description: z.string().optional(), decisionsText: z.string().optional(), status: z.enum(["rascunho","registrada","em_acompanhamento","concluida"]).default("registrada") })).mutation(async ({ ctx, input }) => {
+        assertCanManageCorporateMinutes(ctx);
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+        await ensureCorporateMinutesTables(db);
+        if (input.id) { await execP(db, `UPDATE corporate_meetings SET title=?, meeting_date=?, meeting_type=?, branch_id=?, sector_id=?, participants_text=?, description=?, decisions_text=?, status=? WHERE id=? AND company_id=?`, [input.title, input.meetingDate, input.meetingType || null, input.branchId ?? null, input.sectorId ?? null, input.participantsText || null, input.description || null, input.decisionsText || null, input.status, input.id, cid]); return { ok: true, id: input.id }; }
+        const [res]: any = await execP(db, `INSERT INTO corporate_meetings (company_id,title,meeting_date,meeting_type,branch_id,sector_id,participants_text,description,decisions_text,status,created_by_user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)`, [cid, input.title, input.meetingDate, input.meetingType || null, input.branchId ?? null, input.sectorId ?? null, input.participantsText || null, input.description || null, input.decisionsText || null, input.status, ctx.user.id]);
+        return { ok: true, id: Number((res as any).insertId ?? 0) };
+      }),
+      remove: protectedProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ ctx, input }) => {
+        assertCanManageCorporateMinutes(ctx);
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) return { ok: false };
+        await ensureCorporateMinutesTables(db); await execP(db, `UPDATE corporate_meetings SET is_active=0 WHERE id=? AND company_id=?`, [input.id, cid]); return { ok: true };
+      }),
+      upsertAction: protectedProcedure.input(z.object({ id: z.number().optional(), meetingId: z.number().int(), description: z.string().min(1), responsibleName: z.string().optional(), responsibleUserId: z.number().int().nullable().optional(), dueDate: z.string().optional(), status: z.enum(["pendente","em_andamento","concluida","cancelada"]).default("pendente") })).mutation(async ({ ctx, input }) => {
+        assertCanManageCorporateMinutes(ctx);
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+        await ensureCorporateMinutesTables(db);
+        const completedAt = input.status === "concluida" ? new Date() : null;
+        if (input.id) { await execP(db, `UPDATE corporate_meeting_actions SET description=?, responsible_name=?, responsible_user_id=?, due_date=?, status=?, completed_at=COALESCE(?, completed_at) WHERE id=? AND company_id=?`, [input.description, input.responsibleName || null, input.responsibleUserId ?? null, input.dueDate || null, input.status, completedAt, input.id, cid]); return { ok: true, id: input.id }; }
+        const [res]: any = await execP(db, `INSERT INTO corporate_meeting_actions (meeting_id,company_id,description,responsible_name,responsible_user_id,due_date,status,completed_at) VALUES (?,?,?,?,?,?,?,?)`, [input.meetingId, cid, input.description, input.responsibleName || null, input.responsibleUserId ?? null, input.dueDate || null, input.status, completedAt]);
+        return { ok: true, id: Number((res as any).insertId ?? 0) };
+      }),
+      removeAction: protectedProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ ctx, input }) => {
+        assertCanManageCorporateMinutes(ctx); const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) return { ok: false };
+        await execP(db, `DELETE FROM corporate_meeting_actions WHERE id=? AND company_id=?`, [input.id, cid]); return { ok: true };
+      }),
+      addAttachment: protectedProcedure.input(z.object({ meetingId: z.number().int(), kind: z.enum(["lista_presenca","fotografia","evidencia","plano_acao","documento"]).default("documento"), title: z.string().optional(), fileName: z.string().optional(), mimeType: z.string().optional(), fileBase64: z.string().max(12_000_000) })).mutation(async ({ ctx, input }) => {
+        assertCanManageCorporateMinutes(ctx);
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+        await ensureCorporateMinutesTables(db);
+        const fs = await import("fs/promises"); const path = await import("path"); const crypto = await import("crypto");
+        const m = input.fileBase64.match(/^data:([^;]+);base64,(.*)$/); const mime = input.mimeType || m?.[1] || "application/octet-stream"; const b64 = m ? m[2] : input.fileBase64; const buf = Buffer.from(b64, "base64");
+        if (!buf.length || buf.length > 8_000_000) throw new TRPCError({ code: "BAD_REQUEST", message: "Arquivo invalido ou maior que 8MB." });
+        const safeOriginal = (input.fileName || "anexo").replace(/[^\w.\-]+/g, "_").slice(0, 120); const ext = path.extname(safeOriginal) || (mime.includes("pdf") ? ".pdf" : mime.includes("png") ? ".png" : mime.includes("jpeg") ? ".jpg" : ".bin");
+        const finalName = `ata_${input.meetingId}_${Date.now()}_${crypto.randomBytes(4).toString("hex")}${ext}`; const outDir = "/var/www/saudedotrabalho/uploads/corporate_meetings"; await fs.mkdir(outDir, { recursive: true }); await fs.writeFile(path.join(outDir, finalName), buf);
+        const url = `/uploads/corporate_meetings/${finalName}`; const [res]: any = await execP(db, `INSERT INTO corporate_meeting_attachments (meeting_id,company_id,kind,title,file_url,file_name,mime_type,file_size,uploaded_by_user_id) VALUES (?,?,?,?,?,?,?,?,?)`, [input.meetingId, cid, input.kind, input.title || safeOriginal, url, safeOriginal, mime, buf.length, ctx.user.id]);
+        return { ok: true, id: Number((res as any).insertId ?? 0), url };
+      }),
+      removeAttachment: protectedProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ ctx, input }) => {
+        assertCanManageCorporateMinutes(ctx); const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) return { ok: false };
+        await execP(db, `DELETE FROM corporate_meeting_attachments WHERE id=? AND company_id=?`, [input.id, cid]); return { ok: true };
+      }),
+      generatePdf: protectedProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ ctx, input }) => {
+        assertCanManageCorporateMinutes(ctx); const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+        await ensureCorporateMinutesTables(db); const url = await generateCorporateMeetingPdf(db, cid, input.id); return { ok: true, url };
+      }),
+      shareByEmail: protectedProcedure.input(z.object({ id: z.number().int(), emails: z.array(z.string().email()).min(1).max(50), message: z.string().optional() })).mutation(async ({ ctx, input }) => {
+        assertCanManageCorporateMinutes(ctx); const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+        await ensureCorporateMinutesTables(db); const [[meeting]]: any = await execP(db, `SELECT title FROM corporate_meetings WHERE id=? AND company_id=? AND is_active=1`, [input.id, cid]); if (!meeting) throw new TRPCError({ code: "NOT_FOUND" });
+        const base = getEmailLinkBaseUrl(); const link = `${base}/admin/atas-corporativas?id=${input.id}`; let sent = 0;
+        for (const to of input.emails) { const r = await sendEmail({ to, subject: `Ata corporativa - ${meeting.title}`, html: `<p>${String(input.message || "Segue ata corporativa registrada na plataforma.")}</p><p><a href="${link}">Abrir ata na plataforma</a></p>` }); if (r.ok) sent++; }
+        return { ok: true, sent };
+      }),
+      dashboard: protectedProcedure.query(async ({ ctx }) => {
+        assertCanManageCorporateMinutes(ctx); const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) return null;
+        await ensureCorporateMinutesTables(db);
+        const [[meetings]]: any = await execP(db, `SELECT COUNT(*) AS c FROM corporate_meetings WHERE company_id=? AND is_active=1`, [cid]);
+        const [[pending]]: any = await execP(db, `SELECT COUNT(*) AS c FROM corporate_meeting_actions WHERE company_id=? AND status<>'concluida'`, [cid]);
+        const [[overdue]]: any = await execP(db, `SELECT COUNT(*) AS c FROM corporate_meeting_actions WHERE company_id=? AND status<>'concluida' AND due_date<CURDATE()`, [cid]);
+        const [[attachments]]: any = await execP(db, `SELECT COUNT(*) AS c FROM corporate_meeting_attachments WHERE company_id=?`, [cid]);
+        return { meetings: Number(meetings?.c ?? 0), pendingActions: Number(pending?.c ?? 0), overdueActions: Number(overdue?.c ?? 0), attachments: Number(attachments?.c ?? 0) };
+      }),
+    });
+  })(),
+
   cipa: (() => {
     let _cipaDdlDone = false;
     async function ensureCipaTables(db: any) {
@@ -28138,16 +29587,22 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
       }),
       // Vincula um membro eleito a um usuário da plataforma e concede o perfil "Integrante da CIPA".
       linkMemberToUser: adminOrRhProcedure
-        .input(z.object({ memberId: z.number().int(), userId: z.number().int() }))
+        .input(z.object({ memberId: z.number().int(), userId: z.number().int().optional(), cpf: z.string().optional() }))
         .mutation(async ({ ctx, input }) => {
           const cid = (ctx.user as any).companyId;
           const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+          await ensureAuthIdentityColumns(db);
           const [[m]]: any = await execP(db, `SELECT id FROM cipa_members WHERE id=? AND company_id=?`, [input.memberId, cid]);
           if (!m) throw new TRPCError({ code: "NOT_FOUND" });
-          const [[u]]: any = await execP(db, `SELECT id FROM users WHERE id=? AND company_id=?`, [input.userId, cid]);
+          const cpf = normalizeCpf(input.cpf);
+          const [[u]]: any = input.userId
+            ? await execP(db, `SELECT id FROM users WHERE id=? AND company_id=?`, [input.userId, cid])
+            : cpf
+            ? await execP(db, `SELECT id FROM users WHERE cpf=? AND company_id=? LIMIT 1`, [cpf, cid])
+            : [[]];
           if (!u) throw new TRPCError({ code: "NOT_FOUND", message: "Usuário não encontrado nesta empresa." });
-          await execP(db, `UPDATE cipa_members SET user_id=? WHERE id=?`, [input.userId, input.memberId]);
-          await execP(db, `UPDATE users SET role='cipa' WHERE id=?`, [input.userId]);
+          await execP(db, `UPDATE cipa_members SET user_id=? WHERE id=?`, [Number(u.id), input.memberId]);
+          await execP(db, `UPDATE users SET role='cipa' WHERE id=?`, [Number(u.id)]);
           return { ok: true };
         }),
       encerrarMandatoMembro: adminOrRhProcedure.input(z.object({ memberId: z.number().int() })).mutation(async ({ input }) => {
@@ -28267,6 +29722,190 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           diasParaFimMandato: daysLeft,
           mandateEndDate: nextExpiry?.d ?? null,
         };
+      }),
+    });
+  })(),
+
+  cipaTraining: (() => {
+    let done = false;
+    async function ensure(db: any) {
+      if (done || !db) return;
+      await db.execute(drzSql`CREATE TABLE IF NOT EXISTS cipa_learning_contents (
+        id INT AUTO_INCREMENT PRIMARY KEY, company_id INT NOT NULL, content_type VARCHAR(30) NOT NULL,
+        module_id INT NULL, title VARCHAR(255) NOT NULL, description TEXT, url VARCHAR(1024),
+        file_url VARCHAR(1024), file_name VARCHAR(255), provider VARCHAR(80),
+        is_required TINYINT(1) NOT NULL DEFAULT 0, validity_months INT NULL,
+        order_index INT NOT NULL DEFAULT 0, is_active TINYINT(1) NOT NULL DEFAULT 1,
+        created_by INT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_company (company_id, is_active, order_index), INDEX idx_module (module_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+      await db.execute(drzSql`CREATE TABLE IF NOT EXISTS cipa_learning_progress (
+        id INT AUTO_INCREMENT PRIMARY KEY, content_id INT NOT NULL, user_id INT NOT NULL,
+        started_at TIMESTAMP NULL, completed_at TIMESTAMP NULL,
+        percent_watched DECIMAL(5,2) NOT NULL DEFAULT 0, time_spent_seconds INT NOT NULL DEFAULT 0,
+        score DECIMAL(5,2) NULL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_user_content (content_id, user_id), INDEX idx_user (user_id), INDEX idx_content (content_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+      try { await db.execute(drzSql`ALTER TABLE modules ADD COLUMN mandatory_target_roles VARCHAR(160) NULL`); } catch (_) {}
+      try { await db.execute(drzSql`ALTER TABLE modules ADD COLUMN training_start_date VARCHAR(10) NULL`); } catch (_) {}
+      try { await db.execute(drzSql`ALTER TABLE modules ADD COLUMN training_due_date VARCHAR(10) NULL`); } catch (_) {}
+      try { await db.execute(drzSql`ALTER TABLE modules ADD COLUMN certificate_due_date VARCHAR(10) NULL`); } catch (_) {}
+      done = true;
+    }
+    const contentInput = z.object({
+      id: z.number().optional(),
+      contentType: z.enum(["course", "material", "video", "link"]),
+      moduleId: z.number().int().optional(),
+      title: z.string().min(1),
+      description: z.string().optional(),
+      url: z.string().optional(),
+      fileUrl: z.string().optional(),
+      fileName: z.string().optional(),
+      provider: z.string().optional(),
+      isRequired: z.boolean().optional(),
+      validityMonths: z.number().int().min(0).optional(),
+      orderIndex: z.number().int().optional(),
+    });
+    return router({
+      listAdmin: adminOrRhProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) return [];
+        await ensure(db);
+        const [rows]: any = await execP(db, `
+          SELECT c.*, m.title AS module_title,
+            (SELECT COUNT(DISTINCT up.userId) FROM user_progress up JOIN users u ON u.id=up.userId WHERE c.content_type='course' AND u.company_id=c.company_id AND up.moduleId=c.module_id AND up.isCompleted=1) AS course_completed,
+            (SELECT COUNT(DISTINCT p.user_id) FROM cipa_learning_progress p JOIN users u ON u.id=p.user_id WHERE c.content_type<>'course' AND u.company_id=c.company_id AND p.content_id=c.id AND p.completed_at IS NOT NULL) AS external_completed,
+            (SELECT COUNT(DISTINCT cert.id) FROM certificates cert JOIN users u ON u.id=cert.userId WHERE u.company_id=c.company_id AND cert.moduleId=c.module_id) AS certificates_count
+          FROM cipa_learning_contents c LEFT JOIN modules m ON m.id=c.module_id
+          WHERE c.company_id=? AND c.is_active=1 ORDER BY c.order_index, c.id`, [cid]);
+        return (rows ?? []).map((r: any) => ({
+          id: Number(r.id), contentType: String(r.content_type), moduleId: r.module_id == null ? null : Number(r.module_id),
+          moduleTitle: r.module_title ?? null, title: String(r.title ?? ""), description: r.description ?? null,
+          url: r.url ?? null, fileUrl: r.file_url ?? null, fileName: r.file_name ?? null, provider: r.provider ?? null,
+          isRequired: Boolean(Number(r.is_required ?? 0)), validityMonths: r.validity_months == null ? null : Number(r.validity_months),
+          orderIndex: Number(r.order_index ?? 0), completedCount: Number(r.course_completed ?? 0) + Number(r.external_completed ?? 0),
+          certificatesCount: Number(r.certificates_count ?? 0),
+        }));
+      }),
+      courseOptions: adminOrRhProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db) return [];
+        await ensure(db);
+        const [rows]: any = await execP(db, `
+          SELECT DISTINCT m.id, m.title, m.description, m.durationMinutes, m.template_category
+          FROM modules m
+          WHERE m.isActive=1 AND (
+            m.created_by_company_id=?
+            OR EXISTS (SELECT 1 FROM company_content_enrollments cce WHERE cce.company_id=? AND cce.content_type='module' AND cce.content_id=m.id AND cce.is_active=1)
+            OR LOWER(m.title) REGEXP 'cipa|nr-05|nr05|sipat|acidente|ass[eé]dio'
+          )
+          ORDER BY CASE WHEN LOWER(m.title) REGEXP 'cipa|nr-05|nr05' THEN 0 ELSE 1 END, m.title`, [cid ?? 0, cid ?? 0]);
+        return rows ?? [];
+      }),
+      upsert: adminOrRhProcedure.input(contentInput).mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+        await ensure(db);
+        if (input.contentType === "course" && !input.moduleId) throw new TRPCError({ code: "BAD_REQUEST", message: "Selecione um curso." });
+        if (input.contentType !== "course" && !input.url && !input.fileUrl) throw new TRPCError({ code: "BAD_REQUEST", message: "Informe URL ou arquivo." });
+        const vals = [input.contentType, input.moduleId ?? null, input.title, input.description || null, input.url || null, input.fileUrl || null, input.fileName || null, input.provider || null, input.isRequired ? 1 : 0, input.validityMonths ?? null, input.orderIndex ?? 0];
+        if (input.id) {
+          await execP(db, `UPDATE cipa_learning_contents SET content_type=?, module_id=?, title=?, description=?, url=?, file_url=?, file_name=?, provider=?, is_required=?, validity_months=?, order_index=? WHERE id=? AND company_id=?`, [...vals, input.id, cid]);
+          return { ok: true, id: input.id };
+        }
+        const [res]: any = await execP(db, `INSERT INTO cipa_learning_contents (company_id, content_type, module_id, title, description, url, file_url, file_name, provider, is_required, validity_months, order_index, created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, [cid, ...vals, ctx.user.id]);
+        return { ok: true, id: Number((res as any).insertId ?? 0) };
+      }),
+      remove: adminOrRhProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) return { ok: false };
+        await ensure(db);
+        await execP(db, `UPDATE cipa_learning_contents SET is_active=0 WHERE id=? AND company_id=?`, [input.id, cid]);
+        return { ok: true };
+      }),
+      learningForEmployee: protectedProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId;
+        const userId = ctx.user.id;
+        const empty = { summary: { total: 0, completed: 0, required: 0, pendingRequired: 0, certificates: 0 }, courses: [], resources: [] };
+        const db = await getDb(); if (!db || !cid) return empty;
+        await ensure(db);
+        const [rows]: any = await execP(db, `
+          SELECT c.*, m.title AS module_title, m.description AS module_description, m.durationMinutes AS module_duration,
+            up.percentWatched AS course_percent, up.isCompleted AS course_completed,
+            p.percent_watched AS external_percent, p.completed_at,
+            cert.id AS certificate_id, cert.certificateCode AS certificate_code, cert.pdfUrl AS certificate_url
+          FROM cipa_learning_contents c
+          LEFT JOIN modules m ON m.id=c.module_id
+          LEFT JOIN user_progress up ON up.userId=? AND up.moduleId=c.module_id
+          LEFT JOIN cipa_learning_progress p ON p.content_id=c.id AND p.user_id=?
+          LEFT JOIN certificates cert ON cert.userId=? AND cert.moduleId=c.module_id
+          WHERE c.company_id=? AND c.is_active=1 ORDER BY c.order_index, c.id`, [userId, userId, userId, cid]);
+        const list = (rows ?? []).map((r: any) => {
+          const isCourse = String(r.content_type) === "course";
+          const percent = isCourse ? Number(r.course_percent ?? 0) : Number(r.external_percent ?? 0);
+          const completed = isCourse ? Boolean(Number(r.course_completed ?? 0)) : Boolean(r.completed_at);
+          return { id: Number(r.id), contentType: String(r.content_type), moduleId: r.module_id == null ? null : Number(r.module_id), title: String(r.title || r.module_title || ""), description: r.description || r.module_description || null, url: r.url ?? null, fileUrl: r.file_url ?? null, fileName: r.file_name ?? null, provider: r.provider ?? null, isRequired: Boolean(Number(r.is_required ?? 0)), durationMinutes: Number(r.module_duration ?? 0), percent, isCompleted: completed, certificate: r.certificate_id ? { code: r.certificate_code, url: r.certificate_url ?? null } : null };
+        });
+        if (String((ctx.user as any).role ?? "") === "cipa") {
+          const [autoRows]: any = await execP(db, `
+            SELECT m.id, m.title, m.description, m.durationMinutes,
+              m.training_start_date, m.training_due_date, m.certificate_due_date,
+              up.percentWatched AS course_percent, up.isCompleted AS course_completed,
+              cert.id AS certificate_id, cert.certificateCode AS certificate_code, cert.pdfUrl AS certificate_url
+            FROM modules m
+            LEFT JOIN user_progress up ON up.userId=? AND up.moduleId=m.id
+            LEFT JOIN certificates cert ON cert.userId=? AND cert.moduleId=m.id
+            WHERE m.isActive=1
+              AND COALESCE(m.is_mandatory,0)=1
+              AND FIND_IN_SET('cipa', COALESCE(m.mandatory_target_roles,'')) > 0
+              AND (
+                m.created_by_company_id IS NULL
+                OR m.created_by_company_id=?
+                OR EXISTS (
+                  SELECT 1 FROM company_content_enrollments cce
+                  WHERE cce.company_id=? AND cce.content_type='module' AND cce.content_id=m.id AND cce.is_active=1
+                )
+              )
+            ORDER BY m.orderIndex, m.id`, [userId, userId, cid, cid]);
+          const existingModuleIds = new Set(list.filter((i: any) => i.moduleId != null).map((i: any) => Number(i.moduleId)));
+          for (const r of autoRows ?? []) {
+            const moduleId = Number(r.id);
+            if (existingModuleIds.has(moduleId)) continue;
+            const percent = Number(r.course_percent ?? 0);
+            const completed = Boolean(Number(r.course_completed ?? 0));
+            list.push({
+              id: `mandatory-module-${moduleId}`,
+              contentType: "course",
+              moduleId,
+              title: String(r.title ?? ""),
+              description: r.description ?? null,
+              url: null,
+              fileUrl: null,
+              fileName: null,
+              provider: "Gestao de Cursos",
+              isRequired: true,
+              durationMinutes: Number(r.durationMinutes ?? 0),
+              percent,
+              isCompleted: completed,
+              trainingStartDate: r.training_start_date ?? null,
+              dueDate: r.training_due_date ?? null,
+              certificateDueDate: r.certificate_due_date ?? null,
+              certificate: r.certificate_id ? { code: r.certificate_code, url: r.certificate_url ?? null } : null,
+            });
+          }
+        }
+        return { summary: { total: list.length, completed: list.filter((i: any) => i.isCompleted).length, required: list.filter((i: any) => i.isRequired).length, pendingRequired: list.filter((i: any) => i.isRequired && !i.isCompleted).length, certificates: list.filter((i: any) => i.certificate).length }, courses: list.filter((i: any) => i.contentType === "course"), resources: list.filter((i: any) => i.contentType !== "course") };
+      }),
+      markProgress: protectedProcedure.input(z.object({ contentId: z.number().int(), percentWatched: z.number().min(0).max(100).optional(), timeSpentSeconds: z.number().int().min(0).optional(), completed: z.boolean().optional() })).mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+        await ensure(db);
+        const [[content]]: any = await execP(db, `SELECT id FROM cipa_learning_contents WHERE id=? AND company_id=? AND is_active=1`, [input.contentId, cid]);
+        if (!content) throw new TRPCError({ code: "NOT_FOUND" });
+        const pct = input.completed ? 100 : Math.max(0, Math.min(100, Number(input.percentWatched ?? 0)));
+        await execP(db, `INSERT INTO cipa_learning_progress (content_id, user_id, started_at, completed_at, percent_watched, time_spent_seconds) VALUES (?, ?, NOW(), ?, ?, ?) ON DUPLICATE KEY UPDATE started_at=COALESCE(started_at, NOW()), completed_at=CASE WHEN VALUES(completed_at) IS NOT NULL THEN VALUES(completed_at) ELSE completed_at END, percent_watched=GREATEST(percent_watched, VALUES(percent_watched)), time_spent_seconds=time_spent_seconds + VALUES(time_spent_seconds)`, [input.contentId, ctx.user.id, input.completed || pct >= 100 ? new Date() : null, pct, input.timeSpentSeconds ?? 0]);
+        return { ok: true };
       }),
     });
   })(),
@@ -28591,7 +30230,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         const cid = (ctx.user as any).companyId;
         const db = await getDb(); if (!db || !cid) return null;
         await ensureFaTables(db);
-        const [[emp]]: any = await execP(db, `SELECT COUNT(*) AS c FROM users WHERE company_id=? AND role='user' AND COALESCE(is_active,1)=1`, [cid]);
+        const [[emp]]: any = await execP(db, `SELECT COUNT(*) AS c FROM users u WHERE u.company_id=? AND u.role='user' AND ${activeEmployeeWhere("u")}`, [cid]);
         const [[contents]]: any = await execP(db, `SELECT COUNT(*) AS c, SUM(is_required=1) AS required_count FROM firstaid_learning_contents WHERE company_id=? AND is_active=1`, [cid]);
         const [[trained]]: any = await execP(db, `
           SELECT COUNT(DISTINCT x.user_id) AS c FROM (

@@ -3,7 +3,7 @@ import AppLayout from "@/components/AppLayout";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { Users, Vote, Calendar, Plus, Save, Trash2, Loader2, ShieldCheck, BarChart3, User as UserIcon, Camera, Radio, FileText, Upload, Pencil } from "lucide-react";
+import { Users, Vote, Calendar, Plus, Save, Trash2, Loader2, ShieldCheck, BarChart3, User as UserIcon, Camera, Radio, FileText, Upload, Pencil, BookOpen } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from "recharts";
 
 /**
@@ -15,7 +15,7 @@ export default function AdminCipa() {
   const { user } = useAuth();
   // Configurar eleição é responsabilidade do RH — Integrante da CIPA não tem essa aba.
   const canManageElections = ["admin", "rh", "admin_global", "company_admin", "super_admin", "sesmt"].includes(user?.role ?? "");
-  const [tab, setTab] = useState<"eleicoes" | "membros" | "reunioes" | "indicadores">(canManageElections ? "eleicoes" : "reunioes");
+  const [tab, setTab] = useState<"eleicoes" | "membros" | "reunioes" | "indicadores" | "capacitacao">(canManageElections ? "eleicoes" : "reunioes");
 
   return (
     <AppLayout>
@@ -32,6 +32,7 @@ export default function AdminCipa() {
             ...(canManageElections ? [["eleicoes", "Eleições", Vote]] as const : []),
             ["membros", "Integrantes", Users],
             ["reunioes", "Reuniões & Atas", Calendar],
+            ["capacitacao", "Capacitação", BookOpen],
             ["indicadores", "Indicadores", BarChart3],
           ] as const).map(([k, label, Icon]) => (
             <button key={k} onClick={() => setTab(k as any)}
@@ -44,6 +45,7 @@ export default function AdminCipa() {
         {tab === "eleicoes" && <ElectionsTab />}
         {tab === "membros" && <MembersTab />}
         {tab === "reunioes" && <MeetingsTab />}
+        {tab === "capacitacao" && <TrainingTab />}
         {tab === "indicadores" && <IndicatorsTab />}
       </div>
     </AppLayout>
@@ -281,7 +283,7 @@ function MembersTab() {
   const endMut = (trpc.cipa as any).encerrarMandatoMembro.useMutation({ onSuccess: () => { q.refetch(); toast.success("Mandato encerrado."); } });
   const linkMut = (trpc.cipa as any).linkMemberToUser.useMutation({ onSuccess: () => { q.refetch(); toast.success("Acesso concedido (perfil Integrante da CIPA)."); }, onError: (e: any) => toast.error(e?.message ?? "Erro") });
   const [linking, setLinking] = useState<number | null>(null);
-  const [userId, setUserId] = useState("");
+  const [cpf, setCpf] = useState("");
   return (
     <div className="mt-4 bg-white border rounded-xl p-5">
       <h3 className="font-bold mb-3">Integrantes ativos</h3>
@@ -297,8 +299,8 @@ function MembersTab() {
                 {m.user_id ? <span className="text-emerald-700 text-xs">✓ vinculado</span> : (
                   linking === m.id ? (
                     <div className="flex gap-1">
-                      <input value={userId} onChange={e => setUserId(e.target.value)} placeholder="ID do usuário" className="border rounded px-1.5 py-1 text-xs w-24" />
-                      <button onClick={() => { if (userId) linkMut.mutate({ memberId: m.id, userId: Number(userId) }); setLinking(null); setUserId(""); }} className="text-xs text-blue-600">Salvar</button>
+                      <input value={cpf} onChange={e => setCpf(e.target.value)} placeholder="CPF" className="border rounded px-1.5 py-1 text-xs w-28" />
+                      <button onClick={() => { if (cpf) linkMut.mutate({ memberId: m.id, cpf }); setLinking(null); setCpf(""); }} className="text-xs text-blue-600">Salvar</button>
                     </div>
                   ) : <button onClick={() => setLinking(m.id)} className="text-xs text-blue-600 hover:underline">Vincular usuário</button>
                 )}
@@ -469,6 +471,91 @@ function LegacyMeetingsTab() {
           </div>
         ))}
         {meetings.length === 0 && <p className="text-sm text-slate-400 text-center py-4">Nenhuma reunião registrada.</p>}
+      </div>
+    </div>
+  );
+}
+
+function TrainingTab() {
+  const q = (trpc.cipaTraining as any).listAdmin.useQuery();
+  const coursesQ = (trpc.cipaTraining as any).courseOptions.useQuery();
+  const items = (q.data ?? []) as any[];
+  const courses = (coursesQ.data ?? []) as any[];
+  const [editing, setEditing] = useState<any | null>(null);
+  const [form, setForm] = useState({ id: undefined as number | undefined, contentType: "course", moduleId: "", title: "", description: "", url: "", fileName: "", provider: "", isRequired: true, orderIndex: 0 });
+  const upMut = (trpc.cipaTraining as any).upsert.useMutation({ onSuccess: () => { q.refetch(); toast.success("Conteúdo salvo."); setEditing(null); reset(); }, onError: (e: any) => toast.error(e?.message ?? "Erro") });
+  const delMut = (trpc.cipaTraining as any).remove.useMutation({ onSuccess: () => { q.refetch(); toast.success("Conteúdo removido."); } });
+  function reset() { setForm({ id: undefined, contentType: "course", moduleId: "", title: "", description: "", url: "", fileName: "", provider: "", isRequired: true, orderIndex: 0 }); }
+  function edit(it: any) {
+    setEditing(it);
+    setForm({ id: it.id, contentType: it.contentType, moduleId: it.moduleId ? String(it.moduleId) : "", title: it.title ?? "", description: it.description ?? "", url: it.url ?? it.fileUrl ?? "", fileName: it.fileName ?? "", provider: it.provider ?? "", isRequired: !!it.isRequired, orderIndex: Number(it.orderIndex ?? 0) });
+  }
+  function save() {
+    const selected = courses.find((c: any) => Number(c.id) === Number(form.moduleId));
+    upMut.mutate({
+      id: form.id,
+      contentType: form.contentType,
+      moduleId: form.contentType === "course" && form.moduleId ? Number(form.moduleId) : undefined,
+      title: form.contentType === "course" && !form.title.trim() && selected ? selected.title : form.title.trim(),
+      description: form.description.trim() || undefined,
+      url: form.contentType !== "course" ? form.url.trim() || undefined : undefined,
+      fileName: form.fileName.trim() || undefined,
+      provider: form.provider.trim() || undefined,
+      isRequired: form.isRequired,
+      orderIndex: Number(form.orderIndex || 0),
+    });
+  }
+  return (
+    <div className="mt-4 grid lg:grid-cols-[360px_1fr] gap-4">
+      <div className="bg-white border rounded-xl p-5 space-y-3">
+        <h3 className="font-bold flex items-center gap-2"><BookOpen size={16} /> {editing ? "Editar conteúdo" : "Novo conteúdo"}</h3>
+        <L l="Tipo">
+          <select value={form.contentType} onChange={e => setForm({ ...form, contentType: e.target.value, moduleId: "" })} className="w-full border rounded px-2 py-1.5 text-sm">
+            <option value="course">Curso da plataforma</option>
+            <option value="material">Material complementar</option>
+            <option value="video">Vídeo externo</option>
+            <option value="link">Link externo</option>
+          </select>
+        </L>
+        {form.contentType === "course" ? (
+          <L l="Curso">
+            <select value={form.moduleId} onChange={e => { const c = courses.find((x: any) => Number(x.id) === Number(e.target.value)); setForm({ ...form, moduleId: e.target.value, title: c?.title ?? form.title }); }} className="w-full border rounded px-2 py-1.5 text-sm">
+              <option value="">Selecione...</option>
+              {courses.map((c: any) => <option key={c.id} value={c.id}>{c.title}</option>)}
+            </select>
+          </L>
+        ) : (
+          <L l="URL"><input value={form.url} onChange={e => setForm({ ...form, url: e.target.value })} placeholder="https://..." className="w-full border rounded px-2 py-1.5 text-sm" /></L>
+        )}
+        <L l="Título"><input value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} className="w-full border rounded px-2 py-1.5 text-sm" /></L>
+        <L l="Descrição"><textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} rows={2} className="w-full border rounded px-2 py-1.5 text-sm" /></L>
+        {form.contentType !== "course" && <div className="grid grid-cols-2 gap-2"><L l="Arquivo"><input value={form.fileName} onChange={e => setForm({ ...form, fileName: e.target.value })} className="w-full border rounded px-2 py-1.5 text-sm" /></L><L l="Provedor"><input value={form.provider} onChange={e => setForm({ ...form, provider: e.target.value })} className="w-full border rounded px-2 py-1.5 text-sm" /></L></div>}
+        <div className="grid grid-cols-2 gap-2">
+          <L l="Ordem"><input type="number" value={form.orderIndex} onChange={e => setForm({ ...form, orderIndex: Number(e.target.value || 0) })} className="w-full border rounded px-2 py-1.5 text-sm" /></L>
+          <label className="text-sm flex items-center gap-2 mt-6"><input type="checkbox" checked={form.isRequired} onChange={e => setForm({ ...form, isRequired: e.target.checked })} /> Obrigatório</label>
+        </div>
+        <div className="flex justify-end gap-2 border-t pt-3">
+          {editing && <button onClick={() => { setEditing(null); reset(); }} className="px-3 py-1.5 border rounded text-sm">Cancelar</button>}
+          <button onClick={save} disabled={upMut.isPending} className="px-3 py-1.5 bg-emerald-600 text-white rounded text-sm font-semibold flex items-center gap-1"><Save size={13} /> Salvar</button>
+        </div>
+      </div>
+      <div className="bg-white border rounded-xl overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="text-left p-3">Conteúdo</th><th className="p-3">Tipo</th><th className="p-3">Obrig.</th><th className="p-3">Concluídos</th><th className="p-3">Cert.</th><th className="p-3"></th></tr></thead>
+          <tbody>
+            {items.map((it: any) => (
+              <tr key={it.id} className="border-t">
+                <td className="p-3"><div className="font-medium">{it.title}</div>{it.moduleTitle && <div className="text-xs text-emerald-700">Curso: {it.moduleTitle}</div>}{it.description && <div className="text-xs text-slate-500 line-clamp-1">{it.description}</div>}</td>
+                <td className="p-3 text-center">{it.contentType}</td>
+                <td className="p-3 text-center">{it.isRequired ? "Sim" : "Não"}</td>
+                <td className="p-3 text-center">{it.completedCount}</td>
+                <td className="p-3 text-center">{it.certificatesCount}</td>
+                <td className="p-3 text-right"><button onClick={() => edit(it)} className="text-xs text-blue-600 mr-3">Editar</button><button onClick={() => { if (confirm("Remover conteúdo?")) delMut.mutate({ id: it.id }); }} className="text-xs text-rose-600">Remover</button></td>
+              </tr>
+            ))}
+            {items.length === 0 && <tr><td colSpan={6} className="p-6 text-center text-sm text-slate-400">Nenhum conteúdo cadastrado.</td></tr>}
+          </tbody>
+        </table>
       </div>
     </div>
   );

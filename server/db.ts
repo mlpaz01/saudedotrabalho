@@ -51,6 +51,24 @@ import { ENV } from "./_core/env";
 
 
 let _db: ReturnType<typeof drizzle> | null = null;
+let _employmentStatusColumnsReady = false;
+let _moduleAudienceColumnsReady = false;
+const ISO_COURSE_ACCESS_ROLES = ["admin", "company_admin", "rh", "sesmt", "admin_global", "super_admin"];
+const COURSE_AUDIENCE_ROLE_GROUPS: Record<string, string[]> = {
+  cipa: ["cipa"],
+  sesmt: ["sesmt"],
+  colaboradores: ["user", "chefia"],
+};
+
+function moduleTargetsRole(targets: unknown, role: unknown) {
+  const roleValue = String(role ?? "");
+  if (!roleValue) return false;
+  const targetList = String(targets ?? "")
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean);
+  return targetList.some((target) => (COURSE_AUDIENCE_ROLE_GROUPS[target] ?? [target]).includes(roleValue));
+}
 
 
 
@@ -74,6 +92,24 @@ export async function getDb() {
 
   return _db;
 
+}
+
+async function ensureEmploymentStatusColumns(db: any) {
+  if (_employmentStatusColumnsReady || !db) return;
+  try { await db.execute(sql.raw("ALTER TABLE users ADD COLUMN employment_status VARCHAR(30) NOT NULL DEFAULT 'active'")); } catch (_) {}
+  try { await db.execute(sql.raw("ALTER TABLE users ADD INDEX idx_users_employment_status (employment_status)")); } catch (_) {}
+  try { await db.execute(sql.raw("ALTER TABLE corporate_emails ADD COLUMN employment_status VARCHAR(30) NOT NULL DEFAULT 'active'")); } catch (_) {}
+  try { await db.execute(sql.raw("ALTER TABLE corporate_emails ADD INDEX idx_corporate_employment_status (employment_status)")); } catch (_) {}
+  _employmentStatusColumnsReady = true;
+}
+
+async function ensureModuleAudienceColumns(db: any) {
+  if (_moduleAudienceColumnsReady || !db) return;
+  try { await db.execute(sql.raw("ALTER TABLE modules ADD COLUMN mandatory_target_roles VARCHAR(160) NULL")); } catch (_) {}
+  try { await db.execute(sql.raw("ALTER TABLE modules ADD COLUMN training_start_date VARCHAR(10) NULL")); } catch (_) {}
+  try { await db.execute(sql.raw("ALTER TABLE modules ADD COLUMN training_due_date VARCHAR(10) NULL")); } catch (_) {}
+  try { await db.execute(sql.raw("ALTER TABLE modules ADD COLUMN certificate_due_date VARCHAR(10) NULL")); } catch (_) {}
+  _moduleAudienceColumnsReady = true;
 }
 
 
@@ -299,6 +335,7 @@ export async function listModules() {
   const db = await getDb();
 
   if (!db) return [];
+  await ensureModuleAudienceColumns(db);
 
   // Only return active + published courses to collaborators
   return db.select().from(modules)
@@ -313,6 +350,7 @@ export async function listModules() {
 export async function listModulesAdmin() {
   const db = await getDb();
   if (!db) return [];
+  await ensureModuleAudienceColumns(db);
   return db.select().from(modules).orderBy(modules.orderIndex);
 }
 
@@ -323,6 +361,7 @@ export async function getModuleById(id: number) {
   const db = await getDb();
 
   if (!db) return undefined;
+  await ensureModuleAudienceColumns(db);
 
   const result = await db.select().from(modules).where(eq(modules.id, id)).limit(1);
 
@@ -337,6 +376,7 @@ export async function updateModule(id: number, data: Partial<typeof modules.$inf
   const db = await getDb();
 
   if (!db) return;
+  await ensureModuleAudienceColumns(db);
 
   await db.update(modules).set(data).where(eq(modules.id, id));
 
@@ -563,12 +603,13 @@ export async function getAdminStats() {
   const db = await getDb();
 
   if (!db) return null;
+  await ensureEmploymentStatusColumns(db);
 
 
 
-  const totalUsers = await db.select({ count: sql<number>`count(*)` }).from(corporateEmails).where(eq(corporateEmails.isActive, true));
+  const totalUsers = await db.select({ count: sql<number>`count(*)` }).from(corporateEmails).where(and(eq(corporateEmails.isActive, true), sql`COALESCE(${corporateEmails.employmentStatus}, 'active') = 'active'`));
 
-  const activeUsers = await db.select({ count: sql<number>`count(*)` }).from(corporateEmails).where(and(eq(corporateEmails.isActive, true), eq(corporateEmails.hasSetPassword, true)));
+  const activeUsers = await db.select({ count: sql<number>`count(*)` }).from(corporateEmails).where(and(eq(corporateEmails.isActive, true), eq(corporateEmails.hasSetPassword, true), sql`COALESCE(${corporateEmails.employmentStatus}, 'active') = 'active'`));
 
   const totalCerts = await db.select({ count: sql<number>`count(*)` }).from(certificates);
 
@@ -1499,12 +1540,20 @@ export async function createModule(data: {
   isActive?: boolean;
 
   publishStatus?: string;
+  validityDays?: number | null;
+  isMandatory?: boolean;
+  profession?: string | null;
+  mandatoryTargetRoles?: string | null;
+  trainingStartDate?: string | null;
+  trainingDueDate?: string | null;
+  certificateDueDate?: string | null;
 
 }) {
 
   const db = await getDb();
 
   if (!db) throw new Error("DB not available");
+  await ensureModuleAudienceColumns(db);
 
   await db.insert(modules).values({
 
@@ -1519,6 +1568,13 @@ export async function createModule(data: {
     isActive: data.isActive ?? true,
 
     publishStatus: data.publishStatus ?? "published",
+    validityDays: data.validityDays ?? null,
+    isMandatory: data.isMandatory ?? false,
+    profession: data.profession ?? null,
+    mandatoryTargetRoles: data.mandatoryTargetRoles ?? null,
+    trainingStartDate: data.trainingStartDate ?? null,
+    trainingDueDate: data.trainingDueDate ?? null,
+    certificateDueDate: data.certificateDueDate ?? null,
 
   });
 
@@ -1545,12 +1601,20 @@ export async function adminUpdateModule(id: number, data: Partial<{
   certSignerName: string;
 
   certSignerRole: string;
+  validityDays: number | null;
+  isMandatory: boolean;
+  profession: string | null;
+  mandatoryTargetRoles: string | null;
+  trainingStartDate: string | null;
+  trainingDueDate: string | null;
+  certificateDueDate: string | null;
 
 }>) {
 
   const db = await getDb();
 
   if (!db) throw new Error("DB not available");
+  await ensureModuleAudienceColumns(db);
 
   await db.update(modules).set(data).where(eq(modules.id, id));
 
@@ -2151,6 +2215,7 @@ export async function getManagerDashboard(companyId: number | null) {
   const db = await getDb();
 
   if (!db) return null;
+  await ensureEmploymentStatusColumns(db);
 
   const now = new Date();
 
@@ -2161,8 +2226,8 @@ export async function getManagerDashboard(companyId: number | null) {
   // R5-P9 #3: alinhado com tela Colaboradores (users WHERE is_active=1). Antes contava
   // corporate_emails (incluía registros sem cadastro real), gerando divergência ex.: 18 vs 12.
   const empCountRaw = companyId
-    ? await db.execute(sql.raw(`SELECT COUNT(*) AS c FROM users WHERE company_id=${companyId} AND is_active=1`))
-    : await db.execute(sql.raw(`SELECT COUNT(*) AS c FROM users WHERE is_active=1`));
+    ? await db.execute(sql.raw(`SELECT COUNT(*) AS c FROM users WHERE company_id=${companyId} AND is_active=1 AND COALESCE(employment_status,'active')='active'`))
+    : await db.execute(sql.raw(`SELECT COUNT(*) AS c FROM users WHERE is_active=1 AND COALESCE(employment_status,'active')='active'`));
   const empCountRows: any = Array.isArray((empCountRaw as any)[0]) ? (empCountRaw as any)[0] : (empCountRaw as any);
   const totalEmployees = Number(empCountRows[0]?.c ?? 0);
 
@@ -2646,7 +2711,7 @@ export async function getSuperAdminOverview() {
 
     .from(corporateEmails)
 
-    .where(eq(corporateEmails.isActive, true));
+    .where(and(eq(corporateEmails.isActive, true), sql`COALESCE(${corporateEmails.employmentStatus}, 'active') = 'active'`));
 
   const canceled30d = await db
 
@@ -3139,9 +3204,11 @@ export async function getVisibleModulesForUser(userId: number) {
   ));
 
   // Platform-level modules (no specific company — visible to all)
+  const canSeeIsoCourses = ISO_COURSE_ACCESS_ROLES.includes(String(user.role ?? ""));
   const platform = await db.select().from(modules).where(and(
     sql`${modules.createdByCompanyId} IS NULL`,
     eq(modules.isActive, true),
+    canSeeIsoCourses ? sql`1=1` : sql`COALESCE(${modules.templateCategory}, '') <> 'iso'`,
   ));
 
   let enrolled: any[] = [];
@@ -3158,10 +3225,22 @@ export async function getVisibleModulesForUser(userId: number) {
 
   }
 
+  const mandatoryForRole = await db.select().from(modules).where(and(
+    eq(modules.isActive, true),
+    eq(modules.isMandatory, true),
+    sql`COALESCE(${modules.mandatoryTargetRoles}, '') <> ''`,
+  ));
+
   // Dedup by id
   const map = new Map<number, any>();
 
   for (const m of [...enrolled, ...own, ...platform]) map.set(m.id, m);
+  for (const m of mandatoryForRole) {
+    const ownerCid = (m as any).createdByCompanyId ?? null;
+    if (ownerCid != null && Number(ownerCid) !== Number(cid) && !filteredIds.includes(Number(m.id))) continue;
+    if (String((m as any).templateCategory ?? "").toLowerCase() === "iso" && !canSeeIsoCourses) continue;
+    if (moduleTargetsRole((m as any).mandatoryTargetRoles, user.role)) map.set(m.id, m);
+  }
 
   return Array.from(map.values()).sort((a, b) => { const oi = (a.orderIndex ?? 0) - (b.orderIndex ?? 0); return oi !== 0 ? oi : (b.id - a.id); });
 
@@ -4066,9 +4145,10 @@ export async function listAIDecompressionGenerationsForCompany(companyId: number
  * Shape: [{ company, branches: [{ branch, sectors: [{ sector, users: [...] }] }] }]
  * Each user includes course/survey/lastAccess stats so the UI can render counters.
  */
-export async function getHierarchyTreeForCompany(companyId: number | null) {
+export async function getHierarchyTreeForCompany(companyId: number | null, opts: { includeAllStatuses?: boolean } = {}) {
   const db = await getDb();
   if (!db) return [];
+  await ensureEmploymentStatusColumns(db);
 
   // 1) Companies (scope)
   const companiesRows = companyId
@@ -4092,11 +4172,16 @@ export async function getHierarchyTreeForCompany(companyId: number | null) {
   );
   const sectorsRows = Array.isArray((sectorsRaw as any)[0]) ? (sectorsRaw as any)[0] : Array.isArray(sectorsRaw) ? sectorsRaw : [];
 
+  const userStatusWhere = opts.includeAllStatuses
+    ? `u.is_active = 1`
+    : `u.is_active = 1 AND COALESCE(u.employment_status, 'active') = 'active'`;
+
   const usersRaw = await db.execute(
     sql.raw(`SELECT u.id, u.name, u.email, u.role, u.lastSignedIn,
                     u.company_id AS companyId, u.branch_id AS branchId, u.sector_id AS sectorId,
-                    u.position AS position,
+                    u.position AS position, u.cpf AS cpf,
                     u.whatsapp_e164 AS whatsapp,
+                    COALESCE(u.employment_status, 'active') AS employmentStatus,
                     ce.employeeName AS cargoName,
                     (SELECT COUNT(*) FROM user_progress p WHERE p.userId = u.id) AS coursesStarted,
                     (SELECT COUNT(*) FROM user_progress p WHERE p.userId = u.id AND p.isCompleted = 1) AS coursesCompleted,
@@ -4105,7 +4190,7 @@ export async function getHierarchyTreeForCompany(companyId: number | null) {
                     (SELECT wi.score FROM wellbeing_index wi WHERE wi.user_id = u.id ORDER BY wi.snapshot_month DESC LIMIT 1) AS wellbeingScore
              FROM users u
              LEFT JOIN corporate_emails ce ON ce.userId = u.id
-             WHERE u.company_id IN (${companyIdsCsv}) AND u.is_active = 1
+             WHERE u.company_id IN (${companyIdsCsv}) AND ${userStatusWhere}
              ORDER BY u.name`)
   );
   const usersRows = Array.isArray((usersRaw as any)[0]) ? (usersRaw as any)[0] : Array.isArray(usersRaw) ? usersRaw : [];
@@ -4223,7 +4308,9 @@ function formatUserStatsRow(u: any, totalModules: number, totalSurveys: number) 
     id: Number(u.id),
     name: u.name || u.cargoName || "(sem nome)",
     email: u.email,
+    cpf: u.cpf ?? null,
     role: u.role,
+    employmentStatus: u.employmentStatus ?? "active",
     branchId: u.branchId != null ? Number(u.branchId) : null,
     sectorId: u.sectorId != null ? Number(u.sectorId) : null,
     cargo: u.cargoName ?? null,
@@ -4754,8 +4841,9 @@ export async function previewCampaignRecipients(opts: {
 }) {
   const db = await getDb();
   if (!db) return [];
+  await ensureEmploymentStatusColumns(db);
 
-  const where: string[] = [`u.company_id = ${opts.companyId}`];
+  const where: string[] = [`u.company_id = ${opts.companyId}`, `u.is_active = 1`, `COALESCE(u.employment_status,'active') = 'active'`];
   if (opts.branchId != null) where.push(`u.branch_id = ${opts.branchId}`);
   if (opts.sectorId != null) where.push(`u.sector_id = ${opts.sectorId}`);
   where.push(`u.email IS NOT NULL AND u.email <> ''`);
@@ -4974,6 +5062,3 @@ export async function getSurveysForCompanyShort(companyId: number) {
   );
   return _rows(raw);
 }
-
-
-
