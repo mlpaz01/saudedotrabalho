@@ -381,7 +381,7 @@ function parseCSV(text: string, accessMethod: string = "email"): ParsedRow[] {
   // Cargo é coluna SEPARADA do perfil (papel/role) — antes "cargo" caía em iPerfil
   // por engano. Agora cargo casa só com cargo/função/position; perfil só com perfil/acesso/papel.
   let iCargo = find("cargo", "funcao", "função", "position");
-  let iPerfil = find("perfil", "acesso", "papel");
+  let iPerfil = find("perfil", "perfis", "profile", "acesso", "papel", "permissao", "permiss");
   // SP7 #1 — coluna nova "whatsapp"
   let iWhats = find("whats", "celular", "telefone");
 
@@ -404,7 +404,21 @@ function parseCSV(text: string, accessMethod: string = "email"): ParsedRow[] {
     }
   }
 
-  const at = (row: string[], idx: number) => (idx >= 0 && idx < row.length ? row[idx] : "");
+  const expectedCols = Math.max(iEmail, iCpf, iNome, iFilial, iSetor, iCargo, iPerfil, iWhats) + 1;
+  const overflowFor = (row: string[]) => delim === "," && iPerfil >= 0 && expectedCols > 0 ? Math.max(0, row.length - expectedCols) : 0;
+  const actualIdx = (row: string[], idx: number) => (idx > iPerfil ? idx + overflowFor(row) : idx);
+  const at = (row: string[], idx: number) => {
+    const realIdx = actualIdx(row, idx);
+    return realIdx >= 0 && realIdx < row.length ? row[realIdx] : "";
+  };
+  const atProfile = (row: string[]) => {
+    if (iPerfil < 0 || iPerfil >= row.length) return "";
+    const overflow = overflowFor(row);
+    if (overflow > 0) {
+      return row.slice(iPerfil, iPerfil + overflow + 1).join(", ");
+    }
+    return row[iPerfil] ?? "";
+  };
   return dataRows
     .map((r) => ({
       email: at(r, iEmail),
@@ -413,7 +427,7 @@ function parseCSV(text: string, accessMethod: string = "email"): ParsedRow[] {
       filial: at(r, iFilial),
       setor: at(r, iSetor),
       cargo: at(r, iCargo),
-      perfil: at(r, iPerfil),
+      perfil: atProfile(r),
       whatsapp: at(r, iWhats),
     }))
     .filter((r) => r.email || r.cpf || r.nome);
@@ -458,11 +472,11 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
   const accessMethod = String((platformConfigQ.data as any)?.accessMethod ?? "email");
   const loginColumnLabel = accessMethod === "cpf" ? "CPF" : accessMethod === "both" ? "E-mail Corporativo + CPF" : accessMethod === "whatsapp" ? "CPF ou WhatsApp" : "E-mail Corporativo";
   const csvTemplate = accessMethod === "cpf"
-    ? "cpf;nome;filial;setor;cargo;perfil;whatsapp\n12345678901;Joao Silva;Matriz;Producao;Operador de Maquinas;colaborador;\n23456789012;Ana Gestora;Matriz;Producao;Coordenadora de Producao;chefia;+5511988888888\n34567890123;Maria Souza;Filial Sao Paulo;Recursos Humanos;Analista de RH;rh;\n"
+    ? "cpf;nome;filial;setor;cargo;perfil;whatsapp\n12345678901;Joao Silva;Matriz;Producao;Operador de Maquinas;colaborador;\n23456789012;Ana Gestora;Matriz;Producao;Coordenadora de Producao;chefia, cipa;+5511988888888\n34567890123;Maria Souza;Filial Sao Paulo;Recursos Humanos;Analista de RH;rh, sesmt;\n"
     : accessMethod === "both"
-    ? "e-mail corporativo;cpf;nome;filial;setor;cargo;perfil;whatsapp\njoao.silva@empresa.com;12345678901;Joao Silva;Matriz;Producao;Operador de Maquinas;colaborador;\nana.gestora@empresa.com;23456789012;Ana Gestora;Matriz;Producao;Coordenadora de Producao;chefia;+5511988888888\n"
+    ? "e-mail corporativo;cpf;nome;filial;setor;cargo;perfil;whatsapp\njoao.silva@empresa.com;12345678901;Joao Silva;Matriz;Producao;Operador de Maquinas;colaborador;\nana.gestora@empresa.com;23456789012;Ana Gestora;Matriz;Producao;Coordenadora de Producao;chefia, cipa;+5511988888888\n"
     : accessMethod === "whatsapp"
-    ? "cpf;whatsapp;nome;filial;setor;cargo;perfil\n12345678901;+5511999999999;Joao Silva;Matriz;Producao;Operador de Maquinas;colaborador\n23456789012;+5511988888888;Ana Gestora;Matriz;Producao;Coordenadora de Producao;chefia\n"
+    ? "cpf;whatsapp;nome;filial;setor;cargo;perfil\n12345678901;+5511999999999;Joao Silva;Matriz;Producao;Operador de Maquinas;colaborador\n23456789012;+5511988888888;Ana Gestora;Matriz;Producao;Coordenadora de Producao;chefia, cipa\n"
     : CSV_TEMPLATE_V2;
 
   const importMut = trpc.admin.importCollaborators.useMutation();
@@ -601,7 +615,7 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
                 <br />
                 <b>Cargo é obrigatório</b> — é usado pelo PGR/AEP/EPI/treinamentos. Aceita variações de cabeçalho: <code>cargo</code>, <code>função</code>, <code>position</code>.
                 <br />
-                <b>Perfil</b> aceito: <code>colaborador</code>, <code>chefia</code>, <code>rh</code> ou <code>admin</code>.
+                <b>Perfil</b> aceito: <code>colaborador</code>, <code>chefia</code>, <code>cipa</code>, <code>sesmt</code>, <code>rh</code> ou <code>admin</code>. Pode informar mais de um perfil na mesma célula, separado por vírgula, por exemplo <code>chefia, cipa</code>.
                 <br />
                 Filiais e setores inexistentes serão criados automaticamente.
                 <br />
@@ -660,7 +674,7 @@ function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported
                               <td className="px-2 py-1">{r.filial || "—"}{r.branchAction === "create" && <span className="text-sky-600"> (nova)</span>}</td>
                               <td className="px-2 py-1">{r.setor || "—"}{r.sectorAction === "create" && <span className="text-sky-600"> (novo)</span>}</td>
                               <td className={`px-2 py-1 ${!r.cargo ? "text-rose-600" : ""}`}>{r.cargo || "—"}</td>
-                              <td className="px-2 py-1">{r.roleLabel}</td>
+                              <td className="px-2 py-1">{r.rolesLabel || r.roleLabel}</td>
                               <td className="px-2 py-1">
                                 {r.status === "ok"
                                   ? <span className={r.action === "update" ? "text-amber-600" : "text-emerald-600"}>{r.action === "update" ? "Atualizar" : "Novo"}</span>

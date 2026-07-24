@@ -46,6 +46,7 @@ export default function AdminScheduling() {
   const { user } = useAuth();
   const isPsicologo = user?.role === "psicologo";
   const isAdminRole = ["admin", "rh", "admin_global", "super_admin", "sesmt"].includes(user?.role ?? "");
+  const isGlobalAdmin = ["admin_global", "super_admin"].includes(user?.role ?? "");
   // SP3 #5 — RH só vê indicadores + cria nova consulta. Não pode mexer em status/finalizar/reagendar.
   // Psicólogo e admin (e admin_global/super_admin) mantêm controle integral.
   const isRhOnly = user?.role === "rh";
@@ -79,13 +80,20 @@ export default function AdminScheduling() {
   const [ethicalTemplateKey, setEthicalTemplateKey] = useState(ETHICAL_ALERT_TEMPLATES[0]?.key ?? "");
 
   const profQuery = trpc.scheduling.listProfessionals.useQuery({});
+  const companiesQ = trpc.pgr.listCompanies.useQuery(undefined, { enabled: isGlobalAdmin });
   // R5-P11 #11 — psicólogo logado: cadastro próprio (cria on-demand se faltar).
   const myProfQuery = (trpc.scheduling as any).myProfessional.useQuery(undefined, { enabled: isPsicologo });
   const apptQuery = trpc.scheduling.listAppointments.useQuery({});
   const collaboratorsQuery = trpc.scheduling.listCollaborators.useQuery(undefined, { enabled: isAdminRole });
 
   const saveProfMut = trpc.scheduling.saveProfessional.useMutation({
-    onSuccess: () => { profQuery.refetch(); setShowProfDialog(false); toast.success("Profissional salvo."); },
+    onSuccess: (r: any) => {
+      profQuery.refetch();
+      setShowProfDialog(false);
+      if (r?.emailWarning) toast.warning(r.emailWarning);
+      else if (r?.emailSent) toast.success("Profissional salvo e convite enviado.");
+      else toast.success("Profissional salvo.");
+    },
   });
   const deleteProfMut = trpc.scheduling.deleteProfessional.useMutation({ onSuccess: () => profQuery.refetch() });
   const updateStatusMut = trpc.scheduling.updateAppointmentStatus.useMutation({
@@ -140,12 +148,14 @@ export default function AdminScheduling() {
   }
 
   // Professional form state
-  const [profForm, setProfForm] = useState({ name: "", email: "", specialty: "", bio: "" });
+  const [profForm, setProfForm] = useState({ name: "", email: "", cpf: "", specialty: "", bio: "", companyIds: [] as number[] });
 
-  function openAddProf() { setEditingProf(null); setProfForm({ name: "", email: "", specialty: "", bio: "" }); setShowProfDialog(true); }
-  function openEditProf(p: any) { setEditingProf(p); setProfForm({ name: p.name, email: p.email ?? "", specialty: p.specialty ?? "", bio: p.bio ?? "" }); setShowProfDialog(true); }
+  function openAddProf() { setEditingProf(null); setProfForm({ name: "", email: "", cpf: "", specialty: "", bio: "", companyIds: [] }); setShowProfDialog(true); }
+  function openEditProf(p: any) { setEditingProf(p); setProfForm({ name: p.name, email: p.email ?? "", cpf: p.cpf ?? "", specialty: p.specialty ?? "", bio: p.bio ?? "", companyIds: p.companyIds ?? [] }); setShowProfDialog(true); }
   function saveProf() {
     if (!profForm.name.trim()) { toast.error("Nome obrigatório"); return; }
+    if (!editingProf && !profForm.email.trim()) { toast.error("E-mail obrigatorio para gerar login."); return; }
+    if (isGlobalAdmin && profForm.companyIds.length === 0) { toast.error("Selecione ao menos uma empresa."); return; }
     saveProfMut.mutate({ id: editingProf?.id, ...profForm });
   }
 
@@ -173,7 +183,7 @@ export default function AdminScheduling() {
     // Persiste o link de reunião padrão (template) sem bloquear o save de disponibilidade.
     saveProfMut.mutate({
       id: selectedProf.id, name: selectedProf.name, email: selectedProf.email ?? "",
-      specialty: selectedProf.specialty ?? "", bio: selectedProf.bio ?? "",
+      cpf: selectedProf.cpf ?? "", specialty: selectedProf.specialty ?? "", bio: selectedProf.bio ?? "",
       meetingUrlTemplate: meetLink || undefined,
     });
   }
@@ -274,6 +284,7 @@ export default function AdminScheduling() {
   }
 
   const profs = profQuery.data ?? [];
+  const companies = (companiesQ.data ?? []) as any[];
   const allAppts = apptQuery.data ?? [];
   const collaborators = collaboratorsQuery.data ?? [];
   // R5-P11 #11 — myProf vem da nova proc dedicada (cria cadastro se faltar);
@@ -281,8 +292,8 @@ export default function AdminScheduling() {
   const myProf = isPsicologo
     ? (myProfQuery.data ?? profs.find((p) => p.email === user?.email) ?? null)
     : null;
-  const baseAppts = isPsicologo
-    ? allAppts.filter((a) => myProf ? a.professionalName === myProf.name : false)
+  const baseAppts = isPsicologo && myProf
+    ? allAppts.filter((a: any) => Number(a.professionalId) === Number(myProf.id) || a.professionalName === myProf.name)
     : allAppts;
   // R5-P9 #15: filtros rápidos de período + busca por nome + filtro por status.
   const [periodFilter, setPeriodFilter] = useState<"hoje"|"semana"|"mes"|"todos">("todos");
@@ -476,6 +487,8 @@ export default function AdminScheduling() {
                       <p className="font-semibold text-slate-800">{p.name}</p>
                       {p.specialty && <p className="text-xs text-primary">{p.specialty}</p>}
                       {p.email && <p className="text-xs text-slate-500">{p.email}</p>}
+                      {p.cpf && <p className="text-xs text-slate-500">CPF: {p.cpf}</p>}
+                      {p.companyNames?.length > 0 && <p className="text-xs text-emerald-700 mt-1">Empresas: {p.companyNames.join(", ")}</p>}
                     </div>
                     <div className="flex gap-1">
                       <button onClick={() => openAvail(p)} title="Disponibilidade" className="p-1.5 rounded hover:bg-slate-100 text-slate-500"><Clock size={14} /></button>
@@ -635,6 +648,37 @@ export default function AdminScheduling() {
               <label className="text-sm font-medium text-slate-700">E-mail</label>
               <Input value={profForm.email} onChange={e => setProfForm(f => ({ ...f, email: e.target.value }))} placeholder="profissional@empresa.com" />
             </div>
+            <div>
+              <label className="text-sm font-medium text-slate-700">CPF</label>
+              <Input value={profForm.cpf} onChange={e => setProfForm(f => ({ ...f, cpf: e.target.value }))} placeholder="000.000.000-00" />
+            </div>
+            {isGlobalAdmin && (
+              <div>
+                <label className="text-sm font-medium text-slate-700">Empresas vinculadas *</label>
+                <div className="mt-1 max-h-40 overflow-y-auto rounded-md border border-slate-200 bg-white p-2 space-y-1">
+                  {companies.length === 0 && <p className="text-xs text-slate-400 px-1 py-2">Nenhuma empresa disponivel.</p>}
+                  {companies.map((c: any) => {
+                    const checked = profForm.companyIds.includes(Number(c.id));
+                    return (
+                      <label key={c.id} className="flex items-center gap-2 rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-50">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={e => setProfForm(f => ({
+                            ...f,
+                            companyIds: e.target.checked
+                              ? Array.from(new Set([...f.companyIds, Number(c.id)]))
+                              : f.companyIds.filter(id => id !== Number(c.id)),
+                          }))}
+                        />
+                        <span>{c.name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <p className="text-[11px] text-slate-500 mt-1">O profissional e os colaboradores enxergam apenas as empresas vinculadas aqui.</p>
+              </div>
+            )}
             <div>
               <label className="text-sm font-medium text-slate-700">Especialidade</label>
               <Input value={profForm.specialty} onChange={e => setProfForm(f => ({ ...f, specialty: e.target.value }))} placeholder="Psicóloga Organizacional" />

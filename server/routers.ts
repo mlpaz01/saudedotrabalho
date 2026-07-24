@@ -2342,6 +2342,50 @@ function firstDbRow(result: any): any | null {
   return rows ?? null;
 }
 
+const IMPORTABLE_USER_ROLES = ["user", "cipa", "chefia", "sesmt", "rh", "admin"] as const;
+const IMPORT_ROLE_PRIORITY: Record<string, number> = {
+  user: 0,
+  cipa: 1,
+  chefia: 2,
+  sesmt: 3,
+  rh: 4,
+  admin: 5,
+};
+
+function stripRoleText(value: unknown): string {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function mapSingleImportedRole(value: unknown): string {
+  const v = stripRoleText(value);
+  if (!v) return "user";
+  if (v.includes("admin") || v.includes("administrad") || v.includes("diretor")) return "admin";
+  if (v.includes("rh") || v.includes("recursos humanos")) return "rh";
+  if (v.includes("sesmt") || v.includes("sst") || v.includes("seguranca") || v.includes("saude") || v.includes("medic") || v.includes("enferm")) return "sesmt";
+  if (["chefia", "gestor", "gerente", "lider", "coordenador", "supervisor", "encarregado"].some(k => v.includes(k))) return "chefia";
+  if (v.includes("cipa") || v.includes("cipeiro")) return "cipa";
+  return "user";
+}
+
+function resolveImportedRoles(value: unknown, canAssignAdmin: boolean): { primary: string; roles: string[] } {
+  const raw = String(value ?? "");
+  const pieces = raw
+    .split(/[,;|/]+|\s+\+\s+|\s+e\s+/i)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const mapped = (pieces.length ? pieces : [raw])
+    .map(mapSingleImportedRole)
+    .map((role) => (role === "admin" && !canAssignAdmin ? "rh" : role))
+    .filter((role): role is typeof IMPORTABLE_USER_ROLES[number] => (IMPORTABLE_USER_ROLES as readonly string[]).includes(role));
+  const unique = Array.from(new Set(mapped.length ? mapped : ["user"]));
+  unique.sort((a, b) => (IMPORT_ROLE_PRIORITY[b] ?? 0) - (IMPORT_ROLE_PRIORITY[a] ?? 0));
+  return { primary: unique[0] ?? "user", roles: unique };
+}
+
 const ISO_COURSE_ACCESS_ROLES = new Set(["admin", "company_admin", "rh", "sesmt", "admin_global", "super_admin"]);
 
 async function assertCourseAccessForUser(db: any, user: any, moduleId: number) {
@@ -2384,6 +2428,70 @@ async function ensureAuthIdentityColumns(db: any) {
   try { await db.execute(drzSql`ALTER TABLE corporate_emails ADD INDEX idx_corporate_employment_status (employment_status)`); } catch (_) {}
   try { await db.execute(drzSql`ALTER TABLE corporate_emails ADD COLUMN activation_token VARCHAR(128) NULL`); } catch (_) {}
   try { await db.execute(drzSql`ALTER TABLE corporate_emails ADD COLUMN activation_expires_at TIMESTAMP NULL`); } catch (_) {}
+}
+
+async function ensureAppointmentProfessionalCompanyTables(db: any) {
+  try { await db.execute(drzSql`ALTER TABLE appointment_professionals ADD COLUMN cpf VARCHAR(20) NULL`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE appointment_professionals ADD INDEX idx_ap_prof_cpf (cpf)`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE appointment_professionals ADD COLUMN user_id INT NULL`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE appointment_professionals ADD INDEX idx_ap_prof_user (user_id)`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE appointment_professionals ADD COLUMN meeting_url_template VARCHAR(500)`); } catch (_) {}
+  await execP(db, `CREATE TABLE IF NOT EXISTS appointment_professional_companies (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    professional_id INT NOT NULL,
+    company_id INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_ap_prof_company (professional_id, company_id),
+    INDEX idx_apc_company (company_id),
+    INDEX idx_apc_professional (professional_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`, []);
+  await execP(db, `INSERT IGNORE INTO appointment_professional_companies (professional_id, company_id)
+    SELECT id, company_id FROM appointment_professionals
+    WHERE company_id IS NOT NULL AND company_id > 0`, []).catch(() => undefined);
+}
+
+async function getProfessionalCompanyIds(db: any, professionalId: number): Promise<number[]> {
+  await ensureAppointmentProfessionalCompanyTables(db);
+  const [rows]: any = await execP(db, `SELECT company_id FROM appointment_professional_companies WHERE professional_id=?`, [professionalId]);
+  return (Array.isArray(rows) ? rows : []).map((r: any) => Number(r.company_id)).filter(Boolean);
+}
+
+async function assertProfessionalLinkedToCompany(db: any, professionalId: number, companyId: number) {
+  await ensureAppointmentProfessionalCompanyTables(db);
+  const [[row]]: any = await execP(db, `
+    SELECT p.id
+    FROM appointment_professionals p
+    LEFT JOIN appointment_professional_companies pc ON pc.professional_id=p.id AND pc.company_id=?
+    WHERE p.id=? AND p.is_active=1 AND (pc.company_id IS NOT NULL OR p.company_id=?)
+    LIMIT 1`, [companyId, professionalId, companyId]);
+  if (!row) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Profissional nao vinculado a esta empresa." });
+  }
+}
+
+async function assertAppointmentBelongsToPsychologist(db: any, appointmentId: number, user: any) {
+  await ensureAppointmentProfessionalCompanyTables(db);
+  const [[row]]: any = await execP(db, `
+    SELECT a.id
+    FROM appointments a
+    JOIN appointment_professionals p ON p.id=a.professional_id
+    WHERE a.id=? AND (p.user_id=? OR p.email=?)
+    LIMIT 1`, [appointmentId, user?.id, String(user?.email ?? "")]);
+  if (!row) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Consulta vinculada a outro profissional." });
+  }
+}
+
+async function assertProfessionalBelongsToPsychologist(db: any, professionalId: number, user: any) {
+  await ensureAppointmentProfessionalCompanyTables(db);
+  const [[row]]: any = await execP(db, `
+    SELECT id
+    FROM appointment_professionals
+    WHERE id=? AND (user_id=? OR email=?)
+    LIMIT 1`, [professionalId, user?.id, String(user?.email ?? "")]);
+  if (!row) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Profissional vinculado a outro usuario." });
+  }
 }
 
 async function ensureCommunicationTemplateTables(db: any) {
@@ -6329,10 +6437,11 @@ export const appRouter = router({
           // SP7 #1 — WhatsApp normalizado E.164
           const { normalizeE164BR } = await import("./_core/whatsapp");
           const whatsappNorm = normalizeE164BR(raw.whatsapp);
-          let role = mapRole(raw.perfil);
-          if (role === "admin" && !canAssignAdmin) role = "rh"; // clamp for RH importers
+          const resolvedRoles = resolveImportedRoles(raw.perfil, canAssignAdmin);
+          const role = resolvedRoles.primary;
           const res: any = {
             email, nome, cpf: cpfNorm ?? "", whatsapp: whatsappNorm ?? "", role, roleLabel: roleLabel[role] ?? role,
+            roles: resolvedRoles.roles, rolesLabel: resolvedRoles.roles.map((r) => roleLabel[r] ?? r).join(", "),
             filial, setor, cargo, status: "ok", branchAction: "none", sectorAction: "none", message: "",
           };
           // Cargo é obrigatório (NR-01) — sem ele PGR/AEP/EPI ficam sem base.
@@ -25640,11 +25749,12 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
       if (role !== "psicologo") return null;
       const db2 = await getDb();
       if (!db2) return null;
+      await ensureAppointmentProfessionalCompanyTables(db2);
       const email = String((ctx.user as any).email || "");
       const name = String((ctx.user as any).name || email);
       const cid = (ctx.user as any).companyId ?? null;
       const found: any = await db2.execute(drzSql`
-        SELECT * FROM appointment_professionals WHERE email=${email} LIMIT 1`);
+        SELECT * FROM appointment_professionals WHERE user_id=${(ctx.user as any).id} OR email=${email} LIMIT 1`);
       let row = (found as any)[0]?.[0];
       if (!row) {
         const ins: any = await db2.execute(drzSql`
@@ -25654,13 +25764,22 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         const r2: any = await db2.execute(drzSql`SELECT * FROM appointment_professionals WHERE id=${id}`);
         row = (r2 as any)[0]?.[0];
       }
+      if (row?.id) {
+        await execP(db2, `UPDATE appointment_professionals SET user_id=COALESCE(user_id, ?), cpf=COALESCE(cpf, ?) WHERE id=?`, [(ctx.user as any).id, (ctx.user as any).cpf ?? null, row.id]).catch(() => undefined);
+      }
+      if (cid && row?.id) {
+        await execP(db2, `INSERT IGNORE INTO appointment_professional_companies (professional_id, company_id) VALUES (?,?)`, [Number(row.id), Number(cid)]).catch(() => undefined);
+      }
+      const companyIds = row?.id ? await getProfessionalCompanyIds(db2, Number(row.id)) : [];
       return {
         id: Number(row.id),
         name: String(row.name ?? ""),
         email: row.email ?? null,
+        cpf: row.cpf ?? null,
         specialty: row.specialty ?? null,
         bio: row.bio ?? null,
         companyId: row.company_id ? Number(row.company_id) : null,
+        companyIds,
         meetingUrlTemplate: row.meeting_url_template ?? null,
         isActive: Boolean(row.is_active),
       };
@@ -25680,18 +25799,51 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
       .query(async ({ ctx, input }) => {
         const db2 = await getDb();
         if (!db2) throw new Error("DB unavailable");
+        await ensureAppointmentProfessionalCompanyTables(db2);
         const cid = input.companyId ?? (ctx.user as any).companyId;
-        const rows = await db2.execute(
-          drzSql`SELECT * FROM appointment_professionals WHERE (company_id = ${cid} OR company_id IS NULL) AND is_active = 1 ORDER BY name`
-        );
+        const role = String((ctx.user as any).role ?? "");
+        const isGlobal = role === "admin_global" || role === "super_admin";
+        let rows: any;
+        if (role === "psicologo") {
+          rows = await db2.execute(drzSql`
+            SELECT p.*, GROUP_CONCAT(c.name ORDER BY c.name SEPARATOR ', ') AS company_names,
+                   GROUP_CONCAT(pc.company_id ORDER BY c.name SEPARATOR ',') AS company_ids
+            FROM appointment_professionals p
+            LEFT JOIN appointment_professional_companies pc ON pc.professional_id=p.id
+            LEFT JOIN companies c ON c.id=pc.company_id
+            WHERE p.is_active=1 AND (p.user_id=${(ctx.user as any).id} OR p.email=${String((ctx.user as any).email ?? "")})
+            GROUP BY p.id ORDER BY p.name`);
+        } else if (isGlobal && !cid) {
+          rows = await db2.execute(drzSql`
+            SELECT p.*, GROUP_CONCAT(c.name ORDER BY c.name SEPARATOR ', ') AS company_names,
+                   GROUP_CONCAT(pc.company_id ORDER BY c.name SEPARATOR ',') AS company_ids
+            FROM appointment_professionals p
+            LEFT JOIN appointment_professional_companies pc ON pc.professional_id=p.id
+            LEFT JOIN companies c ON c.id=pc.company_id
+            WHERE p.is_active=1
+            GROUP BY p.id ORDER BY p.name`);
+        } else {
+          rows = await db2.execute(drzSql`
+            SELECT p.*, GROUP_CONCAT(c.name ORDER BY c.name SEPARATOR ', ') AS company_names,
+                   GROUP_CONCAT(pc.company_id ORDER BY c.name SEPARATOR ',') AS company_ids
+            FROM appointment_professionals p
+            JOIN appointment_professional_companies pc0 ON pc0.professional_id=p.id AND pc0.company_id=${cid}
+            LEFT JOIN appointment_professional_companies pc ON pc.professional_id=p.id
+            LEFT JOIN companies c ON c.id=pc.company_id
+            WHERE p.is_active=1
+            GROUP BY p.id ORDER BY p.name`);
+        }
         const list = Array.isArray((rows as any)[0]) ? (rows as any)[0] : [];
         return list.map((r: any) => ({
           id: Number(r.id),
           name: String(r.name ?? ""),
           email: r.email ?? null,
+          cpf: r.cpf ?? null,
           specialty: r.specialty ?? null,
           bio: r.bio ?? null,
           companyId: r.company_id ? Number(r.company_id) : null,
+          companyIds: String(r.company_ids ?? "").split(",").map((x) => Number(x)).filter(Boolean),
+          companyNames: String(r.company_names ?? "").split(", ").filter(Boolean),
           meetingUrlTemplate: r.meeting_url_template ?? null,
           isActive: Boolean(r.is_active),
         }));
@@ -25702,9 +25854,11 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         id: z.number().int().optional(),
         name: z.string().min(1),
         email: z.string().email().optional().or(z.literal("")),
+        cpf: z.string().optional().or(z.literal("")),
         specialty: z.string().optional(),
         bio: z.string().optional(),
         companyId: z.number().int().optional(),
+        companyIds: z.array(z.number().int()).optional(),
         // SP5 #7 — template do link de reunião (Meet/Teams permanente do profissional).
         // Pode ser o link fixo da sala dele (mais simples sem OAuth).
         meetingUrlTemplate: z.string().optional(),
@@ -25712,24 +25866,89 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
       .mutation(async ({ ctx, input }) => {
         const db2 = await getDb();
         if (!db2) throw new Error("DB unavailable");
-        // Garante DDL
-        try { await db2.execute(drzSql`ALTER TABLE appointment_professionals ADD COLUMN meeting_url_template VARCHAR(500)`); } catch(_) {}
-        const cid = input.companyId ?? (ctx.user as any).companyId ?? null;
+        await ensureAuthIdentityColumns(db2);
+        await ensureAppointmentProfessionalCompanyTables(db2);
+        const role = String((ctx.user as any).role ?? "");
+        const isGlobal = role === "admin_global" || role === "super_admin";
+        const requestedCompanyIds = isGlobal
+          ? Array.from(new Set((input.companyIds?.length ? input.companyIds : input.companyId ? [input.companyId] : []).map(Number).filter(Boolean)))
+          : [(ctx.user as any).companyId].map(Number).filter(Boolean);
+        const cid = requestedCompanyIds[0] ?? input.companyId ?? (ctx.user as any).companyId ?? null;
+        const cpfNorm = normalizeCpf(input.cpf);
+        if (input.cpf && !cpfNorm) throw new TRPCError({ code: "BAD_REQUEST", message: "CPF invalido." });
+        if (!input.id && !input.email) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "E-mail obrigatorio para criar login do psicologo." });
+        }
+        const shouldRefreshCompanyLinks = input.companyIds !== undefined || input.companyId !== undefined;
         if (input.id) {
           await db2.execute(drzSql`
             UPDATE appointment_professionals
             SET name=${input.name}, email=${input.email || null}, specialty=${input.specialty || null},
-                bio=${input.bio || null}, company_id=${cid},
+                bio=${input.bio || null}, company_id=${cid}, cpf=COALESCE(${cpfNorm}, cpf),
                 meeting_url_template=${input.meetingUrlTemplate || null}
             WHERE id=${input.id}
           `);
-          return { id: input.id };
+          if (shouldRefreshCompanyLinks && requestedCompanyIds.length > 0) {
+            await execP(db2, `DELETE FROM appointment_professional_companies WHERE professional_id=?`, [input.id]);
+            for (const coId of requestedCompanyIds) {
+              await execP(db2, `INSERT IGNORE INTO appointment_professional_companies (professional_id, company_id) VALUES (?,?)`, [input.id, coId]);
+            }
+          }
+          return { id: input.id, emailSent: false };
         } else {
           const res = await db2.execute(drzSql`
-            INSERT INTO appointment_professionals (company_id, name, email, specialty, bio, meeting_url_template)
-            VALUES (${cid}, ${input.name}, ${input.email || null}, ${input.specialty || null}, ${input.bio || null}, ${input.meetingUrlTemplate || null})
+            INSERT INTO appointment_professionals (company_id, name, email, cpf, specialty, bio, meeting_url_template)
+            VALUES (${cid}, ${input.name}, ${input.email || null}, ${cpfNorm}, ${input.specialty || null}, ${input.bio || null}, ${input.meetingUrlTemplate || null})
           `);
-          return { id: Number((res as any)[0]?.insertId ?? 0) };
+          const professionalId = Number((res as any)[0]?.insertId ?? 0);
+          for (const coId of requestedCompanyIds) {
+            await execP(db2, `INSERT IGNORE INTO appointment_professional_companies (professional_id, company_id) VALUES (?,?)`, [professionalId, coId]);
+          }
+          let userId = 0;
+          let emailSent = false;
+          let emailWarning: string | undefined;
+          const email = String(input.email || "").toLowerCase();
+          if (email) {
+            const [[existingUser]]: any = await execP(db2, `SELECT id FROM users WHERE email=? LIMIT 1`, [email]).catch(() => [[null]]);
+            if (existingUser?.id) {
+              userId = Number(existingUser.id);
+              await execP(db2, `UPDATE users SET role='psicologo', name=?, cpf=COALESCE(?, cpf), company_id=COALESCE(?, company_id), is_active=1 WHERE id=?`, [input.name, cpfNorm, cid, userId]);
+            } else {
+              const openId = `psych:${email}`;
+              await execP(db2, `INSERT INTO users (openId, name, email, loginMethod, role, company_id, cpf, is_active, employment_status)
+                VALUES (?, ?, ?, 'corporate', 'psicologo', ?, ?, 1, 'active')
+                ON DUPLICATE KEY UPDATE name=VALUES(name), email=VALUES(email), role='psicologo', company_id=VALUES(company_id), cpf=VALUES(cpf), is_active=1`,
+                [openId, input.name, email, cid, cpfNorm]);
+              const [[u]]: any = await execP(db2, `SELECT id FROM users WHERE email=? LIMIT 1`, [email]);
+              userId = Number(u?.id ?? 0);
+            }
+            await execP(db2, `UPDATE appointment_professionals SET user_id=? WHERE id=?`, [userId || null, professionalId]).catch(() => undefined);
+            const [[co]]: any = cid ? await execP(db2, `SELECT name FROM companies WHERE id=? LIMIT 1`, [cid]).catch(() => [[null]]) : [[null]];
+            const companyName = co?.name || "Saude do Trabalho";
+            const { randomBytes } = await import("crypto");
+            const actToken = randomBytes(32).toString("hex");
+            const actExp = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 19).replace("T", " ");
+            await execP(db2, `INSERT INTO corporate_emails (email, company, employeeName, isActive, employment_status, company_id, role, cpf, userId, activation_token, activation_expires_at)
+              VALUES (?, ?, ?, 1, 'active', ?, 'psicologo', ?, ?, ?, ?)
+              ON DUPLICATE KEY UPDATE employeeName=VALUES(employeeName), isActive=1, employment_status='active', company_id=VALUES(company_id), role='psicologo', cpf=VALUES(cpf), userId=VALUES(userId), activation_token=IF(hasSetPassword=1, activation_token, VALUES(activation_token)), activation_expires_at=IF(hasSetPassword=1, activation_expires_at, VALUES(activation_expires_at))`,
+              [email, companyName, input.name, cid, cpfNorm, userId || null, actToken, actExp]);
+            try {
+              const base = getEmailLinkBaseUrl();
+              const link = `${base}/ativar?token=${actToken}`;
+              const sendRes = await sendEmail({
+                to: email,
+                toName: input.name,
+                subject: "Bem-vindo(a) a Plataforma Saude do Trabalho - Psicologia",
+                html: buildWelcomeEmail({ name: input.name, companyName, link, base }),
+              });
+              if (sendRes.ok && !sendRes.preview) emailSent = true;
+              else if (sendRes.preview) emailWarning = "SMTP nao configurado - e-mail em modo preview.";
+              else emailWarning = `E-mail nao enviado: ${sendRes.error || "?"}`;
+            } catch (err: any) {
+              emailWarning = `Falha ao enviar e-mail: ${err?.message || "?"}`;
+            }
+          }
+          return { id: professionalId, userId, emailSent, emailWarning };
         }
       }),
 
@@ -25737,7 +25956,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
     // Quando o slot do colaborador cair dentro de um blackout, getAvailableSlots oculta.
     listBlackouts: protectedProcedure
       .input(z.object({ professionalId: z.number().int() }))
-      .query(async ({ input }) => {
+      .query(async ({ ctx, input }) => {
         const db = await getDb();
         try { await db!.execute(drzSql`CREATE TABLE IF NOT EXISTS appointment_blackouts (
           id INT AUTO_INCREMENT PRIMARY KEY,
@@ -25748,6 +25967,11 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           INDEX idx_bo_prof (professional_id, starts_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`); } catch(_) {}
+        const role = String((ctx.user as any).role ?? "");
+        if (role === "psicologo") await assertProfessionalBelongsToPsychologist(db, input.professionalId, ctx.user);
+        else if ((ctx.user as any).companyId && role !== "admin_global" && role !== "super_admin") {
+          await assertProfessionalLinkedToCompany(db, input.professionalId, Number((ctx.user as any).companyId));
+        }
         const r: any = await db!.execute(drzSql`
           SELECT id, starts_at, ends_at, motivo
           FROM appointment_blackouts
@@ -25763,7 +25987,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         endsAt: z.string(),
         motivo: z.string().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const db = await getDb();
         try { await db!.execute(drzSql`CREATE TABLE IF NOT EXISTS appointment_blackouts (
           id INT AUTO_INCREMENT PRIMARY KEY, professional_id INT NOT NULL,
@@ -25771,6 +25995,11 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           INDEX idx_bo_prof (professional_id, starts_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`); } catch(_) {}
+        const role = String((ctx.user as any).role ?? "");
+        if (role === "psicologo") await assertProfessionalBelongsToPsychologist(db, input.professionalId, ctx.user);
+        else if ((ctx.user as any).companyId && role !== "admin_global" && role !== "super_admin") {
+          await assertProfessionalLinkedToCompany(db, input.professionalId, Number((ctx.user as any).companyId));
+        }
         if (new Date(input.endsAt) <= new Date(input.startsAt))
           throw new TRPCError({ code: "BAD_REQUEST", message: "Data final deve ser maior que a inicial." });
         const res: any = await db!.execute(drzSql`
@@ -25781,8 +26010,16 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
 
     removeBlackout: careManagerProcedure
       .input(z.object({ id: z.number().int() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const db = await getDb();
+        const [[blackout]]: any = await execP(db, `SELECT professional_id FROM appointment_blackouts WHERE id=? LIMIT 1`, [input.id]);
+        if (!blackout) return { ok: true };
+        const professionalId = Number(blackout.professional_id);
+        const role = String((ctx.user as any).role ?? "");
+        if (role === "psicologo") await assertProfessionalBelongsToPsychologist(db, professionalId, ctx.user);
+        else if ((ctx.user as any).companyId && role !== "admin_global" && role !== "super_admin") {
+          await assertProfessionalLinkedToCompany(db, professionalId, Number((ctx.user as any).companyId));
+        }
         await db!.execute(drzSql`DELETE FROM appointment_blackouts WHERE id=${input.id}`);
         return { ok: true };
       }),
@@ -25792,6 +26029,11 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
       .mutation(async ({ ctx, input }) => {
         const db2 = await getDb();
         if (!db2) throw new Error("DB unavailable");
+        const role = String((ctx.user as any).role ?? "");
+        const isGlobal = role === "admin_global" || role === "super_admin";
+        if (!isGlobal && (ctx.user as any).companyId) {
+          await assertProfessionalLinkedToCompany(db2, input.id, Number((ctx.user as any).companyId));
+        }
         await db2.execute(drzSql`UPDATE appointment_professionals SET is_active=0 WHERE id=${input.id}`);
         return { ok: true };
       }),
@@ -25802,6 +26044,11 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
       .query(async ({ ctx, input }) => {
         const db2 = await getDb();
         if (!db2) throw new Error("DB unavailable");
+        const role = String((ctx.user as any).role ?? "");
+        if (role === "psicologo") await assertProfessionalBelongsToPsychologist(db2, input.professionalId, ctx.user);
+        else if ((ctx.user as any).companyId && role !== "admin_global" && role !== "super_admin") {
+          await assertProfessionalLinkedToCompany(db2, input.professionalId, Number((ctx.user as any).companyId));
+        }
         const rows = await db2.execute(
           drzSql`SELECT * FROM appointment_availability WHERE professional_id=${input.professionalId} AND is_active=1 ORDER BY day_of_week, start_time`
         );
@@ -25829,6 +26076,11 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
       .mutation(async ({ ctx, input }) => {
         const db2 = await getDb();
         if (!db2) throw new Error("DB unavailable");
+        const role = String((ctx.user as any).role ?? "");
+        if (role === "psicologo") await assertProfessionalBelongsToPsychologist(db2, input.professionalId, ctx.user);
+        else if ((ctx.user as any).companyId && role !== "admin_global" && role !== "super_admin") {
+          await assertProfessionalLinkedToCompany(db2, input.professionalId, Number((ctx.user as any).companyId));
+        }
         // Replace all slots for this professional
         await db2.execute(drzSql`DELETE FROM appointment_availability WHERE professional_id=${input.professionalId}`);
         for (const slot of input.slots) {
@@ -25848,9 +26100,11 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
      */
     getAvailableDates: protectedProcedure
       .input(z.object({ professionalId: z.number().int(), daysAhead: z.number().int().min(1).max(120).default(45) }))
-      .query(async ({ input }) => {
+      .query(async ({ ctx, input }) => {
         const db2 = await getDb();
         if (!db2) throw new Error("DB unavailable");
+        const requestCompanyId = Number((ctx.user as any).companyId ?? 0);
+        if (requestCompanyId) await assertProfessionalLinkedToCompany(db2, input.professionalId, requestCompanyId);
         // 1. Pega os days_of_week que o profissional atende.
         const avRows: any = await db2.execute(
           drzSql`SELECT DISTINCT day_of_week FROM appointment_availability WHERE professional_id=${input.professionalId} AND is_active=1`
@@ -25900,6 +26154,8 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
       .query(async ({ ctx, input }) => {
         const db2 = await getDb();
         if (!db2) throw new Error("DB unavailable");
+        const requestCompanyId = Number((ctx.user as any).companyId ?? 0);
+        if (requestCompanyId) await assertProfessionalLinkedToCompany(db2, input.professionalId, requestCompanyId);
         const d = new Date(input.date);
         const dow = d.getDay(); // 0=Sun
         // Get availability for that weekday
@@ -26002,6 +26258,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         } catch (err: any) { if (err?.code === "BAD_REQUEST") throw err; /* tabela ausente → segue */ }
 
         // SP5 #7 — Auto-popular meeting_url do template do profissional
+        await assertProfessionalLinkedToCompany(db2, input.professionalId, companyId);
         const profRows = await db2.execute(drzSql`SELECT * FROM appointment_professionals WHERE id=${input.professionalId}`);
         const prof: any = Array.isArray((profRows as any)[0]) ? ((profRows as any)[0])[0] : null;
         const autoMeetingUrl = prof?.meeting_url_template ?? null;
@@ -26089,17 +26346,25 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         const canSeeOutcome = ["psicologo", "admin", "admin_global", "company_admin", "super_admin"].includes(role);
         const cid = input.companyId ?? (ctx.user as any).companyId;
         let q: any;
-        if (isAdmin || role === "psicologo") {
+        if (role === "psicologo") {
+          q = drzSql`SELECT a.*, u.name as collaborator_name, u.email as collaborator_email, p.id as professional_id, p.name as professional_name, p.specialty
+            FROM appointments a
+            JOIN users u ON u.id=a.collaborator_id
+            JOIN appointment_professionals p ON p.id=a.professional_id
+            WHERE p.is_active=1 AND (p.user_id=${(ctx.user as any).id} OR p.email=${String((ctx.user as any).email ?? "")})
+            ORDER BY a.scheduled_at DESC LIMIT 200`;
+        } else if (isAdmin) {
           q = cid
-            ? drzSql`SELECT a.*, u.name as collaborator_name, u.email as collaborator_email, p.name as professional_name, p.specialty FROM appointments a JOIN users u ON u.id=a.collaborator_id JOIN appointment_professionals p ON p.id=a.professional_id WHERE a.company_id=${cid} ORDER BY a.scheduled_at DESC LIMIT 200`
-            : drzSql`SELECT a.*, u.name as collaborator_name, u.email as collaborator_email, p.name as professional_name, p.specialty FROM appointments a JOIN users u ON u.id=a.collaborator_id JOIN appointment_professionals p ON p.id=a.professional_id ORDER BY a.scheduled_at DESC LIMIT 200`;
+            ? drzSql`SELECT a.*, u.name as collaborator_name, u.email as collaborator_email, p.id as professional_id, p.name as professional_name, p.specialty FROM appointments a JOIN users u ON u.id=a.collaborator_id JOIN appointment_professionals p ON p.id=a.professional_id WHERE a.company_id=${cid} ORDER BY a.scheduled_at DESC LIMIT 200`
+            : drzSql`SELECT a.*, u.name as collaborator_name, u.email as collaborator_email, p.id as professional_id, p.name as professional_name, p.specialty FROM appointments a JOIN users u ON u.id=a.collaborator_id JOIN appointment_professionals p ON p.id=a.professional_id ORDER BY a.scheduled_at DESC LIMIT 200`;
         } else {
-          q = drzSql`SELECT a.*, p.name as professional_name, p.specialty FROM appointments a JOIN appointment_professionals p ON p.id=a.professional_id WHERE a.collaborator_id=${ctx.user.id} ORDER BY a.scheduled_at DESC LIMIT 50`;
+          q = drzSql`SELECT a.*, p.id as professional_id, p.name as professional_name, p.specialty FROM appointments a JOIN appointment_professionals p ON p.id=a.professional_id WHERE a.collaborator_id=${ctx.user.id} ORDER BY a.scheduled_at DESC LIMIT 50`;
         }
         const rows = await db2.execute(q);
         const list = Array.isArray((rows as any)[0]) ? (rows as any)[0] : [];
         return list.map((r: any) => ({
           id: Number(r.id),
+          professionalId: Number(r.professional_id ?? 0),
           collaboratorName: r.collaborator_name ?? null,
           collaboratorEmail: r.collaborator_email ?? null,
           professionalName: String(r.professional_name ?? ""),
@@ -26159,6 +26424,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         // Só psicólogo + admin (e admin_global/super_admin/company_admin).
         const canEditAppt = ["psicologo", "admin", "admin_global", "company_admin", "super_admin"].includes(role);
         if (!canEditAppt) throw new TRPCError({ code: "FORBIDDEN", message: "Apenas o psicólogo e administradores podem atualizar consultas. RH tem acesso somente leitura aos agendamentos." });
+        if (role === "psicologo") await assertAppointmentBelongsToPsychologist(db2, input.id, ctx.user);
         const canWriteOutcome = canEditAppt;
         if (input.outcomeNotes !== undefined && !canWriteOutcome) {
           throw new TRPCError({ code: "FORBIDDEN", message: "Observações profissionais são sigilosas; apenas o psicólogo registra." });
@@ -26195,8 +26461,15 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         if (!allowed.includes(role)) throw new TRPCError({ code: "FORBIDDEN" });
         const cid = input?.companyId ?? (ctx.user as any).companyId ?? null;
         if (!cid) return { total: 0, byStatus: {}, attendanceRate: 0, noShowRate: 0, cancelRate: 0, byMonth: [] };
-        const r: any = await db2.execute(drzSql`
-          SELECT status, COUNT(*) AS c FROM appointments WHERE company_id=${cid} GROUP BY status`);
+        const r: any = role === "psicologo"
+          ? await db2.execute(drzSql`
+            SELECT a.status, COUNT(*) AS c
+            FROM appointments a
+            JOIN appointment_professionals p ON p.id=a.professional_id
+            WHERE a.company_id=${cid} AND (p.user_id=${(ctx.user as any).id} OR p.email=${String((ctx.user as any).email ?? "")})
+            GROUP BY a.status`)
+          : await db2.execute(drzSql`
+            SELECT status, COUNT(*) AS c FROM appointments WHERE company_id=${cid} GROUP BY status`);
         const rows: any[] = (r as any)[0] ?? [];
         const byStatus: Record<string, number> = {};
         let total = 0;
@@ -26207,12 +26480,22 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         const noShow = (byStatus.no_show ?? 0) + (byStatus.faltou ?? 0);
         const cancelled = (byStatus.cancelled ?? 0) + (byStatus.cancelado ?? 0);
         const denom = completed + noShow + cancelled;
-        const m: any = await db2.execute(drzSql`
-          SELECT DATE_FORMAT(scheduled_at, '%Y-%m') AS ym, COUNT(*) AS total,
-                 SUM(CASE WHEN status IN ('completed','realizado') THEN 1 ELSE 0 END) AS completed
-          FROM appointments WHERE company_id=${cid}
-            AND scheduled_at >= DATE_SUB(NOW(), INTERVAL 12 MONTH)
-          GROUP BY ym ORDER BY ym`);
+        const m: any = role === "psicologo"
+          ? await db2.execute(drzSql`
+            SELECT DATE_FORMAT(a.scheduled_at, '%Y-%m') AS ym, COUNT(*) AS total,
+                   SUM(CASE WHEN a.status IN ('completed','realizado') THEN 1 ELSE 0 END) AS completed
+            FROM appointments a
+            JOIN appointment_professionals p ON p.id=a.professional_id
+            WHERE a.company_id=${cid}
+              AND (p.user_id=${(ctx.user as any).id} OR p.email=${String((ctx.user as any).email ?? "")})
+              AND a.scheduled_at >= DATE_SUB(NOW(), INTERVAL 12 MONTH)
+            GROUP BY ym ORDER BY ym`)
+          : await db2.execute(drzSql`
+            SELECT DATE_FORMAT(scheduled_at, '%Y-%m') AS ym, COUNT(*) AS total,
+                   SUM(CASE WHEN status IN ('completed','realizado') THEN 1 ELSE 0 END) AS completed
+            FROM appointments WHERE company_id=${cid}
+              AND scheduled_at >= DATE_SUB(NOW(), INTERVAL 12 MONTH)
+            GROUP BY ym ORDER BY ym`);
         const byMonth = ((m as any)[0] ?? []).map((x: any) => ({
           month: String(x.ym), total: Number(x.total ?? 0), completed: Number(x.completed ?? 0),
         }));
@@ -26243,8 +26526,11 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
     /** Psicólogo inicia a consulta — grava horário real de início. */
     startConsultation: careManagerProcedure
       .input(z.object({ id: z.number().int() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        if (String((ctx.user as any).role ?? "") === "psicologo") {
+          await assertAppointmentBelongsToPsychologist(db, input.id, ctx.user);
+        }
         for (const col of [
           "started_at DATETIME NULL", "ended_at DATETIME NULL", "wait_start DATETIME NULL",
           "wait_end DATETIME NULL", "billable TINYINT(1) NOT NULL DEFAULT 0",
@@ -26258,8 +26544,11 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
     /** Psicólogo encerra a consulta — grava fim, duração efetiva e marca faturável. */
     endConsultation: careManagerProcedure
       .input(z.object({ id: z.number().int(), outcomeNotes: z.string().optional() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        if (String((ctx.user as any).role ?? "") === "psicologo") {
+          await assertAppointmentBelongsToPsychologist(db, input.id, ctx.user);
+        }
         const [[a]]: any = await execP(db,
           `SELECT a.started_at, a.professional_id, p.hourly_rate FROM appointments a
            JOIN appointment_professionals p ON p.id=a.professional_id WHERE a.id=?`, [input.id]);
@@ -26276,6 +26565,9 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
       .input(z.object({ id: z.number().int(), waitStart: z.string(), waitEnd: z.string(), obs: z.string().optional() }))
       .mutation(async ({ ctx, input }) => {
         const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        if (String((ctx.user as any).role ?? "") === "psicologo") {
+          await assertAppointmentBelongsToPsychologist(db, input.id, ctx.user);
+        }
         const cid = (ctx.user as any).companyId;
         // Config de faturamento (tempo mínimo p/ ser faturável) por empresa.
         try { await db.execute(`CREATE TABLE IF NOT EXISTS billing_config (company_id INT PRIMARY KEY, min_billable_minutes INT NOT NULL DEFAULT 15)` as any); } catch (_) {}
