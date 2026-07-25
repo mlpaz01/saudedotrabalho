@@ -14591,25 +14591,37 @@ export const appRouter = router({
         segmento: z.string().optional(),
         qtdColaboradores: z.number().int().default(0),
         // Bruno R5-P3 — Aceita "auto" (faixa parametrizada, default novo) + legacy.
-        plano: z.enum(["auto","starter","business","enterprise"]).default("auto"),
+        plano: z.string().default("auto"),
+        proposalModel: z.enum(["enterprise", "white_label"]).default("enterprise"),
+        enterprisePackage: z.enum(["enterprise_start", "enterprise_business", "enterprise_premium"]).optional(),
+        whiteLabelPlan: z.enum(["start_white_label", "partner_pro", "carteira", "enterprise_light"]).optional(),
+        setupMode: z.enum(["none", "single", "installments"]).default("none"),
+        setupValue: z.number().default(0),
+        setupInstallments: z.number().int().default(0),
         descontoExtraPct: z.number().default(0),
         validadeDias: z.number().int().default(15),
         partnerId: z.number().int().optional().nullable(),
         observacoes: z.string().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const { ensureCrmTables, calcularValoresAsync } = await import("./_core/crm");
+        const { ensureCrmTables, calculateCommercialProposalValues } = await import("./_core/crm");
         await ensureCrmTables();
         const db = await getDb();
         // Bruno R5-P3 — usa calc async (faixas vivem em pricing_faixas, editáveis pelo SA).
-        const v = await calcularValoresAsync(input.plano, input.qtdColaboradores, input.descontoExtraPct);
+        const v = calculateCommercialProposalValues(input);
+        const finalPlano = input.proposalModel === "white_label"
+          ? (input.whiteLabelPlan || "start_white_label")
+          : (input.enterprisePackage || "enterprise_premium");
         const uid = (ctx.user as any).id;
         if (input.id) {
           await db!.execute(drzSql`UPDATE commercial_proposals SET
             razao_social=${input.razaoSocial}, nome_fantasia=${input.nomeFantasia ?? null},
             cnpj=${input.cnpj ?? null}, responsavel=${input.responsavel ?? null}, cargo=${input.cargo ?? null},
             email=${input.email ?? null}, telefone=${input.telefone ?? null}, segmento=${input.segmento ?? null},
-            qtd_colaboradores=${input.qtdColaboradores}, plano=${input.plano},
+            qtd_colaboradores=${input.qtdColaboradores}, plano=${finalPlano},
+            proposal_model=${input.proposalModel}, enterprise_package=${input.enterprisePackage ?? null},
+            white_label_plan=${input.whiteLabelPlan ?? null}, setup_mode=${input.setupMode},
+            setup_value=${input.setupValue}, setup_installments=${input.setupInstallments},
             valor_mensal=${v.valor_mensal}, valor_anual=${v.valor_anual},
             desconto_pct=${input.descontoExtraPct}, valor_total=${v.valor_total},
             validade_dias=${input.validadeDias}, partner_id=${input.partnerId ?? null},
@@ -14620,12 +14632,15 @@ export const appRouter = router({
         const res: any = await db!.execute(drzSql`
           INSERT INTO commercial_proposals
           (razao_social, nome_fantasia, cnpj, responsavel, cargo, email, telefone, segmento,
-           qtd_colaboradores, plano, valor_mensal, valor_anual, desconto_pct, valor_total,
+           qtd_colaboradores, plano, proposal_model, enterprise_package, white_label_plan, setup_mode, setup_value, setup_installments,
+           valor_mensal, valor_anual, desconto_pct, valor_total,
            validade_dias, partner_id, observacoes, created_by_user_id)
           VALUES (${input.razaoSocial}, ${input.nomeFantasia ?? null}, ${input.cnpj ?? null},
                   ${input.responsavel ?? null}, ${input.cargo ?? null}, ${input.email ?? null},
                   ${input.telefone ?? null}, ${input.segmento ?? null}, ${input.qtdColaboradores},
-                  ${input.plano}, ${v.valor_mensal}, ${v.valor_anual}, ${input.descontoExtraPct},
+                  ${finalPlano}, ${input.proposalModel}, ${input.enterprisePackage ?? null}, ${input.whiteLabelPlan ?? null},
+                  ${input.setupMode}, ${input.setupValue}, ${input.setupInstallments},
+                  ${v.valor_mensal}, ${v.valor_anual}, ${input.descontoExtraPct},
                   ${v.valor_total}, ${input.validadeDias}, ${input.partnerId ?? null},
                   ${input.observacoes ?? null}, ${uid})`);
         return { ok: true, id: Number((res as any)[0]?.insertId ?? 0), ...v };
@@ -29677,6 +29692,88 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
       }
       return `/uploads/cipa_meetings/${fileName}`;
     }
+    async function loadCipaPendingVoters(db: any, cid: number, electionId: number) {
+      const [[el]]: any = await execP(db, `SELECT id, name, voting_end FROM cipa_elections WHERE id=? AND company_id=?`, [electionId, cid]);
+      if (!el) throw new TRPCError({ code: "NOT_FOUND", message: "Eleicao nao encontrada." });
+      const [rows]: any = await execP(db, `
+        SELECT u.id AS user_id, u.name, u.email, u.whatsapp_e164, COALESCE(u.position,'') AS cargo,
+               COALESCE(b.name,'Sem filial') AS branch_name, COALESCE(s.name,'Sem setor') AS sector_name
+        FROM users u
+        LEFT JOIN branches b ON b.id=u.branch_id
+        LEFT JOIN sectors s ON s.id=u.sector_id
+        WHERE u.company_id=? AND ${activeEmployeeWhere("u")}
+          AND NOT EXISTS (SELECT 1 FROM cipa_voters v WHERE v.election_id=? AND v.user_id=u.id)
+        ORDER BY branch_name, sector_name, u.name`, [cid, electionId]);
+      return { election: el, voters: (rows ?? []) as any[] };
+    }
+    async function generateCipaPendingVotersPdf(db: any, cid: number, electionId: number) {
+      const puppeteer = (await import("puppeteer")).default;
+      const fs = await import("fs/promises");
+      const path = await import("path");
+      const escHtml = (s: unknown) => String(s ?? "").replace(/[<>&"]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;","\"":"&quot;"}[c] as string));
+      const { election, voters } = await loadCipaPendingVoters(db, cid, electionId);
+      const [[co]]: any = await execP(db, `SELECT name, cnpj FROM companies WHERE id=?`, [cid]).catch(() => [[{ name: "", cnpj: "" }]]);
+      const today = new Date().toLocaleDateString("pt-BR");
+      let currentBranch = "";
+      let currentSector = "";
+      const rowsHtml = voters.map((u: any) => {
+        const branch = String(u.branch_name || "Sem filial");
+        const sector = String(u.sector_name || "Sem setor");
+        let prefix = "";
+        if (branch !== currentBranch) {
+          currentBranch = branch;
+          currentSector = "";
+          prefix += `<tr class="branch"><td colspan="4">Filial: ${escHtml(branch)}</td></tr>`;
+        }
+        if (sector !== currentSector) {
+          currentSector = sector;
+          prefix += `<tr class="sector"><td colspan="4">Setor: ${escHtml(sector)}</td></tr>`;
+        }
+        return `${prefix}<tr><td>${escHtml(u.name)}</td><td>${escHtml(u.cargo || "-")}</td><td>${escHtml(sector)}</td><td>${escHtml(branch)}</td></tr>`;
+      }).join("");
+      const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
+        @page { size:A4; margin:16mm; }
+        body { font-family: Arial, sans-serif; color:#0f172a; }
+        h1 { font-size:20pt; color:#065f46; margin:0 0 4px; }
+        .meta { color:#64748b; font-size:9pt; margin-bottom:14px; }
+        .note { border:1px solid #d1fae5; background:#f0fdf4; padding:9px; border-radius:8px; font-size:9pt; margin-bottom:12px; }
+        table { width:100%; border-collapse:collapse; font-size:9pt; }
+        th, td { border:1px solid #e2e8f0; padding:6px; text-align:left; vertical-align:top; }
+        th { background:#ecfeff; }
+        .branch td { background:#064e3b; color:white; font-weight:bold; font-size:11pt; }
+        .sector td { background:#d1fae5; color:#064e3b; font-weight:bold; page-break-before:auto; }
+      </style></head><body>
+        <h1>Relatorio de Faltosos - Eleicao da CIPA</h1>
+        <div class="meta">Empresa: <b>${escHtml(co?.name || "")}</b> - CNPJ: ${escHtml(co?.cnpj || "-")} - Eleicao: ${escHtml(election.name)} - Emissao: ${today}</div>
+        <div class="note">Este relatorio lista apenas colaboradores que ainda nao registraram voto. O candidato escolhido por cada colaborador permanece totalmente sigiloso.</div>
+        <table><thead><tr><th>Nome</th><th>Cargo</th><th>Setor</th><th>Filial</th></tr></thead><tbody>${rowsHtml || `<tr><td colspan="4">Nenhum colaborador pendente de voto.</td></tr>`}</tbody></table>
+      </body></html>`;
+      const outDir = "/var/www/saudedotrabalho/uploads/cipa_elections";
+      await fs.mkdir(outDir, { recursive: true });
+      const fileName = `cipa_faltosos_${electionId}_${Date.now()}.pdf`;
+      const outPath = path.join(outDir, fileName);
+      const browser = await puppeteer.launch({
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium-browser",
+        headless: true,
+        args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      });
+      try {
+        const page = await browser.newPage();
+        await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 15000 });
+        await page.pdf({ path: outPath, format: "A4", printBackground: true });
+      } finally {
+        await browser.close();
+      }
+      return { url: `/uploads/cipa_elections/${fileName}`, total: voters.length };
+    }
+    function fillCipaReminderTemplate(text: string, user: any, election: any) {
+      const end = election.voting_end ? new Date(election.voting_end).toLocaleDateString("pt-BR") : "a data de encerramento";
+      const link = "https://saudedotrabalho.com/plataforma/cipa";
+      return String(text || "")
+        .replace(/\{\{nome\}\}|\{nome\}/g, String(user.name || ""))
+        .replace(/\{\{data_encerramento\}\}|\{data de encerramento\}/g, end)
+        .replace(/\{\{link_votacao\}\}|\{link da vota[cç][aã]o\}/gi, link);
+    }
     return router({
       listElections: adminOrRhProcedure.query(async ({ ctx }) => {
         const cid = (ctx.user as any).companyId;
@@ -29801,6 +29898,91 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
       }),
       // Voto secreto: grava EVIDÊNCIA de participação (cipa_voters) e o VOTO ANÔNIMO
       // (cipa_votes) em inserts separados, sem qualquer chave que os ligue depois.
+      pendingVotersReport: adminOrRhProcedure.input(z.object({ electionId: z.number().int() })).mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+        await ensureCipaTables(db);
+        return await generateCipaPendingVotersPdf(db, cid, input.electionId);
+      }),
+      pendingVotersPreview: adminOrRhProcedure.input(z.object({ electionId: z.number().int() })).query(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId;
+        const db = await getDb(); if (!db || !cid) return { total: 0, groups: [] };
+        await ensureCipaTables(db);
+        const { voters } = await loadCipaPendingVoters(db, cid, input.electionId);
+        const groups = new Map<string, number>();
+        for (const u of voters) {
+          const key = `${u.branch_name || "Sem filial"} / ${u.sector_name || "Sem setor"}`;
+          groups.set(key, (groups.get(key) || 0) + 1);
+        }
+        return { total: voters.length, groups: Array.from(groups.entries()).map(([label, total]) => ({ label, total })) };
+      }),
+      sendPendingVotersReminder: adminOrRhProcedure
+        .input(z.object({
+          electionId: z.number().int(),
+          method: z.enum(["email", "whatsapp", "both"]),
+          subject: z.string().min(3),
+          body: z.string().min(10),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+          await ensureCipaTables(db);
+          const { election, voters } = await loadCipaPendingVoters(db, cid, input.electionId);
+          const uid = Number((ctx.user as any).id || 0);
+          let campaignId: number | null = null;
+          let emailSent = 0, emailFailed = 0, emailNoAddress = 0;
+          let whatsappSent = 0, whatsappFailed = 0, whatsappNoNumber = 0;
+          const useEmail = input.method === "email" || input.method === "both";
+          const useWhatsapp = input.method === "whatsapp" || input.method === "both";
+
+          if (useEmail) {
+            const emailRecipients = voters.filter((u: any) => String(u.email || "").includes("@"));
+            emailNoAddress = voters.length - emailRecipients.length;
+            campaignId = await createEmailCampaign({
+              companyId: cid,
+              createdByUserId: uid,
+              name: `Lembrete CIPA - ${election.name}`,
+              campaignType: "cipa_pending_vote",
+              filterJson: { electionId: input.electionId, onlyPendingVoters: true },
+              emailSubject: input.subject,
+              emailBody: input.body,
+              scheduleType: "immediate",
+              recipients: emailRecipients.map((u: any) => ({ userId: Number(u.user_id), email: String(u.email), name: u.name || null })),
+            });
+            const campaign = await getEmailCampaign(campaignId);
+            await updateEmailCampaignStatus(campaignId, "sending").catch(() => {});
+            for (const r of campaign?.recipients ?? []) {
+              const user = emailRecipients.find((u: any) => Number(u.user_id) === Number(r.userId)) || r;
+              const subject = fillCipaReminderTemplate(input.subject, user, election);
+              const body = fillCipaReminderTemplate(input.body, user, election);
+              const result = await sendEmail({ to: r.email, toName: r.name ?? undefined, subject, html: plainToHtml(body) });
+              if (result.ok) {
+                emailSent++;
+                await updateEmailCampaignRecipient(r.id, result.preview ? "preview_sent" : "sent").catch(() => {});
+                await logEmail(r.email, "cipa_pending_vote", subject, true).catch(() => {});
+              } else {
+                emailFailed++;
+                await updateEmailCampaignRecipient(r.id, "failed", result.error || "unknown error").catch(() => {});
+                await logEmail(r.email, "cipa_pending_vote", subject, false, result.error).catch(() => {});
+              }
+            }
+            await bumpEmailCampaignCounters(campaignId, { sent: emailSent, failed: emailFailed }).catch(() => {});
+            await updateEmailCampaignStatus(campaignId, "sent", true).catch(() => {});
+          }
+
+          if (useWhatsapp) {
+            const { sendWhatsappText } = await import("./_core/whatsapp");
+            for (const u of voters) {
+              const phone = String(u.whatsapp_e164 || "");
+              if (!phone) { whatsappNoNumber++; continue; }
+              const body = fillCipaReminderTemplate(input.body, u, election);
+              const result = await sendWhatsappText(phone, body, { companyId: cid, userId: uid });
+              if (result.ok) whatsappSent++; else whatsappFailed++;
+            }
+          }
+
+          return { ok: true, totalPending: voters.length, campaignId, emailSent, emailFailed, emailNoAddress, whatsappSent, whatsappFailed, whatsappNoNumber };
+        }),
       castVote: protectedProcedure
         .input(z.object({ electionId: z.number().int(), candidateId: z.number().int() }))
         .mutation(async ({ ctx, input }) => {

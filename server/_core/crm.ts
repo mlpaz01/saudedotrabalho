@@ -33,6 +33,16 @@ export async function ensureCrmTables() {
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       INDEX idx_p_status (status), INDEX idx_p_partner (partner_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    for (const col of [
+      "proposal_model VARCHAR(30) NULL DEFAULT 'enterprise'",
+      "enterprise_package VARCHAR(40) NULL",
+      "setup_mode VARCHAR(30) NULL DEFAULT 'none'",
+      "setup_value DECIMAL(12,2) NULL DEFAULT 0",
+      "setup_installments INT NULL DEFAULT 0",
+      "white_label_plan VARCHAR(60) NULL",
+    ]) {
+      try { await db.execute(drzSql.raw(`ALTER TABLE commercial_proposals ADD COLUMN ${col}`)); } catch (_) {}
+    }
     await db.execute(drzSql`CREATE TABLE IF NOT EXISTS crm_pipeline_logs (
       id INT AUTO_INCREMENT PRIMARY KEY,
       proposal_id INT NOT NULL,
@@ -223,6 +233,116 @@ export function faixaParaQtd(qtd: number, faixas?: typeof FAIXAS_COLABORADORES) 
   return list.find(f => q >= f.min && q <= f.max) || list[list.length - 1];
 }
 
+export const ENTERPRISE_PROPOSAL_RANGES = [
+  { key: "1-30", min: 1, max: 30, referenceQty: 30, corporate: null, prices: { enterprise_start: 2900, enterprise_business: 3200, enterprise_premium: 3500 } },
+  { key: "31-100", min: 31, max: 100, referenceQty: 100, corporate: null, prices: { enterprise_start: 6300, enterprise_business: 6900, enterprise_premium: 7500 } },
+  { key: "101-300", min: 101, max: 300, referenceQty: 300, corporate: null, prices: { enterprise_start: 8900, enterprise_business: 9700, enterprise_premium: 10500 } },
+  { key: "301-500", min: 301, max: 500, referenceQty: 500, corporate: null, prices: { enterprise_start: 12000, enterprise_business: 13000, enterprise_premium: 14000 } },
+  { key: "501-999", min: 501, max: 999, referenceQty: null, corporate: 22000, prices: { enterprise_start: 16000, enterprise_business: 17000, enterprise_premium: 19000 } },
+  { key: "1000+", min: 1000, max: 999999, referenceQty: null, corporate: null, prices: { enterprise_start: 29000, enterprise_business: 32000, enterprise_premium: 35000 } },
+] as const;
+
+export const ENTERPRISE_PACKAGES = {
+  enterprise_start: { label: "Enterprise Start", summary: "Modulos essenciais para gestao psicossocial, treinamentos e areas operacionais." },
+  enterprise_business: { label: "Enterprise Business", summary: "Start mais conformidade, CIPA, comunicacao ampliada e gestao documental." },
+  enterprise_premium: { label: "Enterprise Premium", summary: "Plataforma completa, com IA, OCR, integracoes, APIs e suporte prioritario." },
+} as const;
+
+export const WHITE_LABEL_PLANS = {
+  start_white_label: { label: "Start White Label", monthly: 397, setup: 1800, cnpjs: "1 CNPJ", employees: "ate 100 colaboradores ativos", storage: "5 GB", aiCredits: "10.000 creditos de IA/mes" },
+  partner_pro: { label: "Partner Pro", monthly: 797, setup: 3000, cnpjs: "ate 5 CNPJs", employees: "500 colaboradores ativos", storage: "10 GB", aiCredits: "25.000 creditos de IA/mes" },
+  carteira: { label: "Carteira", monthly: 1597, setup: 5400, cnpjs: "ate 20 CNPJs", employees: "2.000 colaboradores ativos", storage: "40 GB", aiCredits: "100.000 creditos de IA/mes" },
+  enterprise_light: { label: "Enterprise Light", monthly: 3797, setup: 9600, cnpjs: "ate 50 CNPJs", employees: "5.000 colaboradores ativos", storage: "100 GB", aiCredits: "250.000 creditos de IA/mes" },
+} as const;
+
+export const ENTERPRISE_FEATURE_MATRIX = [
+  { item: "DRPS, AEP, Inventario Psicossocial e Plano de Acao", start: true, business: true, premium: true },
+  { item: "Dashboards, trilhas, certificados e biblioteca de cursos", start: true, business: true, premium: true },
+  { item: "Areas RH, SESMT, Lideranca, Colaborador e Psicologo", start: true, business: true, premium: true },
+  { item: "Gestao de campanhas e comunicacao por e-mail", start: true, business: true, premium: true },
+  { item: "Canal de Denuncias", start: false, business: true, premium: true },
+  { item: "WhatsApp, CIPA, CIPAT e Biblioteca Preventiva", start: false, business: true, premium: true },
+  { item: "Central de Conformidade, paineis executivos e gestao documental", start: false, business: true, premium: true },
+  { item: "IA, OCR e editor livre de questionarios", start: false, business: false, premium: true },
+  { item: "Atas Corporativas e Primeiros Socorros", start: false, business: false, premium: true },
+  { item: "APIs, Integracao TOTVS/RM e integracoes futuras", start: false, business: false, premium: true },
+  { item: "Atualizacoes automaticas e suporte prioritario", start: false, business: false, premium: true },
+] as const;
+
+export type ProposalModel = "enterprise" | "white_label";
+export type EnterprisePackageKey = keyof typeof ENTERPRISE_PACKAGES;
+export type WhiteLabelPlanKey = keyof typeof WHITE_LABEL_PLANS;
+
+export function rangeForEnterprise(qtd: number) {
+  const q = Math.max(1, Math.floor(qtd || 0));
+  return ENTERPRISE_PROPOSAL_RANGES.find((r) => q >= r.min && q <= r.max) ?? ENTERPRISE_PROPOSAL_RANGES[ENTERPRISE_PROPOSAL_RANGES.length - 1];
+}
+
+export function calculateCommercialProposalValues(input: {
+  proposalModel?: string | null;
+  qtdColaboradores?: number | null;
+  enterprisePackage?: string | null;
+  whiteLabelPlan?: string | null;
+  descontoExtraPct?: number | null;
+  setupMode?: string | null;
+  setupValue?: number | null;
+  setupInstallments?: number | null;
+}) {
+  const model: ProposalModel = input.proposalModel === "white_label" ? "white_label" : "enterprise";
+  const discount = Math.max(0, Math.min(90, Number(input.descontoExtraPct || 0)));
+  const setupMode = String(input.setupMode || "none");
+  const setupValue = Math.max(0, Number(input.setupValue || 0));
+  const setupInstallments = Math.max(0, Math.floor(Number(input.setupInstallments || 0)));
+
+  if (model === "white_label") {
+    const planKey = (String(input.whiteLabelPlan || "start_white_label") in WHITE_LABEL_PLANS ? String(input.whiteLabelPlan || "start_white_label") : "start_white_label") as WhiteLabelPlanKey;
+    const plan = WHITE_LABEL_PLANS[planKey];
+    const monthly = plan.monthly * (1 - discount / 100);
+    return {
+      proposal_model: model,
+      plano: planKey,
+      enterprise_package: null,
+      white_label_plan: planKey,
+      label: plan.label,
+      faixa: "White Label",
+      valor_mensal: Math.round(monthly * 100) / 100,
+      valor_anual: Math.round(monthly * 12 * 100) / 100,
+      valor_total: Math.round(monthly * 12 * 100) / 100,
+      setup_mode: setupMode === "none" ? "single" : setupMode,
+      setup_value: setupValue > 0 ? setupValue : plan.setup,
+      setup_installments: setupMode === "installments" ? Math.max(1, setupInstallments || 1) : 0,
+      per_collaborator_month: null,
+      per_collaborator_day: null,
+      plan,
+    };
+  }
+
+  const pkgKey = (String(input.enterprisePackage || "enterprise_premium") in ENTERPRISE_PACKAGES ? String(input.enterprisePackage || "enterprise_premium") : "enterprise_premium") as EnterprisePackageKey;
+  const range = rangeForEnterprise(Number(input.qtdColaboradores || 0));
+  const base = Number(range.prices[pkgKey]);
+  const monthly = base * (1 - discount / 100);
+  const qty = Math.max(1, Number(input.qtdColaboradores || range.referenceQty || range.min));
+  const divisor = range.referenceQty || qty;
+  return {
+    proposal_model: model,
+    plano: pkgKey,
+    enterprise_package: pkgKey,
+    white_label_plan: null,
+    label: ENTERPRISE_PACKAGES[pkgKey].label,
+    faixa: range.key,
+    valor_mensal: Math.round(monthly * 100) / 100,
+    valor_anual: Math.round(monthly * 12 * 100) / 100,
+    valor_total: Math.round(monthly * 12 * 100) / 100,
+    setup_mode: setupMode,
+    setup_value: setupMode === "none" ? 0 : setupValue,
+    setup_installments: setupMode === "installments" ? Math.max(1, setupInstallments || 1) : 0,
+    per_collaborator_month: Math.round((monthly / Math.max(1, divisor)) * 100) / 100,
+    per_collaborator_day: Math.round((monthly / Math.max(1, divisor) / 30) * 100) / 100,
+    range,
+    package: ENTERPRISE_PACKAGES[pkgKey],
+  };
+}
+
 // Planos legacy (mantidos pra compat com propostas antigas no DB).
 const PLANOS = {
   starter:    { base: 6,  min: 350,  desc_anual: 0.10 },
@@ -374,11 +494,92 @@ export async function generateProposalPDF(proposalId: number): Promise<string> {
 
   // Re-calcula valores caso o DB esteja desatualizado (faixa correta).
   // Bruno R5-P3 #6 — usa faixas atuais do DB (não as default).
-  const faixasAtuais = await loadFaixas();
-  const calc = await calcularValoresAsync(String(p.plano || "auto"), Number(p.qtd_colaboradores || 0), Number(p.desconto_pct || 0));
-  const valorMensal = Number(p.valor_mensal) > 0 ? Number(p.valor_mensal) : calc.valor_mensal;
-  const valorAnual = Number(p.valor_anual) > 0 ? Number(p.valor_anual) : calc.valor_anual;
-  const faixaTxt = calc.faixa || (p.qtd_colaboradores ? `${p.qtd_colaboradores} colaboradores` : "");
+  const proposalModel = String(p.proposal_model || (p.white_label_plan ? "white_label" : "enterprise"));
+  const commercial = calculateCommercialProposalValues({
+    proposalModel,
+    qtdColaboradores: Number(p.qtd_colaboradores || 0),
+    enterprisePackage: p.enterprise_package || p.plano,
+    whiteLabelPlan: p.white_label_plan || p.plano,
+    descontoExtraPct: Number(p.desconto_pct || 0),
+    setupMode: p.setup_mode || "none",
+    setupValue: Number(p.setup_value || 0),
+    setupInstallments: Number(p.setup_installments || 0),
+  });
+  const valorMensal = Number(p.valor_mensal) > 0 ? Number(p.valor_mensal) : commercial.valor_mensal;
+  const valorAnual = Number(p.valor_anual) > 0 ? Number(p.valor_anual) : commercial.valor_anual;
+  const faixaTxt = commercial.faixa || (p.qtd_colaboradores ? `${p.qtd_colaboradores} colaboradores` : "");
+  const packageLabel = commercial.label || String(p.plano || "Plano");
+  const setupMode = String(p.setup_mode || commercial.setup_mode || "none");
+  const setupValue = Number(p.setup_value || commercial.setup_value || 0);
+  const setupInstallments = Number(p.setup_installments || commercial.setup_installments || 0);
+  const setupText = setupMode === "installments" && setupValue > 0
+    ? `${setupInstallments || 1} parcelas de ${fmtMoney(setupValue)}`
+    : setupMode === "single" && setupValue > 0
+      ? `Setup unico de ${fmtMoney(setupValue)}`
+      : proposalModel === "white_label" && setupValue > 0
+        ? `Setup de ${fmtMoney(setupValue)}`
+        : "Sem setup";
+  const collabMonth = Number(commercial.per_collaborator_month || 0);
+  const collabDay = Number(commercial.per_collaborator_day || 0);
+  const commercialText = proposalModel === "white_label"
+    ? "Modelo para consultorias, assessorias, clinicas e parceiros com gestao independente de carteira, marca propria e limites operacionais por plano."
+    : `O investimento apresentado corresponde a aproximadamente ${collabMonth ? fmtMoney(collabMonth) : "valor calculado"} por colaborador/mes${collabDay ? `, ou cerca de ${fmtMoney(collabDay)} por colaborador/dia` : ""}, considerando a quantidade de colaboradores cadastrada na empresa.`;
+
+  const enterpriseFeatureRows = ENTERPRISE_FEATURE_MATRIX.map((f) => `
+    <tr>
+      <td>${escape(f.item)}</td>
+      <td style="text-align:center">${f.start ? "Sim" : "-"}</td>
+      <td style="text-align:center">${f.business ? "Sim" : "-"}</td>
+      <td style="text-align:center">${f.premium ? "Sim" : "-"}</td>
+    </tr>
+  `).join("");
+  const enterpriseRangesHtml = ENTERPRISE_PROPOSAL_RANGES.map((r) => {
+    const atual = Number(p.qtd_colaboradores || 0) >= r.min && Number(p.qtd_colaboradores || 0) <= r.max;
+    return `<tr class="${atual ? "atual" : ""}"><td>${escape(r.key)}</td><td style="text-align:right">${fmtMoney(r.prices.enterprise_start)}</td><td style="text-align:right">${fmtMoney(r.prices.enterprise_business)}</td><td style="text-align:right">${fmtMoney(r.prices.enterprise_premium)}</td><td style="text-align:right">${r.corporate ? fmtMoney(r.corporate) : "-"}</td></tr>`;
+  }).join("");
+  const whiteLabelRows = Object.entries(WHITE_LABEL_PLANS).map(([key, plan]) => `
+    <tr class="${String(commercial.white_label_plan || "") === key ? "atual" : ""}">
+      <td><b>${escape(plan.label)}</b></td>
+      <td style="text-align:right">${fmtMoney(plan.monthly)}/mes</td>
+      <td style="text-align:right">${fmtMoney(plan.setup)}</td>
+      <td>${escape(plan.cnpjs)}<br>${escape(plan.employees)}</td>
+      <td>${escape(plan.storage)}<br>${escape(plan.aiCredits)}</td>
+    </tr>
+  `).join("");
+  const proposalSpecificHtml = proposalModel === "white_label" ? `
+    <h3>Modelo Consultoria / White Label</h3>
+    <p>${commercialText}</p>
+    <div class="faixa-tabela">
+      <div class="titulo">Plano selecionado: ${escape(packageLabel)}</div>
+      <table>
+        <thead><tr><th>Plano</th><th style="text-align:right">Mensalidade</th><th style="text-align:right">Setup</th><th>Limites</th><th>Recursos</th></tr></thead>
+        <tbody>${whiteLabelRows}</tbody>
+      </table>
+    </div>
+    <p style="margin-top:8px">A proposta pode receber modulos adicionais, creditos extras de IA, integracoes, treinamento, suporte ampliado e customizacoes comerciais conforme contrato.</p>
+  ` : `
+    <h3>Modelo Empresa - Contratacao Direta</h3>
+    <p>${commercialText}</p>
+    <div class="faixa-tabela">
+      <div class="titulo">Pacote selecionado: ${escape(packageLabel)}</div>
+      <table>
+        <thead><tr><th>Colaboradores</th><th style="text-align:right">Start</th><th style="text-align:right">Business</th><th style="text-align:right">Premium</th><th style="text-align:right">Corporate oficial</th></tr></thead>
+        <tbody>${enterpriseRangesHtml}</tbody>
+      </table>
+    </div>
+    <div class="faixa-tabela">
+      <div class="titulo">Comparativo de funcionalidades por pacote</div>
+      <table>
+        <thead><tr><th>Funcionalidade</th><th>Start</th><th>Business</th><th>Premium</th></tr></thead>
+        <tbody>${enterpriseFeatureRows}</tbody>
+      </table>
+    </div>
+  `;
+  const faixasAtuais = ENTERPRISE_PROPOSAL_RANGES.map((r) => ({
+    min: r.min,
+    max: r.max,
+    valor_mensal: r.prices[(commercial.enterprise_package || "enterprise_premium") as EnterprisePackageKey] || r.prices.enterprise_premium,
+  }));
 
   const featuresHtml = FEATURES_24.map(g => `
     <div class="feat-grupo">
@@ -530,13 +731,15 @@ export async function generateProposalPDF(proposalId: number): Promise<string> {
   <h2 style="margin-top: 18mm;"><span class="num">2</span>A Plataforma</h2>
   <p class="h2-sub">SaaS completo para SST, em conformidade com NR-01 (Portaria MTP 1.419/2024), Lei 14.457/2022 (canal de denúncias) e LGPD.</p>
 
+  ${proposalSpecificHtml}
+
   ${featuresHtml}
 </div>
 
 <!-- INVESTIMENTO -->
 <div class="page">
   <h2><span class="num">3</span>Investimento</h2>
-  <p class="h2-sub">Modelo de assinatura com valor fixo por faixa de colaboradores — sem taxa de setup, sem fidelidade obrigatória.</p>
+  <p class="h2-sub">${escape(packageLabel)} - ${escape(setupText)}.</p>
 
   <!-- Bruno R5-P5 #2 — Removido valor anual TOTAL. Mostra só MENSAL.
        (Cliente focava no anual, gerava impressão negativa logo de cara.) -->
@@ -544,7 +747,8 @@ export async function generateProposalPDF(proposalId: number): Promise<string> {
     <div class="price-card price-mensal" style="text-align: center; padding: 30px;">
       <div class="lab">Investimento Mensal</div>
       <div class="val" style="font-size: 38pt; margin: 10px 0 6px;">${fmtMoney(valorMensal)}</div>
-      <div class="sub" style="font-size: 11pt;">Faixa <b>${faixaTxt || "—"}</b> · Sem taxa de setup · Sem fidelidade</div>
+      <div class="sub" style="font-size: 11pt;">${escape(packageLabel)} - Faixa <b>${faixaTxt || "-"}</b> - ${escape(setupText)}</div>
+      <div class="sub" style="font-size: 9pt; margin-top: 4px;">Referencia anual: ${fmtMoney(valorAnual)}</div>
     </div>
   </div>
 

@@ -3,7 +3,7 @@ import AppLayout from "@/components/AppLayout";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { Users, Vote, Calendar, Plus, Save, Trash2, Loader2, ShieldCheck, BarChart3, User as UserIcon, Camera, Radio, FileText, Upload, Pencil, BookOpen } from "lucide-react";
+import { Users, Vote, Calendar, Plus, Save, Trash2, Loader2, ShieldCheck, BarChart3, User as UserIcon, Camera, Radio, FileText, Upload, Pencil, BookOpen, Mail, MessageCircle } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from "recharts";
 
 /**
@@ -128,6 +128,7 @@ function ElectionsTab() {
       </div>
 
       {selected && selected.status === "votacao_aberta" && <LiveParticipationPanel electionId={selected.id} />}
+      {selected && <PendingVotersActions electionId={selected.id} votingEnd={selected.voting_end} />}
       {selected && <CandidatesPanel electionId={selected.id} />}
       {selected && ["apurada", "encerrada"].includes(selected.status) && <ResultsPanel electionId={selected.id} />}
     </div>
@@ -155,6 +156,88 @@ function LiveParticipationPanel({ electionId }: { electionId: number }) {
       <p className="text-[10px] text-slate-400 mt-2">Por sigilo, os votos por candidato só ficam visíveis após a apuração.</p>
     </div>
   );
+}
+
+function PendingVotersActions({ electionId, votingEnd }: { electionId: number; votingEnd?: string | null }) {
+  const previewQ = (trpc.cipa as any).pendingVotersPreview.useQuery({ electionId });
+  const reportMut = (trpc.cipa as any).pendingVotersReport.useMutation({
+    onSuccess: (r: any) => { toast.success(`Relatorio gerado com ${r.total} faltoso(s).`); if (r.url) window.open(r.url, "_blank"); },
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao gerar relatorio"),
+  });
+  const reminderMut = (trpc.cipa as any).sendPendingVotersReminder.useMutation({
+    onSuccess: (r: any) => {
+      toast.success(`Lembrete enviado. E-mail: ${r.emailSent}; WhatsApp: ${r.whatsappSent}; pendentes: ${r.totalPending}.`);
+      setReminderOpen(false);
+      previewQ.refetch();
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao enviar lembrete"),
+  });
+  const endDate = votingEnd ? new Date(votingEnd).toLocaleDateString("pt-BR") : "{data de encerramento}";
+  const [reminderOpen, setReminderOpen] = useState(false);
+  const [method, setMethod] = useState<"email" | "whatsapp" | "both">("email");
+  const [subject, setSubject] = useState("Eleicao da CIPA - Sua participacao e importante");
+  const [body, setBody] = useState(
+    `Ola {{nome}}!\n\nConstatamos que seu voto na eleicao da CIPA ainda nao foi registrado.\n\nSua participacao e fundamental para fortalecer a representacao dos trabalhadores e contribuir para um ambiente de trabalho mais seguro.\n\nA votacao permanecera disponivel ate ${endDate}.\n\nClique no link abaixo para registrar seu voto:\n\n{{link_votacao}}\n\nA votacao e totalmente eletronica, rapida e sigilosa.\n\nContamos com sua participacao!`
+  );
+
+  function openReminder(nextMethod: "email" | "whatsapp" | "both") {
+    setMethod(nextMethod);
+    setReminderOpen(true);
+  }
+
+  const total = Number((previewQ.data as any)?.total ?? 0);
+  return (
+    <div className="bg-white border rounded-xl p-5 space-y-3">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h3 className="font-bold flex items-center gap-2"><FileText size={16} /> Faltosos da votacao</h3>
+          <p className="text-xs text-slate-500 mt-1">Lista apenas quem ainda nao votou. O voto continua secreto.</p>
+        </div>
+        <div className="text-sm font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-1">{total} pendente(s)</div>
+      </div>
+      {!!(previewQ.data as any)?.groups?.length && (
+        <div className="grid sm:grid-cols-2 gap-2 text-xs">
+          {((previewQ.data as any).groups as any[]).slice(0, 6).map(g => (
+            <div key={g.label} className="border rounded px-2 py-1 bg-slate-50 flex justify-between gap-2">
+              <span className="truncate">{g.label}</span><b>{g.total}</b>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <button onClick={() => reportMut.mutate({ electionId })} disabled={reportMut.isPending} className="px-3 py-1.5 border rounded text-sm font-semibold flex items-center gap-1">
+          {reportMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <FileText size={13} />} Gerar Relatorio de Faltosos
+        </button>
+        <button onClick={() => openReminder("email")} className="px-3 py-1.5 border rounded text-sm font-semibold flex items-center gap-1"><Mail size={13} /> Enviar por E-mail</button>
+        <button onClick={() => openReminder("whatsapp")} className="px-3 py-1.5 border rounded text-sm font-semibold flex items-center gap-1"><MessageCircle size={13} /> Enviar por WhatsApp</button>
+        <button onClick={() => openReminder("both")} className="px-3 py-1.5 bg-emerald-600 text-white rounded text-sm font-semibold flex items-center gap-1"><SendIcon /> E-mail e WhatsApp</button>
+      </div>
+      {reminderOpen && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setReminderOpen(false)}>
+          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full p-5 space-y-3" onClick={e => e.stopPropagation()}>
+            <h3 className="font-bold">Enviar lembrete aos colaboradores que ainda nao votaram</h3>
+            <p className="text-xs text-slate-500">Canal selecionado: {method === "both" ? "E-mail e WhatsApp" : method === "email" ? "E-mail" : "WhatsApp"}. A mensagem pode ser editada antes do envio.</p>
+            {method !== "whatsapp" && (
+              <L l="Assunto"><input value={subject} onChange={e => setSubject(e.target.value)} className="w-full border rounded px-2 py-1.5 text-sm" /></L>
+            )}
+            <L l="Mensagem">
+              <textarea value={body} onChange={e => setBody(e.target.value)} rows={10} className="w-full border rounded px-2 py-1.5 text-sm" />
+            </L>
+            <div className="flex justify-end gap-2 pt-2 border-t">
+              <button onClick={() => setReminderOpen(false)} className="px-3 py-1.5 border rounded text-sm">Cancelar</button>
+              <button onClick={() => reminderMut.mutate({ electionId, method, subject, body })} disabled={reminderMut.isPending} className="px-3 py-1.5 bg-emerald-600 text-white rounded text-sm font-semibold">
+                {reminderMut.isPending ? "Enviando..." : "Enviar lembrete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SendIcon() {
+  return <Mail size={13} />;
 }
 
 function CandidatesPanel({ electionId }: { electionId: number }) {

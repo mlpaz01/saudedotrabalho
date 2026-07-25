@@ -27,6 +27,28 @@ const STATUS_OPTS = [
   { v: "convertida",          label: "⭐ Convertida em cliente", cls: "bg-yellow-100 text-yellow-800" },
 ];
 
+const ENTERPRISE_PRICING = [
+  { key: "1-30", min: 1, max: 30, ref: 30, corporate: null, prices: { enterprise_start: 2900, enterprise_business: 3200, enterprise_premium: 3500 } },
+  { key: "31-100", min: 31, max: 100, ref: 100, corporate: null, prices: { enterprise_start: 6300, enterprise_business: 6900, enterprise_premium: 7500 } },
+  { key: "101-300", min: 101, max: 300, ref: 300, corporate: null, prices: { enterprise_start: 8900, enterprise_business: 9700, enterprise_premium: 10500 } },
+  { key: "301-500", min: 301, max: 500, ref: 500, corporate: null, prices: { enterprise_start: 12000, enterprise_business: 13000, enterprise_premium: 14000 } },
+  { key: "501-999", min: 501, max: 999, ref: null, corporate: 22000, prices: { enterprise_start: 16000, enterprise_business: 17000, enterprise_premium: 19000 } },
+  { key: "1000+", min: 1000, max: 999999, ref: null, corporate: null, prices: { enterprise_start: 29000, enterprise_business: 32000, enterprise_premium: 35000 } },
+] as const;
+
+const ENTERPRISE_PACKAGES = [
+  { key: "enterprise_start", label: "Enterprise Start" },
+  { key: "enterprise_business", label: "Enterprise Business" },
+  { key: "enterprise_premium", label: "Enterprise Premium" },
+] as const;
+
+const WHITE_LABEL_PLANS = [
+  { key: "start_white_label", label: "Start White Label", monthly: 397, setup: 1800, limit: "1 CNPJ, ate 100 colaboradores, 5 GB, 10.000 creditos IA/mes" },
+  { key: "partner_pro", label: "Partner Pro", monthly: 797, setup: 3000, limit: "Ate 5 CNPJs, 500 colaboradores, 10 GB, 25.000 creditos IA/mes" },
+  { key: "carteira", label: "Carteira", monthly: 1597, setup: 5400, limit: "Ate 20 CNPJs, 2.000 colaboradores, 40 GB, 100.000 creditos IA/mes" },
+  { key: "enterprise_light", label: "Enterprise Light", monthly: 3797, setup: 9600, limit: "Ate 50 CNPJs, 5.000 colaboradores, 100 GB, 250.000 creditos IA/mes" },
+] as const;
+
 export default function SuperAdminCrm() {
   const [tab, setTab] = useState<Tab>("dashboard");
 
@@ -198,12 +220,30 @@ function ProposalForm({ initial, partners, onClose, onSubmit, loading }: any) {
     segmento: initial?.segmento ?? "",
     qtdColaboradores: Number(initial?.qtd_colaboradores ?? 50),
     // Bruno R5 #2 — Default agora é "auto" (tabela parametrizada por faixa de colaboradores).
-    plano: (initial?.plano ?? "auto") as "auto"|"starter"|"business"|"enterprise",
+    plano: initial?.plano ?? "enterprise_premium",
+    proposalModel: (initial?.proposal_model ?? (initial?.white_label_plan ? "white_label" : "enterprise")) as "enterprise" | "white_label",
+    enterprisePackage: (initial?.enterprise_package ?? (String(initial?.plano || "").startsWith("enterprise_") ? initial?.plano : "enterprise_premium")) as string,
+    whiteLabelPlan: (initial?.white_label_plan ?? (["start_white_label","partner_pro","carteira","enterprise_light"].includes(initial?.plano) ? initial?.plano : "start_white_label")) as string,
+    setupMode: (initial?.setup_mode ?? "none") as "none" | "single" | "installments",
+    setupValue: Number(initial?.setup_value ?? 0),
+    setupInstallments: Number(initial?.setup_installments ?? 0),
     descontoExtraPct: Number(initial?.desconto_pct ?? 0),
     validadeDias: Number(initial?.validade_dias ?? 15),
     partnerId: initial?.partner_id ?? null,
     observacoes: initial?.observacoes ?? "",
   });
+  const enterpriseRange = ENTERPRISE_PRICING.find(r => f.qtdColaboradores >= r.min && f.qtdColaboradores <= r.max) ?? ENTERPRISE_PRICING[ENTERPRISE_PRICING.length - 1];
+  const enterpriseMonthly = enterpriseRange.prices[f.enterprisePackage as keyof typeof enterpriseRange.prices] ?? enterpriseRange.prices.enterprise_premium;
+  const enterpriseDivisor = enterpriseRange.ref ?? Math.max(1, f.qtdColaboradores);
+  const enterprisePerMonth = enterpriseMonthly / Math.max(1, enterpriseDivisor);
+  const whitePlan = WHITE_LABEL_PLANS.find(p => p.key === f.whiteLabelPlan) ?? WHITE_LABEL_PLANS[0];
+  const selectedMonthly = f.proposalModel === "white_label" ? whitePlan.monthly : enterpriseMonthly;
+  const submitData = {
+    ...f,
+    plano: f.proposalModel === "white_label" ? f.whiteLabelPlan : f.enterprisePackage,
+    setupValue: f.setupMode === "none" ? 0 : f.setupValue,
+    setupInstallments: f.setupMode === "installments" ? Math.max(1, f.setupInstallments || 1) : 0,
+  };
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full p-5 space-y-3 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
@@ -220,7 +260,51 @@ function ProposalForm({ initial, partners, onClose, onSubmit, loading }: any) {
           <L l="Colaboradores">
             <input type="number" min={1} value={f.qtdColaboradores} onChange={e => setF({...f, qtdColaboradores: Number(e.target.value || 0)})} className="w-full border rounded px-2 py-1.5"/>
           </L>
-          <L l="Plano">
+          <L l="Modelo de proposta">
+            <select value={f.proposalModel} onChange={e => setF({...f, proposalModel: e.target.value as any})} className="w-full border rounded px-2 py-1.5">
+              <option value="enterprise">Empresa - contratacao direta</option>
+              <option value="white_label">Consultoria / White Label</option>
+            </select>
+          </L>
+          {f.proposalModel === "enterprise" ? (
+            <L l="Pacote Enterprise">
+              <select value={f.enterprisePackage} onChange={e => setF({...f, enterprisePackage: e.target.value})} className="w-full border rounded px-2 py-1.5">
+                {ENTERPRISE_PACKAGES.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
+              </select>
+              <p className="text-[11px] text-slate-600 mt-1">
+                Faixa {enterpriseRange.key}: {brl(enterpriseMonthly)}/mes. Aprox. {brl(enterprisePerMonth)} por colaborador/mes.
+              </p>
+            </L>
+          ) : (
+            <L l="Plano White Label">
+              <select value={f.whiteLabelPlan} onChange={e => setF({...f, whiteLabelPlan: e.target.value})} className="w-full border rounded px-2 py-1.5">
+                {WHITE_LABEL_PLANS.map(p => <option key={p.key} value={p.key}>{p.label} - {brl(p.monthly)}/mes</option>)}
+              </select>
+              <p className="text-[11px] text-slate-600 mt-1">{whitePlan.limit}. Setup: {brl(whitePlan.setup)}.</p>
+            </L>
+          )}
+          <L l="Implantacao">
+            <select value={f.setupMode} onChange={e => setF({...f, setupMode: e.target.value as any})} className="w-full border rounded px-2 py-1.5">
+              <option value="none">Sem setup</option>
+              <option value="single">Setup unico</option>
+              <option value="installments">Setup parcelado</option>
+            </select>
+          </L>
+          {f.setupMode !== "none" && (
+            <L l={f.setupMode === "installments" ? "Valor da parcela" : "Valor do setup"}>
+              <input type="number" min={0} value={f.setupValue} onChange={e => setF({...f, setupValue: Number(e.target.value || 0)})} className="w-full border rounded px-2 py-1.5"/>
+              {f.setupMode === "installments" && (
+                <input type="number" min={1} value={f.setupInstallments} onChange={e => setF({...f, setupInstallments: Number(e.target.value || 1)})} placeholder="Parcelas" className="w-full border rounded px-2 py-1.5 mt-2"/>
+              )}
+            </L>
+          )}
+          <div className="col-span-2 rounded-lg border bg-slate-50 p-3 text-xs text-slate-700">
+            <b>Previa:</b> mensalidade {brl(selectedMonthly)}
+            {f.setupMode === "installments" && f.setupValue > 0 ? `; implantacao em ${Math.max(1, f.setupInstallments || 1)} parcelas de ${brl(f.setupValue)}` : ""}
+            {f.setupMode === "single" && f.setupValue > 0 ? `; setup unico de ${brl(f.setupValue)}` : ""}.
+          </div>
+          <div className="hidden">
+          <L l="Plano legado (ignorar)">
             <select value={f.plano} onChange={e => setF({...f, plano: e.target.value as any})} className="w-full border rounded px-2 py-1.5">
               <option value="auto">Automático por faixa de colaboradores (recomendado)</option>
               <option value="starter">Legacy Starter (R$ 6/colab, min R$ 350)</option>
@@ -233,6 +317,7 @@ function ProposalForm({ initial, partners, onClose, onSubmit, loading }: any) {
               </p>
             )}
           </L>
+          </div>
           <L l="Desconto extra (%)">
             <input type="number" min={0} max={50} value={f.descontoExtraPct} onChange={e => setF({...f, descontoExtraPct: Number(e.target.value || 0)})} className="w-full border rounded px-2 py-1.5"/>
           </L>
@@ -253,7 +338,7 @@ function ProposalForm({ initial, partners, onClose, onSubmit, loading }: any) {
         </div>
         <div className="flex justify-end gap-2 pt-2 border-t">
           <Button variant="outline" onClick={onClose}>Cancelar</Button>
-          <Button onClick={() => onSubmit(f)} disabled={loading} className="gap-1">
+          <Button onClick={() => onSubmit(submitData)} disabled={loading} className="gap-1">
             {loading ? <Loader2 size={14} className="animate-spin"/> : <Save size={14}/>}
             Salvar
           </Button>
