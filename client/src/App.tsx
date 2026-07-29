@@ -65,6 +65,7 @@ import SuperAdminCatalog from "@/pages/superadmin/SuperAdminCatalog";
 import SuperAdminAccessHours from "@/pages/superadmin/SuperAdminAccessHours";
 import SuperAdminCrm from "@/pages/superadmin/SuperAdminCrm";
 import SuperAdminIntegrations from "@/pages/superadmin/SuperAdminIntegrations";
+import SuperAdminWhiteLabel from "@/pages/superadmin/SuperAdminWhiteLabel";
 import IntermediadorDashboard from "@/pages/IntermediadorDashboard";
 import Cipa from "@/pages/Cipa";
 import AdminCipa from "@/pages/admin/AdminCipa";
@@ -307,6 +308,7 @@ function Router() {
       <Route path="/super-admin/horarios" component={() => <SuperAdminRoute component={SuperAdminAccessHours} />} />
       <Route path="/super-admin/integracoes" component={() => <SuperAdminRoute component={SuperAdminIntegrations} />} />
       <Route path="/super-admin/crm" component={() => <SuperAdminRoute component={SuperAdminCrm} />} />
+      <Route path="/super-admin/white-label" component={() => <SuperAdminRoute component={SuperAdminWhiteLabel} />} />
       <Route path="/intermediador" component={() => <IntermediadorRoute component={IntermediadorDashboard} />} />
       <Route path="/campanhas" component={() => <ProtectedRoute component={CampanhasIndex} />} />
       <Route path="/campanhas/:id" component={() => <ProtectedRoute component={CampanhaDetail} />} />

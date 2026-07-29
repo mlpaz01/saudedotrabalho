@@ -15003,6 +15003,161 @@ export const appRouter = router({
         return { ok: true, id: Number((r as any)[0]?.insertId ?? 0), arquivoUrl };
       }),
 
+    whiteLabelOverview: superAdminProcedure.query(async () => {
+      const { getWhiteLabelOverview } = await import("./_core/whiteLabel");
+      return getWhiteLabelOverview();
+    }),
+
+    whiteLabelListPlans: superAdminProcedure.query(async () => {
+      const { listWhiteLabelPlans } = await import("./_core/whiteLabel");
+      return listWhiteLabelPlans();
+    }),
+
+    whiteLabelUpsertPlan: superAdminProcedure
+      .input(z.object({
+        code: z.string().min(2),
+        label: z.string().min(2),
+        monthlyPrice: z.number().min(0),
+        setupPrice: z.number().min(0),
+        includedCnpjs: z.number().int().min(0),
+        includedEmployees: z.number().int().min(0),
+        includedStorageGb: z.number().int().min(0),
+        includedAiCredits: z.number().int().min(0),
+        isActive: z.boolean().default(true),
+        sortOrder: z.number().int().default(0),
+      }))
+      .mutation(async ({ input }) => {
+        const { upsertWhiteLabelPlan } = await import("./_core/whiteLabel");
+        await upsertWhiteLabelPlan(input);
+        return { ok: true };
+      }),
+
+    whiteLabelListAiPackages: superAdminProcedure.query(async () => {
+      const { listWhiteLabelAiPackages } = await import("./_core/whiteLabel");
+      return listWhiteLabelAiPackages();
+    }),
+
+    whiteLabelUpsertAiPackage: superAdminProcedure
+      .input(z.object({
+        id: z.number().int().optional(),
+        code: z.string().min(2),
+        label: z.string().min(2),
+        credits: z.number().int().min(1),
+        salePrice: z.number().min(0),
+        estimatedCost: z.number().min(0),
+        isActive: z.boolean().default(true),
+        sortOrder: z.number().int().default(0),
+      }))
+      .mutation(async ({ input }) => {
+        const { upsertWhiteLabelAiPackage } = await import("./_core/whiteLabel");
+        await upsertWhiteLabelAiPackage(input);
+        return { ok: true };
+      }),
+
+    whiteLabelListPartners: superAdminProcedure.query(async () => {
+      const { listWhiteLabelPartners } = await import("./_core/whiteLabel");
+      return listWhiteLabelPartners();
+    }),
+
+    whiteLabelGetPartner: superAdminProcedure
+      .input(z.object({ id: z.number().int() }))
+      .query(async ({ input }) => {
+        const { getWhiteLabelPartner } = await import("./_core/whiteLabel");
+        return getWhiteLabelPartner(input.id);
+      }),
+
+    whiteLabelUpsertPartner: superAdminProcedure
+      .input(z.object({
+        id: z.number().int().optional(),
+        legalName: z.string().min(2),
+        tradeName: z.string().optional().nullable(),
+        document: z.string().optional().nullable(),
+        contactName: z.string().optional().nullable(),
+        contactEmail: z.string().optional().nullable(),
+        contactPhone: z.string().optional().nullable(),
+        planCode: z.string().min(2),
+        status: z.string().default("active"),
+        monthlyPrice: z.number().min(0).optional(),
+        setupPrice: z.number().min(0).optional(),
+        brandName: z.string().optional().nullable(),
+        logoUrl: z.string().optional().nullable(),
+        primaryColor: z.string().optional().nullable(),
+        secondaryColor: z.string().optional().nullable(),
+        customDomain: z.string().optional().nullable(),
+        supportLevel: z.string().optional().nullable(),
+        hideSdtBrand: z.boolean().default(true),
+        allowPartnerBranding: z.boolean().default(true),
+        notes: z.string().optional().nullable(),
+        changeType: z.string().optional(),
+        changeNote: z.string().optional().nullable(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const { upsertWhiteLabelPartner } = await import("./_core/whiteLabel");
+        const result = await upsertWhiteLabelPartner(input, Number((ctx.user as any)?.id || 0));
+        return { ok: true, ...result };
+      }),
+
+    whiteLabelListCompanies: superAdminProcedure.query(async () => {
+      const { listCompaniesForWhiteLabel } = await import("./_core/whiteLabel");
+      return listCompaniesForWhiteLabel();
+    }),
+
+    whiteLabelLinkCompany: superAdminProcedure
+      .input(z.object({
+        partnerId: z.number().int(),
+        companyId: z.number().int(),
+        clientLabel: z.string().optional().nullable(),
+      }))
+      .mutation(async ({ input }) => {
+        const { linkCompanyToWhiteLabel } = await import("./_core/whiteLabel");
+        await linkCompanyToWhiteLabel(input.partnerId, input.companyId, input.clientLabel ?? undefined);
+        return { ok: true };
+      }),
+
+    whiteLabelUnlinkCompany: superAdminProcedure
+      .input(z.object({ companyId: z.number().int() }))
+      .mutation(async ({ input }) => {
+        const { unlinkCompanyFromWhiteLabel } = await import("./_core/whiteLabel");
+        await unlinkCompanyFromWhiteLabel(input.companyId);
+        return { ok: true };
+      }),
+
+    whiteLabelAdjustAiCredits: superAdminProcedure
+      .input(z.object({
+        partnerId: z.number().int(),
+        credits: z.number().int(),
+        note: z.string().optional().nullable(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const { adjustWhiteLabelAiCredits } = await import("./_core/whiteLabel");
+        await adjustWhiteLabelAiCredits(input.partnerId, input.credits, input.note ?? undefined, Number((ctx.user as any)?.id || 0));
+        return { ok: true };
+      }),
+
+    whiteLabelCreateAiCreditOrder: superAdminProcedure
+      .input(z.object({
+        partnerId: z.number().int(),
+        packageId: z.number().int().optional().nullable(),
+        credits: z.number().int().optional(),
+        amount: z.number().optional(),
+        estimatedCost: z.number().optional(),
+        paymentMethod: z.enum(["pix", "card", "manual"]).default("pix"),
+        paymentProvider: z.string().default("manual"),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const { createWhiteLabelAiCreditOrder } = await import("./_core/whiteLabel");
+        const result = await createWhiteLabelAiCreditOrder(input, Number((ctx.user as any)?.id || 0));
+        return { ok: true, ...result };
+      }),
+
+    whiteLabelMarkAiOrderPaid: superAdminProcedure
+      .input(z.object({ orderId: z.number().int() }))
+      .mutation(async ({ ctx, input }) => {
+        const { markWhiteLabelAiOrderPaid } = await import("./_core/whiteLabel");
+        await markWhiteLabelAiOrderPaid(input.orderId, Number((ctx.user as any)?.id || 0));
+        return { ok: true };
+      }),
+
   }),
 
 
