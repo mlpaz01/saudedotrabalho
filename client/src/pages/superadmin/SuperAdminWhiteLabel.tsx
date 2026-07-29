@@ -292,13 +292,11 @@ function PartnersTab({ plans, partners, selectedPartnerId, setSelectedPartnerId,
 
   const previewLogin = () => {
     if (!form.id) return toast.error("Salve o parceiro antes de visualizar.");
-    window.localStorage.setItem("whiteLabelPreviewPartnerId", String(form.id));
     window.open(`/plataforma/login?wlPreview=${form.id}`, "_blank", "noopener,noreferrer");
   };
 
   const previewPlatform = () => {
     if (!form.id) return toast.error("Salve o parceiro antes de visualizar.");
-    window.localStorage.setItem("whiteLabelPreviewPartnerId", String(form.id));
     window.open(`/plataforma/dashboard?wlPreview=${form.id}`, "_blank", "noopener,noreferrer");
   };
 

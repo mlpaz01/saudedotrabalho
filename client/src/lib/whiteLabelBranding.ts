@@ -35,15 +35,22 @@ function getPreviewPartnerId() {
   const params = new URLSearchParams(window.location.search);
   const fromQuery = params.get("wlPreview") || params.get("whiteLabelPreview");
   if (fromQuery) {
-    window.localStorage.setItem("whiteLabelPreviewPartnerId", fromQuery);
+    window.localStorage.removeItem("whiteLabelPreviewPartnerId");
+    window.sessionStorage.setItem("whiteLabelPreviewPartnerId", fromQuery);
     return fromQuery;
   }
-  return window.localStorage.getItem("whiteLabelPreviewPartnerId") || "";
+  window.localStorage.removeItem("whiteLabelPreviewPartnerId");
+  if (window.location.pathname.includes("/login")) {
+    window.sessionStorage.removeItem("whiteLabelPreviewPartnerId");
+    return "";
+  }
+  return window.sessionStorage.getItem("whiteLabelPreviewPartnerId") || "";
 }
 
 export function clearWhiteLabelPreview() {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem("whiteLabelPreviewPartnerId");
+  window.sessionStorage.removeItem("whiteLabelPreviewPartnerId");
 }
 
 export function useWhiteLabelBranding(companyId?: number | null) {
