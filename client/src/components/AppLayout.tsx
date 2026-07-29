@@ -12,10 +12,11 @@ import {
   LifeBuoy, Headphones, HeartHandshake, BarChart3, ListChecks, BookMarked,
   Megaphone, Briefcase, Trophy, Printer, Pencil, Upload,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { NotificationBell } from "./NotificationBell";
 import { toast } from "sonner";
+import { applyBrandVars, clearWhiteLabelPreview, useWhiteLabelBranding } from "@/lib/whiteLabelBranding";
 
 const LOGO_FULL = "/plataforma/logo-full.png";
 const LOGO_MARK = "/plataforma/logo-mark.png";
@@ -241,6 +242,8 @@ const GLOBAL_CSS = `
   --surface: #FFFFFF;
   --navy: #0E2C46;
   --green: #43C285;
+  --wl-primary: #0E2C46;
+  --wl-secondary: #43C285;
   --green-glow: rgba(67,194,133,.16);
   --green-bar: #43C285;
   --side: 250px;
@@ -260,7 +263,7 @@ const GLOBAL_CSS = `
 .sdt-sidebar {
   width: var(--side);
   flex-shrink: 0;
-  background: linear-gradient(177deg, #123451, #0A2138);
+  background: linear-gradient(177deg, var(--wl-primary), #0A2138);
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -303,6 +306,8 @@ const GLOBAL_CSS = `
 /* R5-P9 #12: aumentado de 40→56 (full) e 36→44 (mark) — antes parecia "erro de layout" */
 .sdt-logo-full { height: 56px; max-width: 220px; object-fit: contain; display: block; cursor: pointer; filter: brightness(0) invert(1); }
 .sdt-logo-mark { width: 44px; height: 44px; object-fit: contain; display: none; cursor: pointer; filter: brightness(0) invert(1); }
+.sdt-logo-full.wl-logo, .sdt-logo-mark.wl-logo { filter: none; background: rgba(255,255,255,0.96); border-radius: 8px; padding: 6px; }
+.sdt-logo-mark.wl-logo { padding: 4px; }
 .sdt-sidebar.collapsed .sdt-logo-full { display: none; }
 .sdt-sidebar.collapsed .sdt-logo-mark { display: block; }
 
@@ -580,6 +585,7 @@ function ImpersonationBanner() {
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
+  const { branding } = useWhiteLabelBranding((user as any)?.companyId ?? null);
   const { has } = useEntitlements();
   const [location] = useLocation();
   const [collapsed, setCollapsed] = useState<boolean>(() => {
@@ -591,6 +597,14 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     try { localStorage.setItem("sdt-sidebar-collapsed", collapsed ? "1" : "0"); } catch {}
   }
   const [mobileOpen, setMobileOpen] = useState(false);
+  const isWhiteLabel = branding.found && branding.hideSdtBrand;
+  const logoFull = branding.found ? branding.logoFullUrl : LOGO_FULL;
+  const logoMark = branding.found ? branding.logoMarkUrl : LOGO_MARK;
+  const brandName = branding.brandName || "Saúde do Trabalho";
+
+  useEffect(() => {
+    applyBrandVars(branding);
+  }, [branding]);
 
   // P18 #5 CRÍTICO (Bruno) — "Acessar como" grava impersonatedCompanyId/delegatedRole
   // no localStorage, que sobrevive ao logout (não é limpo pelo cookie de sessão).
@@ -698,8 +712,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               </button>
             </div>
             <Link href={homeHref} onClick={() => setMobileOpen(false)}>
-              <img src={LOGO_FULL} alt="Saude do Trabalho" className="sdt-logo-full" />
-              <img src={LOGO_MARK} alt="SDT" className="sdt-logo-mark" />
+              <img src={logoFull} alt={brandName} className={`sdt-logo-full ${isWhiteLabel ? "wl-logo" : ""}`} />
+              <img src={logoMark} alt={brandName} className={`sdt-logo-mark ${isWhiteLabel ? "wl-logo" : ""}`} />
             </Link>
           </div>
 
@@ -768,8 +782,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             >
               <Menu size={20} />
             </button>
-            <img src={LOGO_MARK} alt="SDT" style={{ width: 28, height: 28, objectFit: "contain" }} />
-            <span style={{ fontFamily: "inherit", fontSize: 14, fontWeight: 700, color: "#0E2C46" }}>Saúde do Trabalho</span>
+            <img src={logoMark} alt={brandName} style={{ width: 28, height: 28, objectFit: "contain" }} />
+            <span style={{ fontFamily: "inherit", fontSize: 14, fontWeight: 700, color: branding.primaryColor || "#0E2C46" }}>{brandName}</span>
           </header>
 
           <header className="sdt-topbar">
@@ -791,10 +805,21 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           </header>
 
           <ImpersonationBanner />
+          {branding.source === "preview" && (
+            <div style={{ margin: "12px 20px 0", borderRadius: 8, background: "#fff7ed", border: "1px solid #fed7aa", color: "#9a3412", padding: "8px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, fontSize: 12 }}>
+              <span>Pré-visualização white label: {brandName}</span>
+              <button
+                onClick={() => { clearWhiteLabelPreview(); window.location.href = "/plataforma/super-admin/white-label"; }}
+                style={{ border: "none", background: "#fb923c", color: "#fff", borderRadius: 6, padding: "5px 9px", fontWeight: 700, cursor: "pointer" }}
+              >
+                Sair da prévia
+              </button>
+            </div>
+          )}
 
           <main className="sdt-content">{children}</main>
           <footer style={{ textAlign: "center", padding: "12px 0 16px", fontSize: 11, color: "#9aa0a6" }}>
-            Saúde do Trabalho · v{APP_VERSION}
+            {isWhiteLabel ? `${brandName} · v${APP_VERSION}` : `Saúde do Trabalho · v${APP_VERSION}`}
           </footer>
         </div>
       </div>

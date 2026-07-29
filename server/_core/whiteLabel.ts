@@ -523,3 +523,81 @@ export async function getWhiteLabelOverview() {
   }, { partners: 0, activePartners: 0, monthlyRevenue: 0, linkedCompanies: 0, activeEmployees: 0, aiConsumed: 0, aiCost: 0, aiRevenue: 0 });
   return { partners, orders: rowsOf(ordersR), totals };
 }
+
+function normalizeDomain(value: unknown) {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (!raw) return "";
+  return raw
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .split("/")[0]
+    .split(":")[0]
+    .trim();
+}
+
+function publicBrandPayload(row: any | null, source: string) {
+  if (!row) {
+    return {
+      found: false,
+      source: "default",
+      partnerId: null,
+      brandName: "Saúde do Trabalho",
+      logoUrl: "/plataforma/logo-horizontal.webp",
+      logoFullUrl: "/plataforma/logo-full.png",
+      logoMarkUrl: "/plataforma/logo-mark.png",
+      primaryColor: "#0E2C46",
+      secondaryColor: "#43C285",
+      customDomain: null,
+      hideSdtBrand: false,
+      allowPartnerBranding: false,
+    };
+  }
+  const brandName = String(row.brand_name || row.trade_name || row.legal_name || "Portal");
+  const logoUrl = row.logo_url ? String(row.logo_url) : "/plataforma/logo-horizontal.webp";
+  return {
+    found: true,
+    source,
+    partnerId: Number(row.id),
+    brandName,
+    logoUrl,
+    logoFullUrl: logoUrl,
+    logoMarkUrl: logoUrl,
+    primaryColor: String(row.primary_color || "#0E2C46"),
+    secondaryColor: String(row.secondary_color || "#43C285"),
+    customDomain: row.custom_domain || null,
+    hideSdtBrand: Number(row.hide_sdt_brand ?? 1) === 1,
+    allowPartnerBranding: Number(row.allow_partner_branding ?? 1) === 1,
+  };
+}
+
+export async function resolveWhiteLabelBranding(input: { host?: string | null; companyId?: number | null; partnerId?: number | null }) {
+  await ensureWhiteLabelTables();
+  const db = await getDb();
+  if (!db) return publicBrandPayload(null, "default");
+
+  const partnerId = Number(input.partnerId || 0);
+  if (partnerId > 0) {
+    const r: any = await db.execute(drzSql`SELECT * FROM white_label_partners WHERE id=${partnerId} AND status <> 'canceled' LIMIT 1`);
+    return publicBrandPayload(rowsOf<any>(r)[0] || null, "preview");
+  }
+
+  const host = normalizeDomain(input.host);
+  if (host) {
+    const r: any = await db.execute(drzSql`SELECT * FROM white_label_partners WHERE custom_domain IS NOT NULL AND custom_domain <> '' AND status <> 'canceled'`);
+    const match = rowsOf<any>(r).find((row) => normalizeDomain(row.custom_domain) === host);
+    if (match) return publicBrandPayload(match, "domain");
+  }
+
+  const companyId = Number(input.companyId || 0);
+  if (companyId > 0) {
+    const r: any = await db.execute(drzSql`
+      SELECT w.*
+      FROM white_label_company_links l
+      JOIN white_label_partners w ON w.id=l.partner_id
+      WHERE l.company_id=${companyId} AND l.is_active=1 AND w.status <> 'canceled'
+      LIMIT 1`);
+    return publicBrandPayload(rowsOf<any>(r)[0] || null, "company");
+  }
+
+  return publicBrandPayload(null, "default");
+}

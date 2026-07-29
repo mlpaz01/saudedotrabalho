@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Eye, EyeOff, Mail, Lock, ArrowRight, ChevronLeft, IdCard } from "lucide-react";
+import { applyBrandVars, useWhiteLabelBranding } from "@/lib/whiteLabelBranding";
 
 const LOGO_URL = "/plataforma/logo-horizontal.webp";
 const PHOTO_URL =
@@ -13,6 +14,7 @@ const PHOTO_URL =
 
 export default function Login() {
   const [, navigate] = useLocation();
+  const { branding } = useWhiteLabelBranding();
   const [step, setStep] = useState<"email" | "password">("email");
   const [identifier, setIdentifier] = useState("");
   const [loginLabel, setLoginLabel] = useState("");
@@ -21,6 +23,13 @@ export default function Login() {
   const [employeeName, setEmployeeName] = useState<string | null>(null);
   const [accessHint, setAccessHint] = useState("Identificador de acesso");
   const [loginMethod, setLoginMethod] = useState("email");
+  const isWhiteLabel = branding.found && branding.hideSdtBrand;
+  const brandName = branding.brandName || "Saúde do Trabalho";
+  const logoUrl = branding.logoUrl || LOGO_URL;
+
+  useEffect(() => {
+    applyBrandVars(branding);
+  }, [branding]);
 
   const checkEmail = trpc.auth.checkCorporateEmail.useMutation({
     onSuccess: (data) => {
@@ -72,12 +81,12 @@ export default function Login() {
         {/* Bottom branding */}
         <div className="absolute bottom-0 left-0 right-0 p-10 text-white">
           <img
-            src={LOGO_URL}
-            alt="Saúde do Trabalho"
-            className="w-52 h-auto mb-5 brightness-0 invert"
+            src={logoUrl}
+            alt={brandName}
+            className={`w-52 h-auto mb-5 ${isWhiteLabel ? "rounded-lg bg-white/95 p-3 shadow-sm" : "brightness-0 invert"}`}
           />
           <h2 className="text-2xl font-bold leading-snug mb-2">
-            Cuidando de quem cuida<br />da sua empresa.
+            {isWhiteLabel ? brandName : "Cuidando de quem cuida"}<br />da sua empresa.
           </h2>
           <p className="text-white/75 text-sm leading-relaxed max-w-sm">
             Plataforma integrada de saúde mental, riscos psicossociais e conformidade NR-01.
@@ -105,7 +114,7 @@ export default function Login() {
       <div className="flex-1 flex flex-col items-center justify-center bg-white px-8 py-12">
         {/* Mobile logo */}
         <div className="lg:hidden mb-8">
-          <img src={LOGO_URL} alt="Saúde do Trabalho" className="w-48 h-auto" />
+          <img src={logoUrl} alt={brandName} className="w-48 h-auto" />
         </div>
 
         <div className="w-full max-w-sm">
@@ -160,6 +169,7 @@ export default function Login() {
               <Button
                 type="submit"
                 className="w-full h-11 font-semibold text-sm"
+                style={branding.found ? { backgroundColor: branding.primaryColor } : undefined}
                 disabled={checkEmail.isPending}
               >
                 {checkEmail.isPending ? (
@@ -227,6 +237,7 @@ export default function Login() {
               <Button
                 type="submit"
                 className="w-full h-11 font-semibold text-sm"
+                style={branding.found ? { backgroundColor: branding.primaryColor } : undefined}
                 disabled={login.isPending}
               >
                 {login.isPending ? (
@@ -248,7 +259,7 @@ export default function Login() {
 
         {/* Bottom legal */}
         <p className="mt-auto pt-12 text-xs text-muted-foreground/50 text-center">
-          © {new Date().getFullYear()} Saúde do Trabalho · Todos os direitos reservados
+          © {new Date().getFullYear()} {isWhiteLabel ? brandName : "Saúde do Trabalho"} · Todos os direitos reservados
         </p>
       </div>
     </div>

@@ -290,6 +290,18 @@ function PartnersTab({ plans, partners, selectedPartnerId, setSelectedPartnerId,
     }));
   };
 
+  const previewLogin = () => {
+    if (!form.id) return toast.error("Salve o parceiro antes de visualizar.");
+    window.localStorage.setItem("whiteLabelPreviewPartnerId", String(form.id));
+    window.open(`/plataforma/login?wlPreview=${form.id}`, "_blank", "noopener,noreferrer");
+  };
+
+  const previewPlatform = () => {
+    if (!form.id) return toast.error("Salve o parceiro antes de visualizar.");
+    window.localStorage.setItem("whiteLabelPreviewPartnerId", String(form.id));
+    window.open(`/plataforma/dashboard?wlPreview=${form.id}`, "_blank", "noopener,noreferrer");
+  };
+
   return (
     <div className="grid gap-4 xl:grid-cols-[320px_1fr]">
       <Card>
@@ -360,6 +372,20 @@ function PartnersTab({ plans, partners, selectedPartnerId, setSelectedPartnerId,
             <Field label="Observacoes"><Textarea rows={3} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></Field>
           </div>
           <div className="mt-4 flex justify-end">
+            <button
+              type="button"
+              onClick={previewLogin}
+              className="mr-2 inline-flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-semibold"
+            >
+              <Palette size={15} /> Prévia do login
+            </button>
+            <button
+              type="button"
+              onClick={previewPlatform}
+              className="mr-2 inline-flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-semibold"
+            >
+              <Shield size={15} /> Prévia interna
+            </button>
             <button
               onClick={() => save.mutate(form)}
               disabled={save.isPending}

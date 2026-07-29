@@ -64,7 +64,7 @@ app.use("/pdfs", express.static("/var/www/saudedotrabalho/public/pdfs"));
   // ── Redirect helper: SPA roda sob /plataforma/ no nginx. Se alguém acessa
   // /campanhas, /admin/*, etc direto (link de e-mail antigo, digitação manual),
   // redireciona pro path correto. Evita 404 confuso pro Bruno.
-  app.get(["/campanhas", "/campanhas/*", "/admin", "/admin/*", "/inicio", "/cursos", "/cursos/*", "/pesquisas", "/pesquisas/*", "/certificados", "/perfil", "/suporte", "/super-admin", "/super-admin/*"], (req, res, next) => {
+  app.get(["/login", "/dashboard", "/campanhas", "/campanhas/*", "/admin", "/admin/*", "/inicio", "/cursos", "/cursos/*", "/pesquisas", "/pesquisas/*", "/certificados", "/perfil", "/suporte", "/super-admin", "/super-admin/*"], (req, res, next) => {
     // Só redireciona pra navegação tipo browser (não API/JSON)
     if (req.path.startsWith("/api/") || req.path.startsWith("/plataforma/")) return next();
     const accept = String(req.headers.accept || "");
@@ -158,6 +158,35 @@ app.use("/pdfs", express.static("/var/www/saudedotrabalho/public/pdfs"));
 
   // ── SP7 — WhatsApp Webhook (Meta Cloud API) ─────────────────────────────
   // GET: verificação inicial pela Meta (handshake hub.challenge)
+  app.get("/api/white-label/branding", async (req, res) => {
+    try {
+      const { resolveWhiteLabelBranding } = await import("./whiteLabel");
+      const forwardedHost = String(req.headers["x-forwarded-host"] || "");
+      const host = forwardedHost || String(req.headers.host || "");
+      const companyId = req.query.companyId ? Number(req.query.companyId) : null;
+      const partnerId = req.query.previewPartnerId ? Number(req.query.previewPartnerId) : null;
+      const branding = await resolveWhiteLabelBranding({ host, companyId, partnerId });
+      res.setHeader("Cache-Control", "no-store");
+      return res.json(branding);
+    } catch (e: any) {
+      console.warn("[white-label branding]", e?.message || e);
+      return res.json({
+        found: false,
+        source: "default",
+        partnerId: null,
+        brandName: "Saúde do Trabalho",
+        logoUrl: "/plataforma/logo-horizontal.webp",
+        logoFullUrl: "/plataforma/logo-full.png",
+        logoMarkUrl: "/plataforma/logo-mark.png",
+        primaryColor: "#0E2C46",
+        secondaryColor: "#43C285",
+        customDomain: null,
+        hideSdtBrand: false,
+        allowPartnerBranding: false,
+      });
+    }
+  });
+
   app.get("/api/whatsapp/webhook", (req, res) => {
     (async () => {
       try {
@@ -328,8 +357,15 @@ tr:nth-child(even){background:#f8f9fa}.tag{display:inline-block;padding:2px 8px;
     })
   );
 
-  // Landing page
-  app.get("/", (_req, res) => {
+  // Landing page. Dominios white label entram direto no login da plataforma.
+  app.get("/", async (req, res) => {
+    try {
+      const { resolveWhiteLabelBranding } = await import("./whiteLabel");
+      const forwardedHost = String(req.headers["x-forwarded-host"] || "");
+      const host = forwardedHost || String(req.headers.host || "");
+      const branding = await resolveWhiteLabelBranding({ host });
+      if (branding.found) return res.redirect(302, "/plataforma/login");
+    } catch (_) {}
     res.sendFile("/var/www/saudedotrabalho/site_index.html");
   });
 
@@ -353,4 +389,3 @@ tr:nth-child(even){background:#f8f9fa}.tag{display:inline-block;padding:2px 8px;
 }
 
 startServer().catch(console.error);
-
