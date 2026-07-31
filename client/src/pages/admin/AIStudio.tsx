@@ -712,7 +712,7 @@ export default function AIStudio() {
                 >
 
 
-                  <option value="iniciante">Iniciante</option>
+                  <option value="basico">Iniciante</option>
 
 
                   <option value="intermediario">Intermediário</option>
