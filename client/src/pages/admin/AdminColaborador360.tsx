@@ -24,7 +24,7 @@ function initials(name?: string | null) {
   return name.trim().split(/\s+/).slice(0, 2).map((p) => p[0]?.toUpperCase()).join("");
 }
 
-function fmtDate(d?: string | null) {
+function fmtDate(d?: string | Date | null) {
   if (!d) return "—";
   const dt = new Date(d);
   if (isNaN(dt.getTime())) return String(d);
@@ -647,14 +647,14 @@ export default function AdminColaborador360({ id }: { id: number }) {
       <InterventionDialog
         open={showIntervention}
         onClose={() => setShowIntervention(false)}
-        onSubmit={(technique, notes) => addIntervention.mutate({ userId: id, technique, notes: notes || undefined })}
+        onSubmit={(technique: string, notes: string) => addIntervention.mutate({ userId: id, technique, notes: notes || undefined })}
         loading={addIntervention.isPending}
       />
       {/* Agendar conversa dialog */}
       <ScheduleDialog
         open={showSchedule}
         onClose={() => setShowSchedule(false)}
-        onSubmit={(title, eventDate, description) =>
+        onSubmit={(title: string, eventDate: string, description: string) =>
           scheduleConversation.mutate({ userId: id, title: title || undefined, eventDate, description: description || undefined })
         }
         loading={scheduleConversation.isPending}
@@ -782,7 +782,7 @@ function ScheduleDialog({ open, onClose, onSubmit, loading }: any) {
                 className="w-full mt-1 h-10 rounded-md border border-border px-3 text-sm bg-white"
               >
                 <option value="">— Selecione um profissional —</option>
-                {profs.map(p => <option key={p.id} value={p.id}>{p.name}{p.specialty ? ` (${p.specialty})` : ""}</option>)}
+                {profs.map((p: any) => <option key={p.id} value={p.id}>{p.name}{p.specialty ? ` (${p.specialty})` : ""}</option>)}
               </select>
             </div>
           )}
@@ -830,4 +830,3 @@ function ScheduleDialog({ open, onClose, onSubmit, loading }: any) {
     </Dialog>
   );
 }
-

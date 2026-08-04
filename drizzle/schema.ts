@@ -27,9 +27,11 @@ export const users = mysqlTable("users", {
   sectorId: int("sector_id"),
   // Cargo do colaborador — usado por PGR/AEP/EPI/Treinamentos. Migração: ALTER TABLE users ADD COLUMN position VARCHAR(120) NULL.
   position: varchar("position", { length: 120 }),
+  employeeRegistration: varchar("employee_registration", { length: 120 }),
   cpf: varchar("cpf", { length: 20 }),
   whatsappE164: varchar("whatsapp_e164", { length: 20 }),
   employmentStatus: varchar("employment_status", { length: 30 }).default("active").notNull(),
+  countsAsEmployee: tinyint("counts_as_employee"),
   isActive: tinyint("is_active").default(1).notNull(),
 });
 
@@ -162,7 +164,7 @@ export type ReminderSettings = typeof reminderSettings.$inferSelect;
 export const emailLogs = mysqlTable("email_logs", {
   id: int("id").autoincrement().primaryKey(),
   recipientEmail: varchar("recipientEmail", { length: 320 }).notNull(),
-  type: mysqlEnum("type", ["reminder_employee", "alert_rh", "welcome"]).notNull(),
+  type: mysqlEnum("type", ["reminder_employee", "alert_rh", "welcome", "cipa_pending_vote"]).notNull(),
   subject: varchar("subject", { length: 512 }),
   sentAt: timestamp("sentAt").defaultNow().notNull(),
   success: boolean("success").default(true).notNull(),

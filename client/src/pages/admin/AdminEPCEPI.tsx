@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import AppLayout from "@/components/AppLayout";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
@@ -48,17 +48,16 @@ export default function AdminEPCEPI() {
   const pgrList = trpc.pgr.list.useQuery();
 
   const epcEpiQuery = trpc.pgr.listEpcEpi.useQuery(
-    { pgrId },
-    {
-      enabled: !!pgrId,
-      onSuccess: (data: EpcEpiRow[]) => {
-        if (pgrId !== hasLoaded) {
-          setRows(data ?? []);
-          setHasLoaded(pgrId);
-        }
-      },
-    }
+    { pgrId: Number(pgrId) },
+    { enabled: !!pgrId }
   );
+
+  useEffect(() => {
+    if (epcEpiQuery.data && pgrId !== hasLoaded) {
+      setRows((epcEpiQuery.data ?? []) as EpcEpiRow[]);
+      setHasLoaded(pgrId);
+    }
+  }, [epcEpiQuery.data, hasLoaded, pgrId]);
 
   const saveMutation = trpc.pgr.saveEpcEpi.useMutation({
     onSuccess: () => {
@@ -94,7 +93,7 @@ export default function AdminEPCEPI() {
       toast.error("Selecione um PGR antes de salvar.");
       return;
     }
-    saveMutation.mutate({ pgrId, items: rows });
+    saveMutation.mutate({ pgrId: Number(pgrId), items: rows });
   }
 
   return (
@@ -333,11 +332,11 @@ export default function AdminEPCEPI() {
 
               <Button
                 onClick={handleSave}
-                disabled={saveMutation.isLoading}
+                disabled={saveMutation.isPending}
                 className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white"
               >
                 <Save className="w-4 h-4" />
-                {saveMutation.isLoading ? "Salvando..." : "Salvar"}
+                {saveMutation.isPending ? "Salvando..." : "Salvar"}
               </Button>
             </div>
           )}

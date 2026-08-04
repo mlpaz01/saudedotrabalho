@@ -8,6 +8,7 @@ import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
+import { sql } from "drizzle-orm";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -136,7 +137,7 @@ app.use("/pdfs", express.static("/var/www/saudedotrabalho/public/pdfs"));
               audience: "collaborator",
             }),
           });
-          await db.execute("UPDATE appointments SET link_email_sent=1 WHERE id=?" as any, [a.id] as any);
+          await db.execute(sql`UPDATE appointments SET link_email_sent=1 WHERE id=${a.id}`);
           sent++;
         } catch (e) { console.warn("[appt today-link] falhou id", a.id, (e as any)?.message); }
       }

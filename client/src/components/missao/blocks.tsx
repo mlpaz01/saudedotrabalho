@@ -428,7 +428,7 @@ export function FallbackBlock({ onAnswer }: RendererProps) {
   );
 }
 
-const Renderers: Record<string, (p: RendererProps) => JSX.Element> = {
+const Renderers: Record<string, React.ComponentType<RendererProps>> = {
   concept: ConceptBlock,
   example: ExampleBlock,
   quick_check: QuickCheckBlock,

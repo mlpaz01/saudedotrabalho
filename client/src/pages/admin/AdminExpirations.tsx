@@ -62,7 +62,7 @@ export default function AdminExpirations() {
   const [filter, setFilter]   = useState<FilterKey>("todos");
   const [search, setSearch]   = useState("");
 
-  const { data: raw, isLoading, refetch } = trpc.admin.companyExpirations.useQuery(undefined, { refetchOnWindowFocus: false });
+  const { data: raw, isLoading, refetch } = trpc.dashboard.companyExpirations.useQuery(undefined, { refetchOnWindowFocus: false });
 
   const items = useMemo(() => {
     const list = (raw ?? []).map((r: any) => ({

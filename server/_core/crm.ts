@@ -759,7 +759,7 @@ export async function generateProposalPDF(proposalId: number): Promise<string> {
       <tbody>
         ${faixasAtuais.map(f => {
           const atual = Number(p.qtd_colaboradores || 0) >= f.min && Number(p.qtd_colaboradores || 0) <= f.max;
-          return `<tr class="${atual ? "atual" : ""}"><td>${f.min === f.max ? f.min : (f.max >= 99999 ? `${f.min}+` : `${f.min} a ${f.max}`)}</td><td style="text-align:right">${fmtMoney(f.valor_mensal)}</td></tr>`;
+          return `<tr class="${atual ? "atual" : ""}"><td>${Number(f.min) === Number(f.max) ? f.min : (f.max >= 99999 ? `${f.min}+` : `${f.min} a ${f.max}`)}</td><td style="text-align:right">${fmtMoney(f.valor_mensal)}</td></tr>`;
         }).join("")}
       </tbody>
     </table>

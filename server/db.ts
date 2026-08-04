@@ -1,4 +1,5 @@
 import { and, eq, lt, sql, desc, isNull, or } from "drizzle-orm";
+import { activeEmployeeSql } from "./_core/activeEmployees";
 
 import { drizzle } from "drizzle-orm/mysql2";
 
@@ -98,6 +99,8 @@ async function ensureEmploymentStatusColumns(db: any) {
   if (_employmentStatusColumnsReady || !db) return;
   try { await db.execute(sql.raw("ALTER TABLE users ADD COLUMN employment_status VARCHAR(30) NOT NULL DEFAULT 'active'")); } catch (_) {}
   try { await db.execute(sql.raw("ALTER TABLE users ADD INDEX idx_users_employment_status (employment_status)")); } catch (_) {}
+  try { await db.execute(sql.raw("ALTER TABLE users ADD COLUMN counts_as_employee TINYINT(1) NULL")); } catch (_) {}
+  try { await db.execute(sql.raw("ALTER TABLE users ADD INDEX idx_users_counts_as_employee (counts_as_employee)")); } catch (_) {}
   try { await db.execute(sql.raw("ALTER TABLE corporate_emails ADD COLUMN employment_status VARCHAR(30) NOT NULL DEFAULT 'active'")); } catch (_) {}
   try { await db.execute(sql.raw("ALTER TABLE corporate_emails ADD INDEX idx_corporate_employment_status (employment_status)")); } catch (_) {}
   _employmentStatusColumnsReady = true;
@@ -697,11 +700,13 @@ export async function getInactiveUsers(daysThreshold: number) {
 
 // ─── Email Logs ───────────────────────────────────────────────────────────────
 
+let emailLogTypesReady = false;
+
 export async function logEmail(
 
   recipientEmail: string,
 
-  type: "reminder_employee" | "alert_rh" | "welcome",
+  type: "reminder_employee" | "alert_rh" | "welcome" | "cipa_pending_vote",
 
   subject: string,
 
@@ -714,6 +719,11 @@ export async function logEmail(
   const db = await getDb();
 
   if (!db) return;
+
+  if (!emailLogTypesReady) {
+    try { await db.execute(sql.raw("ALTER TABLE email_logs MODIFY COLUMN type ENUM('reminder_employee','alert_rh','welcome','cipa_pending_vote') NOT NULL")); } catch {}
+    emailLogTypesReady = true;
+  }
 
   await db.insert(emailLogs).values({ recipientEmail, type, subject, success, errorMessage });
 
@@ -2226,8 +2236,8 @@ export async function getManagerDashboard(companyId: number | null) {
   // R5-P9 #3: alinhado com tela Colaboradores (users WHERE is_active=1). Antes contava
   // corporate_emails (incluía registros sem cadastro real), gerando divergência ex.: 18 vs 12.
   const empCountRaw = companyId
-    ? await db.execute(sql.raw(`SELECT COUNT(*) AS c FROM users WHERE company_id=${companyId} AND is_active=1 AND COALESCE(employment_status,'active')='active'`))
-    : await db.execute(sql.raw(`SELECT COUNT(*) AS c FROM users WHERE is_active=1 AND COALESCE(employment_status,'active')='active'`));
+    ? await db.execute(sql.raw(`SELECT COUNT(*) AS c FROM users u WHERE u.company_id=${companyId} AND ${activeEmployeeSql("u")}`))
+    : await db.execute(sql.raw(`SELECT COUNT(*) AS c FROM users u WHERE ${activeEmployeeSql("u")}`));
   const empCountRows: any = Array.isArray((empCountRaw as any)[0]) ? (empCountRaw as any)[0] : (empCountRaw as any);
   const totalEmployees = Number(empCountRows[0]?.c ?? 0);
 
@@ -4174,7 +4184,7 @@ export async function getHierarchyTreeForCompany(companyId: number | null, opts:
 
   const userStatusWhere = opts.includeAllStatuses
     ? `u.is_active = 1`
-    : `u.is_active = 1 AND COALESCE(u.employment_status, 'active') = 'active'`;
+    : activeEmployeeSql("u");
 
   const usersRaw = await db.execute(
     sql.raw(`SELECT u.id, u.name, u.email, u.role, u.lastSignedIn,
@@ -4182,6 +4192,7 @@ export async function getHierarchyTreeForCompany(companyId: number | null, opts:
                     u.position AS position, u.cpf AS cpf,
                     u.whatsapp_e164 AS whatsapp,
                     COALESCE(u.employment_status, 'active') AS employmentStatus,
+                    u.counts_as_employee AS countsAsEmployee,
                     ce.employeeName AS cargoName,
                     (SELECT COUNT(*) FROM user_progress p WHERE p.userId = u.id) AS coursesStarted,
                     (SELECT COUNT(*) FROM user_progress p WHERE p.userId = u.id AND p.isCompleted = 1) AS coursesCompleted,
@@ -4843,7 +4854,7 @@ export async function previewCampaignRecipients(opts: {
   if (!db) return [];
   await ensureEmploymentStatusColumns(db);
 
-  const where: string[] = [`u.company_id = ${opts.companyId}`, `u.is_active = 1`, `COALESCE(u.employment_status,'active') = 'active'`];
+  const where: string[] = [`u.company_id = ${opts.companyId}`, activeEmployeeSql("u")];
   if (opts.branchId != null) where.push(`u.branch_id = ${opts.branchId}`);
   if (opts.sectorId != null) where.push(`u.sector_id = ${opts.sectorId}`);
   where.push(`u.email IS NOT NULL AND u.email <> ''`);

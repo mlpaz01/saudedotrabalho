@@ -50,7 +50,7 @@ export async function generateLessonPDF(opts: {
   });
   try {
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: "networkidle0" });
+    await page.setContent(html, { waitUntil: "load" });
     await page.pdf({ path: outPath, format: "A4", printBackground: true });
   } finally {
     await browser.close();

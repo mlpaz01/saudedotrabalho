@@ -66,7 +66,7 @@ export default function AdminProgramas() {
   const utils = trpc.useUtils();
   const programsQ = trpc.trainingPrograms.list.useQuery();
   const modulesQ = trpc.admin.listModules.useQuery();
-  const factorsQ = trpc.pgr.listFactors.useQuery();
+  const factorsQ = trpc.riskAssessment.listFactors.useQuery();
 
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -76,7 +76,7 @@ export default function AdminProgramas() {
   const [addModuleMap, setAddModuleMap] = useState<Record<number, number>>({});
   const [addFactorMap, setAddFactorMap] = useState<Record<number, number>>({});
 
-  const programs = programsQ.data ?? [];
+  const programs = (programsQ.data ?? []) as any[];
   const allModules = (modulesQ.data ?? []) as any[];
   const allFactors = (factorsQ.data ?? []) as any[];
 
@@ -172,20 +172,20 @@ export default function AdminProgramas() {
                     allModules={allModules}
                     allFactors={allFactors}
                     addModuleVal={addModuleMap[p.id] ?? 0}
-                    onAddModuleChange={(v) => setAddModuleMap(m => ({ ...m, [p.id]: v }))}
+                    onAddModuleChange={(v: number) => setAddModuleMap(m => ({ ...m, [p.id]: v }))}
                     onAddModule={() => {
                       const mid = addModuleMap[p.id];
                       if (mid) { addModMut.mutate({ programId: p.id, moduleId: mid }); setAddModuleMap(m => ({ ...m, [p.id]: 0 })); }
                     }}
-                    onRemoveModule={(id) => removeModMut.mutate({ id })}
-                    onReorder={(id, dir) => reorderModMut.mutate({ id, direction: dir })}
+                    onRemoveModule={(id: number) => removeModMut.mutate({ id })}
+                    onReorder={(id: number, dir: "up" | "down") => reorderModMut.mutate({ id, direction: dir })}
                     addFactorVal={addFactorMap[p.id] ?? 0}
-                    onAddFactorChange={(v) => setAddFactorMap(f => ({ ...f, [p.id]: v }))}
+                    onAddFactorChange={(v: number) => setAddFactorMap(f => ({ ...f, [p.id]: v }))}
                     onAddFactor={() => {
                       const fid = addFactorMap[p.id];
                       if (fid) { addFactorMut.mutate({ programId: p.id, factorId: fid }); setAddFactorMap(f => ({ ...f, [p.id]: 0 })); }
                     }}
-                    onRemoveFactor={(id) => removeFactorMut.mutate({ id })}
+                    onRemoveFactor={(id: number) => removeFactorMut.mutate({ id })}
                   />
                 ))}
               </div>
@@ -213,20 +213,20 @@ export default function AdminProgramas() {
                     allModules={allModules}
                     allFactors={allFactors}
                     addModuleVal={addModuleMap[p.id] ?? 0}
-                    onAddModuleChange={(v) => setAddModuleMap(m => ({ ...m, [p.id]: v }))}
+                    onAddModuleChange={(v: number) => setAddModuleMap(m => ({ ...m, [p.id]: v }))}
                     onAddModule={() => {
                       const mid = addModuleMap[p.id];
                       if (mid) { addModMut.mutate({ programId: p.id, moduleId: mid }); setAddModuleMap(m => ({ ...m, [p.id]: 0 })); }
                     }}
-                    onRemoveModule={(id) => removeModMut.mutate({ id })}
-                    onReorder={(id, dir) => reorderModMut.mutate({ id, direction: dir })}
+                    onRemoveModule={(id: number) => removeModMut.mutate({ id })}
+                    onReorder={(id: number, dir: "up" | "down") => reorderModMut.mutate({ id, direction: dir })}
                     addFactorVal={addFactorMap[p.id] ?? 0}
-                    onAddFactorChange={(v) => setAddFactorMap(f => ({ ...f, [p.id]: v }))}
+                    onAddFactorChange={(v: number) => setAddFactorMap(f => ({ ...f, [p.id]: v }))}
                     onAddFactor={() => {
                       const fid = addFactorMap[p.id];
                       if (fid) { addFactorMut.mutate({ programId: p.id, factorId: fid }); setAddFactorMap(f => ({ ...f, [p.id]: 0 })); }
                     }}
-                    onRemoveFactor={(id) => removeFactorMut.mutate({ id })}
+                    onRemoveFactor={(id: number) => removeFactorMut.mutate({ id })}
                   />
                 ))}
               </div>

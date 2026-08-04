@@ -13,6 +13,7 @@ import { Course, GenerateOptions } from "./types";
 import * as fs from "fs";
 
 import * as path from "path";
+import { sql } from "drizzle-orm";
 
 
 
@@ -187,7 +188,7 @@ async function generatePDF(html: string, outPath: string): Promise<void> {
 
     const page = await browser.newPage();
 
-    await page.setContent(html, { waitUntil: "networkidle0" });
+      await page.setContent(html, { waitUntil: "load" });
 
     await page.pdf({ path: outPath, format: "A4", printBackground: true, margin: { top: "20mm", bottom: "20mm", left: "18mm", right: "18mm" }, displayHeaderFooter: true, footerTemplate: '<div style="font-size:10px;color:#aaa;text-align:center;width:100%;padding-right:18mm;">Pagina <span class="pageNumber"></span> de <span class="totalPages"></span></div>', headerTemplate: '<span></span>' });
 
@@ -253,9 +254,9 @@ export async function generate(opts: GenerateOptions & { genId?: string | number
   // Store partial outline immediately so UI can show structure preview
   if (opts.genId) {
     try {
-      const { getDb, _rawSql } = await import("../../db");
+      const { getDb } = await import("../../db");
       const dbi = await getDb();
-      if (dbi) await dbi.execute(_rawSql`UPDATE ai_course_generations SET generated_outline=${JSON.stringify({ title: outline.title, description: outline.description, units: outline.units })} WHERE id=${opts.genId}`);
+      if (dbi) await dbi.execute(sql`UPDATE ai_course_generations SET generated_outline=${JSON.stringify({ title: outline.title, description: outline.description, units: outline.units })} WHERE id=${opts.genId}`);
     } catch (_) {}
   }
 
@@ -263,7 +264,10 @@ export async function generate(opts: GenerateOptions & { genId?: string | number
   const course: Course = {
     title: outline.title,
     description: outline.description ?? "",
+    coverImageQuery: outline.coverImageQuery ?? "professional workplace training",
+    totalEstimatedMinutes: opts.duration || 60,
     units: [],
+    finalExam: [],
   };
 
   const allLessonTitles: string[] = [];
@@ -277,6 +281,7 @@ export async function generate(opts: GenerateOptions & { genId?: string | number
   for (const unit of (outline.units ?? [])) {
     const courseUnit: Course["units"][0] = {
       title: unit.title,
+      description: unit.description ?? "",
       icon: unit.icon ?? "book",
       lessons: [],
     };
@@ -287,6 +292,7 @@ export async function generate(opts: GenerateOptions & { genId?: string | number
       await log(lessonPct, `Criando aula ${lessonsDone}/${totalLessons}: "${lessonTitle}"`);
 
       let blocks: any[] = [];
+      let estimatedMinutes = Math.max(3, Math.round((opts.duration || 60) / totalLessons));
 
       // 1. OpenRouter
       if (orKey) {
@@ -317,10 +323,10 @@ export async function generate(opts: GenerateOptions & { genId?: string | number
             courseTitle: outline.title,
             unitTitle: unit.title,
             lessonTitle,
-            lessonIndex: lessonsDone - 1,
-            previousTitles: [...previousTitles],
+            previousLessonTitles: [...previousTitles],
           });
-          blocks = result ?? [];
+          blocks = result?.blocks ?? [];
+          estimatedMinutes = Number(result?.estimatedMinutes || estimatedMinutes);
           if (blocks.length) console.log(`[ContentForge] lesson ${lessonsDone}: Gemini OK`);
         } catch (geminiErr) {
           console.error(`[ContentForge] Gemini lesson failed: ${lessonTitle}`, String(geminiErr).slice(0, 100));
@@ -332,7 +338,7 @@ export async function generate(opts: GenerateOptions & { genId?: string | number
         console.error(`[ContentForge] all providers failed for lesson: ${lessonTitle}`);
       }
 
-      courseUnit.lessons.push({ title: lessonTitle, blocks });
+      courseUnit.lessons.push({ title: lessonTitle, estimatedMinutes, blocks });
       previousTitles.push(lessonTitle);
     }
 
@@ -364,7 +370,7 @@ export async function generate(opts: GenerateOptions & { genId?: string | number
     } catch (e) { console.error("[ContentForge] final exam skipped:", e); }
   }
 
-  (course as any).finalExam = examQuestions ?? [];
+  course.finalExam = examQuestions ?? [];
 
   // -- PDF --
   await log(82, "Gerando PDF do curso...");

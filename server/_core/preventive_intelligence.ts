@@ -14,6 +14,7 @@
  */
 import { getDb } from "../db";
 import { sql as drzSql } from "drizzle-orm";
+import { activeEmployeeSql, ensureActiveEmployeeColumns } from "./activeEmployees";
 
 export type Alert = {
   type: "low_training_adoption" | "denuncias_spike" | "sector_critical" | "survey_stale";
@@ -27,6 +28,7 @@ export type Alert = {
 export async function runPreventiveIntelligenceForCompany(companyId: number): Promise<{ alerts: Alert[]; admins: number[] }> {
   const db = await getDb();
   if (!db) return { alerts: [], admins: [] };
+  await ensureActiveEmployeeColumns(db);
   const alerts: Alert[] = [];
 
   // Hoje formatado pra dedup_key
@@ -34,7 +36,7 @@ export async function runPreventiveIntelligenceForCompany(companyId: number): Pr
 
   // (1) Baixa adesão a treinamentos
   try {
-    const [[active]]: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM users WHERE company_id=${companyId} AND is_active=1`);
+    const [[active]]: any = await db.execute(drzSql.raw(`SELECT COUNT(*) AS c FROM users u WHERE u.company_id=${companyId} AND ${activeEmployeeSql("u")}`));
     const total = Number(active?.c ?? 0);
     if (total >= 5) {
       const [[done]]: any = await db.execute(drzSql`SELECT COUNT(DISTINCT userId) AS c FROM user_progress WHERE userId IN (SELECT id FROM users WHERE company_id=${companyId}) AND isCompleted=1`);
@@ -103,7 +105,7 @@ export async function runPreventiveIntelligenceForCompany(companyId: number): Pr
     const [surveys]: any = await db.execute(drzSql`
       SELECT s.id, s.title, s.created_at,
         (SELECT COUNT(DISTINCT user_id) FROM survey_responses sr WHERE sr.survey_id=s.id) AS respondentes,
-        (SELECT COUNT(*) FROM users WHERE company_id=s.company_id AND is_active=1) AS total
+        (SELECT COUNT(*) FROM users u WHERE u.company_id=s.company_id AND ${activeEmployeeSql("u")}) AS total
       FROM surveys s
       WHERE s.company_id=${companyId} AND s.status='active' AND s.created_at <= DATE_SUB(NOW(), INTERVAL 7 DAY)`);
     for (const sv of ((surveys as any)[0] ?? [])) {
@@ -153,7 +155,8 @@ export async function runPreventiveIntelligenceForCompany(companyId: number): Pr
 export async function runPreventiveIntelligenceCron(): Promise<{ companies: number; totalAlerts: number }> {
   const db = await getDb();
   if (!db) return { companies: 0, totalAlerts: 0 };
-  const raw: any = await db.execute(drzSql`SELECT id FROM companies WHERE id IN (SELECT DISTINCT company_id FROM users WHERE is_active=1)`);
+  await ensureActiveEmployeeColumns(db);
+  const raw: any = await db.execute(drzSql.raw(`SELECT id FROM companies WHERE id IN (SELECT DISTINCT u.company_id FROM users u WHERE ${activeEmployeeSql("u")})`));
   // mysql2 driver pode retornar shape distinto; normaliza pra array
   const rows: any[] = Array.isArray((raw as any)[0]) ? (raw as any)[0] : (Array.isArray(raw) ? raw : []);
   let totalAlerts = 0;

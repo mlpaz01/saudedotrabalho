@@ -199,7 +199,7 @@ function PropostasTab() {
           initial={editing}
           partners={(partnersQ.data ?? []) as any[]}
           onClose={() => { setOpenNew(false); setEditing(null); }}
-          onSubmit={(data) => upsertMut.mutate(data)}
+          onSubmit={(data: any) => upsertMut.mutate(data)}
           loading={upsertMut.isPending}
         />
       )}
@@ -808,7 +808,7 @@ function ContractForm({ initial, partners, onClose, onSubmit, loading }: any) {
 function L({ l, children }: any) {
   return <div><label className="text-xs font-semibold text-slate-700 block mb-1">{l}</label>{children}</div>;
 }
-function Input({ v, on }: any) { return <input type="text" value={v} onChange={e => on(e.target.value)} className="w-full border rounded px-2 py-1.5 text-sm"/>; }
+function Input({ v, on }: { v: string | number | null | undefined; on: (value: string) => void }) { return <input type="text" value={v ?? ""} onChange={e => on(e.target.value)} className="w-full border rounded px-2 py-1.5 text-sm"/>; }
 function brl(v: any) { return `R$ ${Number(v ?? 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; }
 
 // Bruno R5-P3 #6 — Aba pra editar faixas de preço (Super Admin).

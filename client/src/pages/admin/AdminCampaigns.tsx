@@ -47,7 +47,7 @@ export default function AdminCampaigns() {
           <CampaignList
             campaigns={list.data ?? []}
             loading={list.isLoading}
-            onOpen={(id) => { setDetailId(id); setView("detail"); }}
+            onOpen={(id: number) => { setDetailId(id); setView("detail"); }}
           />
         )}
         {view === "wizard" && (
@@ -808,4 +808,3 @@ function fmtDateTime(v: any) {
   if (!v) return "—";
   try { return new Date(v).toLocaleString("pt-BR"); } catch { return "—"; }
 }
-

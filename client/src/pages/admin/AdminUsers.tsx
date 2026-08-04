@@ -299,8 +299,8 @@ export default function AdminUsers() {
                 expandedSectors={expandedSectors}
                 toggleSector={toggleSector}
                 onUserClick={openCollaborator}
-                onEditAssignment={(u) => setAssigningUser({ ...u, companyId: co.company.id })}
-                onDelete={(u) => setDeletingUser({ ...u, companyId: co.company.id })}
+                onEditAssignment={(u: any) => setAssigningUser({ ...u, companyId: co.company.id })}
+                onDelete={(u: any) => setDeletingUser({ ...u, companyId: co.company.id })}
               />
             ))
           )}
@@ -925,6 +925,11 @@ function AssignmentDialog({ user, onClose, onSaved }: { user: any; onClose: () =
   const [cpf, setCpf] = useState<string>(user?.cpf ?? "");
   const [role, setRole] = useState<string>(user?.role ?? "user");
   const [employmentStatus, setEmploymentStatus] = useState<string>(user?.employmentStatus ?? "active");
+  const [countsAsEmployee, setCountsAsEmployee] = useState<boolean>(
+    user?.countsAsEmployee == null
+      ? ["user", "chefia", "cipa", "sesmt", "admin", "company_admin"].includes(String(user?.role ?? "user"))
+      : Boolean(Number(user.countsAsEmployee))
+  );
   const [branchId, setBranchId] = useState<number | null>(user?.branchId ?? null);
   const [sectorId, setSectorId] = useState<number | null>(user?.sectorId ?? null);
   // SP3 #1 — Cargo na edição (campo já existe no banco/importer; faltava na UI)
@@ -960,6 +965,7 @@ function AssignmentDialog({ user, onClose, onSaved }: { user: any; onClose: () =
       cpf: cpf.trim() || null,
       role: role as any,
       employmentStatus: employmentStatus as any,
+      countsAsEmployee,
       branchId: branchId,
       sectorId: sectorId,
       position: position.trim() || null,
@@ -1019,6 +1025,20 @@ function AssignmentDialog({ user, onClose, onSaved }: { user: any; onClose: () =
               <option value="admin">Administrador</option>
             </select>
           </div>
+          <label className="flex items-start gap-3 rounded-md border p-3">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={countsAsEmployee}
+              onChange={(e) => setCountsAsEmployee(e.target.checked)}
+            />
+            <span>
+              <span className="block text-sm font-medium">Contabilizar como colaborador ativo</span>
+              <span className="block text-xs text-muted-foreground mt-1">
+                Use para RH ou outro perfil que tambem seja funcionario da empresa. Desmarque para prestadores e acessos tecnicos.
+              </span>
+            </span>
+          </label>
           <div>
             <Label>Cargo / Função</Label>
             <Input

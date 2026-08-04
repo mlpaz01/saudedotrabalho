@@ -92,7 +92,7 @@ export default function SuperAdminClients() {
 
         {delegateFor && (
           <DelegateModal client={delegateFor} onClose={() => setDelegateFor(null)}
-            onConfirm={(role, justification) => {
+            onConfirm={(role: string, justification: string) => {
               logMut.mutate({ companyId: delegateFor.id, delegatedRole: role, action: "start_session", justification },
                 { onSuccess: () => {
                   localStorage.setItem("impersonatedCompanyId", String(delegateFor.id));

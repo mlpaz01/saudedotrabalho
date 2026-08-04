@@ -91,7 +91,7 @@ export default function AIStudio() {
   const [prompt, setPrompt] = useState("");
 
 
-  const [level, setLevel] = useState("intermediario");
+  const [level, setLevel] = useState<"basico" | "intermediario" | "avancado">("intermediario");
 
 
   const [duration, setDuration] = useState("30");
@@ -703,7 +703,7 @@ export default function AIStudio() {
                   value={level}
 
 
-                  onChange={e => setLevel(e.target.value)}
+                  onChange={e => setLevel(e.target.value as "basico" | "intermediario" | "avancado")}
 
 
                   className="w-full border border-input rounded-md px-3 py-2 text-sm bg-background"

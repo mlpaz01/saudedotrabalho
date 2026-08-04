@@ -283,7 +283,7 @@ export default function AdminBibliotecaPreventiva() {
                         month={month}
                         initial={editingCampaign}
                         isGlobal={isGlobal}
-                        onSubmit={(data) => upsertMut.mutate(data)}
+                        onSubmit={(data: any) => upsertMut.mutate(data)}
                         onCancel={() => { setShowNewCampaign(null); setEditingCampaign(null); }}
                         loading={upsertMut.isPending}
                       />
@@ -309,7 +309,7 @@ export default function AdminBibliotecaPreventiva() {
           campaign={blastCampaign}
           loading={blastMut.isPending}
           onClose={() => setBlastCampaign(null)}
-          onConfirm={(payload) => {
+          onConfirm={(payload: any) => {
             blastMut.mutate({ campaignId: blastCampaign.id, ...payload }, {
               onSettled: () => setBlastCampaign(null),
             });

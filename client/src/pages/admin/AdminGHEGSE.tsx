@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import AppLayout from "@/components/AppLayout";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
@@ -51,30 +51,22 @@ export default function AdminGHEGSE() {
     isError: gheGseError,
     refetch,
   } = trpc.pgr.listGheGse.useQuery(
-    { pgrId: selectedPgrId },
-    {
-      enabled: !!selectedPgrId,
-      onSuccess: (data: GheGseRow[]) => {
-        setRows(
-          data.map((item: GheGseRow) => ({
-            id: item.id,
-            nome: item.nome ?? "",
-            tipo: item.tipo ?? "GHE",
-            setor: item.setor ?? "",
-            funcao: item.funcao ?? "",
-            atividade: item.atividade ?? "",
-            qtdExpostos: item.qtdExpostos != null ? String(item.qtdExpostos) : "",
-            jornada: item.jornada ?? "",
-            ambienteOperacional: item.ambienteOperacional ?? "",
-          }))
-        );
-        setIsDirty(false);
-      },
-      onError: () => {
-        toast.error("Erro ao carregar GHE/GSE. Tente novamente.");
-      },
-    }
+    { pgrId: Number(selectedPgrId) },
+    { enabled: !!selectedPgrId }
   );
+
+  useEffect(() => {
+    if (!gheGseData) return;
+    setRows((gheGseData as GheGseRow[]).map((item) => ({
+      id: item.id, nome: item.nome ?? "", tipo: item.tipo ?? "GHE", setor: item.setor ?? "",
+      funcao: item.funcao ?? "", atividade: item.atividade ?? "",
+      qtdExpostos: item.qtdExpostos != null ? String(item.qtdExpostos) : "",
+      jornada: item.jornada ?? "", ambienteOperacional: item.ambienteOperacional ?? "",
+    })));
+    setIsDirty(false);
+  }, [gheGseData]);
+
+  useEffect(() => { if (gheGseError) toast.error("Erro ao carregar GHE/GSE. Tente novamente."); }, [gheGseError]);
 
   const saveMutation = trpc.pgr.saveGheGse.useMutation({
     onSuccess: () => {
@@ -128,7 +120,7 @@ export default function AdminGHEGSE() {
       return;
     }
     saveMutation.mutate({
-      pgrId: selectedPgrId,
+      pgrId: Number(selectedPgrId),
       items: rows.map((row) => ({
         id: row.id,
         nome: row.nome,
@@ -136,7 +128,7 @@ export default function AdminGHEGSE() {
         setor: row.setor,
         funcao: row.funcao,
         atividade: row.atividade,
-        qtdExpostos: row.qtdExpostos !== "" ? Number(row.qtdExpostos) : null,
+        qtdExpostos: row.qtdExpostos !== "" ? Number(row.qtdExpostos) : undefined,
         jornada: row.jornada,
         ambienteOperacional: row.ambienteOperacional,
       })),
@@ -209,7 +201,7 @@ export default function AdminGHEGSE() {
                   variant="outline"
                   size="sm"
                   onClick={handleAddRow}
-                  disabled={isLoading || saveMutation.isLoading}
+                  disabled={isLoading || saveMutation.isPending}
                 >
                   <Plus className="w-4 h-4 mr-1" />
                   Adicionar linha
@@ -218,11 +210,11 @@ export default function AdminGHEGSE() {
                   size="sm"
                   onClick={handleSave}
                   disabled={
-                    !isDirty || isLoading || saveMutation.isLoading
+                    !isDirty || isLoading || saveMutation.isPending
                   }
                 >
                   <Save className="w-4 h-4 mr-1" />
-                  {saveMutation.isLoading ? "Salvando..." : "Salvar"}
+                  {saveMutation.isPending ? "Salvando..." : "Salvar"}
                 </Button>
               </div>
             </div>
@@ -422,10 +414,10 @@ export default function AdminGHEGSE() {
                 <Button
                   size="sm"
                   onClick={handleSave}
-                  disabled={saveMutation.isLoading}
+                  disabled={saveMutation.isPending}
                 >
                   <Save className="w-4 h-4 mr-1" />
-                  {saveMutation.isLoading ? "Salvando..." : "Salvar alterações"}
+                  {saveMutation.isPending ? "Salvando..." : "Salvar alterações"}
                 </Button>
               </div>
             )}

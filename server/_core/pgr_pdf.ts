@@ -172,6 +172,11 @@ export type PgrData = {
   respTecnicoAssinaturaUrl?: string | null;
   respTecnicoValidadeAte?: string | null;
   logoUrl?: string | null;
+  currentRevision?: string | null;
+  approvedAt?: string | null;
+  planoPsicossocial?: any[] | null;
+  notasTecnicas?: string | null;
+  sumarioCustom?: string | null;
   gheFuncoes?: GheRow[] | null;
   revisoes?: RevisaoRow[] | null;
   inventario?: InventarioRow[] | null;
@@ -284,7 +289,7 @@ async function renderPDF(html: string, outPath: string): Promise<void> {
   });
   try {
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: "networkidle0" });
+    await page.setContent(html, { waitUntil: "load" });
     await page.pdf({ path: outPath, format: "A4", printBackground: true, displayHeaderFooter: false });
   } finally {
     await browser.close();
@@ -1004,7 +1009,7 @@ function renderSumarioPgr(d: PgrData & { sumarioCustom?: string | null }, attCou
     }
     attCounts.oficiais.forEach((o) => {
       sub++;
-      items.push({ num: `${cap}.${sub}`, label: `${o.label} (${o.count} documento(s))`, level: 2 });
+      items.push({ num: `${cap}.${sub}`, label: `${o.label} (${o.n} documento(s))`, level: 2 });
     });
   }
 

@@ -300,7 +300,7 @@ export default function AdminPCMSO() {
             <div className="flex justify-end gap-2 pt-2">
               <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancelar</Button>
               <Button disabled={upsertM.isPending || !form.fatorRisco || !form.tipoExame}
-                onClick={() => upsertM.mutate({ ...form, fatorRisco: form.fatorRisco, tipoExame: form.tipoExame })}>
+                onClick={() => upsertM.mutate({ ...form, observacoes: form.observacoes ?? undefined, responsavel: form.responsavel ?? undefined, fatorRisco: form.fatorRisco, tipoExame: form.tipoExame })}>
                 {upsertM.isPending ? "Salvando..." : "Salvar"}
               </Button>
             </div>

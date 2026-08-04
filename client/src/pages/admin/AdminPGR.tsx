@@ -191,10 +191,7 @@ export default function AdminPGR() {
   const importAepM = trpc.pgr.importFromAEP.useMutation({
     onSuccess: (r: any) => {
       toast.success(r?.message ?? "Importado!");
-      if (typeof editId === "number") {
-        trpc.useContext ? undefined : undefined;
-        window.location.reload();
-      }
+      if (typeof editId === "number") window.location.reload();
     },
     onError: (e: any) => toast.error(e?.message ?? "Erro ao importar"),
   });

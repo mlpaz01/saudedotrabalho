@@ -78,7 +78,7 @@ const BASE_CSS = `
   .footer-note { margin-top: 14mm; font-size: 8.5pt; color: #64748b; text-align: center; border-top: 1px solid #e5e7eb; padding-top: 6px; }
 `;
 
-async function renderPDF(html: string, outPath: string): Promise<void> {
+export async function renderPDF(html: string, outPath: string): Promise<void> {
   const browser = await puppeteer.launch({
     headless: true,
     args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
@@ -86,7 +86,7 @@ async function renderPDF(html: string, outPath: string): Promise<void> {
   });
   try {
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: "networkidle0" });
+    await page.setContent(html, { waitUntil: "load" });
     await page.pdf({ path: outPath, format: "A4", printBackground: true, displayHeaderFooter: false });
   } finally {
     await browser.close();

@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import AppLayout from "@/components/AppLayout";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -53,7 +53,7 @@ export default function AdminClientPlans() {
   const [reason, setReason] = useState("");
 
   // Sync com dados do servidor
-  useMemo(() => {
+  useEffect(() => {
     if (subQ.data) {
       setDraftPlan(String(subQ.data.company.plan ?? ""));
       setDraftVertentes((subQ.data.vertentes ?? []).map((v: any) => v.vertente_code));
@@ -121,8 +121,8 @@ export default function AdminClientPlans() {
     if (!selectedId) return;
     await updateMut.mutateAsync({
       companyId: selectedId,
-      planCode: draftPlan,
-      vertentes: draftVertentes,
+      planCode: draftPlan as "nr01_inteligente" | "saude_integral" | "corporate",
+      vertentes: draftVertentes as ("mental" | "sst" | "educacao")[],
       addons: draftAddons,
       reason: reason || undefined,
     });

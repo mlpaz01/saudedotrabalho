@@ -1,7 +1,6 @@
 import { sql as drzSql } from "drizzle-orm";
 import { getDb } from "../db";
-
-const ACTIVE_EMPLOYEE_ROLES = ["user", "chefia", "cipa", "sesmt", "admin", "company_admin"];
+import { activeEmployeeSql } from "./activeEmployees";
 
 export const WHITE_LABEL_PLAN_DEFAULTS = [
   {
@@ -217,6 +216,9 @@ export async function ensureWhiteLabelTables() {
   try {
     await db.execute(drzSql`ALTER TABLE companies ADD COLUMN white_label_partner_id INT NULL`);
   } catch (_) {}
+  try {
+    await db.execute(drzSql`ALTER TABLE users ADD COLUMN counts_as_employee TINYINT(1) NULL`);
+  } catch (_) {}
 
   for (const p of WHITE_LABEL_PLAN_DEFAULTS) {
     await db.execute(drzSql`INSERT IGNORE INTO white_label_plan_catalog
@@ -314,8 +316,7 @@ export async function listWhiteLabelPartners() {
       COALESCE(wallet.gross_revenue_current_period, 0) AS gross_revenue_current_period,
       COUNT(DISTINCT l.company_id) AS linked_companies,
       COUNT(DISTINCT CASE
-        WHEN u.is_active=1 AND COALESCE(u.employment_status,'active')='active'
-          AND u.role IN (${ACTIVE_EMPLOYEE_ROLES.map((x) => `'${x}'`).join(",")})
+        WHEN ${activeEmployeeSql("u")}
         THEN u.id END) AS active_employees
     FROM white_label_partners w
     LEFT JOIN white_label_plan_catalog p ON p.code=w.plan_code
@@ -339,7 +340,7 @@ export async function getWhiteLabelPartner(id: number) {
   const partner = rowsOf<any>(partnerR)[0];
   if (!partner) return null;
   const companiesR: any = await db.execute(drzSql`SELECT l.*, c.name, c.cnpj, c.logo_url, c.primary_color,
-      (SELECT COUNT(*) FROM users u WHERE u.company_id=c.id AND u.is_active=1 AND COALESCE(u.employment_status,'active')='active') AS active_employees
+      (SELECT COUNT(*) FROM users u WHERE u.company_id=c.id AND ${activeEmployeeSql("u")}) AS active_employees
     FROM white_label_company_links l
     JOIN companies c ON c.id=l.company_id
     WHERE l.partner_id=${id}
@@ -413,7 +414,7 @@ export async function listCompaniesForWhiteLabel() {
   const r: any = await db.execute(drzSql.raw(`
     SELECT c.id, c.name, c.cnpj, c.logo_url, c.primary_color, COALESCE(c.is_active,1) AS is_active,
       l.partner_id, w.legal_name AS partner_name,
-      COUNT(DISTINCT CASE WHEN u.is_active=1 AND COALESCE(u.employment_status,'active')='active' THEN u.id END) AS active_employees
+      COUNT(DISTINCT CASE WHEN ${activeEmployeeSql("u")} THEN u.id END) AS active_employees
     FROM companies c
     LEFT JOIN white_label_company_links l ON l.company_id=c.id AND l.is_active=1
     LEFT JOIN white_label_partners w ON w.id=l.partner_id

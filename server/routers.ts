@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { ForbiddenError } from "@shared/_core/errors";
 
 
 
@@ -26,6 +27,11 @@ import { COOKIE_NAME, ETHICAL_ALERT_TEMPLATES, ETHICAL_ALERT_DISCLAIMER, PROSPEC
 
 
 import { getSessionCookieOptions } from "./_core/cookies";
+import { activeEmployeeSql } from "./_core/activeEmployees";
+import { supportRouter } from "./_core/supportRouter";
+import { clientPlansRouter } from "./_core/clientPlansRouter";
+import { denunciaRouter } from "./_core/denunciaRouter";
+import { ehsRouter } from "./_core/ehsRouter";
 
 
 
@@ -2330,10 +2336,8 @@ async function execP(db: any, text: string, params: any[] = []): Promise<[any[],
   return [data, []];
 }
 
-const ACTIVE_EMPLOYEE_ROLES = ["user", "chefia", "cipa", "sesmt", "admin", "company_admin"] as const;
-
 function activeEmployeeWhere(alias = "u"): string {
-  return `${alias}.is_active=1 AND COALESCE(${alias}.employment_status,'active')='active' AND ${alias}.role IN (${ACTIVE_EMPLOYEE_ROLES.map((r) => `'${r}'`).join(",")})`;
+  return activeEmployeeSql(alias);
 }
 
 function firstDbRow(result: any): any | null {
@@ -2420,6 +2424,8 @@ async function ensureAuthIdentityColumns(db: any) {
   try { await db.execute(drzSql`ALTER TABLE users ADD INDEX idx_users_whatsapp (whatsapp_e164)`); } catch (_) {}
   try { await db.execute(drzSql`ALTER TABLE users ADD COLUMN employment_status VARCHAR(30) NOT NULL DEFAULT 'active'`); } catch (_) {}
   try { await db.execute(drzSql`ALTER TABLE users ADD INDEX idx_users_employment_status (employment_status)`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE users ADD COLUMN counts_as_employee TINYINT(1) NULL`); } catch (_) {}
+  try { await db.execute(drzSql`ALTER TABLE users ADD INDEX idx_users_counts_as_employee (counts_as_employee)`); } catch (_) {}
   try { await db.execute(drzSql`ALTER TABLE corporate_emails ADD COLUMN cpf VARCHAR(20) NULL`); } catch (_) {}
   try { await db.execute(drzSql`ALTER TABLE corporate_emails ADD INDEX idx_corporate_cpf (cpf)`); } catch (_) {}
   try { await db.execute(drzSql`ALTER TABLE corporate_emails ADD COLUMN whatsapp_e164 VARCHAR(20) NULL`); } catch (_) {}
@@ -3638,7 +3644,7 @@ async function generateEpiEpcReportPdf(db: any, cid: number, scope?: { branchId?
   const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
   try {
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: "networkidle0" });
+  await page.setContent(html, { waitUntil: "load" });
     await page.pdf({ path: outPath, format: "A4", printBackground: true });
   } finally {
     await browser.close();
@@ -3807,7 +3813,7 @@ async function generateFirstAidKitReportPdf(db: any, cid: number) {
   const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
   try {
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: "networkidle0" });
+  await page.setContent(html, { waitUntil: "load" });
     await page.pdf({ path: outPath, format: "A4", printBackground: true });
   } finally {
     await browser.close();
@@ -4029,6 +4035,10 @@ async function testTotvsRmHttpConnection(cfg: any) {
 }
 
 export const appRouter = router({
+  support: supportRouter,
+  clientPlans: clientPlansRouter,
+  ehs: ehsRouter,
+  denuncia: denunciaRouter,
 
 
 
@@ -4463,7 +4473,7 @@ export const appRouter = router({
 
 
 
-        const record = await getCorporateEmailByEmail(input.email);
+        const record = (await getCorporateEmailByEmail(input.email))!;
 
 
 
@@ -4526,7 +4536,7 @@ export const appRouter = router({
 
 
 
-        const user = await getUserByOpenId(openId);
+        const user = (await getUserByOpenId(openId))!;
 
 
 
@@ -4548,10 +4558,10 @@ export const appRouter = router({
         try {
           const _db = await getDb();
           if (_db) {
-            const cr: any = await _db.execute(drzSql`SELECT company_id, branch_id, sector_id, role FROM corporate_emails WHERE email = ${input.email} LIMIT 1`);
+            const cr: any = await _db!.execute(drzSql`SELECT company_id, branch_id, sector_id, role FROM corporate_emails WHERE email = ${input.email} LIMIT 1`);
             const crow = Array.isArray(cr) ? (cr[0]?.[0] ?? cr[0]) : cr;
             if (crow) {
-              await _db.execute(drzSql`UPDATE users SET company_id = ${crow.company_id ?? null}, branch_id = ${crow.branch_id ?? null}, sector_id = ${crow.sector_id ?? null}, role = ${crow.role || 'user'} WHERE id = ${user.id}`);
+              await _db!.execute(drzSql`UPDATE users SET company_id = ${crow.company_id ?? null}, branch_id = ${crow.branch_id ?? null}, sector_id = ${crow.sector_id ?? null}, role = ${crow.role || 'user'} WHERE id = ${user.id}`);
             }
           }
         } catch (e) { /* non-fatal: user keeps default role */ }
@@ -4660,7 +4670,7 @@ export const appRouter = router({
 
 
 
-        const record = await getCorporateEmailByEmail(input.email);
+        const record = (await getCorporateEmailByEmail(input.email))!;
 
 
 
@@ -4696,7 +4706,7 @@ export const appRouter = router({
 
 
 
-        const valid = await bcrypt.compare(input.password, record.passwordHash);
+        const valid = await bcrypt.compare(input.password, record.passwordHash!);
 
 
 
@@ -4732,7 +4742,7 @@ export const appRouter = router({
 
 
 
-        let user = record.userId ? (await (async () => {
+        let user = (record.userId ? (await (async () => {
 
 
 
@@ -4804,7 +4814,7 @@ export const appRouter = router({
 
 
 
-        })()) : undefined;
+        })()) : undefined)!;
 
 
 
@@ -6282,7 +6292,7 @@ export const appRouter = router({
               return co?.logo_url ?? null;
             } catch { return null; }
           })(),
-          companyName: ctx.user?.companyName || "Saúde do Trabalho",
+          companyName: (ctx.user as any)?.companyName || "Saúde do Trabalho",
         });
 
 
@@ -6435,6 +6445,33 @@ export const appRouter = router({
 
 
 
+
+    verifyByCode: publicProcedure
+      .input(z.object({ code: z.string().min(4).max(100) }))
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) return { valid: false, expired: false, code: input.code };
+        const [rows]: any = await execP(db, `
+          SELECT c.certificateCode AS code, c.issuedAt AS issued_at, c.expires_at,
+                 u.name AS user_name, m.title AS module_name, COALESCE(m.durationMinutes, 0) AS module_duration
+          FROM certificates c
+          LEFT JOIN users u ON u.id=c.userId
+          LEFT JOIN modules m ON m.id=c.moduleId
+          WHERE c.certificateCode=? LIMIT 1`, [input.code.trim()]);
+        const row = Array.isArray(rows) ? rows[0] : null;
+        if (!row) return { valid: false, expired: false, code: input.code };
+        const expiresAt = row.expires_at ? new Date(row.expires_at) : null;
+        return {
+          valid: true,
+          expired: Boolean(expiresAt && expiresAt.getTime() < Date.now()),
+          code: String(row.code),
+          userName: String(row.user_name || "Titular"),
+          moduleName: String(row.module_name || "Curso"),
+          moduleDuration: Number(row.module_duration || 0),
+          issuedAt: row.issued_at ?? null,
+          expiresAt: row.expires_at ?? null,
+        };
+      }),
 
     download: protectedProcedure
 
@@ -7024,6 +7061,7 @@ export const appRouter = router({
         role: z.enum(["user", "chefia", "rh", "sesmt", "cipa", "admin"]).optional(),
         cpf: z.string().nullable().optional(),
         employmentStatus: z.enum(["active", "away", "terminated", "death", "retired", "other"]).optional(),
+        countsAsEmployee: z.boolean().optional(),
         branchId: z.number().nullable().optional(),
         sectorId: z.number().nullable().optional(),
         position: z.string().nullable().optional(),
@@ -7113,6 +7151,9 @@ export const appRouter = router({
           const allowCorporateAccess = status === "active" || status === "away" || status === "other";
           await db.execute(drzSql`UPDATE users SET employment_status = ${status}, is_active = 1 WHERE id = ${input.userId}`);
           await db.execute(drzSql`UPDATE corporate_emails SET employment_status = ${status}, isActive = ${allowCorporateAccess ? 1 : 0} WHERE userId = ${input.userId} OR (company_id = ${urow.company_id} AND email = ${String(urow.email ?? "").toLowerCase()})`);
+        }
+        if (input.countsAsEmployee !== undefined) {
+          await db.execute(drzSql`UPDATE users SET counts_as_employee = ${input.countsAsEmployee ? 1 : 0} WHERE id = ${input.userId}`);
         }
         return { ok: true };
       }),
@@ -8061,10 +8102,10 @@ export const appRouter = router({
           const base = getEmailLinkBaseUrl();
           const sendRes = await sendEmail({
             to: user.email,
-            toName: user.name || user.email,
+            toName: user.employeeName || user.email,
             subject: `Lembrete: Continue sua jornada na plataforma Saúde do Trabalho`,
             html: plainToHtml(
-              `Olá, ${user.name || user.email.split('@')[0]}!\n\nNotamos que você não acessa a plataforma há alguns dias.\n` +
+              `Olá, ${user.employeeName || user.email.split('@')[0]}!\n\nNotamos que você não acessa a plataforma há alguns dias.\n` +
               `Continue de onde parou — seus treinamentos, pesquisas e materiais estão te esperando.\n\n` +
               `Acessar agora: ${base}/plataforma\n\n` +
               `— Equipe Saúde do Trabalho`
@@ -15298,7 +15339,7 @@ export const appRouter = router({
         const meta = getReqMeta(ctx);
         await logAudit({ userId: ctx.user.id, userEmail: ctx.user.email, action: "delegated_admin.invalidate_survey_response",
           entityType: "survey_response", entityId: input.responseId, detailsJson: { justification: input.justification, surveyId: row.survey_id, targetUserId: row.user_id },
-          ipAddress: meta.ip, userAgent: meta.userAgent });
+          ipAddress: meta.ip, userAgent: meta.ua });
         return { ok: true };
       }),
 
@@ -16630,7 +16671,7 @@ export const appRouter = router({
                 // First-block image as lesson cover (if any)
 
 
-                const firstImgQuery = (lesson.blocks || []).map(b => (b as any)?.data?.imageQuery).find(Boolean);
+                const firstImgQuery = (lesson.blocks || []).map((b: any) => b?.data?.imageQuery).find(Boolean);
 
 
                 if (firstImgQuery) {
@@ -17674,7 +17715,7 @@ export const appRouter = router({
       .input(z.object({
         surveyId: z.number().int(),
         sectorId: z.number().int().optional(),
-        responses: z.array(z.record(z.string())).min(1).max(500),
+        responses: z.array(z.record(z.string(), z.string())).min(1).max(500),
       }))
       .mutation(async ({ ctx, input }) => {
         const cid = (ctx.user as any).companyId;
@@ -21431,7 +21472,7 @@ Return only the JSON content object (no wrapper). Format per type:
         responsibleParty: z.string().optional(),
         priority: z.string().optional(),
         status: z.string().optional(),
-        monthlyProgress: z.record(z.boolean()).optional(),
+        monthlyProgress: z.record(z.string(), z.boolean()).optional(),
         notes: z.string().optional(),
         fiveW2hWhy: z.string().optional(),
         fiveW2hWhere: z.string().optional(),
@@ -21758,7 +21799,7 @@ Return only the JSON content object (no wrapper). Format per type:
           const meta = getReqMeta(ctx);
           await logAudit({ userId: ctx.user.id, userEmail: ctx.user.email, action: "aep.invalidate_response",
             entityType: "survey_response", entityId: input.responseId, detailsJson: { justification: input.justification, surveyId: row.survey_id, targetUserId: row.user_id },
-            ipAddress: meta.ip, userAgent: meta.userAgent });
+            ipAddress: meta.ip, userAgent: meta.ua });
           return { ok: true };
         }),
     }),
@@ -25197,9 +25238,9 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
       .input(z.object({ branchId: z.number().nullable().optional(), sectorId: z.number().nullable().optional() }).optional())
       .query(async ({ ctx, input }) => {
         const cid = (ctx.user as any).companyId;
-        if (!cid) return { bands: { sem_risco: 0, sinal_precoce: 0, risco_moderado: 0, risco_elevado: 0 }, total: 0, evolution: [], bySector: [], topRisk: [] };
+        if (!cid) return { bands: { sem_risco: 0, sinal_precoce: 0, risco_moderado: 0, risco_elevado: 0 }, total: 0, evolution: [], bySector: [], byBranch: [], topRisk: [] };
         const db = await getDb();
-        if (!db) return { bands: { sem_risco: 0, sinal_precoce: 0, risco_moderado: 0, risco_elevado: 0 }, total: 0, evolution: [], bySector: [], topRisk: [] };
+        if (!db) return { bands: { sem_risco: 0, sinal_precoce: 0, risco_moderado: 0, risco_elevado: 0 }, total: 0, evolution: [], bySector: [], byBranch: [], topRisk: [] };
         const bId = input?.branchId ?? null, sId = input?.sectorId ?? null;
         const band = (sc: number) => sc >= 80 ? "sem_risco" : sc >= 60 ? "sinal_precoce" : sc >= 40 ? "risco_moderado" : "risco_elevado";
         let where = `WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`;
@@ -25218,15 +25259,26 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         const people = (rows as any[]).filter((r) => r.score != null).map((r) => ({ ...r, score: Number(r.score), band: band(Number(r.score)) }));
         const bands = { sem_risco: 0, sinal_precoce: 0, risco_moderado: 0, risco_elevado: 0 } as Record<string, number>;
         const bySectorMap = new Map<string, any>();
+        const byBranchMap = new Map<string, any>();
         for (const p of people) {
           bands[p.band]++;
           const sk = p.sector ?? "Sem setor";
           if (!bySectorMap.has(sk)) bySectorMap.set(sk, { name: sk, sem_risco: 0, sinal_precoce: 0, risco_moderado: 0, risco_elevado: 0 });
           bySectorMap.get(sk)[p.band]++;
+          const bk = p.branch ?? "Sem filial";
+          if (!byBranchMap.has(bk)) byBranchMap.set(bk, { id: bk, name: bk, sem_risco: 0, sinal_precoce: 0, risco_moderado: 0, risco_elevado: 0, scoreSum: 0 });
+          const branch = byBranchMap.get(bk);
+          branch[p.band]++;
+          branch.scoreSum += p.score;
         }
         const bySector = [...bySectorMap.values()].map((s) => {
           const tot = s.sem_risco + s.sinal_precoce + s.risco_moderado + s.risco_elevado;
           return { ...s, riskPct: tot ? Math.round(((s.risco_moderado + s.risco_elevado) / tot) * 100) : 0 };
+        }).sort((a, b) => b.riskPct - a.riskPct);
+        const byBranch = [...byBranchMap.values()].map((branch) => {
+          const total = branch.sem_risco + branch.sinal_precoce + branch.risco_moderado + branch.risco_elevado;
+          const { scoreSum, ...visible } = branch;
+          return { ...visible, total, riskPct: total ? Math.round(((branch.risco_moderado + branch.risco_elevado) / total) * 100) : 0, avgScore: total ? Math.round(scoreSum / total) : 0 };
         }).sort((a, b) => b.riskPct - a.riskPct);
         const topRisk = people.filter((p) => p.band !== "sem_risco").sort((a, b) => a.score - b.score).slice(0, 15)
           .map((p) => ({ userId: p.userId, name: p.name, branch: p.branch, sector: p.sector, band: p.band, score: p.score }));
@@ -25238,7 +25290,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           ${where}
           GROUP BY wi.snapshot_month ORDER BY wi.snapshot_month DESC LIMIT 6`, params);
         const evolution = (evoRows as any[]).reverse().map((e) => ({ month: e.month, avgScore: Number(e.avgScore) || 0, elevado: Number(e.elevado) || 0, moderado: Number(e.moderado) || 0 }));
-        return { bands, total: people.length, evolution, bySector, topRisk };
+        return { bands, total: people.length, evolution, bySector, byBranch, topRisk };
       }),
     // === Overview KPIs ===
     overview: adminOrRhProcedure
@@ -25270,7 +25322,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           : '';
 
         // P18 #23 (cont.) — "colaboradores ativos" padronizado com o painel de Conformidade:
-        // is_active=1 e exclui cargos administrativos/técnicos (admin/RH/SESMT/psicólogo).
+        // Definicao unica: inclui perfis internos marcados como colaboradores e exclui prestadores.
         const STAFF_EXCL = activeEmployeeWhere("u");
         const totalUsersR: any = await db.execute(drzSql.raw(`SELECT COUNT(*) AS c FROM users u WHERE ${STAFF_EXCL} ${companyFilter} ${branchFilter} ${sectorFilter}`));
         const activeUsersR: any = await db.execute(drzSql.raw(`SELECT COUNT(*) AS c FROM users u WHERE ${STAFF_EXCL} AND u.lastSignedIn >= DATE_SUB(NOW(), INTERVAL 30 DAY) ${companyFilter} ${branchFilter} ${sectorFilter}`));
@@ -28057,6 +28109,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
       .input(z.object({}))
       .query(async ({ ctx }) => {
         const db = await getDb();
+        if (!db) return { totalAssessments: 0, criticalFactors: 0, highFactors: 0, mediumFactors: 0, lowFactors: 0, actionPlanItems: 0 };
         const cid = ctx.user.companyId;
         const totalR: any = await db.execute(drzSql`
           SELECT COUNT(*) as cnt FROM risk_assessments WHERE company_id=${cid}
@@ -28092,6 +28145,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
       .input(z.object({}))
       .query(async ({ ctx }) => {
         const db = await getDb();
+        if (!db) return { factors: [], rows: [] };
         const cid = ctx.user.companyId;
         const factorR: any = await db.execute(drzSql`
           SELECT id, code, name FROM psychosocial_factors ORDER BY axis_order, id
@@ -29033,7 +29087,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           sesmt_rh: `'sesmt','rh','admin','company_admin'`,
           managers: `'manager','sector_lead','chefia','admin','company_admin'`,
         };
-        let usersSql = `SELECT id FROM users WHERE company_id=? AND is_active=1 AND COALESCE(employment_status,'active')='active'`;
+        let usersSql = `SELECT u.id FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`;
         const rolesIn = roleFilter[input.audience];
         if (rolesIn) usersSql += ` AND role IN (${rolesIn})`;
         const [users] = await execP(db, usersSql, [cid]) as any;
@@ -29094,7 +29148,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
 
         // Resolve audiência — SP3 #4: granular por role
         // SP8 — traz whatsapp_e164 também (necessário pra canal whatsapp)
-        let usersSql = `SELECT id, name, email, whatsapp_e164 FROM users WHERE company_id=? AND is_active=1 AND COALESCE(employment_status,'active')='active'`;
+        let usersSql = `SELECT u.id, u.name, u.email, u.whatsapp_e164 FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`;
         const params: any[] = [cid];
         const roleFilter: Record<string, string | null> = {
           todos:          null,
@@ -29860,14 +29914,14 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
             certBody: `Certificamos a participação nas atividades da Semana Interna de Prevenção de Acidentes do Trabalho (SIPAT) ${ed.year}, no período de ${period}.`,
             durationMinutes: (mod as any)?.durationMinutes ?? null,
             companyLogoUrl: co?.logo_url ?? null,
-            companyName: co?.name ?? ctx.user?.companyName ?? "Saúde do Trabalho",
+            companyName: co?.name ?? (ctx.user as any)?.companyName ?? "Saúde do Trabalho",
           });
           const { storagePut } = await import("./storage");
           const { url } = await storagePut(`certificates/${code}.png`, pdfBuffer, "image/png");
           const cert = await createCertificate(ctx.user.id, anchorModuleId, code, url);
           await execP(db, `UPDATE certificates SET sipat_edition_id=? WHERE certificateCode=?`, [input.editionId, code]);
           const meta = getReqMeta(ctx);
-          await logAudit({ userId: ctx.user.id, userEmail: ctx.user.email, action: "sipat_certificate_issued", entityType: "certificate", entityId: cert?.id, detailsJson: { editionId: input.editionId, code }, ipAddress: meta.ip, userAgent: meta.userAgent });
+          await logAudit({ userId: ctx.user.id, userEmail: ctx.user.email, action: "sipat_certificate_issued", entityType: "certificate", entityId: cert?.id, detailsJson: { editionId: input.editionId, code }, ipAddress: meta.ip, userAgent: meta.ua });
           return { ok: true, alreadyExisted: false, url, code };
         }),
 
@@ -31588,7 +31642,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         const cid = (ctx.user as any).companyId;
         const db = await getDb(); if (!db || !cid) return null;
         await ensureFaTables(db);
-        const [[emp]]: any = await execP(db, `SELECT COUNT(*) AS c FROM users u WHERE u.company_id=? AND u.role='user' AND ${activeEmployeeWhere("u")}`, [cid]);
+        const [[emp]]: any = await execP(db, `SELECT COUNT(*) AS c FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]);
         const [[contents]]: any = await execP(db, `SELECT COUNT(*) AS c, SUM(is_required=1) AS required_count FROM firstaid_learning_contents WHERE company_id=? AND is_active=1`, [cid]);
         const [[trained]]: any = await execP(db, `
           SELECT COUNT(DISTINCT x.user_id) AS c FROM (
@@ -31863,7 +31917,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
     });
   })(),
 
-  denuncia: router({
+  denunciaLegacy: router({
     submitReport: publicProcedure
       .input(z.object({
         category: z.string(),

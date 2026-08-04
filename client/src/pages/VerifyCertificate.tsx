@@ -36,9 +36,9 @@ export default function VerifyCertificate() {
                 <strong>{q.data.userName}</strong>
                 <span style={{ color: "#789", display: "flex", alignItems: "center", gap: 6 }}><Award size={14} /> Curso</span>
                 <strong>{q.data.moduleName}</strong>
-                {q.data.moduleDuration > 0 && (<>
+                {Number(q.data.moduleDuration ?? 0) > 0 && (<>
                   <span style={{ color: "#789", display: "flex", alignItems: "center", gap: 6 }}><Clock size={14} /> Carga horária</span>
-                  <strong>{q.data.moduleDuration} minutos</strong>
+                  <strong>{Number(q.data.moduleDuration ?? 0)} minutos</strong>
                 </>)}
                 {q.data.issuedAt && (<>
                   <span style={{ color: "#789", display: "flex", alignItems: "center", gap: 6 }}><Calendar size={14} /> Emitido em</span>

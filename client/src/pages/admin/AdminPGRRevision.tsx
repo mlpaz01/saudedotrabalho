@@ -23,7 +23,7 @@ export default function AdminPGRRevision() {
     isLoading: loadingRevisions,
     refetch: refetchRevisions,
   } = trpc.pgr.listPgrRevisions.useQuery(
-    { pgrId: selectedPgrId },
+    { pgrId: Number(selectedPgrId) },
     { enabled: !!selectedPgrId }
   );
 
@@ -79,7 +79,7 @@ export default function AdminPGRRevision() {
       return;
     }
     saveRevision.mutate({
-      pgrId: selectedPgrId,
+      pgrId: Number(selectedPgrId),
       versao: formData.versao,
       dataRevisao: formData.dataRevisao,
       responsavel: formData.responsavel,
@@ -89,7 +89,7 @@ export default function AdminPGRRevision() {
 
   const handleDelete = (revisionId: string) => {
     if (!confirm("Tem certeza que deseja excluir esta revisão?")) return;
-    deleteRevision.mutate({ id: revisionId });
+    deleteRevision.mutate({ id: Number(revisionId) });
   };
 
   const selectedPgr = pgrList?.find((p: any) => p.id === selectedPgrId);

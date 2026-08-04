@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
@@ -163,8 +163,9 @@ export default function AdminScheduling() {
   const [availSlots, setAvailSlots] = useState<{dayOfWeek:number; startTime:string; endTime:string; slotDurationMinutes:number}[]>([]);
   const availQuery = trpc.scheduling.getAvailability.useQuery(
     { professionalId: selectedProf?.id ?? 0 },
-    { enabled: !!selectedProf, onSuccess: (d: any) => setAvailSlots(d) }
+    { enabled: !!selectedProf }
   );
+  useEffect(() => { if (availQuery.data) setAvailSlots(availQuery.data as typeof availSlots); }, [availQuery.data]);
   const saveAvailMut = trpc.scheduling.saveAvailability.useMutation({
     onSuccess: () => { toast.success("Disponibilidade salva."); setShowAvailDialog(false); },
   });
@@ -283,10 +284,10 @@ export default function AdminScheduling() {
     });
   }
 
-  const profs = profQuery.data ?? [];
+  const profs = (profQuery.data ?? []) as any[];
   const companies = (companiesQ.data ?? []) as any[];
-  const allAppts = apptQuery.data ?? [];
-  const collaborators = collaboratorsQuery.data ?? [];
+  const allAppts = (apptQuery.data ?? []) as any[];
+  const collaborators = (collaboratorsQuery.data ?? []) as any[];
   // R5-P11 #11 — myProf vem da nova proc dedicada (cria cadastro se faltar);
   // fallback antigo (match por email) só pra retrocompat.
   const myProf = isPsicologo

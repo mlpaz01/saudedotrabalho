@@ -41,8 +41,8 @@ export default function AdminChefia() {
 
   const sectorName = data?.sectorName ?? "Meu setor";
   const teamSize = data?.teamSize ?? 0;
-  const actionPlanItems = data?.actionPlanItems ?? [];
-  const riskSummary = data?.riskSummary ?? [];
+  const actionPlanItems = (data?.actionPlanItems ?? []) as any[];
+  const riskSummary = (data?.riskSummary ?? []) as any[];
   const trainingRate = data?.trainingRate ?? 0;
 
   return (

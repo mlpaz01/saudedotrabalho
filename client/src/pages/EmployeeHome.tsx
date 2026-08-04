@@ -91,7 +91,7 @@ export default function EmployeeHome() {
   const pendingSurveys = Array.isArray(mySurveys) ? (mySurveys as any[]).length : 0;
   const priorSurveys = Array.isArray(mySurveys) ? (mySurveys as any[]).filter((s: any) => s.isPriority).length : 0;
   const points = (data?.gamificationPoints ?? 0) > 0
-    ? data?.gamificationPoints
+    ? Number(data?.gamificationPoints ?? 0)
     : completedModules * 10 + certsCount * 25;
   const expiringSoon = certsExpiring.find((c: any) => {
     const d = daysUntil(c.expiresAt);
