@@ -30,27 +30,34 @@ export const DEFAULT_BRANDING: WhiteLabelBranding = {
   allowPartnerBranding: false,
 };
 
-function getPreviewPartnerId() {
-  if (typeof window === "undefined") return "";
+function getPreviewRequest() {
+  if (typeof window === "undefined") return { partnerId: "", demoMode: false };
   const params = new URLSearchParams(window.location.search);
   const fromQuery = params.get("wlPreview") || params.get("whiteLabelPreview");
-  if (fromQuery) {
+  const fromDemo = params.get("wlDemo") || params.get("whiteLabelDemo");
+  const partnerId = fromQuery || fromDemo;
+  if (partnerId) {
     window.localStorage.removeItem("whiteLabelPreviewPartnerId");
-    window.sessionStorage.setItem("whiteLabelPreviewPartnerId", fromQuery);
-    return fromQuery;
+    window.sessionStorage.setItem("whiteLabelPreviewPartnerId", partnerId);
+    window.sessionStorage.setItem("whiteLabelPreviewMode", fromDemo ? "demo" : "preview");
+    return { partnerId, demoMode: Boolean(fromDemo) };
   }
   window.localStorage.removeItem("whiteLabelPreviewPartnerId");
   if (window.location.pathname.includes("/login")) {
     window.sessionStorage.removeItem("whiteLabelPreviewPartnerId");
-    return "";
+    window.sessionStorage.removeItem("whiteLabelPreviewMode");
+    return { partnerId: "", demoMode: false };
   }
-  return window.sessionStorage.getItem("whiteLabelPreviewPartnerId") || "";
+  const storedPartnerId = window.sessionStorage.getItem("whiteLabelPreviewPartnerId") || "";
+  const demoMode = window.sessionStorage.getItem("whiteLabelPreviewMode") === "demo";
+  return { partnerId: storedPartnerId, demoMode };
 }
 
 export function clearWhiteLabelPreview() {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem("whiteLabelPreviewPartnerId");
   window.sessionStorage.removeItem("whiteLabelPreviewPartnerId");
+  window.sessionStorage.removeItem("whiteLabelPreviewMode");
 }
 
 export function useWhiteLabelBranding(companyId?: number | null) {
@@ -60,8 +67,8 @@ export function useWhiteLabelBranding(companyId?: number | null) {
 
   const query = useMemo(() => {
     const params = new URLSearchParams();
-    const previewPartnerId = getPreviewPartnerId();
-    if (previewPartnerId) params.set("previewPartnerId", previewPartnerId);
+    const preview = getPreviewRequest();
+    if (preview.partnerId) params.set("previewPartnerId", preview.partnerId);
     else if (companyKey) params.set("companyId", companyKey);
     const qs = params.toString();
     return `/api/white-label/branding${qs ? `?${qs}` : ""}`;
@@ -69,12 +76,15 @@ export function useWhiteLabelBranding(companyId?: number | null) {
 
   useEffect(() => {
     let alive = true;
+    const preview = getPreviewRequest();
     setLoading(true);
     fetch(query, { credentials: "include", cache: "no-store" })
       .then((r) => r.json())
       .then((data) => {
         if (!alive) return;
-        setBranding({ ...DEFAULT_BRANDING, ...(data || {}) });
+        const next = { ...DEFAULT_BRANDING, ...(data || {}) };
+        if (preview.demoMode && next.source === "preview") next.source = "domain";
+        setBranding(next);
       })
       .catch(() => {
         if (alive) setBranding(DEFAULT_BRANDING);
