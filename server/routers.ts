@@ -3268,6 +3268,384 @@ async function buildCipaReportSections(db: any, cid: number, escHtml: (s: unknow
   ];
 }
 
+let _epiEpcDdlDone = false;
+async function ensureEpiEpcTables(db: any) {
+  if (_epiEpcDdlDone || !db) return;
+  try {
+    await db.execute(drzSql`CREATE TABLE IF NOT EXISTS epi_epc_assets (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      company_id INT NOT NULL,
+      type VARCHAR(10) NOT NULL DEFAULT 'epi',
+      category VARCHAR(120),
+      description VARCHAR(255) NOT NULL,
+      manufacturer VARCHAR(160),
+      model VARCHAR(160),
+      ca_number VARCHAR(60),
+      ca_status VARCHAR(60),
+      ca_valid_until DATE NULL,
+      ca_source VARCHAR(255),
+      ca_last_validated_at DATETIME NULL,
+      acquisition_date DATE NULL,
+      manufacture_date DATE NULL,
+      product_valid_until DATE NULL,
+      lot VARCHAR(80),
+      serial_number VARCHAR(120),
+      size VARCHAR(60),
+      unit VARCHAR(30) DEFAULT 'un',
+      quantity INT NOT NULL DEFAULT 0,
+      min_quantity INT NOT NULL DEFAULT 0,
+      storage_location VARCHAR(255),
+      branch_id INT NULL,
+      sector_id INT NULL,
+      position_name VARCHAR(160),
+      risk_protected VARCHAR(255),
+      pgr_id INT NULL,
+      gse_id INT NULL,
+      pgr_risk_id INT NULL,
+      related_hazard VARCHAR(255),
+      risk_source VARCHAR(255),
+      replacement_periodicity VARCHAR(120),
+      replacement_criteria TEXT,
+      conservation_info TEXT,
+      cleaning_info TEXT,
+      inspection_periodicity VARCHAR(120),
+      maintenance_periodicity VARCHAR(120),
+      next_inspection_date DATE NULL,
+      next_maintenance_date DATE NULL,
+      status VARCHAR(40) NOT NULL DEFAULT 'ativo',
+      photo_url VARCHAR(1024),
+      document_url VARCHAR(1024),
+      manual_url VARCHAR(1024),
+      pgr_linked TINYINT(1) NOT NULL DEFAULT 0,
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+      created_by INT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_epi_company (company_id, is_active, type),
+      INDEX idx_epi_ca (ca_number),
+      INDEX idx_epi_branch_sector (branch_id, sector_id),
+      INDEX idx_epi_pgr_gse (pgr_id, gse_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    await db.execute(drzSql`CREATE TABLE IF NOT EXISTS epi_epc_deliveries (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      company_id INT NOT NULL,
+      asset_id INT NOT NULL,
+      collaborator_id INT NULL,
+      collaborator_name VARCHAR(255),
+      collaborator_cpf VARCHAR(40),
+      collaborator_registration VARCHAR(80),
+      branch_id INT NULL,
+      sector_id INT NULL,
+      position_name VARCHAR(160),
+      quantity INT NOT NULL DEFAULT 1,
+      size VARCHAR(60),
+      ca_number VARCHAR(60),
+      lot VARCHAR(80),
+      delivery_date DATE NOT NULL,
+      reason VARCHAR(80),
+      orientation_text TEXT,
+      responsible_user_id INT NULL,
+      responsible_name VARCHAR(255),
+      signature_method VARCHAR(40) NOT NULL DEFAULT 'pendente',
+      signature_status VARCHAR(40) NOT NULL DEFAULT 'pendente',
+      signature_data TEXT,
+      physical_receipt_url VARCHAR(1024),
+      signed_at DATETIME NULL,
+      receipt_code VARCHAR(80),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_epi_delivery_company (company_id, delivery_date),
+      INDEX idx_epi_delivery_asset (asset_id),
+      INDEX idx_epi_delivery_user (collaborator_id),
+      INDEX idx_epi_delivery_status (signature_status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    await db.execute(drzSql`CREATE TABLE IF NOT EXISTS epi_epc_returns (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      company_id INT NOT NULL,
+      asset_id INT NOT NULL,
+      collaborator_id INT NULL,
+      quantity INT NOT NULL DEFAULT 1,
+      event_type VARCHAR(40) NOT NULL DEFAULT 'devolucao',
+      event_date DATE NOT NULL,
+      reason VARCHAR(80),
+      condition_text VARCHAR(255),
+      destination VARCHAR(120),
+      responsible_user_id INT NULL,
+      responsible_name VARCHAR(255),
+      notes TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_epi_return_company (company_id, event_date),
+      INDEX idx_epi_return_asset (asset_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    await db.execute(drzSql`CREATE TABLE IF NOT EXISTS epi_epc_movements (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      company_id INT NOT NULL,
+      asset_id INT NOT NULL,
+      movement_type VARCHAR(40) NOT NULL,
+      quantity INT NOT NULL,
+      previous_quantity INT NULL,
+      new_quantity INT NULL,
+      collaborator_id INT NULL,
+      branch_id INT NULL,
+      sector_id INT NULL,
+      reason VARCHAR(160),
+      user_id INT NULL,
+      user_name VARCHAR(255),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_epi_mov_company (company_id, created_at),
+      INDEX idx_epi_mov_asset (asset_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    await db.execute(drzSql`CREATE TABLE IF NOT EXISTS epi_epc_learning_contents (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      company_id INT NOT NULL,
+      content_type VARCHAR(30) NOT NULL,
+      asset_id INT NULL,
+      module_id INT NULL,
+      title VARCHAR(255) NOT NULL,
+      description TEXT,
+      url VARCHAR(1024),
+      provider VARCHAR(80),
+      target_type VARCHAR(40) DEFAULT 'geral',
+      target_value VARCHAR(255),
+      is_required TINYINT(1) NOT NULL DEFAULT 0,
+      validity_months INT NULL,
+      order_index INT NOT NULL DEFAULT 0,
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+      created_by INT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_epi_learning_company (company_id, is_active),
+      INDEX idx_epi_learning_asset (asset_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    await db.execute(drzSql`CREATE TABLE IF NOT EXISTS epi_epc_documents (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      company_id INT NOT NULL,
+      asset_id INT NULL,
+      delivery_id INT NULL,
+      collaborator_id INT NULL,
+      branch_id INT NULL,
+      sector_id INT NULL,
+      document_type VARCHAR(80) NOT NULL,
+      title VARCHAR(255) NOT NULL,
+      file_url VARCHAR(1024),
+      metadata_json JSON NULL,
+      created_by INT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_epi_docs_company (company_id, document_type),
+      INDEX idx_epi_docs_asset (asset_id),
+      INDEX idx_epi_docs_delivery (delivery_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    await db.execute(drzSql`CREATE TABLE IF NOT EXISTS epi_epc_audit_logs (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      company_id INT NOT NULL,
+      entity_type VARCHAR(60) NOT NULL,
+      entity_id INT NULL,
+      action VARCHAR(60) NOT NULL,
+      before_json JSON NULL,
+      after_json JSON NULL,
+      user_id INT NULL,
+      user_name VARCHAR(255),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_epi_audit_company (company_id, created_at),
+      INDEX idx_epi_audit_entity (entity_type, entity_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    _epiEpcDdlDone = true;
+  } catch (e) {
+    console.warn("[epiEpc] DDL:", (e as any)?.message);
+  }
+}
+
+async function logEpiEpcAudit(db: any, cid: number, user: any, entityType: string, entityId: number | null, action: string, beforeValue: any, afterValue: any) {
+  try {
+    await ensureEpiEpcTables(db);
+    await execP(db, `INSERT INTO epi_epc_audit_logs (company_id, entity_type, entity_id, action, before_json, after_json, user_id, user_name) VALUES (?,?,?,?,CAST(? AS JSON),CAST(? AS JSON),?,?)`, [
+      cid, entityType, entityId, action, JSON.stringify(beforeValue ?? null), JSON.stringify(afterValue ?? null),
+      user?.id ?? null, user?.name || user?.email || null,
+    ]);
+  } catch (e) {
+    console.warn("[epiEpc] audit:", (e as any)?.message);
+  }
+}
+
+async function loadEpiEpcReport(db: any, cid: number, scope?: { branchId?: number | null; sectorId?: number | null; gseId?: number | null }) {
+  await ensureEpiEpcTables(db);
+  const where = ["a.company_id=?", "a.is_active=1"];
+  const params: any[] = [cid];
+  if (scope?.branchId) { where.push("a.branch_id=?"); params.push(scope.branchId); }
+  if (scope?.sectorId) { where.push("a.sector_id=?"); params.push(scope.sectorId); }
+  if (scope?.gseId) { where.push("a.gse_id=?"); params.push(scope.gseId); }
+  const whereSql = where.join(" AND ");
+  const [assets]: any = await execP(db, `
+    SELECT a.*,
+      COALESCE(b.name, 'Sem filial definida') AS branch_name,
+      COALESCE(s.name, 'Sem setor definido') AS sector_name,
+      p.title AS pgr_title,
+      g.nome AS gse_name
+    FROM epi_epc_assets a
+    LEFT JOIN branches b ON b.id=a.branch_id
+    LEFT JOIN sectors s ON s.id=a.sector_id
+    LEFT JOIN pgr_documents p ON p.id=a.pgr_id
+    LEFT JOIN pgr_gse g ON g.id=a.gse_id
+    WHERE ${whereSql}
+    ORDER BY a.type, branch_name, sector_name, a.description`, params);
+  const [deliveries]: any = await execP(db, `
+    SELECT d.*, a.description AS asset_description, a.type AS asset_type, b.name AS branch_name, s.name AS sector_name
+    FROM epi_epc_deliveries d
+    JOIN epi_epc_assets a ON a.id=d.asset_id
+    LEFT JOIN branches b ON b.id=d.branch_id
+    LEFT JOIN sectors s ON s.id=d.sector_id
+    WHERE d.company_id=? ORDER BY d.delivery_date DESC, d.id DESC LIMIT 1000`, [cid]);
+  const [movements]: any = await execP(db, `
+    SELECT m.*, a.description AS asset_description, a.type AS asset_type
+    FROM epi_epc_movements m JOIN epi_epc_assets a ON a.id=m.asset_id
+    WHERE m.company_id=? ORDER BY m.created_at DESC LIMIT 1000`, [cid]);
+
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const d30 = new Date(today.getTime() + 30 * 86400000);
+  const isPast = (d: any) => d && new Date(d).getTime() < today.getTime();
+  const isSoon = (d: any) => d && new Date(d).getTime() >= today.getTime() && new Date(d).getTime() <= d30.getTime();
+  const assetRows = (assets ?? []).map((r: any) => ({
+    ...r,
+    id: Number(r.id),
+    quantity: Number(r.quantity ?? 0),
+    min_quantity: Number(r.min_quantity ?? 0),
+    isEpi: String(r.type) === "epi",
+    caExpired: String(r.type) === "epi" && isPast(r.ca_valid_until),
+    caSoon: String(r.type) === "epi" && isSoon(r.ca_valid_until),
+    productExpired: isPast(r.product_valid_until),
+    productSoon: isSoon(r.product_valid_until),
+    stockCritical: Number(r.min_quantity ?? 0) > 0 && Number(r.quantity ?? 0) <= Number(r.min_quantity ?? 0),
+  }));
+  const deliveryRows = (deliveries ?? []).map((r: any) => ({ ...r, id: Number(r.id), quantity: Number(r.quantity ?? 0) }));
+  const signed = deliveryRows.filter((r: any) => String(r.signature_status) === "assinado").length;
+  const pendingSignature = deliveryRows.filter((r: any) => String(r.signature_status) !== "assinado").length;
+  const summary = {
+    epis: assetRows.filter((r: any) => r.type === "epi").length,
+    epcs: assetRows.filter((r: any) => r.type === "epc").length,
+    linkedToPgr: assetRows.filter((r: any) => Number(r.pgr_linked ?? 0) === 1).length,
+    notLinkedToPgr: assetRows.filter((r: any) => Number(r.pgr_linked ?? 0) !== 1).length,
+    caValid: assetRows.filter((r: any) => r.type === "epi" && !r.caExpired && !r.caSoon && r.ca_number).length,
+    caSoon: assetRows.filter((r: any) => r.caSoon).length,
+    caExpired: assetRows.filter((r: any) => r.caExpired).length,
+    productSoon: assetRows.filter((r: any) => r.productSoon).length,
+    productExpired: assetRows.filter((r: any) => r.productExpired).length,
+    stockCritical: assetRows.filter((r: any) => r.stockCritical).length,
+    deliveriesMonth: deliveryRows.filter((r: any) => {
+      const d = r.delivery_date ? new Date(r.delivery_date) : null;
+      return d && d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth();
+    }).length,
+    pendingSignature,
+    signedDeliveries: signed,
+    workersWithPending: new Set(deliveryRows.filter((r: any) => String(r.signature_status) !== "assinado").map((r: any) => r.collaborator_id || r.collaborator_cpf || r.collaborator_name).filter(Boolean)).size,
+    trainingPending: 0,
+    trainingExpired: 0,
+    totalAssets: assetRows.length,
+    totalDeliveries: deliveryRows.length,
+  };
+  const byLocationMap = new Map<string, any>();
+  for (const r of assetRows) {
+    const key = `${r.branch_name}||${r.sector_name}`;
+    if (!byLocationMap.has(key)) byLocationMap.set(key, { branchName: r.branch_name, sectorName: r.sector_name, epis: 0, epcs: 0, caExpired: 0, productExpired: 0, stockCritical: 0 });
+    const x = byLocationMap.get(key);
+    if (r.type === "epi") x.epis += 1; else x.epcs += 1;
+    if (r.caExpired) x.caExpired += 1;
+    if (r.productExpired) x.productExpired += 1;
+    if (r.stockCritical) x.stockCritical += 1;
+  }
+  return { summary, assets: assetRows, deliveries: deliveryRows, movements: movements ?? [], byLocation: Array.from(byLocationMap.values()) };
+}
+
+async function buildEpiEpcReportSections(db: any, cid: number, escHtml: (s: unknown) => string, today: string, scope?: { branchId?: number | null; sectorId?: number | null; gseId?: number | null }) {
+  const report = await loadEpiEpcReport(db, cid, scope);
+  const table = (headers: string[], rows: string[][]) => rows.length === 0
+    ? `<p><i>Nenhum registro encontrado.</i></p>`
+    : `<table style="width:100%; border-collapse:collapse;">
+        <tr>${headers.map(h => `<th style="text-align:left; padding:6px; border-bottom:2px solid #cbd5e1;">${escHtml(h)}</th>`).join("")}</tr>
+        ${rows.map(cols => `<tr>${cols.map(c => `<td style="padding:6px; border-bottom:1px solid #e2e8f0;">${c}</td>`).join("")}</tr>`).join("")}
+      </table>`;
+  const fmtDate = (d: any) => d ? new Date(d).toLocaleDateString("pt-BR") : "-";
+  const pendingRows = report.assets.filter((a: any) => a.caExpired || a.caSoon || a.productExpired || a.productSoon || a.stockCritical || (a.type === "epi" && !a.ca_number));
+  return [
+    { n: 1, t: "Identificacao e Objetivo", c: `Este anexo consolida a gestao digital de EPI/EPC em ${today}, com cadastro, vinculo ao PGR/GSE, controle de CA, validade do produto, estoque, entregas, assinaturas e pendencias.` },
+    { n: 2, t: "Criterios de Gestao", c: `A validade do CA e o prazo de utilizacao/validade fisica do EPI sao tratados como controles independentes. A plataforma nao assume que CA vencido invalida automaticamente o produto nem que CA valido torna o produto automaticamente adequado.` },
+    { n: 3, t: "Resumo Executivo", c: table(["Indicador", "Quantidade"], [
+      ["EPIs cadastrados", String(report.summary.epis)],
+      ["EPCs cadastrados", String(report.summary.epcs)],
+      ["EPIs/EPCs vinculados ao PGR", String(report.summary.linkedToPgr)],
+      ["Nao vinculados ao PGR", String(report.summary.notLinkedToPgr)],
+      ["CAs vencidos", String(report.summary.caExpired)],
+      ["CAs proximos do vencimento", String(report.summary.caSoon)],
+      ["Produtos vencidos", String(report.summary.productExpired)],
+      ["Produtos proximos do vencimento", String(report.summary.productSoon)],
+      ["Estoque critico", String(report.summary.stockCritical)],
+      ["Entregas no mes", String(report.summary.deliveriesMonth)],
+      ["Entregas pendentes de assinatura", String(report.summary.pendingSignature)],
+    ]) },
+    { n: 4, t: "Relacao de EPI e EPC", c: table(["Tipo", "Descricao", "CA", "Validade CA", "Validade Produto", "Estoque", "Filial", "Setor", "GSE"], report.assets.map((a: any) => [
+      escHtml(String(a.type).toUpperCase()), escHtml(a.description), escHtml(a.ca_number || "-"), fmtDate(a.ca_valid_until), fmtDate(a.product_valid_until), `${Number(a.quantity ?? 0)} ${escHtml(a.unit || "un")}`, escHtml(a.branch_name), escHtml(a.sector_name), escHtml(a.gse_name || "-")
+    ])) },
+    { n: 5, t: "Vinculo com PGR, GSE e Riscos", c: table(["Equipamento", "PGR", "GSE", "Risco protegido", "Perigo", "Fonte do risco", "Status"], report.assets.map((a: any) => [
+      escHtml(a.description), escHtml(a.pgr_title || "-"), escHtml(a.gse_name || "-"), escHtml(a.risk_protected || "-"), escHtml(a.related_hazard || "-"), escHtml(a.risk_source || "-"), Number(a.pgr_linked ?? 0) ? "Vinculado" : "Nao vinculado"
+    ])) },
+    { n: 6, t: "Controle de CA", c: table(["EPI", "CA", "Status CA", "Validade CA", "Fonte", "Ultima validacao"], report.assets.filter((a: any) => a.type === "epi").map((a: any) => [
+      escHtml(a.description), escHtml(a.ca_number || "-"), escHtml(a.ca_status || "-"), fmtDate(a.ca_valid_until), escHtml(a.ca_source || "-"), fmtDate(a.ca_last_validated_at)
+    ])) },
+    { n: 7, t: "Controle de Validade do Produto e Substituicao", c: table(["Equipamento", "Aquisicao", "Fabricacao", "Validade produto", "Periodicidade", "Criterio", "Conservacao"], report.assets.map((a: any) => [
+      escHtml(a.description), fmtDate(a.acquisition_date), fmtDate(a.manufacture_date), fmtDate(a.product_valid_until), escHtml(a.replacement_periodicity || "-"), escHtml(a.replacement_criteria || "-"), escHtml(a.conservation_info || "-")
+    ])) },
+    { n: 8, t: "Controle de Fornecimento e Assinaturas", c: table(["Data", "Colaborador", "CPF", "Equipamento", "Qtd", "Motivo", "Assinatura"], report.deliveries.map((d: any) => [
+      fmtDate(d.delivery_date), escHtml(d.collaborator_name || "-"), escHtml(d.collaborator_cpf || "-"), escHtml(d.asset_description || "-"), String(d.quantity), escHtml(d.reason || "-"), escHtml(d.signature_status || "pendente")
+    ])) },
+    { n: 9, t: "Estoque e Movimentacoes", c: table(["Data", "Equipamento", "Tipo", "Qtd", "Saldo", "Usuario", "Motivo"], report.movements.slice(0, 250).map((m: any) => [
+      m.created_at ? new Date(m.created_at).toLocaleString("pt-BR") : "-", escHtml(m.asset_description || "-"), escHtml(m.movement_type || "-"), String(m.quantity), String(m.new_quantity ?? "-"), escHtml(m.user_name || "-"), escHtml(m.reason || "-")
+    ])) },
+    { n: 10, t: "Pendencias e Nao Conformidades", c: table(["Equipamento", "Pendencia", "Filial", "Setor"], pendingRows.map((a: any) => {
+      const pend = [a.caExpired ? "CA vencido" : null, a.caSoon ? "CA proximo" : null, a.productExpired ? "Produto vencido" : null, a.productSoon ? "Produto proximo" : null, a.stockCritical ? "Estoque critico" : null, a.type === "epi" && !a.ca_number ? "CA nao informado" : null].filter(Boolean).join(", ");
+      return [escHtml(a.description), escHtml(pend), escHtml(a.branch_name), escHtml(a.sector_name)];
+    })) },
+    { n: 11, t: "Conclusao", c: `O modulo permite rastrear qual equipamento foi entregue, para quem, quando, qual CA/lote estava relacionado, se houve assinatura e quais pendencias precisam ser corrigidas. Os dados deste anexo refletem os registros existentes no sistema no momento da geracao.` },
+  ];
+}
+
+async function generateEpiEpcReportPdf(db: any, cid: number, scope?: { branchId?: number | null; sectorId?: number | null; gseId?: number | null }) {
+  const puppeteer = (await import("puppeteer")).default;
+  const fs = await import("fs/promises");
+  const path = await import("path");
+  const escHtml = (s: unknown) => String(s ?? "").replace(/[<>&"]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;","\"":"&quot;"}[c] as string));
+  const [[co]]: any = await execP(db, `SELECT name, cnpj FROM companies WHERE id=?`, [cid]).catch(() => [[{ name: "", cnpj: "" }]]);
+  const today = new Date().toLocaleDateString("pt-BR", { day: "2-digit", month: "long", year: "numeric" });
+  const sections = await buildEpiEpcReportSections(db, cid, escHtml, today, scope);
+  const sectionsHtml = sections.map(s => `<h2>${s.n}. ${s.t}</h2><div>${s.c}</div>`).join("\n");
+  const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
+    @page { size: A4; margin: 18mm; }
+    body { font-family: 'Segoe UI', Arial, sans-serif; color:#0f172a; }
+    h1 { font-size: 22pt; margin: 0 0 6px; color:#0E2C46; }
+    h2 { font-size: 13pt; margin: 18px 0 8px; color:#0E2C46; border-bottom:1px solid #cbd5e1; padding-bottom:4px; }
+    .meta { color:#64748b; font-size:9pt; margin-bottom:18px; }
+    table { font-size:8.2pt; }
+    th { background:#f8fafc; }
+    .footer { position: fixed; bottom: 8mm; left: 18mm; right: 18mm; font-size:8pt; color:#94a3b8; border-top:1px solid #e2e8f0; padding-top:4px; }
+  </style></head><body>
+    <h1>ANEXO Nº 8 - GESTAO DE EPI</h1>
+    <div class="meta">Empresa: <b>${escHtml(co?.name || "")}</b> · CNPJ: ${escHtml(co?.cnpj || "-")} · Emissao: ${today}</div>
+    ${sectionsHtml}
+    <div class="footer">Plataforma Saude do Trabalho · Gestao digital de EPI/EPC NR-06 · ${today}</div>
+  </body></html>`;
+  const outDir = "/var/www/saudedotrabalho/uploads/epi_epc_reports";
+  await fs.mkdir(outDir, { recursive: true });
+  const fileName = `anexo_8_gestao_epi_${cid}_${Date.now()}.pdf`;
+  const outPath = path.join(outDir, fileName);
+  const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: "networkidle0" });
+    await page.pdf({ path: outPath, format: "A4", printBackground: true });
+  } finally {
+    await browser.close();
+  }
+  return `/uploads/epi_epc_reports/${fileName}`;
+}
+
 async function loadFirstAidKitReport(db: any, cid: number) {
   const [rawRows]: any = await execP(db, `
     SELECT
@@ -16682,6 +17060,22 @@ export const appRouter = router({
       const partScore = partRate;
       const trainScore = coursesLinked > 0 ? Math.round((completionRate + (coursesLinked >= 3 ? 100 : coursesLinked * 33)) / 2) : 0;
       const evidScore = Math.min(100, (certCount > 0 ? 40 : 0) + (termCount > 0 ? 40 : 0) + (hasResp ? 20 : 0));
+      let epiEpcScore = 0;
+      try {
+        await ensureEpiEpcTables(db);
+        const rep = await loadEpiEpcReport(db, cid);
+        const totalAssets = Number(rep.summary.totalAssets ?? 0);
+        if (totalAssets > 0) {
+          const bad = Number(rep.summary.notLinkedToPgr ?? 0)
+            + Number(rep.summary.caExpired ?? 0)
+            + Number(rep.summary.productExpired ?? 0)
+            + Number(rep.summary.stockCritical ?? 0)
+            + Number(rep.summary.pendingSignature ?? 0);
+          const base = totalAssets + Math.max(1, Number(rep.summary.totalDeliveries ?? 0));
+          epiEpcScore = Math.max(0, Math.min(100, Math.round(((base - bad) / base) * 100)));
+        }
+      } catch (_) {}
+
       const axes = [
         { axis: "ciclo", label: "Ciclo de Avaliação Ativo", score: cicloScore, details: [{ ok: hasCycle, warn: false, text: hasCycle ? "Ciclo de avaliação ativo encontrado" : "Nenhum ciclo de avaliação iniciado" }] },
         { axis: "inventario", label: "Inventário de Riscos", score: invScore, details: [{ ok: invCount >= 5, warn: invCount > 0 && invCount < 5, text: `${invCount} itens de risco identificados` }] },
@@ -16940,6 +17334,22 @@ export const appRouter = router({
         }
       } catch (_) {}
 
+      let epiEpcMaturityScore = 0;
+      try {
+        await ensureEpiEpcTables(db);
+        const rep = await loadEpiEpcReport(db, cid);
+        const totalAssets = Number(rep.summary.totalAssets ?? 0);
+        if (totalAssets > 0) {
+          const bad = Number(rep.summary.notLinkedToPgr ?? 0)
+            + Number(rep.summary.caExpired ?? 0)
+            + Number(rep.summary.productExpired ?? 0)
+            + Number(rep.summary.stockCritical ?? 0)
+            + Number(rep.summary.pendingSignature ?? 0);
+          const base = totalAssets + Math.max(1, Number(rep.summary.totalDeliveries ?? 0));
+          epiEpcMaturityScore = Math.max(0, Math.min(100, Math.round(((base - bad) / base) * 100)));
+        }
+      } catch (_) {}
+
       const axes = [
         { key: "pesquisas", label: "Pesquisas", score: pesquisasScore },
         { key: "treinamentos", label: "Treinamentos", score: treinamentosScore },
@@ -16948,6 +17358,7 @@ export const appRouter = router({
         { key: "cipa", label: "CIPA", score: cipaScore },
         { key: "sipat", label: "SIPAT", score: sipatScore },
         { key: "primeirosSocorros", label: "Primeiros Socorros", score: primeirosSocorrosScore },
+        { key: "epiEpc", label: "Gestão de EPI / EPC", score: epiEpcMaturityScore },
       ];
       const conformidadeGeral = Math.round(axes.reduce((a, x) => a + x.score, 0) / axes.length);
 
@@ -23269,6 +23680,8 @@ Return only the JSON content object (no wrapper). Format per type:
           ? await buildCipaReportSections(db, cid, escHtml, today)
           : tipo === "Kit Primeiros Socorros"
             ? await buildFirstAidKitReportSections(db, cid, escHtml, today)
+            : (tipo === "Gestão de EPI" || tipo === "Gestao de EPI" || tipo === "ANEXO Nº 8 — GESTÃO DE EPI" || tipo === "ANEXO Nº 8 - GESTAO DE EPI")
+              ? await buildEpiEpcReportSections(db, cid, escHtml, today)
             : await (async () => {
         const [[uCnt]]: any = await execP(db, `SELECT COUNT(*) AS cnt FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`, [cid]).catch(() => [[{ cnt: 0 }]]);
         const [[dCnt]]: any = await execP(db, `SELECT COUNT(*) AS cnt FROM denuncias WHERE company_id=?`, [cid]).catch(() => [[{ cnt: 0 }]]);
@@ -30540,6 +30953,322 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
   })(),
 
   // ─── P15 #5 — Kit de Primeiros Socorros (NR-07 item 7.5.1) ────────────────
+  epiEpc: (() => {
+    const assetInput = z.object({
+      id: z.number().optional(),
+      type: z.enum(["epi", "epc"]).default("epi"),
+      category: z.string().optional(),
+      description: z.string().min(1),
+      manufacturer: z.string().optional(),
+      model: z.string().optional(),
+      caNumber: z.string().optional(),
+      caStatus: z.string().optional(),
+      caValidUntil: z.string().optional(),
+      caSource: z.string().optional(),
+      acquisitionDate: z.string().optional(),
+      manufactureDate: z.string().optional(),
+      productValidUntil: z.string().optional(),
+      lot: z.string().optional(),
+      serialNumber: z.string().optional(),
+      size: z.string().optional(),
+      unit: z.string().optional(),
+      quantity: z.number().int().min(0).optional(),
+      minQuantity: z.number().int().min(0).optional(),
+      storageLocation: z.string().optional(),
+      branchId: z.number().int().nullable().optional(),
+      sectorId: z.number().int().nullable().optional(),
+      positionName: z.string().optional(),
+      riskProtected: z.string().optional(),
+      pgrId: z.number().int().nullable().optional(),
+      gseId: z.number().int().nullable().optional(),
+      pgrRiskId: z.number().int().nullable().optional(),
+      relatedHazard: z.string().optional(),
+      riskSource: z.string().optional(),
+      replacementPeriodicity: z.string().optional(),
+      replacementCriteria: z.string().optional(),
+      conservationInfo: z.string().optional(),
+      cleaningInfo: z.string().optional(),
+      inspectionPeriodicity: z.string().optional(),
+      maintenancePeriodicity: z.string().optional(),
+      nextInspectionDate: z.string().optional(),
+      nextMaintenanceDate: z.string().optional(),
+      status: z.string().optional(),
+      photoUrl: z.string().optional(),
+      documentUrl: z.string().optional(),
+      manualUrl: z.string().optional(),
+      pgrLinked: z.boolean().optional(),
+    });
+    const learningInput = z.object({
+      id: z.number().optional(),
+      contentType: z.enum(["course", "material", "video", "link"]).default("course"),
+      assetId: z.number().int().nullable().optional(),
+      moduleId: z.number().int().nullable().optional(),
+      title: z.string().min(1),
+      description: z.string().optional(),
+      url: z.string().optional(),
+      provider: z.string().optional(),
+      targetType: z.enum(["geral", "epi", "epc", "cargo", "setor", "filial", "gse", "colaborador"]).default("geral"),
+      targetValue: z.string().optional(),
+      isRequired: z.boolean().optional(),
+      validityMonths: z.number().int().min(0).optional(),
+      orderIndex: z.number().int().optional(),
+    });
+    const deliveryInput = z.object({
+      assetId: z.number().int(),
+      collaboratorId: z.number().int().nullable().optional(),
+      collaboratorName: z.string().optional(),
+      collaboratorCpf: z.string().optional(),
+      collaboratorRegistration: z.string().optional(),
+      branchId: z.number().int().nullable().optional(),
+      sectorId: z.number().int().nullable().optional(),
+      positionName: z.string().optional(),
+      quantity: z.number().int().min(1).default(1),
+      size: z.string().optional(),
+      caNumber: z.string().optional(),
+      lot: z.string().optional(),
+      deliveryDate: z.string().optional(),
+      reason: z.string().optional(),
+      orientationText: z.string().optional(),
+      responsibleName: z.string().optional(),
+      signatureMethod: z.enum(["eletronica", "biometrica", "fisica", "pendente"]).default("pendente"),
+    });
+    const mapAsset = (r: any) => ({
+      id: Number(r.id), companyId: Number(r.company_id), type: String(r.type),
+      category: r.category, description: r.description, manufacturer: r.manufacturer, model: r.model,
+      caNumber: r.ca_number, caStatus: r.ca_status, caValidUntil: r.ca_valid_until, caSource: r.ca_source, caLastValidatedAt: r.ca_last_validated_at,
+      acquisitionDate: r.acquisition_date, manufactureDate: r.manufacture_date, productValidUntil: r.product_valid_until,
+      lot: r.lot, serialNumber: r.serial_number, size: r.size, unit: r.unit, quantity: Number(r.quantity ?? 0), minQuantity: Number(r.min_quantity ?? 0),
+      storageLocation: r.storage_location, branchId: r.branch_id == null ? null : Number(r.branch_id), sectorId: r.sector_id == null ? null : Number(r.sector_id),
+      positionName: r.position_name, riskProtected: r.risk_protected, pgrId: r.pgr_id == null ? null : Number(r.pgr_id), gseId: r.gse_id == null ? null : Number(r.gse_id),
+      pgrRiskId: r.pgr_risk_id == null ? null : Number(r.pgr_risk_id), relatedHazard: r.related_hazard, riskSource: r.risk_source,
+      replacementPeriodicity: r.replacement_periodicity, replacementCriteria: r.replacement_criteria, conservationInfo: r.conservation_info, cleaningInfo: r.cleaning_info,
+      inspectionPeriodicity: r.inspection_periodicity, maintenancePeriodicity: r.maintenance_periodicity, nextInspectionDate: r.next_inspection_date, nextMaintenanceDate: r.next_maintenance_date,
+      status: r.status, photoUrl: r.photo_url, documentUrl: r.document_url, manualUrl: r.manual_url, pgrLinked: Boolean(Number(r.pgr_linked ?? 0)),
+      branchName: r.branch_name, sectorName: r.sector_name, pgrTitle: r.pgr_title, gseName: r.gse_name,
+      createdAt: r.created_at, updatedAt: r.updated_at,
+    });
+    async function findAsset(db: any, cid: number, id: number) {
+      const [[row]]: any = await execP(db, `SELECT * FROM epi_epc_assets WHERE id=? AND company_id=? AND is_active=1`, [id, cid]);
+      return row ?? null;
+    }
+    async function insertDelivery(db: any, ctx: any, cid: number, input: z.infer<typeof deliveryInput>) {
+      const asset = await findAsset(db, cid, input.assetId);
+      if (!asset) throw new TRPCError({ code: "NOT_FOUND", message: "Equipamento nao encontrado." });
+      if (Number(asset.quantity ?? 0) < input.quantity) throw new TRPCError({ code: "BAD_REQUEST", message: `Estoque insuficiente (${asset.quantity} disponiveis).` });
+      let collaborator: any = null;
+      if (input.collaboratorId) {
+        const [[u]]: any = await execP(db, `SELECT * FROM users WHERE id=? AND company_id=? LIMIT 1`, [input.collaboratorId, cid]);
+        collaborator = u ?? null;
+      }
+      const prevQty = Number(asset.quantity ?? 0);
+      const newQty = prevQty - input.quantity;
+      const receiptCode = `EPI-${cid}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+      const respName = input.responsibleName || (ctx.user as any).name || (ctx.user as any).email;
+      const [res]: any = await execP(db, `INSERT INTO epi_epc_deliveries
+        (company_id, asset_id, collaborator_id, collaborator_name, collaborator_cpf, collaborator_registration, branch_id, sector_id, position_name, quantity, size, ca_number, lot, delivery_date, reason, orientation_text, responsible_user_id, responsible_name, signature_method, signature_status, receipt_code)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [
+        cid, input.assetId, input.collaboratorId ?? null, input.collaboratorName || collaborator?.name || null, input.collaboratorCpf || collaborator?.cpf || null, input.collaboratorRegistration || null,
+        input.branchId ?? collaborator?.branch_id ?? null, input.sectorId ?? collaborator?.sector_id ?? null, input.positionName || collaborator?.position || null,
+        input.quantity, input.size || asset.size || null, input.caNumber || asset.ca_number || null, input.lot || asset.lot || null, input.deliveryDate || new Date().toISOString().slice(0,10),
+        input.reason || null, input.orientationText || null, ctx.user.id, respName, input.signatureMethod, "pendente", receiptCode,
+      ]);
+      const deliveryId = Number((res as any).insertId ?? 0);
+      await execP(db, `UPDATE epi_epc_assets SET quantity=? WHERE id=?`, [newQty, input.assetId]);
+      await execP(db, `INSERT INTO epi_epc_movements (company_id, asset_id, movement_type, quantity, previous_quantity, new_quantity, collaborator_id, branch_id, sector_id, reason, user_id, user_name) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, [
+        cid, input.assetId, "entrega", input.quantity, prevQty, newQty, input.collaboratorId ?? null, input.branchId ?? collaborator?.branch_id ?? null, input.sectorId ?? collaborator?.sector_id ?? null, input.reason || null, ctx.user.id, respName,
+      ]);
+      await execP(db, `INSERT INTO epi_epc_documents (company_id, asset_id, delivery_id, collaborator_id, branch_id, sector_id, document_type, title, metadata_json, created_by) VALUES (?,?,?,?,?,?,?,?,?,?)`, [
+        cid, input.assetId, deliveryId, input.collaboratorId ?? null, input.branchId ?? collaborator?.branch_id ?? null, input.sectorId ?? collaborator?.sector_id ?? null, "recibo", `Recibo ${receiptCode}`, JSON.stringify({ receiptCode, status: "pendente" }), ctx.user.id,
+      ]);
+      await logEpiEpcAudit(db, cid, ctx.user, "delivery", deliveryId, "create", null, input);
+      return { ok: true, id: deliveryId, receiptCode, newQuantity: newQty };
+    }
+    function receiptHtml(delivery: any, asset: any, company: any) {
+      const esc = (s: any) => String(s ?? "").replace(/[<>&"]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;","\"":"&quot;"}[c] as string));
+      return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Recibo EPI/EPC</title><style>body{font-family:Segoe UI,Arial,sans-serif;color:#0f172a;padding:28px}.box{border:1px solid #cbd5e1;border-radius:8px;padding:18px}h1{font-size:20px;color:#0E2C46}table{width:100%;border-collapse:collapse;font-size:12px}td{padding:7px;border-bottom:1px solid #e2e8f0}.sign{height:80px;border-bottom:1px solid #0f172a;margin-top:40px}.muted{color:#64748b;font-size:11px}</style></head><body><div class="box"><h1>RECIBO DE ENTREGA DE EPI/EPC</h1><p class="muted">Codigo: ${esc(delivery.receipt_code)} · Gerado pela Plataforma Saude do Trabalho</p><table><tr><td><b>Empresa</b></td><td>${esc(company?.name)} · CNPJ ${esc(company?.cnpj || "-")}</td></tr><tr><td><b>Colaborador</b></td><td>${esc(delivery.collaborator_name)} · CPF/matricula ${esc(delivery.collaborator_cpf || delivery.collaborator_registration || "-")}</td></tr><tr><td><b>Equipamento</b></td><td>${esc(asset.description)} · ${esc(String(asset.type).toUpperCase())}</td></tr><tr><td><b>Fabricante/modelo</b></td><td>${esc(asset.manufacturer || "-")} / ${esc(asset.model || "-")}</td></tr><tr><td><b>CA e lote</b></td><td>${esc(delivery.ca_number || asset.ca_number || "-")} · ${esc(delivery.lot || asset.lot || "-")}</td></tr><tr><td><b>Quantidade</b></td><td>${esc(delivery.quantity)} ${esc(asset.unit || "un")}</td></tr><tr><td><b>Data e motivo</b></td><td>${esc(delivery.delivery_date)} · ${esc(delivery.reason || "-")}</td></tr><tr><td><b>Orientacoes</b></td><td>${esc(delivery.orientation_text || asset.conservation_info || "Recebi orientacao sobre uso, guarda, higienizacao e conservacao do equipamento.")}</td></tr><tr><td><b>Responsavel pela entrega</b></td><td>${esc(delivery.responsible_name || "-")}</td></tr></table><div class="sign"></div><p class="muted">Assinatura do trabalhador</p></div></body></html>`;
+    }
+    return router({
+      listAssets: protectedProcedure.input(z.object({ type: z.enum(["epi", "epc", "todos"]).optional(), search: z.string().optional() }).optional()).query(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) return [];
+        await ensureEpiEpcTables(db);
+        const where = ["a.company_id=?", "a.is_active=1"]; const params: any[] = [cid];
+        if (input?.type && input.type !== "todos") { where.push("a.type=?"); params.push(input.type); }
+        if (input?.search?.trim()) { where.push("(a.description LIKE ? OR a.ca_number LIKE ? OR a.category LIKE ?)"); const q = `%${input.search.trim()}%`; params.push(q, q, q); }
+        const [rows]: any = await execP(db, `SELECT a.*, b.name AS branch_name, s.name AS sector_name, p.title AS pgr_title, g.nome AS gse_name FROM epi_epc_assets a LEFT JOIN branches b ON b.id=a.branch_id LEFT JOIN sectors s ON s.id=a.sector_id LEFT JOIN pgr_documents p ON p.id=a.pgr_id LEFT JOIN pgr_gse g ON g.id=a.gse_id WHERE ${where.join(" AND ")} ORDER BY a.updated_at DESC, a.id DESC LIMIT 800`, params);
+        return (rows ?? []).map(mapAsset);
+      }),
+      upsertAsset: adminOrRhProcedure.input(assetInput).mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+        await ensureEpiEpcTables(db);
+        if (input.type === "epc" && input.caNumber?.trim()) throw new TRPCError({ code: "BAD_REQUEST", message: "EPC nao exige CA. Remova o CA ou altere o tipo para EPI." });
+        const values = [input.type, input.category || null, input.description, input.manufacturer || null, input.model || null, input.type === "epi" ? input.caNumber || null : null, input.type === "epi" ? input.caStatus || null : null, input.type === "epi" ? input.caValidUntil || null : null, input.type === "epi" ? input.caSource || null : null, input.acquisitionDate || null, input.manufactureDate || null, input.productValidUntil || null, input.lot || null, input.serialNumber || null, input.size || null, input.unit || "un", input.quantity ?? 0, input.minQuantity ?? 0, input.storageLocation || null, input.branchId ?? null, input.sectorId ?? null, input.positionName || null, input.riskProtected || null, input.pgrId ?? null, input.gseId ?? null, input.pgrRiskId ?? null, input.relatedHazard || null, input.riskSource || null, input.replacementPeriodicity || null, input.replacementCriteria || null, input.conservationInfo || null, input.cleaningInfo || null, input.inspectionPeriodicity || null, input.maintenancePeriodicity || null, input.nextInspectionDate || null, input.nextMaintenanceDate || null, input.status || "ativo", input.photoUrl || null, input.documentUrl || null, input.manualUrl || null, input.pgrLinked ? 1 : 0];
+        if (input.id) {
+          const before = await findAsset(db, cid, input.id); if (!before) throw new TRPCError({ code: "NOT_FOUND" });
+          await execP(db, `UPDATE epi_epc_assets SET type=?, category=?, description=?, manufacturer=?, model=?, ca_number=?, ca_status=?, ca_valid_until=?, ca_source=?, ca_last_validated_at=CASE WHEN ? IS NOT NULL THEN NOW() ELSE ca_last_validated_at END, acquisition_date=?, manufacture_date=?, product_valid_until=?, lot=?, serial_number=?, size=?, unit=?, quantity=?, min_quantity=?, storage_location=?, branch_id=?, sector_id=?, position_name=?, risk_protected=?, pgr_id=?, gse_id=?, pgr_risk_id=?, related_hazard=?, risk_source=?, replacement_periodicity=?, replacement_criteria=?, conservation_info=?, cleaning_info=?, inspection_periodicity=?, maintenance_periodicity=?, next_inspection_date=?, next_maintenance_date=?, status=?, photo_url=?, document_url=?, manual_url=?, pgr_linked=? WHERE id=? AND company_id=?`, [...values.slice(0, 9), values[8], ...values.slice(9), input.id, cid]);
+          await logEpiEpcAudit(db, cid, ctx.user, "asset", input.id, "update", before, input);
+          return { ok: true, id: input.id };
+        }
+        const [res]: any = await execP(db, `INSERT INTO epi_epc_assets (company_id, type, category, description, manufacturer, model, ca_number, ca_status, ca_valid_until, ca_source, acquisition_date, manufacture_date, product_valid_until, lot, serial_number, size, unit, quantity, min_quantity, storage_location, branch_id, sector_id, position_name, risk_protected, pgr_id, gse_id, pgr_risk_id, related_hazard, risk_source, replacement_periodicity, replacement_criteria, conservation_info, cleaning_info, inspection_periodicity, maintenance_periodicity, next_inspection_date, next_maintenance_date, status, photo_url, document_url, manual_url, pgr_linked, created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [cid, ...values, ctx.user.id]);
+        const id = Number((res as any).insertId ?? 0); await logEpiEpcAudit(db, cid, ctx.user, "asset", id, "create", null, input);
+        return { ok: true, id };
+      }),
+      removeAsset: adminOrRhProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) return { ok: false };
+        await ensureEpiEpcTables(db); const before = await findAsset(db, cid, input.id);
+        await execP(db, `UPDATE epi_epc_assets SET is_active=0 WHERE id=? AND company_id=?`, [input.id, cid]);
+        await logEpiEpcAudit(db, cid, ctx.user, "asset", input.id, "deactivate", before, null);
+        return { ok: true };
+      }),
+      aiSuggestAsset: adminOrRhProcedure.input(z.object({ prompt: z.string().min(3), type: z.enum(["epi", "epc"]).default("epi") })).mutation(async ({ input }) => {
+        const base: any = { type: input.type, category: input.type === "epi" ? "Protecao individual" : "Protecao coletiva", description: input.prompt, riskProtected: "", replacementCriteria: "Conforme fabricante, conservacao, higienizacao, desgaste, contaminacao, dano, mudanca de funcao ou criterio tecnico.", conservationInfo: "Manter limpo, seco, identificado e armazenado em local protegido.", cleaningInfo: "Higienizar conforme manual/ficha tecnica do fabricante.", caNumber: "", caStatus: input.type === "epi" ? "CA nao informado/nao validado" : "", warning: "A IA nao inventa numero de CA. Confirme CA, fabricante, modelo e ficha tecnica antes de usar como evidencia." };
+        const txt = input.prompt.toLowerCase();
+        if (txt.includes("auricular") || txt.includes("plug") || txt.includes("auditivo")) Object.assign(base, { category: "Protecao auditiva", riskProtected: "Ruido ocupacional", relatedHazard: "Exposicao a ruido", replacementPeriodicity: "Conforme fabricante e condicao de uso" });
+        else if (txt.includes("luva")) Object.assign(base, { category: "Protecao das maos", riskProtected: "Contato mecanico, quimico, termico ou biologico conforme material da luva", relatedHazard: "Contato com agentes agressivos" });
+        else if (txt.includes("capacete")) Object.assign(base, { category: "Protecao da cabeca", riskProtected: "Impactos, queda de objetos e riscos mecanicos", relatedHazard: "Impacto contra/por objetos" });
+        else if (txt.includes("oculos") || txt.includes("óculos")) Object.assign(base, { category: "Protecao ocular e facial", riskProtected: "Projecao de particulas, respingos e poeiras", relatedHazard: "Projecao de particulas" });
+        return { ok: true, suggestion: base };
+      }),
+      searchCA: adminOrRhProcedure.input(z.object({ caNumber: z.string().min(1) })).mutation(async ({ input }) => ({ ok: true, caNumber: input.caNumber.replace(/\D/g, ""), status: "nao_validado", message: "Consulta oficial de CA ainda nao conectada. Informe fonte oficial e data de validacao antes de usar como evidencia." })),
+      listCourseOptions: adminOrRhProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db) return [];
+        const [rows]: any = await execP(db, `SELECT DISTINCT m.id, m.title, m.description, m.durationMinutes FROM modules m WHERE m.isActive=1 AND (m.created_by_company_id=? OR m.created_by_company_id IS NULL OR LOWER(m.title) REGEXP 'epi|epc|nr-06|nr 06|protecao|proteção|seguranca|segurança') ORDER BY m.title LIMIT 300`, [cid ?? 0]);
+        return rows ?? [];
+      }),
+      listLearning: adminOrRhProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) return [];
+        await ensureEpiEpcTables(db);
+        const [rows]: any = await execP(db, `SELECT c.*, a.description AS asset_description, m.title AS module_title FROM epi_epc_learning_contents c LEFT JOIN epi_epc_assets a ON a.id=c.asset_id LEFT JOIN modules m ON m.id=c.module_id WHERE c.company_id=? AND c.is_active=1 ORDER BY c.order_index, c.id`, [cid]);
+        return rows ?? [];
+      }),
+      upsertLearning: adminOrRhProcedure.input(learningInput).mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+        await ensureEpiEpcTables(db);
+        if (input.id) {
+          await execP(db, `UPDATE epi_epc_learning_contents SET content_type=?, asset_id=?, module_id=?, title=?, description=?, url=?, provider=?, target_type=?, target_value=?, is_required=?, validity_months=?, order_index=? WHERE id=? AND company_id=?`, [input.contentType, input.assetId ?? null, input.moduleId ?? null, input.title, input.description || null, input.url || null, input.provider || null, input.targetType, input.targetValue || null, input.isRequired ? 1 : 0, input.validityMonths ?? null, input.orderIndex ?? 0, input.id, cid]);
+          return { ok: true, id: input.id };
+        }
+        const [res]: any = await execP(db, `INSERT INTO epi_epc_learning_contents (company_id, content_type, asset_id, module_id, title, description, url, provider, target_type, target_value, is_required, validity_months, order_index, created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [cid, input.contentType, input.assetId ?? null, input.moduleId ?? null, input.title, input.description || null, input.url || null, input.provider || null, input.targetType, input.targetValue || null, input.isRequired ? 1 : 0, input.validityMonths ?? null, input.orderIndex ?? 0, ctx.user.id]);
+        return { ok: true, id: Number((res as any).insertId ?? 0) };
+      }),
+      removeLearning: adminOrRhProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) return { ok: false };
+        await execP(db, `UPDATE epi_epc_learning_contents SET is_active=0 WHERE id=? AND company_id=?`, [input.id, cid]);
+        return { ok: true };
+      }),
+      listCollaborators: adminOrRhProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) return [];
+        const [rows]: any = await execP(db, `SELECT u.id, u.name, u.email, u.cpf, u.position, u.branch_id, u.sector_id, b.name AS branch_name, s.name AS sector_name FROM users u LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id WHERE u.company_id=? AND ${activeEmployeeWhere("u")} ORDER BY u.name LIMIT 1000`, [cid]);
+        return rows ?? [];
+      }),
+      registerDelivery: adminOrRhProcedure.input(deliveryInput).mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+        await ensureEpiEpcTables(db);
+        return insertDelivery(db, ctx, cid, input);
+      }),
+      bulkDelivery: adminOrRhProcedure.input(z.object({ collaboratorIds: z.array(z.number().int()).min(1), delivery: deliveryInput.omit({ collaboratorId: true, collaboratorName: true, collaboratorCpf: true }) })).mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+        await ensureEpiEpcTables(db);
+        const results: any[] = [];
+        for (const collaboratorId of input.collaboratorIds) results.push(await insertDelivery(db, ctx, cid, { ...input.delivery, collaboratorId }));
+        return { ok: true, count: results.length, results };
+      }),
+      listDeliveries: protectedProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) return [];
+        await ensureEpiEpcTables(db);
+        const [rows]: any = await execP(db, `SELECT d.*, a.description AS asset_description, a.type AS asset_type, b.name AS branch_name, s.name AS sector_name FROM epi_epc_deliveries d JOIN epi_epc_assets a ON a.id=d.asset_id LEFT JOIN branches b ON b.id=d.branch_id LEFT JOIN sectors s ON s.id=d.sector_id WHERE d.company_id=? ORDER BY d.delivery_date DESC, d.id DESC LIMIT 500`, [cid]);
+        return rows ?? [];
+      }),
+      signDelivery: adminOrRhProcedure.input(z.object({ id: z.number().int(), method: z.enum(["eletronica", "biometrica", "fisica"]).default("eletronica"), signatureData: z.string().optional(), physicalReceiptUrl: z.string().optional() })).mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+        await ensureEpiEpcTables(db);
+        await execP(db, `UPDATE epi_epc_deliveries SET signature_method=?, signature_status='assinado', signature_data=?, physical_receipt_url=?, signed_at=NOW() WHERE id=? AND company_id=?`, [input.method, input.signatureData || null, input.physicalReceiptUrl || null, input.id, cid]);
+        await logEpiEpcAudit(db, cid, ctx.user, "delivery", input.id, "sign", null, input);
+        return { ok: true };
+      }),
+      receiptHtml: protectedProcedure.input(z.object({ id: z.number().int() })).query(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) return { html: "" };
+        await ensureEpiEpcTables(db);
+        const [[delivery]]: any = await execP(db, `SELECT * FROM epi_epc_deliveries WHERE id=? AND company_id=?`, [input.id, cid]);
+        if (!delivery) throw new TRPCError({ code: "NOT_FOUND" });
+        const [[asset]]: any = await execP(db, `SELECT * FROM epi_epc_assets WHERE id=?`, [delivery.asset_id]);
+        const [[company]]: any = await execP(db, `SELECT name, cnpj FROM companies WHERE id=?`, [cid]);
+        return { html: receiptHtml(delivery, asset, company) };
+      }),
+      registerReturn: adminOrRhProcedure.input(z.object({ assetId: z.number().int(), collaboratorId: z.number().int().nullable().optional(), quantity: z.number().int().min(1), eventType: z.enum(["devolucao", "substituicao", "descarte"]).default("devolucao"), eventDate: z.string().optional(), reason: z.string().optional(), conditionText: z.string().optional(), destination: z.string().optional(), notes: z.string().optional() })).mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+        await ensureEpiEpcTables(db);
+        const asset = await findAsset(db, cid, input.assetId); if (!asset) throw new TRPCError({ code: "NOT_FOUND" });
+        const respName = (ctx.user as any).name || (ctx.user as any).email;
+        const [res]: any = await execP(db, `INSERT INTO epi_epc_returns (company_id, asset_id, collaborator_id, quantity, event_type, event_date, reason, condition_text, destination, responsible_user_id, responsible_name, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, [cid, input.assetId, input.collaboratorId ?? null, input.quantity, input.eventType, input.eventDate || new Date().toISOString().slice(0,10), input.reason || null, input.conditionText || null, input.destination || null, ctx.user.id, respName, input.notes || null]);
+        if (input.destination === "retorna_estoque" || input.eventType === "devolucao") {
+          const prevQty = Number(asset.quantity ?? 0); const newQty = prevQty + input.quantity;
+          await execP(db, `UPDATE epi_epc_assets SET quantity=? WHERE id=?`, [newQty, input.assetId]);
+          await execP(db, `INSERT INTO epi_epc_movements (company_id, asset_id, movement_type, quantity, previous_quantity, new_quantity, collaborator_id, reason, user_id, user_name) VALUES (?,?,?,?,?,?,?,?,?,?)`, [cid, input.assetId, input.eventType, input.quantity, prevQty, newQty, input.collaboratorId ?? null, input.reason || null, ctx.user.id, respName]);
+        }
+        return { ok: true, id: Number((res as any).insertId ?? 0) };
+      }),
+      listReturns: protectedProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) return [];
+        await ensureEpiEpcTables(db);
+        const [rows]: any = await execP(db, `SELECT r.*, a.description AS asset_description, u.name AS collaborator_name FROM epi_epc_returns r JOIN epi_epc_assets a ON a.id=r.asset_id LEFT JOIN users u ON u.id=r.collaborator_id WHERE r.company_id=? ORDER BY r.event_date DESC, r.id DESC LIMIT 500`, [cid]);
+        return rows ?? [];
+      }),
+      registerMovement: adminOrRhProcedure.input(z.object({ assetId: z.number().int(), movementType: z.enum(["entrada", "entrega", "devolucao", "substituicao", "descarte", "transferencia", "ajuste", "manutencao"]), quantity: z.number().int().min(1), reason: z.string().optional() })).mutation(async ({ ctx, input }) => {
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+        await ensureEpiEpcTables(db);
+        const asset = await findAsset(db, cid, input.assetId); if (!asset) throw new TRPCError({ code: "NOT_FOUND" });
+        const prevQty = Number(asset.quantity ?? 0); const add = ["entrada", "devolucao", "ajuste"].includes(input.movementType); const newQty = add ? prevQty + input.quantity : prevQty - input.quantity;
+        if (newQty < 0) throw new TRPCError({ code: "BAD_REQUEST", message: `Estoque insuficiente (${prevQty} disponiveis).` });
+        await execP(db, `UPDATE epi_epc_assets SET quantity=? WHERE id=?`, [newQty, input.assetId]);
+        await execP(db, `INSERT INTO epi_epc_movements (company_id, asset_id, movement_type, quantity, previous_quantity, new_quantity, reason, user_id, user_name) VALUES (?,?,?,?,?,?,?,?,?)`, [cid, input.assetId, input.movementType, input.quantity, prevQty, newQty, input.reason || null, ctx.user.id, (ctx.user as any).name || (ctx.user as any).email]);
+        return { ok: true, newQuantity: newQty };
+      }),
+      listMovements: protectedProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) return [];
+        await ensureEpiEpcTables(db);
+        const [rows]: any = await execP(db, `SELECT m.*, a.description AS asset_description, a.type AS asset_type FROM epi_epc_movements m JOIN epi_epc_assets a ON a.id=m.asset_id WHERE m.company_id=? ORDER BY m.created_at DESC LIMIT 500`, [cid]);
+        return rows ?? [];
+      }),
+      alerts: protectedProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) return { vencidos: [], d7: [], d15: [], d30: [], estoqueCritico: [], assinaturaPendente: [], semPgr: [] };
+        await ensureEpiEpcTables(db);
+        const [rows]: any = await execP(db, `SELECT * FROM epi_epc_assets WHERE company_id=? AND is_active=1`, [cid]);
+        const [pendingSig]: any = await execP(db, `SELECT d.*, a.description AS asset_description FROM epi_epc_deliveries d JOIN epi_epc_assets a ON a.id=d.asset_id WHERE d.company_id=? AND d.signature_status<>'assinado' ORDER BY d.delivery_date DESC`, [cid]);
+        const today = new Date(); today.setHours(0,0,0,0); const days = (d: any) => d ? Math.ceil((new Date(d).getTime() - today.getTime()) / 86400000) : null;
+        const alerts = { vencidos: [] as any[], d7: [] as any[], d15: [] as any[], d30: [] as any[], estoqueCritico: [] as any[], assinaturaPendente: pendingSig ?? [], semPgr: [] as any[] };
+        for (const a of rows ?? []) {
+          for (const c of [{ kind: "CA", date: a.ca_valid_until, enabled: a.type === "epi" }, { kind: "Produto", date: a.product_valid_until, enabled: true }, { kind: "Inspecao EPC", date: a.next_inspection_date, enabled: a.type === "epc" }, { kind: "Manutencao EPC", date: a.next_maintenance_date, enabled: a.type === "epc" }]) {
+            if (!c.enabled || !c.date) continue; const n = days(c.date); const item = { ...a, alertKind: c.kind, days: n };
+            if (n! < 0) alerts.vencidos.push(item); else if (n! <= 7) alerts.d7.push(item); else if (n! <= 15) alerts.d15.push(item); else if (n! <= 30) alerts.d30.push(item);
+          }
+          if (Number(a.min_quantity ?? 0) > 0 && Number(a.quantity ?? 0) <= Number(a.min_quantity ?? 0)) alerts.estoqueCritico.push(a);
+          if (Number(a.pgr_linked ?? 0) !== 1) alerts.semPgr.push(a);
+        }
+        return alerts;
+      }),
+      documents: protectedProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) return [];
+        await ensureEpiEpcTables(db);
+        const [rows]: any = await execP(db, `SELECT d.*, a.description AS asset_description, u.name AS collaborator_name FROM epi_epc_documents d LEFT JOIN epi_epc_assets a ON a.id=d.asset_id LEFT JOIN users u ON u.id=d.collaborator_id WHERE d.company_id=? ORDER BY d.created_at DESC LIMIT 500`, [cid]);
+        return rows ?? [];
+      }),
+      report: protectedProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) return { summary: {}, assets: [], deliveries: [], movements: [], byLocation: [] };
+        return loadEpiEpcReport(db, cid);
+      }),
+      generateReportPdf: adminOrRhProcedure.mutation(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+        const url = await generateEpiEpcReportPdf(db, cid);
+        return { ok: true, url };
+      }),
+      dashboard: protectedProcedure.query(async ({ ctx }) => {
+        const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) return null;
+        const report = await loadEpiEpcReport(db, cid);
+        return report.summary;
+      }),
+    });
+  })(),
+
   firstaid: (() => {
     let _faDdlDone = false;
     async function ensureFaTables(db: any) {

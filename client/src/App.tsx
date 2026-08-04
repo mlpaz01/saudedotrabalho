@@ -71,6 +71,7 @@ import Cipa from "@/pages/Cipa";
 import AdminCipa from "@/pages/admin/AdminCipa";
 import AdminCorporateMinutes from "@/pages/admin/AdminCorporateMinutes";
 import AdminFirstAid from "@/pages/admin/AdminFirstAid";
+import AdminEpiEpcManagement from "@/pages/admin/AdminEpiEpcManagement";
 import CampanhasIndex, { CampanhaDetail } from "@/pages/Campanhas";
 import Configurador from "@/pages/admin/Configurador";
 import AdminBranches from "@/pages/admin/AdminBranches";
@@ -283,6 +284,7 @@ function Router() {
       <Route path="/cipa" component={() => <ProtectedRoute component={Cipa} />} />
       {/* P15 #5 — Kit de Primeiros Socorros (NR-07) */}
       <Route path="/admin/primeiros-socorros" component={() => <ProtectedRoute component={AdminFirstAid} adminOnly />} />
+      <Route path="/admin/gestao-epi-epc" component={() => <ProtectedRoute component={AdminEpiEpcManagement} adminOnly />} />
       {/* Bruno R5-P6 #1 — Dashboard dos Ciclos Psicossociais (PRIORIDADE MÁXIMA) */}
       <Route path="/admin/ciclos-dashboard" component={() => <ProtectedRoute component={AdminCyclesDashboard} adminOnly />} />
       {/* Bruno R5-P6 #6 — Dashboard de Prazos do Plano de Ação (RH visão completa, Chefia só setor) */}

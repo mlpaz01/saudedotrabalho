@@ -220,6 +220,7 @@ export default function AdminPGR() {
     "Lei 14.457/2022",
     "Relatório da CIPA",
     "Kit Primeiros Socorros",
+    "Gestão de EPI",
   ];
   const [statusNotes, setStatusNotes] = useState("");
   const historyQ = trpc.pgr.getHistory.useQuery(
@@ -914,6 +915,7 @@ function AnexosOficiaisPanel({ pgrId, cycles, existing, onChange }: { pgrId: num
     { tipo: "Legitimidade do Canal de Denúncias", needsCycle: false, hint: "Anexa o relatório de Legitimidade do Canal de Denúncias (PDF auto)" },
     { tipo: "Relatório da CIPA",                 needsCycle: false, hint: "Anexa o relatório da CIPA: governança/mandato, reuniões, SIPAT e cursos NR-05 (PDF auto)" },
     { tipo: "Kit Primeiros Socorros",             needsCycle: false, hint: "Anexa o relatório de kits, itens, estoques, vencimentos e pendências por filial/setor (PDF auto)" },
+    { tipo: "Gestão de EPI",                       needsCycle: false, hint: "Anexa o Anexo Nº 8 - Gestão de EPI/EPC, com dados reais de CA, produto, entregas, assinaturas, estoque e pendências (PDF auto)" },
   ];
   // Bruno R5 #9 — Após criar registro do anexo, dispara geração do PDF oficial.
   const genPdfMut = trpc.pgr.generateOfficialAttachmentPdf.useMutation({
@@ -1036,6 +1038,7 @@ function AnexosExtrasUpload({ pgrId, existing, onChange }: { pgrId: number; exis
     "Legitimidade do Canal de Denúncias",
     "Relatório da CIPA",
     "Kit Primeiros Socorros",
+    "Gestão de EPI",
     "LGPD",
     "Lei 14.457/2022",
   ];

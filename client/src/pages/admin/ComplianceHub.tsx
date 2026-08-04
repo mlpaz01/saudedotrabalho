@@ -11,7 +11,7 @@ import {
   ExternalLink, ShieldAlert, ListChecks, ScrollText, GraduationCap,
 } from "lucide-react";
 
-type TabId = "overview" | "fiscalizacao" | "evidencias" | "dossie" | "documentos" | "maturidade" | "primeiros_socorros";
+type TabId = "overview" | "fiscalizacao" | "evidencias" | "dossie" | "documentos" | "maturidade" | "primeiros_socorros" | "epi_epc";
 
 const AXIS_ICONS: Record<string, any> = {
   ciclo: ShieldCheck,
@@ -131,6 +131,67 @@ function FirstAidCompliancePanel() {
   );
 }
 
+function EpiEpcCompliancePanel() {
+  const reportQ = (trpc as any).epiEpc.report.useQuery();
+  const pdfMut = (trpc as any).epiEpc.generateReportPdf.useMutation({
+    onSuccess: (r: any) => {
+      if (r?.url) window.open(r.url, "_blank");
+      toast.success("PDF de Gestão de EPI/EPC gerado.");
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao gerar PDF."),
+  });
+  const d = reportQ.data as any;
+  const cards = [
+    ["EPIs", d?.summary?.epis ?? 0],
+    ["EPCs", d?.summary?.epcs ?? 0],
+    ["Vinculados ao PGR", d?.summary?.linkedToPgr ?? 0],
+    ["CAs vencidos", d?.summary?.caExpired ?? 0],
+    ["Produtos vencidos", d?.summary?.productExpired ?? 0],
+    ["Pendentes assinatura", d?.summary?.pendingSignature ?? 0],
+  ];
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-xl border p-5 flex items-start justify-between gap-4">
+        <div>
+          <h2 className="font-semibold text-lg mb-1">Gestão de EPI / EPC — NR-06</h2>
+          <p className="text-sm text-slate-500">Evidência de CA, validade do produto, vínculo PGR/GSE, entregas, assinaturas, estoque e pendências.</p>
+        </div>
+        <Button onClick={() => pdfMut.mutate()} disabled={pdfMut.isPending} className="gap-2">
+          {pdfMut.isPending ? <Loader2 size={14} className="animate-spin" /> : <Printer size={14} />} Gerar PDF
+        </Button>
+      </div>
+      {reportQ.isLoading ? (
+        <div className="flex justify-center py-8"><Loader2 className="animate-spin text-slate-400" /></div>
+      ) : (
+        <>
+          <div className="grid sm:grid-cols-2 lg:grid-cols-6 gap-3">
+            {cards.map(([label, value]) => (
+              <div key={label} className="bg-white rounded-xl border p-4">
+                <div className="text-xs uppercase tracking-wide text-slate-400 font-semibold">{label}</div>
+                <div className="text-2xl font-bold text-slate-900 mt-1">{value}</div>
+              </div>
+            ))}
+          </div>
+          <div className="bg-white rounded-xl border overflow-hidden">
+            <div className="px-5 py-3 border-b bg-slate-50 font-semibold text-sm">Pendências por filial e setor</div>
+            <table className="w-full text-xs">
+              <thead className="bg-slate-50 text-slate-500">
+                <tr><th className="text-left p-2">Filial</th><th className="text-left p-2">Setor</th><th className="p-2">EPIs</th><th className="p-2">EPCs</th><th className="p-2">CA vencido</th><th className="p-2">Produto vencido</th><th className="p-2">Estoque crítico</th></tr>
+              </thead>
+              <tbody>
+                {(d?.byLocation ?? []).map((r: any, i: number) => (
+                  <tr key={i} className="border-t"><td className="p-2">{r.branchName}</td><td className="p-2">{r.sectorName}</td><td className="p-2 text-center">{r.epis}</td><td className="p-2 text-center">{r.epcs}</td><td className="p-2 text-center">{r.caExpired}</td><td className="p-2 text-center">{r.productExpired}</td><td className="p-2 text-center">{r.stockCritical}</td></tr>
+                ))}
+                {!(d?.byLocation ?? []).length && <tr><td colSpan={7} className="p-5 text-center text-slate-400">Nenhum EPI/EPC cadastrado.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function ComplianceHub() {
   const [tab, setTab] = useState<TabId>("overview");
   const [simRunning, setSimRunning] = useState(false);
@@ -158,6 +219,7 @@ export default function ComplianceHub() {
     { id: "fiscalizacao", label: "Simular Fiscalização", icon: ClipboardCheck },
     { id: "evidencias",   label: "Evidências",           icon: FileSearch },
     { id: "primeiros_socorros", label: "Primeiros Socorros", icon: FileText },
+    { id: "epi_epc", label: "EPI / EPC", icon: ShieldAlert },
     { id: "dossie",       label: "Dossiê Individual",    icon: Users },
     { id: "documentos",   label: "Documentos Oficiais",  icon: Download },
   ];
@@ -468,6 +530,8 @@ export default function ComplianceHub() {
 
         {/* ── PRIMEIROS SOCORROS ───────────────────────────────────────────── */}
         {tab === "primeiros_socorros" && <FirstAidCompliancePanel />}
+
+        {tab === "epi_epc" && <EpiEpcCompliancePanel />}
 
         {/* ── DOSSIÊ INDIVIDUAL ─────────────────────────────────────────────── */}
         {tab === "dossie" && (

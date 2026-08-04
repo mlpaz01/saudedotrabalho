@@ -10,7 +10,7 @@ import {
   Mail, ShieldAlert, CreditCard, FolderOpen, GraduationCap, Stethoscope,
   Link2, Layers, RotateCcw, Activity, Search, LineChart, Signature, FileText,
   LifeBuoy, Headphones, HeartHandshake, BarChart3, ListChecks, BookMarked,
-  Megaphone, Briefcase, Trophy, Printer, Pencil, Upload,
+  Megaphone, Briefcase, Trophy, Printer, Pencil, Upload, HardHat,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { trpc } from "@/lib/trpc";
@@ -118,6 +118,7 @@ const adminSections: NavSection[] = [
     items: [
       { label: "GHE / GSE", href: "/admin/ghe-gse", roles: ["sesmt", "admin_global", "super_admin"], icon: <Layers size={16} />, feature: "risk_assessment" },
       { label: "EPC / EPI", href: "/admin/epc-epi", roles: ["sesmt", "admin_global", "super_admin"], icon: <Shield size={16} />, feature: "risk_assessment" },
+      { label: "Gestao de EPI / EPC", href: "/admin/gestao-epi-epc", roles: ["sesmt", "admin_global", "super_admin"], icon: <HardHat size={16} />, feature: "risk_assessment" },
       { label: "Gerador de PGR", href: "/admin/pgr", roles: ["sesmt", "admin_global", "super_admin"], icon: <FileCheck size={16} />, feature: "pgr" },
       { label: "Dashboard PGR", href: "/admin/pgr/executivo", roles: ["sesmt", "admin_global", "super_admin"], icon: <BarChart3 size={16} />, feature: "pgr" },
       { label: "Auditoria PGR", href: "/admin/pgr/auditoria", roles: ["sesmt", "admin_global", "super_admin"], icon: <ShieldCheck size={16} />, feature: "pgr" },
@@ -204,6 +205,7 @@ const ITEM_LABELS: Record<string, string> = {
   "Acoes Vinculadas": "Ações Vinculadas",
   "GHE / GSE": "GHE / GSE",
   "EPC / EPI": "EPC / EPI",
+  "Gestao de EPI / EPC": "Gestão de EPI / EPC",
   "Revisoes PGR": "Revisões PGR",
   "Dashboard SST": "Dashboard SST",
   "Gerador de PGR": "Gerador de PGR",
