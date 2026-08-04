@@ -3,6 +3,7 @@ import type { User } from "../../drizzle/schema";
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./cookies";
 import { sdk } from "./sdk";
+import { getWhiteLabelPartnerIdForCompany, whiteLabelPartnerOwnsCompany } from "./whiteLabelAccess";
 
 export type TrpcContext = {
   req: CreateExpressContextOptions["req"];
@@ -13,6 +14,7 @@ export type TrpcContext = {
     // P15 #6 — Administração Delegada: SuperAdmin assumindo um role específico.
     _isDelegating?: boolean;
     _originalRole?: string;
+    _whiteLabelPartnerId?: number;
   }) | null;
 };
 
@@ -57,6 +59,28 @@ export async function createContext(
           role: roleHeader,
           _isDelegating: true,
           _originalRole: "super_admin",
+        } as any;
+      }
+    }
+  }
+
+  // White-label network admins may switch only between companies linked to
+  // their own partner. The browser header is never trusted without this check.
+  if (user && (user as any).role === "company_admin") {
+    const homeCompanyId = Number((user as any).companyId || 0);
+    const partnerId = await getWhiteLabelPartnerIdForCompany(homeCompanyId);
+    if (partnerId) {
+      finalUser = { ...(finalUser ?? user) as any, _whiteLabelPartnerId: partnerId } as any;
+      const raw = opts.req.headers["x-impersonate-company-id"];
+      const header = Array.isArray(raw) ? raw[0] : raw;
+      const selectedCompanyId = Number(header || 0);
+      if (selectedCompanyId > 0 && await whiteLabelPartnerOwnsCompany(partnerId, selectedCompanyId)) {
+        finalUser = {
+          ...(finalUser ?? user) as any,
+          companyId: selectedCompanyId as any,
+          _isImpersonating: selectedCompanyId !== homeCompanyId,
+          _originalCompanyId: homeCompanyId,
+          _whiteLabelPartnerId: partnerId,
         } as any;
       }
     }

@@ -32,6 +32,7 @@ import { supportRouter } from "./_core/supportRouter";
 import { clientPlansRouter } from "./_core/clientPlansRouter";
 import { denunciaRouter } from "./_core/denunciaRouter";
 import { ehsRouter } from "./_core/ehsRouter";
+import { whiteLabelNetworkRouter } from "./_core/whiteLabelNetworkRouter";
 
 
 
@@ -4037,6 +4038,7 @@ async function testTotvsRmHttpConnection(cfg: any) {
 export const appRouter = router({
   support: supportRouter,
   clientPlans: clientPlansRouter,
+  whiteLabelNetwork: whiteLabelNetworkRouter,
   ehs: ehsRouter,
   denuncia: denunciaRouter,
 

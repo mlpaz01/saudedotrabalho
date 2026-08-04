@@ -66,6 +66,7 @@ import SuperAdminAccessHours from "@/pages/superadmin/SuperAdminAccessHours";
 import SuperAdminCrm from "@/pages/superadmin/SuperAdminCrm";
 import SuperAdminIntegrations from "@/pages/superadmin/SuperAdminIntegrations";
 import SuperAdminWhiteLabel from "@/pages/superadmin/SuperAdminWhiteLabel";
+import WhiteLabelNetworkAdmin from "@/pages/WhiteLabelNetworkAdmin";
 import IntermediadorDashboard from "@/pages/IntermediadorDashboard";
 import Cipa from "@/pages/Cipa";
 import AdminCipa from "@/pages/admin/AdminCipa";
@@ -153,6 +154,14 @@ function SuperAdminRoute({ component: Component }: { component: React.ComponentT
   return <Component />;
 }
 
+function WhiteLabelNetworkRoute({ component: Component }: { component: React.ComponentType }) {
+  const { user, loading } = useAuth();
+  if (loading) return <div className="min-h-screen brand-gradient flex items-center justify-center"><div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" /></div>;
+  if (!user) return <Redirect to="/login" />;
+  if (user.role !== "company_admin") return <Redirect to="/inicio" />;
+  return <Component />;
+}
+
 // P14 #5 — Perfil Intermediador: área comercial própria, isolada do admin/RH.
 function IntermediadorRoute({ component: Component }: { component: React.ComponentType }) {
   const { user, loading } = useAuth();
@@ -175,6 +184,7 @@ function RoleAwareDashboard() {
   if (loading) return <div className="min-h-screen brand-gradient flex items-center justify-center"><div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" /></div>;
   if (!user) return <Redirect to="/login" />;
   if (isSuperAdmin(user.role)) return <Redirect to="/super-admin" />;
+  if (user.role === "company_admin") return <Redirect to="/rede" />;
   if (user.role === "chefia") return <Redirect to="/admin/chefia-dashboard" />;
   if (user.role === "intermediador") return <Redirect to="/intermediador" />;
   if (isManagerRole(user.role)) return <ManagerDashboard />;
@@ -311,6 +321,7 @@ function Router() {
       <Route path="/super-admin/integracoes" component={() => <SuperAdminRoute component={SuperAdminIntegrations} />} />
       <Route path="/super-admin/crm" component={() => <SuperAdminRoute component={SuperAdminCrm} />} />
       <Route path="/super-admin/white-label" component={() => <SuperAdminRoute component={SuperAdminWhiteLabel} />} />
+      <Route path="/rede" component={() => <WhiteLabelNetworkRoute component={WhiteLabelNetworkAdmin} />} />
       <Route path="/intermediador" component={() => <IntermediadorRoute component={IntermediadorDashboard} />} />
       <Route path="/campanhas" component={() => <ProtectedRoute component={CampanhasIndex} />} />
       <Route path="/campanhas/:id" component={() => <ProtectedRoute component={CampanhaDetail} />} />

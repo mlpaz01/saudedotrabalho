@@ -64,7 +64,9 @@ function currentPeriod() {
   return new Date().toISOString().slice(0, 7);
 }
 
+let whiteLabelTablesReady = false;
 export async function ensureWhiteLabelTables() {
+  if (whiteLabelTablesReady) return;
   const db = await getDb();
   if (!db) return;
 
@@ -231,6 +233,7 @@ export async function ensureWhiteLabelTables() {
       (code, label, credits, sale_price, estimated_cost, is_active, sort_order)
       VALUES (${p.code}, ${p.label}, ${p.credits}, ${p.salePrice}, ${p.estimatedCost}, 1, ${p.sortOrder})`);
   }
+  whiteLabelTablesReady = true;
 }
 
 export async function listWhiteLabelPlans() {

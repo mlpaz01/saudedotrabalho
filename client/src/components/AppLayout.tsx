@@ -116,16 +116,16 @@ const adminSections: NavSection[] = [
     // PGR — documentação e programa formal de gerenciamento
     section: "PGR Programa",
     items: [
-      { label: "GHE / GSE", href: "/admin/ghe-gse", roles: ["sesmt", "admin_global", "super_admin"], icon: <Layers size={16} />, feature: "risk_assessment" },
-      { label: "EPC / EPI", href: "/admin/epc-epi", roles: ["sesmt", "admin_global", "super_admin"], icon: <Shield size={16} />, feature: "risk_assessment" },
-      { label: "Gestao de EPI / EPC", href: "/admin/gestao-epi-epc", roles: ["sesmt", "admin_global", "super_admin"], icon: <HardHat size={16} />, feature: "risk_assessment" },
-      { label: "Gerador de PGR", href: "/admin/pgr", roles: ["sesmt", "admin_global", "super_admin"], icon: <FileCheck size={16} />, feature: "pgr" },
-      { label: "Dashboard PGR", href: "/admin/pgr/executivo", roles: ["sesmt", "admin_global", "super_admin"], icon: <BarChart3 size={16} />, feature: "pgr" },
-      { label: "Auditoria PGR", href: "/admin/pgr/auditoria", roles: ["sesmt", "admin_global", "super_admin"], icon: <ShieldCheck size={16} />, feature: "pgr" },
-      { label: "Revisoes PGR", href: "/admin/pgr-revisoes", roles: ["sesmt", "admin_global", "super_admin"], icon: <RotateCcw size={16} />, feature: "risk_assessment" },
-      { label: "Arquivos SST", href: "/admin/arquivos", roles: ["sesmt", "admin_global", "super_admin"], icon: <FolderOpen size={16} /> },
-      { label: "Responsaveis Tecnicos", href: "/admin/responsaveis-tecnicos", roles: ["sesmt", "admin_global", "super_admin"], icon: <Signature size={16} /> },
-      { label: "Texto Padrao do PGR", href: "/admin/sesmt-defaults", roles: ["sesmt", "admin_global", "super_admin"], icon: <FileText size={16} /> },
+      { label: "GHE / GSE", href: "/admin/ghe-gse", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <Layers size={16} />, feature: "risk_assessment" },
+      { label: "EPC / EPI", href: "/admin/epc-epi", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <Shield size={16} />, feature: "risk_assessment" },
+      { label: "Gestao de EPI / EPC", href: "/admin/gestao-epi-epc", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <HardHat size={16} />, feature: "risk_assessment" },
+      { label: "Gerador de PGR", href: "/admin/pgr", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <FileCheck size={16} />, feature: "pgr" },
+      { label: "Dashboard PGR", href: "/admin/pgr/executivo", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <BarChart3 size={16} />, feature: "pgr" },
+      { label: "Auditoria PGR", href: "/admin/pgr/auditoria", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <ShieldCheck size={16} />, feature: "pgr" },
+      { label: "Revisoes PGR", href: "/admin/pgr-revisoes", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <RotateCcw size={16} />, feature: "risk_assessment" },
+      { label: "Arquivos SST", href: "/admin/arquivos", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <FolderOpen size={16} /> },
+      { label: "Responsaveis Tecnicos", href: "/admin/responsaveis-tecnicos", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <Signature size={16} /> },
+      { label: "Texto Padrao do PGR", href: "/admin/sesmt-defaults", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <FileText size={16} /> },
     ],
   },
   {
@@ -169,6 +169,10 @@ const superAdminNav: NavItem[] = [
   { label: "Integrações", href: "/super-admin/integracoes", notRoles: ["sesmt", "psicologo"], icon: <Link2 size={16} /> },
   { label: "CRM / Financeiro", href: "/super-admin/crm", notRoles: ["sesmt", "psicologo"], icon: <Briefcase size={16} /> },
   { label: "White Label", href: "/super-admin/white-label", notRoles: ["sesmt", "psicologo"], icon: <Store size={16} /> },
+];
+
+const whiteLabelNetworkNav: NavItem[] = [
+  { label: "Painel da Rede", href: "/rede", icon: <ShieldCheck size={16} /> },
 ];
 
 const ITEM_LABELS: Record<string, string> = {
@@ -558,12 +562,19 @@ const GLOBAL_CSS = `
 `;
 
 function ImpersonationBanner() {
+  const { user } = useAuth();
   const impersonatedId = typeof window !== "undefined" ? window.localStorage.getItem("impersonatedCompanyId") : null;
   const companyIdNum = impersonatedId ? Number(impersonatedId) : 0;
-  const nameQ = trpc.superAdmin.getImpersonatedCompanyName.useQuery(
+  const isNetworkAdmin = user?.role === "company_admin";
+  const superNameQ = trpc.superAdmin.getImpersonatedCompanyName.useQuery(
     { companyId: companyIdNum },
-    { enabled: !!companyIdNum }
+    { enabled: !!companyIdNum && !isNetworkAdmin }
   );
+  const networkNameQ = (trpc.whiteLabelNetwork as any).getCompanyName.useQuery(
+    { companyId: companyIdNum },
+    { enabled: !!companyIdNum && isNetworkAdmin }
+  );
+  const companyName = isNetworkAdmin ? networkNameQ.data : superNameQ.data;
   if (!impersonatedId) return null;
   const stop = () => {
     // P18 #5 — "delegatedRole" também precisa sair aqui; se só impersonatedCompanyId
@@ -574,7 +585,7 @@ function ImpersonationBanner() {
   };
   return (
     <div className="sdt-imp">
-      <span>Visualizando como <strong>{nameQ.data ?? `Empresa #${impersonatedId}`}</strong></span>
+      <span>{isNetworkAdmin ? "Administrando" : "Visualizando como"} <strong>{companyName ?? `Empresa #${impersonatedId}`}</strong></span>
       <button
         onClick={stop}
         style={{ padding: "3px 10px", borderRadius: "6px", background: "rgba(0,0,0,0.18)", color: "#1a0e00", border: "none", cursor: "pointer", fontSize: "12px", fontWeight: 700, fontFamily: "inherit" }}
@@ -624,6 +635,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   const isImpersonating = typeof window !== "undefined" && !!window.localStorage.getItem("impersonatedCompanyId");
   const isSuperAdmin = user?.role === "super_admin" && !isImpersonating;
+  const isWhiteLabelNetworkAdmin = user?.role === "company_admin";
   const isAdmin =
     isSuperAdmin ||
     user?.role === "admin" ||
@@ -668,6 +680,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   // P14 #5 — Intermediador tem área comercial própria, isolada do restante do admin.
   const isIntermediador = user?.role === "intermediador";
   const homeHref = isIntermediador ? "/intermediador"
+    : isWhiteLabelNetworkAdmin && !isImpersonating ? "/rede"
     : user?.role === "chefia" ? "/admin/chefia"
     : user?.role === "psicologo" ? "/admin/agenda"  // VÍDEO V5 — psicólogo abre direto na agenda
     : isAdmin ? "/dashboard" : "/inicio";
@@ -731,6 +744,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                   <div>
                     <div className="sdt-sl">{SECTION_LABELS["Super Admin"]}</div>
                     {superAdminNav.map((i) => renderNavItem(i))}
+                  </div>
+                )}
+                {isWhiteLabelNetworkAdmin && (
+                  <div>
+                    <div className="sdt-sl">ADMINISTRAÇÃO DA REDE</div>
+                    {whiteLabelNetworkNav.map((i) => renderNavItem(i))}
                   </div>
                 )}
                 {filteredAdminSections.map((sec) => (
