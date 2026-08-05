@@ -9,6 +9,7 @@ import {
   Activity, Building2, ChevronRight, FileText, History, Plus, Settings2,
   ShieldCheck, Sparkles, Users,
 } from "lucide-react";
+import { CommercialWorkspace } from "@/pages/CommercialCrm";
 
 type Tab = "painel" | "empresas" | "usuarios" | "crm" | "configuracoes" | "auditoria";
 
@@ -193,37 +194,7 @@ export default function WhiteLabelNetworkAdmin() {
           </section>
         )}
 
-        {tab === "crm" && (
-          <section className="space-y-3">
-            <div className="flex justify-between items-center">
-              <h2 className="font-semibold text-lg">CRM e propostas</h2>
-              <Button onClick={() => { setProposalForm(emptyProposal); setShowProposal(true); }}><Plus size={16} /> Nova proposta</Button>
-            </div>
-            <div className="border rounded-lg overflow-x-auto bg-white">
-              <table className="w-full text-sm">
-                <thead className="bg-slate-50"><tr>
-                  <th className="text-left p-3">Empresa</th><th className="text-left p-3">Contato</th>
-                  <th className="text-right p-3">Colaboradores</th><th className="text-right p-3">Mensalidade</th>
-                  <th className="text-left p-3">Status</th><th className="p-3"></th>
-                </tr></thead>
-                <tbody>{proposalRows.map((p) => (
-                  <tr key={p.id} className="border-t">
-                    <td className="p-3 font-medium">{p.nome_fantasia || p.razao_social}</td>
-                    <td className="p-3"><div>{p.responsavel || "-"}</div><div className="text-xs text-muted-foreground">{p.email || ""}</div></td>
-                    <td className="p-3 text-right">{p.qtd_colaboradores || 0}</td><td className="p-3 text-right">{money(p.valor_mensal)}</td>
-                    <td className="p-3">{STATUS_LABELS[p.status] || p.status}</td>
-                    <td className="p-3 text-right"><button className="text-primary font-medium" onClick={() => {
-                      setProposalForm({ id: p.id, companyName: p.nome_fantasia || p.razao_social, cnpj: p.cnpj || "", contactName: p.responsavel || "", email: p.email || "", phone: p.telefone || "", employees: Number(p.qtd_colaboradores || 0), monthlyValue: Number(p.valor_mensal || 0), status: p.status, notes: p.observacoes || "" });
-                      setShowProposal(true);
-                    }}>Editar</button></td>
-                  </tr>
-                ))}
-                {proposalRows.length === 0 && <tr><td colSpan={6} className="p-8 text-center text-muted-foreground">Nenhuma proposta cadastrada.</td></tr>}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        )}
+        {tab === "crm" && <CommercialWorkspace />}
 
         {tab === "configuracoes" && (
           <section className="space-y-5">
@@ -346,4 +317,3 @@ function ProposalModal({ value, onChange, onClose, onSave }: any) {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return <label className="block text-sm"><span className="block mb-1 font-medium">{label}</span>{children}</label>;
 }
-

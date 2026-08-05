@@ -42,6 +42,8 @@ const employeeNav: NavItem[] = [
   { label: "Meus Cursos", href: "/cursos", icon: <BookOpen size={16} />, feature: "courses" },
   { label: "Qualificacoes e Habilitacoes", href: "/qualificacoes", icon: <IdCard size={16} /> },
   { label: "Nocoes de Primeiros Socorros", href: "/primeiros-socorros", icon: <HeartHandshake size={16} /> },
+  { label: "Meu EPI/EPC", href: "/meu-epi-epc", icon: <HardHat size={16} /> },
+  { label: "Meus Atestados", href: "/meus-atestados", icon: <Stethoscope size={16} /> },
   { label: "Certificados", href: "/certificados", icon: <Award size={16} />, feature: "certificates" },
   { label: "Pesquisas", href: "/pesquisas", icon: <ClipboardList size={16} />, feature: "surveys" },
   // SP5 #3 — Campanhas Preventivas visíveis ao colaborador
@@ -132,6 +134,7 @@ const adminSections: NavSection[] = [
     // Saúde Ocupacional — PCMSO, exames, vencimentos médicos
     section: "Saude Ocupacional",
     items: [
+      { label: "Atestados e Afastamentos", href: "/admin/atestados-afastamentos", roles: ["admin", "rh", "sesmt", "company_admin", "admin_global", "super_admin", "chefia"], icon: <Stethoscope size={16} /> },
       { label: "Referencia de Monitoramento", href: "/admin/pcmso", notRoles: ["chefia", "sesmt", "psicologo"], icon: <Stethoscope size={16} /> },
       // P15 #5 — Kit de Primeiros Socorros (NR-07)
       { label: "Kit Primeiros Socorros", href: "/admin/primeiros-socorros", notRoles: ["chefia", "psicologo"], icon: <HeartHandshake size={16} /> },
@@ -210,6 +213,9 @@ const ITEM_LABELS: Record<string, string> = {
   "GHE / GSE": "GHE / GSE",
   "EPC / EPI": "EPC / EPI",
   "Gestao de EPI / EPC": "Gestão de EPI / EPC",
+  "Meu EPI/EPC": "Meu EPI/EPC",
+  "Meus Atestados": "Meus Atestados e Afastamentos",
+  "Atestados e Afastamentos": "Atestados e Afastamentos",
   "Revisoes PGR": "Revisões PGR",
   "Dashboard SST": "Dashboard SST",
   "Gerador de PGR": "Gerador de PGR",

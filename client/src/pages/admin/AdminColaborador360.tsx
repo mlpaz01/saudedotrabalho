@@ -202,6 +202,7 @@ export default function AdminColaborador360({ id }: { id: number }) {
   // Bruno R5-P6 #2 — Aviso de riscos do setor + direitos automáticos.
   const sectorRisksQ = trpc.riskCorrelation.sectorRisksForUser.useQuery({ userId: id }, { enabled: !!id });
   const planAcaoQ = trpc.riskCorrelation.coursesPlanoAcao.useQuery({ userId: id }, { enabled: !!id });
+  const occupationalQ = (trpc as any).occupationalHealth.employeeTimeline.useQuery({ collaboratorId: id }, { enabled: !!id });
   const utils = trpc.useUtils();
 
   const [showIntervention, setShowIntervention] = useState(false);
@@ -515,6 +516,13 @@ export default function AdminColaborador360({ id }: { id: number }) {
               )}
             </div>
           </div>
+        </div>
+
+        {/* SAÚDE OCUPACIONAL - fluxo digital */}
+        <div className="bg-white rounded-2xl border border-border shadow-sm p-6">
+          <h2 className="font-semibold text-foreground mb-1 flex items-center gap-2"><Stethoscope size={18} className="text-primary" /> Saúde Ocupacional</h2>
+          <p className="text-xs text-muted-foreground mb-4">Atestados, afastamentos, recorrências e retorno ao trabalho com rastreabilidade.</p>
+          {(occupationalQ.data ?? []).length === 0 ? <Empty>Nenhum caso registrado no novo fluxo digital.</Empty> : <div className="space-y-3">{(occupationalQ.data ?? []).map((c:any)=><div key={c.id} className="border-l-4 border-primary bg-slate-50 p-3"><div className="flex justify-between gap-3"><div><b className="text-sm capitalize">{c.document_type}</b><div className="text-xs text-muted-foreground mt-1">{fmtDate(c.start_date)} a {fmtDate(c.end_date)} · {c.total_days ? `${c.total_days} dia(s)` : `${c.total_hours} hora(s)`}</div></div><span className="text-xs font-semibold text-primary">{String(c.status).replaceAll("_"," ")}</span></div><div className="mt-2 text-xs">Retorno: {String(c.return_status).replaceAll("_"," ")} · previsto {fmtDate(c.return_expected_date)}{c.return_actual_date ? ` · efetivo ${fmtDate(c.return_actual_date)}` : ""}</div>{(c.benefit_review_required||c.recurrence_review_required)?<div className="mt-2 text-xs text-amber-700">{c.benefit_review_required?"Análise previdenciária recomendada. ":""}{c.recurrence_review_required?"Possível recorrência em 60 dias.":""}</div>:null}</div>)}</div>}
         </div>
 
         {/* LEAVE HISTORY */}

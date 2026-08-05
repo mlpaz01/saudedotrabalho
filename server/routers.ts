@@ -33,6 +33,8 @@ import { clientPlansRouter } from "./_core/clientPlansRouter";
 import { denunciaRouter } from "./_core/denunciaRouter";
 import { ehsRouter } from "./_core/ehsRouter";
 import { whiteLabelNetworkRouter } from "./_core/whiteLabelNetworkRouter";
+import { commercialRouter } from "./_core/commercialRouter";
+import { occupationalHealthRouter } from "./_core/occupationalHealthRouter";
 
 
 
@@ -3442,6 +3444,29 @@ async function ensureEpiEpcTables(db: any) {
       INDEX idx_epi_docs_asset (asset_id),
       INDEX idx_epi_docs_delivery (delivery_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    for (const col of [
+      "file_name VARCHAR(255) NULL", "mime_type VARCHAR(120) NULL", "file_size INT NULL",
+      "document_version INT NOT NULL DEFAULT 1", "uploaded_by INT NULL", "uploaded_at DATETIME NULL",
+    ]) { try { await db.execute(drzSql.raw(`ALTER TABLE epi_epc_documents ADD COLUMN ${col}`)); } catch {} }
+    for (const col of [
+      "receipt_status VARCHAR(40) NOT NULL DEFAULT 'pendente'", "receipt_generated_at DATETIME NULL",
+      "last_notified_at DATETIME NULL",
+    ]) { try { await db.execute(drzSql.raw(`ALTER TABLE epi_epc_deliveries ADD COLUMN ${col}`)); } catch {} }
+    await db.execute(drzSql`CREATE TABLE IF NOT EXISTS epi_epc_delivery_notifications (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      company_id INT NOT NULL,
+      delivery_id INT NOT NULL,
+      collaborator_id INT NULL,
+      channel VARCHAR(30) NOT NULL,
+      recipient VARCHAR(320),
+      status VARCHAR(40) NOT NULL DEFAULT 'registrado',
+      sent_at DATETIME NULL,
+      accessed_at DATETIME NULL,
+      created_by INT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_epi_notification_delivery (delivery_id, created_at),
+      INDEX idx_epi_notification_company (company_id, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
     await db.execute(drzSql`CREATE TABLE IF NOT EXISTS epi_epc_audit_logs (
       id INT AUTO_INCREMENT PRIMARY KEY,
       company_id INT NOT NULL,
@@ -3524,8 +3549,8 @@ async function loadEpiEpcReport(db: any, cid: number, scope?: { branchId?: numbe
     stockCritical: Number(r.min_quantity ?? 0) > 0 && Number(r.quantity ?? 0) <= Number(r.min_quantity ?? 0),
   }));
   const deliveryRows = (deliveries ?? []).map((r: any) => ({ ...r, id: Number(r.id), quantity: Number(r.quantity ?? 0) }));
-  const signed = deliveryRows.filter((r: any) => String(r.signature_status) === "assinado").length;
-  const pendingSignature = deliveryRows.filter((r: any) => String(r.signature_status) !== "assinado").length;
+  const signed = deliveryRows.filter((r: any) => ["assinado", "comprovado"].includes(String(r.signature_status))).length;
+  const pendingSignature = deliveryRows.filter((r: any) => !["assinado", "comprovado"].includes(String(r.signature_status))).length;
   const summary = {
     epis: assetRows.filter((r: any) => r.type === "epi").length,
     epcs: assetRows.filter((r: any) => r.type === "epc").length,
@@ -3543,7 +3568,7 @@ async function loadEpiEpcReport(db: any, cid: number, scope?: { branchId?: numbe
     }).length,
     pendingSignature,
     signedDeliveries: signed,
-    workersWithPending: new Set(deliveryRows.filter((r: any) => String(r.signature_status) !== "assinado").map((r: any) => r.collaborator_id || r.collaborator_cpf || r.collaborator_name).filter(Boolean)).size,
+    workersWithPending: new Set(deliveryRows.filter((r: any) => !["assinado", "comprovado"].includes(String(r.signature_status))).map((r: any) => r.collaborator_id || r.collaborator_cpf || r.collaborator_name).filter(Boolean)).size,
     trainingPending: 0,
     trainingExpired: 0,
     totalAssets: assetRows.length,
@@ -4039,6 +4064,8 @@ export const appRouter = router({
   support: supportRouter,
   clientPlans: clientPlansRouter,
   whiteLabelNetwork: whiteLabelNetworkRouter,
+  commercial: commercialRouter,
+  occupationalHealth: occupationalHealthRouter,
   ehs: ehsRouter,
   denuncia: denunciaRouter,
 
@@ -31143,6 +31170,73 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
       const esc = (s: any) => String(s ?? "").replace(/[<>&"]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;","\"":"&quot;"}[c] as string));
       return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Recibo EPI/EPC</title><style>body{font-family:Segoe UI,Arial,sans-serif;color:#0f172a;padding:28px}.box{border:1px solid #cbd5e1;border-radius:8px;padding:18px}h1{font-size:20px;color:#0E2C46}table{width:100%;border-collapse:collapse;font-size:12px}td{padding:7px;border-bottom:1px solid #e2e8f0}.sign{height:80px;border-bottom:1px solid #0f172a;margin-top:40px}.muted{color:#64748b;font-size:11px}</style></head><body><div class="box"><h1>RECIBO DE ENTREGA DE EPI/EPC</h1><p class="muted">Codigo: ${esc(delivery.receipt_code)} · Gerado pela Plataforma Saude do Trabalho</p><table><tr><td><b>Empresa</b></td><td>${esc(company?.name)} · CNPJ ${esc(company?.cnpj || "-")}</td></tr><tr><td><b>Colaborador</b></td><td>${esc(delivery.collaborator_name)} · CPF/matricula ${esc(delivery.collaborator_cpf || delivery.collaborator_registration || "-")}</td></tr><tr><td><b>Equipamento</b></td><td>${esc(asset.description)} · ${esc(String(asset.type).toUpperCase())}</td></tr><tr><td><b>Fabricante/modelo</b></td><td>${esc(asset.manufacturer || "-")} / ${esc(asset.model || "-")}</td></tr><tr><td><b>CA e lote</b></td><td>${esc(delivery.ca_number || asset.ca_number || "-")} · ${esc(delivery.lot || asset.lot || "-")}</td></tr><tr><td><b>Quantidade</b></td><td>${esc(delivery.quantity)} ${esc(asset.unit || "un")}</td></tr><tr><td><b>Data e motivo</b></td><td>${esc(delivery.delivery_date)} · ${esc(delivery.reason || "-")}</td></tr><tr><td><b>Orientacoes</b></td><td>${esc(delivery.orientation_text || asset.conservation_info || "Recebi orientacao sobre uso, guarda, higienizacao e conservacao do equipamento.")}</td></tr><tr><td><b>Responsavel pela entrega</b></td><td>${esc(delivery.responsible_name || "-")}</td></tr></table><div class="sign"></div><p class="muted">Assinatura do trabalhador</p></div></body></html>`;
     }
+    async function generateDeliveryReceipt(db: any, cid: number, deliveryId: number, user: any) {
+      const [[delivery]]: any = await execP(db, `SELECT * FROM epi_epc_deliveries WHERE id=? AND company_id=?`, [deliveryId, cid]);
+      if (!delivery) throw new TRPCError({ code: "NOT_FOUND", message: "Entrega não encontrada." });
+      const [[asset]]: any = await execP(db, `SELECT * FROM epi_epc_assets WHERE id=? AND company_id=?`, [delivery.asset_id, cid]);
+      const [[company]]: any = await execP(db, `SELECT name, cnpj FROM companies WHERE id=?`, [cid]);
+      const puppeteer = (await import("puppeteer")).default;
+      const browser = await puppeteer.launch({ headless: true, executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined, args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"] });
+      let bytes: Uint8Array;
+      try { const page = await browser.newPage(); await page.setContent(receiptHtml(delivery, asset, company), { waitUntil: "load" }); bytes = await page.pdf({ format: "A4", printBackground: true }); } finally { await browser.close(); }
+      const { storagePut } = await import("./storage");
+      const stored = await storagePut(`epi_epc/${cid}/entrega_${deliveryId}/recibo_original_${delivery.receipt_code}.pdf`, bytes, "application/pdf");
+      await execP(db, `INSERT INTO epi_epc_documents (company_id, asset_id, delivery_id, collaborator_id, branch_id, sector_id, document_type, title, file_url, file_name, mime_type, file_size, metadata_json, document_version, created_by, uploaded_by, uploaded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,CAST(? AS JSON),?,?,?,NOW())`, [cid, delivery.asset_id, deliveryId, delivery.collaborator_id, delivery.branch_id, delivery.sector_id, "recibo_original", `Recibo original ${delivery.receipt_code}`, stored.url, `recibo_${delivery.receipt_code}.pdf`, "application/pdf", bytes.byteLength, JSON.stringify({ receiptCode: delivery.receipt_code, status: "gerado" }), 1, user.id, user.id]);
+      await execP(db, `UPDATE epi_epc_deliveries SET receipt_status=CASE WHEN receipt_status='comprovado' THEN receipt_status ELSE 'gerado' END, receipt_generated_at=NOW() WHERE id=? AND company_id=?`, [deliveryId, cid]);
+      await logEpiEpcAudit(db, cid, user, "delivery", deliveryId, "receipt_generated", null, { url: stored.url });
+      return stored.url;
+    }
+    function decodeEpiDocument(fileBase64: string) {
+      const raw = fileBase64.replace(/^data:[^;]+;base64,/, "");
+      const buffer = Buffer.from(raw, "base64");
+      if (!buffer.length || buffer.length > 15 * 1024 * 1024) throw new TRPCError({ code: "BAD_REQUEST", message: "O documento deve possuir até 15 MB." });
+      return buffer;
+    }
+    async function saveSignedDeliveryReceipt(db: any, cid: number, deliveryId: number, input: { fileBase64: string; fileName: string; mimeType: string; signedAt?: string }, user: any, requireOwn: boolean) {
+      const allowedMime = ["application/pdf", "image/png", "image/jpeg"];
+      if (!allowedMime.includes(input.mimeType)) throw new TRPCError({ code: "BAD_REQUEST", message: "Envie um arquivo PDF, PNG ou JPG." });
+      const [[delivery]]: any = await execP(db, `SELECT * FROM epi_epc_deliveries WHERE id=? AND company_id=?`, [deliveryId, cid]);
+      if (!delivery) throw new TRPCError({ code: "NOT_FOUND", message: "Entrega não encontrada." });
+      if (requireOwn && Number(delivery.collaborator_id) !== Number(user.id)) throw new TRPCError({ code: "FORBIDDEN" });
+      const buffer = decodeEpiDocument(input.fileBase64);
+      const ext = input.mimeType === "application/pdf" ? ".pdf" : input.mimeType === "image/png" ? ".png" : ".jpg";
+      const { storagePut } = await import("./storage");
+      const stored = await storagePut(`epi_epc/${cid}/entrega_${deliveryId}/recibo_assinado_${Date.now()}${ext}`, buffer, input.mimeType);
+      const [[versionRow]]: any = await execP(db, `SELECT COALESCE(MAX(document_version),0)+1 AS v FROM epi_epc_documents WHERE delivery_id=? AND company_id=? AND document_type='recibo_assinado'`, [deliveryId, cid]);
+      const version = Number(versionRow?.v || 1);
+      await execP(db, `INSERT INTO epi_epc_documents (company_id, asset_id, delivery_id, collaborator_id, branch_id, sector_id, document_type, title, file_url, file_name, mime_type, file_size, metadata_json, document_version, created_by, uploaded_by, uploaded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,CAST(? AS JSON),?,?,?,NOW())`, [cid, delivery.asset_id, deliveryId, delivery.collaborator_id, delivery.branch_id, delivery.sector_id, "recibo_assinado", `Recibo assinado ${delivery.receipt_code}`, stored.url, input.fileName, input.mimeType, buffer.length, JSON.stringify({ receiptCode: delivery.receipt_code, signedAt: input.signedAt || new Date().toISOString(), uploadedBy: user.id }), version, user.id, user.id]);
+      await execP(db, `UPDATE epi_epc_deliveries SET signature_method='fisica', signature_status='comprovado', receipt_status='comprovado', physical_receipt_url=?, signed_at=? WHERE id=? AND company_id=?`, [stored.url, input.signedAt || new Date(), deliveryId, cid]);
+      await logEpiEpcAudit(db, cid, user, "delivery", deliveryId, "signed_receipt_uploaded", { signatureStatus: delivery.signature_status }, { signatureStatus: "comprovado", url: stored.url, version });
+      return { ok: true, url: stored.url, version };
+    }
+    async function notifyEpiDelivery(db: any, cid: number, deliveryId: number, channels: Array<"internal" | "email">, user: any) {
+      const [[delivery]]: any = await execP(db, `SELECT d.*,u.email,u.name FROM epi_epc_deliveries d LEFT JOIN users u ON u.id=d.collaborator_id WHERE d.id=? AND d.company_id=?`, [deliveryId, cid]);
+      if (!delivery) throw new TRPCError({ code: "NOT_FOUND", message: "Entrega não encontrada." });
+      if (!delivery.receipt_generated_at) await generateDeliveryReceipt(db, cid, deliveryId, user);
+      const title = "Recibo de entrega de EPI/EPC disponível";
+      const body = `Olá, ${delivery.name || delivery.collaborator_name || "colaborador(a)"}. Um recibo de entrega de EPI/EPC está disponível. Acesse Meu EPI/EPC, imprima, assine e anexe o documento para comprovação.`;
+      const results: any[] = [];
+      for (const channel of channels) {
+        let status = "registrado";
+        const recipient = channel === "email" ? delivery.email : String(delivery.collaborator_id || "");
+        if (channel === "internal" && delivery.collaborator_id) {
+          const key = `epi-delivery-${deliveryId}`;
+          await execP(db, `INSERT INTO notifications (user_id,company_id,type,priority,title,body,link,icon,dedup_key) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE body=VALUES(body),read_at=NULL,created_at=NOW()`, [delivery.collaborator_id, cid, "epi_receipt", "alta", title, body, "/meu-epi-epc", "file-text", key]);
+          status = "enviado";
+        } else if (channel === "email") {
+          if (!delivery.email) status = "sem_destinatario";
+          else {
+            const sent = await sendEmail({ to: delivery.email, toName: delivery.name || undefined, subject: title, html: plainToHtml(`${body}\n\nAcesse: ${getEmailLinkBaseUrl()}/plataforma/meu-epi-epc`) });
+            status = sent.ok ? (sent.preview ? "simulado" : "enviado") : "falhou";
+          }
+        }
+        await execP(db, `INSERT INTO epi_epc_delivery_notifications (company_id,delivery_id,collaborator_id,channel,recipient,status,sent_at,created_by) VALUES (?,?,?,?,?,?,NOW(),?)`, [cid, deliveryId, delivery.collaborator_id, channel, recipient || null, status, user.id]);
+        results.push({ deliveryId, channel, status });
+      }
+      await execP(db, `UPDATE epi_epc_deliveries SET receipt_status=CASE WHEN receipt_status='comprovado' THEN receipt_status ELSE 'disponibilizado' END,last_notified_at=NOW() WHERE id=? AND company_id=?`, [deliveryId, cid]);
+      await logEpiEpcAudit(db, cid, user, "delivery", deliveryId, "receipt_notified", null, results);
+      return results;
+    }
     return router({
       listAssets: protectedProcedure.input(z.object({ type: z.enum(["epi", "epc", "todos"]).optional(), search: z.string().optional() }).optional()).query(async ({ ctx, input }) => {
         const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) return [];
@@ -31228,28 +31322,47 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         for (const collaboratorId of input.collaboratorIds) results.push(await insertDelivery(db, ctx, cid, { ...input.delivery, collaboratorId }));
         return { ok: true, count: results.length, results };
       }),
-      listDeliveries: protectedProcedure.query(async ({ ctx }) => {
+      listDeliveries: adminOrRhProcedure.query(async ({ ctx }) => {
         const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) return [];
         await ensureEpiEpcTables(db);
         const [rows]: any = await execP(db, `SELECT d.*, a.description AS asset_description, a.type AS asset_type, b.name AS branch_name, s.name AS sector_name FROM epi_epc_deliveries d JOIN epi_epc_assets a ON a.id=d.asset_id LEFT JOIN branches b ON b.id=d.branch_id LEFT JOIN sectors s ON s.id=d.sector_id WHERE d.company_id=? ORDER BY d.delivery_date DESC, d.id DESC LIMIT 500`, [cid]);
         return rows ?? [];
       }),
-      signDelivery: adminOrRhProcedure.input(z.object({ id: z.number().int(), method: z.enum(["eletronica", "biometrica", "fisica"]).default("eletronica"), signatureData: z.string().optional(), physicalReceiptUrl: z.string().optional() })).mutation(async ({ ctx, input }) => {
+      signDelivery: adminOrRhProcedure.input(z.object({ id: z.number().int(), fileBase64: z.string().min(20), fileName: z.string().min(1).max(255), mimeType: z.string(), signedAt: z.string().optional() })).mutation(async ({ ctx, input }) => {
         const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
         await ensureEpiEpcTables(db);
-        await execP(db, `UPDATE epi_epc_deliveries SET signature_method=?, signature_status='assinado', signature_data=?, physical_receipt_url=?, signed_at=NOW() WHERE id=? AND company_id=?`, [input.method, input.signatureData || null, input.physicalReceiptUrl || null, input.id, cid]);
-        await logEpiEpcAudit(db, cid, ctx.user, "delivery", input.id, "sign", null, input);
-        return { ok: true };
+        return saveSignedDeliveryReceipt(db, cid, input.id, input, ctx.user, false);
+      }),
+      generateReceiptPdf: adminOrRhProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ ctx, input }) => {
+        const cid=(ctx.user as any).companyId; const db=await getDb(); if(!db||!cid)throw new TRPCError({code:"BAD_REQUEST"}); await ensureEpiEpcTables(db);
+        return { ok:true, url:await generateDeliveryReceipt(db,cid,input.id,ctx.user) };
+      }),
+      deliveryDocuments: adminOrRhProcedure.input(z.object({ id:z.number().int() })).query(async({ctx,input})=>{
+        const cid=(ctx.user as any).companyId;const db=await getDb();if(!db||!cid)return[];await ensureEpiEpcTables(db);
+        const [rows]:any=await execP(db,`SELECT d.*,u.name AS uploaded_by_name FROM epi_epc_documents d LEFT JOIN users u ON u.id=d.uploaded_by WHERE d.company_id=? AND d.delivery_id=? ORDER BY d.created_at DESC,d.id DESC`,[cid,input.id]);return rows??[];
+      }),
+      notifyDelivery: adminOrRhProcedure.input(z.object({ id:z.number().int(), channels:z.array(z.enum(["internal","email"])).min(1) })).mutation(async({ctx,input})=>{
+        const cid=(ctx.user as any).companyId;const db=await getDb();if(!db||!cid)throw new TRPCError({code:"BAD_REQUEST"});await ensureEpiEpcTables(db);
+        return{ok:true,results:await notifyEpiDelivery(db,cid,input.id,input.channels,ctx.user)};
+      }),
+      notifyDeliveryGroup: adminOrRhProcedure.input(z.object({ ids:z.array(z.number().int()).min(1).max(200), channels:z.array(z.enum(["internal","email"])).min(1) })).mutation(async({ctx,input})=>{
+        const cid=(ctx.user as any).companyId;const db=await getDb();if(!db||!cid)throw new TRPCError({code:"BAD_REQUEST"});await ensureEpiEpcTables(db);
+        const results:any[]=[];for(const id of [...new Set(input.ids)])results.push(...await notifyEpiDelivery(db,cid,id,input.channels,ctx.user));
+        return{ok:true,deliveries:new Set(results.map(x=>x.deliveryId)).size,results};
       }),
       receiptHtml: protectedProcedure.input(z.object({ id: z.number().int() })).query(async ({ ctx, input }) => {
         const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) return { html: "" };
         await ensureEpiEpcTables(db);
         const [[delivery]]: any = await execP(db, `SELECT * FROM epi_epc_deliveries WHERE id=? AND company_id=?`, [input.id, cid]);
         if (!delivery) throw new TRPCError({ code: "NOT_FOUND" });
+        const role=String((ctx.user as any).role||"");if(!["admin","rh","sesmt","company_admin","admin_global","super_admin"].includes(role)&&Number(delivery.collaborator_id)!==Number(ctx.user.id))throw new TRPCError({code:"FORBIDDEN"});
         const [[asset]]: any = await execP(db, `SELECT * FROM epi_epc_assets WHERE id=?`, [delivery.asset_id]);
         const [[company]]: any = await execP(db, `SELECT name, cnpj FROM companies WHERE id=?`, [cid]);
         return { html: receiptHtml(delivery, asset, company) };
       }),
+      myDeliveries: protectedProcedure.query(async({ctx})=>{const cid=(ctx.user as any).companyId;const db=await getDb();if(!db||!cid)return[];await ensureEpiEpcTables(db);const [rows]:any=await execP(db,`SELECT d.*,a.description AS asset_description,a.type AS asset_type,a.manufacturer,a.model,a.product_valid_until,a.replacement_periodicity,a.replacement_criteria FROM epi_epc_deliveries d JOIN epi_epc_assets a ON a.id=d.asset_id WHERE d.company_id=? AND d.collaborator_id=? ORDER BY d.delivery_date DESC,d.id DESC`,[cid,ctx.user.id]);return rows??[];}),
+      myDeliveryDocuments: protectedProcedure.input(z.object({id:z.number().int()})).query(async({ctx,input})=>{const cid=(ctx.user as any).companyId;const db=await getDb();if(!db||!cid)return[];const [[own]]:any=await execP(db,`SELECT id FROM epi_epc_deliveries WHERE id=? AND company_id=? AND collaborator_id=?`,[input.id,cid,ctx.user.id]);if(!own)throw new TRPCError({code:"FORBIDDEN"});const [rows]:any=await execP(db,`SELECT id,document_type,title,file_url,file_name,mime_type,document_version,uploaded_at,created_at FROM epi_epc_documents WHERE company_id=? AND delivery_id=? ORDER BY id DESC`,[cid,input.id]);return rows??[];}),
+      uploadMySignedReceipt: protectedProcedure.input(z.object({id:z.number().int(),fileBase64:z.string().min(20),fileName:z.string().min(1).max(255),mimeType:z.string(),signedAt:z.string().optional()})).mutation(async({ctx,input})=>{const cid=(ctx.user as any).companyId;const db=await getDb();if(!db||!cid)throw new TRPCError({code:"BAD_REQUEST"});await ensureEpiEpcTables(db);return saveSignedDeliveryReceipt(db,cid,input.id,input,ctx.user,true);}),
       registerReturn: adminOrRhProcedure.input(z.object({ assetId: z.number().int(), collaboratorId: z.number().int().nullable().optional(), quantity: z.number().int().min(1), eventType: z.enum(["devolucao", "substituicao", "descarte"]).default("devolucao"), eventDate: z.string().optional(), reason: z.string().optional(), conditionText: z.string().optional(), destination: z.string().optional(), notes: z.string().optional() })).mutation(async ({ ctx, input }) => {
         const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
         await ensureEpiEpcTables(db);
@@ -31289,7 +31402,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         const cid = (ctx.user as any).companyId; const db = await getDb(); if (!db || !cid) return { vencidos: [], d7: [], d15: [], d30: [], estoqueCritico: [], assinaturaPendente: [], semPgr: [] };
         await ensureEpiEpcTables(db);
         const [rows]: any = await execP(db, `SELECT * FROM epi_epc_assets WHERE company_id=? AND is_active=1`, [cid]);
-        const [pendingSig]: any = await execP(db, `SELECT d.*, a.description AS asset_description FROM epi_epc_deliveries d JOIN epi_epc_assets a ON a.id=d.asset_id WHERE d.company_id=? AND d.signature_status<>'assinado' ORDER BY d.delivery_date DESC`, [cid]);
+        const [pendingSig]: any = await execP(db, `SELECT d.*, a.description AS asset_description FROM epi_epc_deliveries d JOIN epi_epc_assets a ON a.id=d.asset_id WHERE d.company_id=? AND d.signature_status NOT IN ('assinado','comprovado') ORDER BY d.delivery_date DESC`, [cid]);
         const today = new Date(); today.setHours(0,0,0,0); const days = (d: any) => d ? Math.ceil((new Date(d).getTime() - today.getTime()) / 86400000) : null;
         const alerts = { vencidos: [] as any[], d7: [] as any[], d15: [] as any[], d30: [] as any[], estoqueCritico: [] as any[], assinaturaPendente: pendingSig ?? [], semPgr: [] as any[] };
         for (const a of rows ?? []) {

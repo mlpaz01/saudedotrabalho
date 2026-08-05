@@ -55,6 +55,8 @@ import ManagerDashboard from "@/pages/ManagerDashboard";
 import AdminVisao360 from "@/pages/admin/AdminVisao360";
 import EmployeeHome from "@/pages/EmployeeHome";
 import FirstAid from "@/pages/FirstAid";
+import MyEpiEpc from "@/pages/MyEpiEpc";
+import OccupationalHealth from "@/pages/OccupationalHealth";
 import AdminExpirations from "@/pages/AdminExpirations";
 import MyLicenses from "@/pages/MyLicenses";
 import Qualificacoes from "@/pages/Qualificacoes";
@@ -63,7 +65,7 @@ import SuperAdminDashboard from "@/pages/superadmin/SuperAdminDashboard";
 import SuperAdminClients from "@/pages/superadmin/SuperAdminClients";
 import SuperAdminCatalog from "@/pages/superadmin/SuperAdminCatalog";
 import SuperAdminAccessHours from "@/pages/superadmin/SuperAdminAccessHours";
-import SuperAdminCrm from "@/pages/superadmin/SuperAdminCrm";
+import CommercialCrm from "@/pages/CommercialCrm";
 import SuperAdminIntegrations from "@/pages/superadmin/SuperAdminIntegrations";
 import SuperAdminWhiteLabel from "@/pages/superadmin/SuperAdminWhiteLabel";
 import WhiteLabelNetworkAdmin from "@/pages/WhiteLabelNetworkAdmin";
@@ -212,6 +214,8 @@ function Router() {
       <Route path="/minhas-licencas" component={() => <ProtectedRoute component={MyLicenses} />} />
       <Route path="/qualificacoes" component={() => <ProtectedRoute component={Qualificacoes} />} />
       <Route path="/primeiros-socorros" component={() => <ProtectedRoute component={FirstAid} />} />
+      <Route path="/meu-epi-epc" component={() => <ProtectedRoute component={MyEpiEpc} />} />
+      <Route path="/meus-atestados" component={() => <ProtectedRoute component={OccupationalHealth} />} />
       <Route path="/admin/qualificacoes" component={() => <ProtectedRoute component={AdminQualifications} adminOnly />} />
       <Route path="/area-de-descompressao" component={() => <ProtectedRoute component={Decompression} />} />
       <Route path="/dashboard-classic" component={() => <ProtectedRoute component={Dashboard} />} />
@@ -280,7 +284,8 @@ function Router() {
       <Route path="/admin/pgr/auditoria" component={() => <ProtectedRoute component={AdminPGRAudit} adminOnly />} />
       <Route path="/admin/arquivos" component={() => <ProtectedRoute component={AdminFiles} adminOnly />} />
       <Route path="/admin/treinamentos-nr" component={() => <ProtectedRoute component={AdminNRTraining} adminOnly />} />
-        <Route path="/admin/pcmso" component={() => <ProtectedRoute component={AdminPCMSO} adminOnly />} />
+      <Route path="/admin/pcmso" component={() => <ProtectedRoute component={AdminPCMSO} adminOnly />} />
+      <Route path="/admin/atestados-afastamentos" component={() => <ProtectedRoute component={OccupationalHealth} adminOnly />} />
       <Route path="/admin/fatores" component={() => <ProtectedRoute component={AdminFatores} adminOnly />} />
       <Route path="/admin/programs" component={() => <ProtectedRoute component={AdminPrograms} adminOnly />} />
       <Route path="/admin/programas" component={() => <ProtectedRoute component={AdminProgramas} adminOnly />} />
@@ -319,7 +324,7 @@ function Router() {
       <Route path="/super-admin/catalogo" component={() => <SuperAdminRoute component={SuperAdminCatalog} />} />
       <Route path="/super-admin/horarios" component={() => <SuperAdminRoute component={SuperAdminAccessHours} />} />
       <Route path="/super-admin/integracoes" component={() => <SuperAdminRoute component={SuperAdminIntegrations} />} />
-      <Route path="/super-admin/crm" component={() => <SuperAdminRoute component={SuperAdminCrm} />} />
+      <Route path="/super-admin/crm" component={() => <SuperAdminRoute component={CommercialCrm} />} />
       <Route path="/super-admin/white-label" component={() => <SuperAdminRoute component={SuperAdminWhiteLabel} />} />
       <Route path="/rede" component={() => <WhiteLabelNetworkRoute component={WhiteLabelNetworkAdmin} />} />
       <Route path="/intermediador" component={() => <IntermediadorRoute component={IntermediadorDashboard} />} />

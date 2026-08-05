@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import {
   AlertTriangle, ArrowUpDown, BookOpen, FileText,
   HardHat, Layers, Loader2, Package, Plus, Printer, Save, Search, Shield,
-  Sparkles, Undo2, Users, X,
+  Sparkles, Undo2, Users, X, Send, Upload, FolderOpen,
 } from "lucide-react";
 
 type TabId = "painel" | "cadastro" | "aprendizagem" | "entregas" | "devolucoes" | "estoque" | "alertas" | "relatorios" | "documentos" | "movimentacoes";
@@ -266,15 +266,17 @@ function DeliveriesTab() {
   const assetsQ = api.listAssets.useQuery({ type: "epi" });
   const usersQ = api.listCollaborators.useQuery();
   const [bulk, setBulk] = useState<number[]>([]);
+  const [selectedDeliveries, setSelectedDeliveries] = useState<number[]>([]);
+  const [documentsFor, setDocumentsFor] = useState<any | null>(null);
   const [f, setF] = useState<any>({ assetId: 0, collaboratorId: 0, quantity: 1, deliveryDate: new Date().toISOString().slice(0,10), reason: "Primeira entrega", signatureMethod: "eletronica" });
   const one = api.registerDelivery.useMutation({ onSuccess: () => { q.refetch(); assetsQ.refetch(); toast.success("Entrega registrada."); } });
   const bulkMut = api.bulkDelivery.useMutation({ onSuccess: (r: any) => { q.refetch(); assetsQ.refetch(); setBulk([]); toast.success(`${r.count} entregas registradas.`); } });
-  const sign = api.signDelivery.useMutation({ onSuccess: () => { q.refetch(); toast.success("Assinatura registrada."); } });
+  const sign = api.signDelivery.useMutation({ onSuccess: () => { q.refetch(); toast.success("Recibo assinado anexado e comprovado."); }, onError:(e:any)=>toast.error(e.message) });
+  const receipt = api.generateReceiptPdf.useMutation({ onSuccess: (r:any) => { q.refetch(); window.open(r.url,"_blank"); }, onError:(e:any)=>toast.error(e.message) });
+  const notify = api.notifyDelivery.useMutation({ onSuccess: (r:any) => { q.refetch(); toast.success(`Notificação registrada em ${r.results.length} canal(is).`); }, onError:(e:any)=>toast.error(e.message) });
+  const notifyGroup = api.notifyDeliveryGroup.useMutation({ onSuccess: (r:any) => { q.refetch(); setSelectedDeliveries([]); toast.success(`${r.deliveries} recibo(s) enviado(s) ao grupo selecionado.`); }, onError:(e:any)=>toast.error(e.message) });
   const selectedAsset = (assetsQ.data ?? []).find((a: any) => a.id === Number(f.assetId));
-  function printReceipt(r: any) {
-    const html = `<html><head><title>Recibo EPI/EPC</title><style>body{font-family:Arial;padding:24px}td{padding:7px;border-bottom:1px solid #ddd}.sign{height:80px;border-bottom:1px solid #222;margin-top:40px}</style></head><body><h2>RECIBO DE ENTREGA DE EPI/EPC</h2><table><tr><td>Colaborador</td><td>${r.collaborator_name || "-"}</td></tr><tr><td>CPF</td><td>${r.collaborator_cpf || "-"}</td></tr><tr><td>Equipamento</td><td>${r.asset_description}</td></tr><tr><td>CA</td><td>${r.ca_number || "-"}</td></tr><tr><td>Lote</td><td>${r.lot || "-"}</td></tr><tr><td>Qtd</td><td>${r.quantity}</td></tr><tr><td>Data</td><td>${fmt(r.delivery_date)}</td></tr><tr><td>Motivo</td><td>${r.reason || "-"}</td></tr></table><div class="sign"></div><p>Assinatura do trabalhador</p><script>window.print()</script></body></html>`;
-    const w = window.open("", "_blank"); if (w) { w.document.write(html); w.document.close(); }
-  }
+  function uploadSigned(deliveryId:number,file:File){if(!["application/pdf","image/png","image/jpeg"].includes(file.type))return toast.error("Envie PDF, PNG ou JPG.");const reader=new FileReader();reader.onload=()=>sign.mutate({id:deliveryId,fileBase64:String(reader.result),fileName:file.name,mimeType:file.type,signedAt:new Date().toISOString()});reader.readAsDataURL(file);}
   return (
     <div className="mt-4 space-y-4">
       <div className="bg-white border rounded-xl p-4 grid lg:grid-cols-5 gap-3 text-sm">
@@ -289,12 +291,15 @@ function DeliveriesTab() {
         </div>
         <button className="lg:col-span-5 px-3 py-1.5 border rounded text-sm font-semibold" onClick={() => f.assetId && bulk.length ? bulkMut.mutate({ collaboratorIds: bulk, delivery: { ...f, collaboratorId: undefined } }) : toast.error("Selecione EPI e colaboradores.")}>Registrar entrega em lote</button>
       </div>
-      <TablePanel title="Histórico de entregas" empty="Nenhuma entrega registrada.">
-        {(q.data ?? []).map((r: any) => <tr key={r.id} className="border-t"><td className="p-2">{fmt(r.delivery_date)}</td><td className="p-2">{r.collaborator_name}<div className="text-slate-400">{r.collaborator_cpf}</div></td><td className="p-2">{r.asset_description}</td><td className="p-2 text-center">{r.quantity}</td><td className="p-2 text-center">{r.signature_status === "assinado" ? <Badge tone="emerald">Assinado</Badge> : <Badge tone="amber">Pendente</Badge>}</td><td className="p-2 text-right space-x-2"><button className="text-blue-600 hover:underline" onClick={() => printReceipt(r)}>Recibo</button>{r.signature_status !== "assinado" && <button className="text-emerald-600 hover:underline" onClick={() => sign.mutate({ id: r.id, method: "eletronica", signatureData: "Assinatura eletrônica registrada pelo SESMT/RH" })}>Assinar</button>}</td></tr>)}
+      <TablePanel title={<div className="flex items-center justify-between gap-3"><span>Histórico de entregas</span><button className="px-3 py-1.5 border rounded bg-white text-primary disabled:opacity-40 inline-flex items-center gap-1.5" disabled={!selectedDeliveries.length||notifyGroup.isPending} onClick={()=>notifyGroup.mutate({ids:selectedDeliveries,channels:["internal","email"]})}><Send size={13}/>Enviar selecionados ({selectedDeliveries.length})</button></div>} empty="Nenhuma entrega registrada.">
+        {(q.data ?? []).map((r: any) => <tr key={r.id} className="border-t"><td className="p-2"><input aria-label={`Selecionar entrega de ${r.collaborator_name}`} type="checkbox" checked={selectedDeliveries.includes(Number(r.id))} onChange={e=>setSelectedDeliveries(e.target.checked?[...selectedDeliveries,Number(r.id)]:selectedDeliveries.filter(id=>id!==Number(r.id)))}/></td><td className="p-2">{fmt(r.delivery_date)}</td><td className="p-2">{r.collaborator_name}<div className="text-slate-400">{r.collaborator_cpf}</div></td><td className="p-2">{r.asset_description}</td><td className="p-2 text-center">{r.quantity}</td><td className="p-2 text-center">{["assinado","comprovado"].includes(r.signature_status) ? <Badge tone="emerald">Comprovado</Badge> : r.receipt_status==="disponibilizado"?<Badge tone="blue">Enviado</Badge>:<Badge tone="amber">Pendente</Badge>}</td><td className="p-2"><div className="flex justify-end gap-1"><button title="Gerar ou visualizar recibo" className="p-1.5 border rounded text-blue-700" onClick={() => receipt.mutate({id:Number(r.id)})}><Printer size={14}/></button><button title="Enviar ao colaborador" className="p-1.5 border rounded text-primary" onClick={()=>notify.mutate({id:Number(r.id),channels:["internal","email"]})}><Send size={14}/></button><button title="Documentos da entrega" className="p-1.5 border rounded" onClick={()=>setDocumentsFor(r)}><FolderOpen size={14}/></button>{!["assinado","comprovado"].includes(r.signature_status)&&<label title="Anexar recibo assinado" className="p-1.5 border rounded text-emerald-700 cursor-pointer"><Upload size={14}/><input type="file" accept="application/pdf,image/png,image/jpeg" className="hidden" onChange={e=>{const file=e.target.files?.[0];if(file)uploadSigned(Number(r.id),file);e.currentTarget.value=""}}/></label>}</div></td></tr>)}
       </TablePanel>
+      {documentsFor&&<DeliveryDocumentsModal delivery={documentsFor} onClose={()=>setDocumentsFor(null)}/>}
     </div>
   );
 }
+
+function DeliveryDocumentsModal({delivery,onClose}:{delivery:any,onClose:any}){const q=api.deliveryDocuments.useQuery({id:Number(delivery.id)});return <Modal onClose={onClose}><div className="flex justify-between items-center"><div><h3 className="font-bold">Documentos da entrega</h3><p className="text-xs text-slate-500">{delivery.collaborator_name} · {delivery.asset_description}</p></div><button onClick={onClose}><X size={18}/></button></div><div className="mt-4 divide-y border rounded">{(q.data??[]).map((d:any)=><div key={d.id} className="p-3 flex justify-between gap-3"><div><b className="text-sm">{d.title}</b><div className="text-xs text-slate-500">Versão {d.document_version||1} · {d.uploaded_by_name||"Sistema"} · {fmt(d.uploaded_at||d.created_at,true)}</div></div>{d.file_url?<a className="text-sm text-primary" target="_blank" rel="noreferrer" href={d.file_url}>Visualizar</a>:<span className="text-xs text-slate-400">Aguardando arquivo</span>}</div>)}{!q.data?.length&&<div className="p-6 text-center text-sm text-slate-400">Nenhum documento gerado.</div>}</div></Modal>}
 
 function ReturnsTab() {
   const q = api.listReturns.useQuery();
@@ -375,7 +380,7 @@ function ReportsTab() {
 
 function DocumentsTab() {
   const q = api.documents.useQuery();
-  return <div className="mt-4"><TablePanel title="Documentos SST — EPI/EPC" empty="Nenhum documento arquivado.">{(q.data ?? []).map((d: any) => <tr key={d.id} className="border-t"><td className="p-2">{d.document_type}</td><td className="p-2">{d.title}</td><td className="p-2">{d.asset_description || "-"}</td><td className="p-2">{d.collaborator_name || "-"}</td><td className="p-2 text-center">{fmt(d.created_at)}</td></tr>)}</TablePanel></div>;
+  return <div className="mt-4"><TablePanel title="Documentos SST — EPI/EPC" empty="Nenhum documento arquivado.">{(q.data ?? []).map((d: any) => <tr key={d.id} className="border-t"><td className="p-2">{d.document_type}</td><td className="p-2">{d.title}<div className="text-slate-400">Versão {d.document_version||1}</div></td><td className="p-2">{d.asset_description || "-"}</td><td className="p-2">{d.collaborator_name || "-"}</td><td className="p-2 text-center">{fmt(d.uploaded_at||d.created_at)}</td><td className="p-2 text-right">{d.file_url&&<a href={d.file_url} target="_blank" rel="noreferrer" className="text-primary hover:underline">Visualizar</a>}</td></tr>)}</TablePanel></div>;
 }
 
 function MovementsTab() {
