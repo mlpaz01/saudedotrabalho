@@ -47,6 +47,7 @@ import { occupationalHealthRouter } from "./_core/occupationalHealthRouter";
 
 
 import { medicalRouter } from "./_core/medicalRouter";
+import { technicalDocumentsRouter } from "./_core/technicalDocumentsRouter";
 import { resolveImportedRoles } from "./_core/importRoles";
 
 import { systemRouter } from "./_core/systemRouter";
@@ -4960,6 +4961,7 @@ export const appRouter = router({
   commercial: commercialRouter,
   occupationalHealth: occupationalHealthRouter,
   medical: medicalRouter,
+  technicalDocuments: technicalDocumentsRouter,
   ehs: ehsRouter,
   denuncia: denunciaRouter,
 

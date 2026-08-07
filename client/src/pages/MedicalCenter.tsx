@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import AppLayout from "@/components/AppLayout";
+import PcmsoWorkspace from "@/components/medical/PcmsoWorkspace";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,9 +15,14 @@ import {
 import { toast } from "sonner";
 import {
   Activity,
+  AlertTriangle,
+  Archive,
   CalendarDays,
+  CheckCircle2,
+  ChevronDown,
   ClipboardPlus,
   Download,
+  Eye,
   FileHeart,
   FileText,
   FolderLock,
@@ -25,7 +31,9 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Send,
   ShieldCheck,
+  Sparkles,
   Stethoscope,
   Syringe,
   UserRound,
@@ -124,12 +132,14 @@ export default function MedicalCenter() {
   const [programOpen, setProgramOpen] = useState(false);
   const [programDraft, setProgramDraft] = useState<any>(null);
   const [annexOpen, setAnnexOpen] = useState(false);
-  const [examOpen, setExamOpen] = useState(false);
   const [vaccineOpen, setVaccineOpen] = useState(false);
   const [partnerOpen, setPartnerOpen] = useState(false);
   const [campaignOpen, setCampaignOpen] = useState(false);
   const [vaccinationOpen, setVaccinationOpen] = useState(false);
   const [selectedProgramId, setSelectedProgramId] = useState<number | null>(
+    null
+  );
+  const [selectedTechnicalId, setSelectedTechnicalId] = useState<number | null>(
     null
   );
 
@@ -138,7 +148,6 @@ export default function MedicalCenter() {
   const collaboratorsQ = trpc.medical.listCollaborators.useQuery();
   const programsQ = trpc.medical.listPrograms.useQuery();
   const pgrsQ = trpc.medical.listPgrs.useQuery();
-  const examsQ = trpc.medical.listExams.useQuery();
   const vaccinesQ = trpc.medical.listVaccines.useQuery();
   const partnersQ = trpc.medical.listVaccinePartners.useQuery();
   const campaignsQ = trpc.medical.listVaccineCampaigns.useQuery();
@@ -154,6 +163,20 @@ export default function MedicalCenter() {
     { limit: 100 },
     { enabled: tab === "relatorios" }
   );
+  const technicalDocsQ = trpc.technicalDocuments.list.useQuery(undefined, {
+    enabled: tab === "documentos",
+  });
+  const technicalDetailQ = trpc.technicalDocuments.get.useQuery(
+    { id: selectedTechnicalId || 0 },
+    { enabled: tab === "documentos" && Boolean(selectedTechnicalId) }
+  );
+
+  useEffect(() => {
+    const rows = (technicalDocsQ.data || []) as any[];
+    if (tab === "documentos" && rows.length && !selectedTechnicalId) {
+      setSelectedTechnicalId(Number(rows[0].id));
+    }
+  }, [tab, technicalDocsQ.data, selectedTechnicalId]);
 
   const collaborators = useMemo(
     () =>
@@ -248,14 +271,6 @@ export default function MedicalCenter() {
     },
     onError: error => toast.error(error.message),
   });
-  const examSave = trpc.medical.upsertExam.useMutation({
-    onSuccess: () => {
-      examsQ.refetch();
-      setExamOpen(false);
-      toast.success("Exame salvo.");
-    },
-    onError: error => toast.error(error.message),
-  });
   const vaccineSave = trpc.medical.upsertVaccine.useMutation({
     onSuccess: () => {
       vaccinesQ.refetch();
@@ -296,6 +311,61 @@ export default function MedicalCenter() {
     },
     onError: error => toast.error(error.message),
   });
+  const pcmsoAi = trpc.medical.generatePcmsoWithAi.useMutation({
+    onSuccess: result => {
+      programQ.refetch();
+      toast.success(
+        result.usedAi
+          ? "PCMSO estruturado pela IA para revisão médica."
+          : "Estrutura segura gerada; o provedor de IA não estava disponível."
+      );
+    },
+    onError: error => toast.error(error.message),
+  });
+  const pcmsoAudit = trpc.medical.auditPcmso.useMutation({
+    onSuccess: result => {
+      programQ.refetch();
+      toast.success(`Auditoria concluída: ${result.score}% de atendimento.`);
+    },
+    onError: error => toast.error(error.message),
+  });
+  const analyticalReport = trpc.medical.generateAnalyticalReport.useMutation({
+    onSuccess: () => {
+      programQ.refetch();
+      toast.success("Relatório analítico gerado para revisão médica.");
+    },
+    onError: error => toast.error(error.message),
+  });
+  const reviewAnalytical = trpc.medical.reviewAnalyticalReport.useMutation({
+    onSuccess: () => {
+      programQ.refetch();
+      toast.success("Relatório analítico atualizado.");
+    },
+    onError: error => toast.error(error.message),
+  });
+  const pgrReview = trpc.medical.requestPgrReview.useMutation({
+    onSuccess: () => {
+      programQ.refetch();
+      toast.success("Solicitação de reavaliação encaminhada ao fluxo do PGR.");
+    },
+    onError: error => toast.error(error.message),
+  });
+  const signPcmso = trpc.medical.signAndPublishPcmso.useMutation({
+    onSuccess: () => {
+      programQ.refetch();
+      programsQ.refetch();
+      toast.success("PCMSO assinado eletronicamente e publicado como vigente.");
+    },
+    onError: error => toast.error(error.message),
+  });
+  const archivePcmso = trpc.medical.archivePcmso.useMutation({
+    onSuccess: () => {
+      programQ.refetch();
+      programsQ.refetch();
+      toast.success("PCMSO arquivado com histórico preservado.");
+    },
+    onError: error => toast.error(error.message),
+  });
 
   async function downloadPrivate(
     kind: "pcmso_annex" | "pcmso_version",
@@ -304,6 +374,18 @@ export default function MedicalCenter() {
     try {
       const result = await (utils as any).client.medical.downloadPrivate.query({
         kind,
+        id,
+      });
+      downloadData(result.dataBase64, result.fileName);
+    } catch (error: any) {
+      toast.error(error?.message || "Não foi possível baixar o documento.");
+    }
+  }
+
+  async function downloadTechnicalVersion(id: number) {
+    try {
+      const result = await utils.client.technicalDocuments.download.query({
+        kind: "version",
         id,
       });
       downloadData(result.dataBase64, result.fileName);
@@ -437,7 +519,6 @@ export default function MedicalCenter() {
             onNewReferral={() => setReferralOpen(true)}
             onNewCertificate={() => setCertificateOpen(true)}
             onNewMedication={() => setMedicationOpen(true)}
-            onVaccination={() => setVaccinationOpen(true)}
           />
         )}
 
@@ -445,7 +526,6 @@ export default function MedicalCenter() {
           <PcmsoWorkspace
             programs={(programsQ.data || []) as any[]}
             pgrs={(pgrsQ.data || []) as any[]}
-            exams={(examsQ.data || []) as any[]}
             selectedId={selectedProgramId}
             select={setSelectedProgramId}
             data={programQ.data as any}
@@ -464,53 +544,59 @@ export default function MedicalCenter() {
               importPgr.mutate({ pcmsoId: selectedProgramId, pgrId })
             }
             onDecision={payload => decideMonitoring.mutate(payload)}
+            onGenerateAi={() =>
+              selectedProgramId && pcmsoAi.mutate({ id: selectedProgramId })
+            }
+            onAudit={() =>
+              selectedProgramId && pcmsoAudit.mutate({ id: selectedProgramId })
+            }
+            onAnalyticalReport={payload =>
+              selectedProgramId &&
+              analyticalReport.mutate({
+                pcmsoId: selectedProgramId,
+                ...payload,
+              })
+            }
+            onReviewAnalytical={payload => reviewAnalytical.mutate(payload)}
+            onPgrReview={payload =>
+              selectedProgramId &&
+              pgrReview.mutate({ pcmsoId: selectedProgramId, ...payload })
+            }
+            onSign={() =>
+              selectedProgramId &&
+              signPcmso.mutate({ id: selectedProgramId, confirmation: true })
+            }
+            onArchive={() =>
+              selectedProgramId &&
+              archivePcmso.mutate({ id: selectedProgramId })
+            }
             onPdf={() =>
               selectedProgramId && pdfGenerate.mutate({ id: selectedProgramId })
             }
-            busy={importPgr.isPending || pdfGenerate.isPending}
+            busy={
+              importPgr.isPending ||
+              pdfGenerate.isPending ||
+              pcmsoAi.isPending ||
+              pcmsoAudit.isPending ||
+              analyticalReport.isPending ||
+              signPcmso.isPending ||
+              archivePcmso.isPending
+            }
           />
         )}
 
         {tab === "exames" && (
           <Panel
-            title="Catálogo de exames e monitoramentos"
-            subtitle="O catálogo apoia a decisão médica; não cria vínculos automáticos com riscos."
-            action={
-              <Button size="sm" onClick={() => setExamOpen(true)}>
-                <Plus size={15} className="mr-1" /> Novo exame
-              </Button>
-            }
+            title="Exames ocupacionais e ASO"
+            subtitle="O PCMSO define o planejamento; a execução clínica e os ASOs permanecem vinculados ao prontuário, sem cadastro paralelo de exames."
           >
-            <div className="overflow-auto border">
-              <table className="w-full text-sm">
-                <thead className="bg-slate-50">
-                  <tr>
-                    <th className="p-2 text-left">Exame</th>
-                    <th className="p-2 text-left">Tipo</th>
-                    <th className="p-2 text-left">Periodicidade padrão</th>
-                    <th className="p-2 text-left">Situação</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {((examsQ.data || []) as any[]).map(row => (
-                    <tr className="border-t" key={row.id}>
-                      <td className="p-2">
-                        <b>{row.name}</b>
-                        <div className="text-xs text-slate-500">
-                          {row.description}
-                        </div>
-                      </td>
-                      <td className="p-2">{row.exam_type}</td>
-                      <td className="p-2">
-                        {row.default_periodicity || "A definir"}
-                      </td>
-                      <td className="p-2">
-                        {Number(row.is_active) ? "Ativo" : "Inativo"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="grid gap-3 md:grid-cols-5">
+              {["Admissional", "Periódico", "Retorno ao trabalho", "Mudança de risco", "Demissional"].map(name => (
+                <div className="border bg-slate-50 p-3 text-sm font-semibold" key={name}>
+                  <CheckCircle2 className="mb-2 text-teal-700" size={18} />
+                  {name}
+                </div>
+              ))}
             </div>
           </Panel>
         )}
@@ -518,40 +604,7 @@ export default function MedicalCenter() {
         {tab === "vacinacao" && (
           <Panel
             title="Campanha de Vacinação Corporativa"
-            subtitle="Cadastro, parceiros, campanhas, doses e comprovantes integrados ao prontuário e ao portal do colaborador."
-            action={
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setVaccineOpen(true)}
-                >
-                  <Plus size={15} className="mr-1" /> Vacina
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setPartnerOpen(true)}
-                >
-                  <Plus size={15} className="mr-1" /> Parceiro
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={!vaccinesQ.data?.length}
-                  onClick={() => setCampaignOpen(true)}
-                >
-                  <CalendarDays size={15} className="mr-1" /> Campanha
-                </Button>
-                <Button
-                  size="sm"
-                  disabled={!patientId}
-                  onClick={() => setVaccinationOpen(true)}
-                >
-                  <Syringe size={15} className="mr-1" /> Registrar dose
-                </Button>
-              </div>
-            }
+            subtitle="Consulta médica das vacinas, campanhas, doses e comprovantes. A gestão operacional é realizada pelo SESMT."
           >
             <div className="grid gap-5 lg:grid-cols-3">
               <div>
@@ -615,13 +668,78 @@ export default function MedicalCenter() {
 
         {tab === "documentos" && (
           <Panel
-            title="Documentos médicos"
-            subtitle="PCMSO, anexos e versões são armazenados em área privada e baixados somente após autorização."
+            title="Documentos médicos e técnicos"
+            subtitle="Consulta restrita a PCMSO, LTCAT, Insalubridade e Periculosidade da empresa. A edição dos laudos técnicos permanece com o SESMT."
           >
-            <p className="text-sm text-slate-600">
-              Use a aba PCMSO para anexos oficiais e versões. Documentos
-              individuais são vinculados ao prontuário do colaborador.
-            </p>
+            <div className="grid gap-4 lg:grid-cols-[300px_1fr]">
+              <div className="divide-y border">
+                {((technicalDocsQ.data || []) as any[]).map(row => (
+                  <button
+                    className={`w-full p-3 text-left text-sm ${selectedTechnicalId === Number(row.id) ? "bg-teal-50" : "hover:bg-slate-50"}`}
+                    key={row.id}
+                    onClick={() => setSelectedTechnicalId(Number(row.id))}
+                    type="button"
+                  >
+                    <b className="line-clamp-2">{row.title}</b>
+                    <span className="mt-1 block text-xs text-slate-500">
+                      {row.document_type?.toUpperCase()} · {row.status} · {Number(row.compliance_score || 0)}%
+                    </span>
+                  </button>
+                ))}
+                {!technicalDocsQ.data?.length ? (
+                  <p className="p-3 text-sm text-slate-500">
+                    Nenhum laudo técnico compartilhado nesta empresa.
+                  </p>
+                ) : null}
+              </div>
+              <div className="border p-4">
+                {(technicalDetailQ.data as any)?.document ? (
+                  <>
+                    <div className="flex flex-wrap items-start justify-between gap-3 border-b pb-3">
+                      <div>
+                        <h3 className="font-semibold">
+                          {(technicalDetailQ.data as any).document.title}
+                        </h3>
+                        <p className="mt-1 text-xs text-slate-500">
+                          PGR: {(technicalDetailQ.data as any).document.pgr_title || "-"} · consulta somente
+                        </p>
+                      </div>
+                      <Badge variant="outline" className="rounded-sm">
+                        {(technicalDetailQ.data as any).document.status}
+                      </Badge>
+                    </div>
+                    <p className="mt-3 whitespace-pre-wrap text-sm text-slate-600">
+                      {(technicalDetailQ.data as any).document.conclusion ||
+                        "Conclusão técnica ainda não registrada."}
+                    </p>
+                    <div className="mt-4 divide-y border">
+                      {((technicalDetailQ.data as any).versions || []).map(
+                        (version: any) => (
+                          <button
+                            className="flex w-full items-center justify-between p-3 text-left text-sm hover:bg-slate-50"
+                            key={version.id}
+                            onClick={() => downloadTechnicalVersion(Number(version.id))}
+                            type="button"
+                          >
+                            Versão {version.version_number} · {new Date(version.generated_at).toLocaleString("pt-BR")}
+                            <Download size={14} />
+                          </button>
+                        )
+                      )}
+                      {!(technicalDetailQ.data as any).versions?.length ? (
+                        <p className="p-3 text-sm text-slate-500">
+                          Nenhuma versão em PDF disponível.
+                        </p>
+                      ) : null}
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-sm text-slate-500">
+                    Selecione um documento para consulta.
+                  </p>
+                )}
+              </div>
+            </div>
           </Panel>
         )}
 
@@ -703,12 +821,6 @@ export default function MedicalCenter() {
           pcmsoId={selectedProgramId}
           save={payload => annexSave.mutate(payload)}
           busy={annexSave.isPending}
-        />
-        <ExamDialog
-          open={examOpen}
-          close={() => setExamOpen(false)}
-          save={payload => examSave.mutate(payload)}
-          busy={examSave.isPending}
         />
         <VaccineDialog
           open={vaccineOpen}
@@ -837,7 +949,6 @@ function PatientWorkspace({
   onNewReferral,
   onNewCertificate,
   onNewMedication,
-  onVaccination,
 }: {
   patient: any;
   data: any;
@@ -848,7 +959,6 @@ function PatientWorkspace({
   onNewReferral: () => void;
   onNewCertificate: () => void;
   onNewMedication: () => void;
-  onVaccination: () => void;
 }) {
   if (!patientId)
     return (
@@ -906,9 +1016,6 @@ function PatientWorkspace({
         subtitle={`${patient?.cpf || "CPF não informado"} · ${patient?.position || "Cargo não informado"} · ${patient?.branch_name || "-"} / ${patient?.sector_name || "-"}`}
         action={
           <div className="flex flex-wrap justify-end gap-2">
-            <Button size="sm" variant="outline" onClick={onVaccination}>
-              <Syringe size={14} className="mr-1" /> Vacinação
-            </Button>
             <Button size="sm" variant="outline" onClick={onNewReferral}>
               <ClipboardPlus size={14} className="mr-1" /> Encaminhar
             </Button>
@@ -971,7 +1078,7 @@ function PatientWorkspace({
   );
 }
 
-function PcmsoWorkspace({
+function LegacyPcmsoWorkspace({
   programs,
   pgrs,
   exams,
@@ -1093,7 +1200,7 @@ function PcmsoWorkspace({
                 </thead>
                 <tbody>
                   {monitoring.map((row: any) => (
-                    <MonitoringRow
+                    <LegacyMonitoringRow
                       key={row.id}
                       row={row}
                       exams={exams}
@@ -1158,7 +1265,7 @@ function PcmsoWorkspace({
   );
 }
 
-function MonitoringRow({
+function LegacyMonitoringRow({
   row,
   exams,
   save,
@@ -1729,10 +1836,7 @@ function ProgramDialog({
     try {
       parsed = JSON.parse(initial?.chapters_json || "[]");
     } catch {}
-    setTitle(
-      initial?.title ||
-        "PCMSO - Programa de Controle Médico de Saúde Ocupacional"
-    );
+    setTitle(initial?.title || "");
     setPgrId(Number(initial?.pgr_id || 0));
     setStatus(initial?.status || "rascunho");
     setFrom(String(initial?.valid_from || "").slice(0, 10));
@@ -1769,7 +1873,15 @@ function ProgramDialog({
         </DialogHeader>
         <div className="grid gap-3">
           <Field label="Título">
-            <Input value={title} onChange={e => setTitle(e.target.value)} />
+            <Input
+              value={title}
+              onChange={e => setTitle(e.target.value)}
+              placeholder="Gerado automaticamente com empresa, filial e ano"
+            />
+            <span className="mt-1 block text-[11px] font-normal text-slate-500">
+              Se ficar em branco, a plataforma criará o título no padrão PCMSO
+              - Empresa - Filial - Ano.
+            </span>
           </Field>
           <div className="grid gap-3 md:grid-cols-2">
             <Field label="PGR de referência">
@@ -1895,10 +2007,11 @@ function ProgramDialog({
             </Field>
           </div>
           <Button
-            disabled={!title || busy}
+            disabled={busy}
             onClick={() =>
               save({
                 id: initial?.id,
+                title: title.trim(),
                 pgrId: pgrId || null,
                 status,
                 validFrom: from || null,

@@ -5,6 +5,13 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { getDb } from "../db";
+import { orChat } from "./contentforge/openrouter";
+import {
+  auditPcmso,
+  buildPcmsoDraft,
+  buildPcmsoTitle,
+  suggestMedicalResponse,
+} from "./pcmsoIntelligence";
 import { protectedProcedure, router } from "./trpc";
 
 let tablesReady = false;
@@ -38,6 +45,67 @@ function requireDoctor(ctx: any) {
       message: "Acesso clínico restrito ao perfil Médico.",
     });
   }
+}
+
+function requirePcmsoRead(ctx: any) {
+  if (
+    ![
+      "medico",
+      "sesmt",
+      "admin",
+      "company_admin",
+      "admin_global",
+      "super_admin",
+    ].includes(roleOf(ctx))
+  )
+    throw new TRPCError({ code: "FORBIDDEN" });
+}
+
+function requireVaccinationRead(ctx: any) {
+  if (
+    ![
+      "medico",
+      "sesmt",
+      "admin",
+      "company_admin",
+      "admin_global",
+      "super_admin",
+    ].includes(roleOf(ctx))
+  )
+    throw new TRPCError({ code: "FORBIDDEN" });
+}
+
+function requireVaccinationManager(ctx: any) {
+  if (
+    ![
+      "sesmt",
+      "admin",
+      "company_admin",
+      "admin_global",
+      "super_admin",
+    ].includes(roleOf(ctx))
+  )
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "A gestão operacional da vacinação é responsabilidade do SESMT.",
+    });
+}
+
+async function ensureColumn(
+  db: any,
+  table: string,
+  column: string,
+  definition: string
+) {
+  const found: any = await db.execute(
+    drzSql`SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=${table} AND COLUMN_NAME=${column} LIMIT 1`
+  );
+  if (rowsOf(found).length) return;
+  await db.execute(
+    drzSql.raw(
+      `ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`
+    )
+  );
 }
 
 function requireDossierAccess(ctx: any) {
@@ -377,6 +445,74 @@ async function ensureTables() {
     INDEX idx_medical_audit_patient (collaborator_id, created_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
 
+  await db.execute(drzSql`CREATE TABLE IF NOT EXISTS pcmso_ai_audits_v2 (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    company_id INT NOT NULL,
+    pcmso_id INT NOT NULL,
+    score INT NOT NULL,
+    result_json LONGTEXT NOT NULL,
+    ai_commentary MEDIUMTEXT,
+    created_by INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_pcmso_audit_program (company_id, pcmso_id, created_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+
+  await db.execute(drzSql`CREATE TABLE IF NOT EXISTS pcmso_analytical_reports_v2 (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    company_id INT NOT NULL,
+    pcmso_id INT NOT NULL,
+    period_start DATE NOT NULL,
+    period_end DATE NOT NULL,
+    metrics_json LONGTEXT NOT NULL,
+    narrative MEDIUMTEXT,
+    recommendations MEDIUMTEXT,
+    status VARCHAR(30) NOT NULL DEFAULT 'rascunho',
+    reviewed_by INT NULL,
+    reviewed_at DATETIME NULL,
+    created_by INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_pcmso_report_program (company_id, pcmso_id, period_end)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+
+  await db.execute(drzSql`CREATE TABLE IF NOT EXISTS pcmso_pgr_review_requests_v2 (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    company_id INT NOT NULL,
+    pcmso_id INT NOT NULL,
+    pgr_id INT NOT NULL,
+    gse_name VARCHAR(255),
+    risk_name VARCHAR(500),
+    description MEDIUMTEXT NOT NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'aberta',
+    requested_by INT NOT NULL,
+    resolved_by INT NULL,
+    resolved_at DATETIME NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_pcmso_pgr_review (company_id, pgr_id, status)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+
+  await ensureColumn(db, "pcmso_programs_v2", "guidelines", "MEDIUMTEXT NULL");
+  await ensureColumn(db, "pcmso_programs_v2", "surveillance_methodology", "MEDIUMTEXT NULL");
+  await ensureColumn(db, "pcmso_programs_v2", "conduct_criteria", "MEDIUMTEXT NULL");
+  await ensureColumn(db, "pcmso_programs_v2", "critical_activities", "MEDIUMTEXT NULL");
+  await ensureColumn(db, "pcmso_programs_v2", "immunization_methodology", "MEDIUMTEXT NULL");
+  await ensureColumn(db, "pcmso_programs_v2", "conclusion", "MEDIUMTEXT NULL");
+  await ensureColumn(db, "pcmso_programs_v2", "integration_score", "INT NOT NULL DEFAULT 0");
+  await ensureColumn(db, "pcmso_programs_v2", "ai_audit_score", "INT NOT NULL DEFAULT 0");
+  await ensureColumn(db, "pcmso_programs_v2", "pending_count", "INT NOT NULL DEFAULT 0");
+  await ensureColumn(db, "pcmso_programs_v2", "pgr_synced_at", "DATETIME NULL");
+  await ensureColumn(db, "pcmso_programs_v2", "pgr_source_updated_at", "DATETIME NULL");
+  await ensureColumn(db, "pcmso_programs_v2", "review_required", "TINYINT(1) NOT NULL DEFAULT 0");
+  await ensureColumn(db, "pcmso_programs_v2", "signed_at", "DATETIME NULL");
+  await ensureColumn(db, "pcmso_programs_v2", "signature_hash", "VARCHAR(128) NULL");
+  await ensureColumn(db, "pcmso_programs_v2", "archived_at", "DATETIME NULL");
+  await ensureColumn(db, "pcmso_risk_monitoring_v2", "possible_aggravations", "MEDIUMTEXT NULL");
+  await ensureColumn(db, "pcmso_risk_monitoring_v2", "suggested_monitoring_kind", "VARCHAR(40) NULL");
+  await ensureColumn(db, "pcmso_risk_monitoring_v2", "suggested_monitoring_name", "VARCHAR(500) NULL");
+  await ensureColumn(db, "pcmso_risk_monitoring_v2", "suggested_periodicity", "VARCHAR(255) NULL");
+  await ensureColumn(db, "pcmso_risk_monitoring_v2", "ai_rationale", "MEDIUMTEXT NULL");
+  await ensureColumn(db, "pcmso_risk_monitoring_v2", "suggestion_status", "VARCHAR(30) NOT NULL DEFAULT 'revisar'");
+  await ensureColumn(db, "pcmso_risk_monitoring_v2", "ai_generated_at", "DATETIME NULL");
+
   tablesReady = true;
 }
 
@@ -436,6 +572,86 @@ function esc(value: any) {
   );
 }
 
+function buildPcmsoPdfHtml(input: {
+  program: any;
+  monitoring: any[];
+  annexes: any[];
+  analyticalReport?: any;
+}) {
+  const { program, monitoring, annexes, analyticalReport } = input;
+  let chapters: any[] = [];
+  try {
+    chapters = JSON.parse(program.chapters_json || "[]");
+  } catch {}
+  const groups = new Map<string, any[]>();
+  monitoring.forEach(row => {
+    const key = row.gse_name || "GSE não identificado";
+    groups.set(key, [...(groups.get(key) || []), row]);
+  });
+  const matrix = [...groups.entries()]
+    .map(
+      ([gse, rows]) => `<h3>${esc(gse)}</h3><table><thead><tr><th>Risco ocupacional</th><th>Possíveis agravos</th><th>Controle médico validado</th><th>Periodicidade</th><th>Critério/observação</th></tr></thead><tbody>${rows
+        .map(
+          row => `<tr><td><b>${esc(row.risk_name)}</b><br>${esc(row.risk_type || "-")}<br><small>${esc(row.risk_classification || "-")}</small></td><td>${esc(row.possible_aggravations || "Não registrado")}</td><td>${esc(String(row.monitoring_kind || "").replaceAll("_", " "))}<br><b>${esc(row.monitoring_name || row.exam_name || "-")}</b></td><td>${esc(row.periodicity || "Definida conforme avaliação médica")}</td><td>${esc(row.observations || "-")}</td></tr>`
+        )
+        .join("")}</tbody></table>`
+    )
+    .join("");
+  const sumario = [
+    "Apresentação",
+    "Objetivo",
+    "Campo de aplicação",
+    "Base normativa",
+    "Diretrizes",
+    "Responsabilidades",
+    "Metodologia",
+    "Integração PGR/PCMSO",
+    "Caracterização dos GSEs",
+    "Planejamento médico e exames",
+    "Critérios de interpretação e conduta",
+    "Vigilância da saúde",
+    "Imunização",
+    "Relatório analítico",
+    "Conclusão",
+    "Responsabilidade técnica",
+    "Anexos",
+  ];
+  const examTypes = [
+    "Admissional",
+    "Periódico",
+    "Retorno ao trabalho",
+    "Mudança de risco ocupacional",
+    "Demissional",
+  ];
+  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
+  @page{size:A4;margin:18mm 15mm}body{font-family:Arial,sans-serif;color:#172b3a;font-size:10pt;line-height:1.45}h1{font-size:25pt;color:#0e2c46}h2{margin-top:9mm;color:#0e2c46;border-bottom:2px solid #0096a6;padding-bottom:2mm}h3{margin-top:6mm;color:#0e2c46}table{width:100%;border-collapse:collapse;font-size:7.7pt;margin:3mm 0 6mm}th,td{border:1px solid #d7e1e8;padding:2mm;vertical-align:top}th{background:#0e2c46;color:#fff}.cover{height:240mm;display:flex;flex-direction:column;justify-content:center;text-align:center;page-break-after:always}.meta{color:#607486}.signature{margin-top:18mm;text-align:center}.signature-line{border-top:1px solid #172b3a;width:80mm;margin:0 auto 2mm}.notice{border-left:3px solid #eab308;padding:3mm;background:#fffbeb;font-size:8.5pt}.toc{columns:2}.page-break{page-break-before:always}p{white-space:pre-wrap}</style></head><body>
+  <section class="cover"><h1>${esc(program.title)}</h1><h2>${esc(program.company_name)}</h2><p>CNPJ: ${esc(program.cnpj || "-")}<br>Vigência: ${esc(program.valid_from || "-")} a ${esc(program.valid_until || "-")}</p><p class="meta">Programa de Controle Médico de Saúde Ocupacional</p></section>
+  <h2>Controle do documento</h2><table><tbody><tr><td><b>Versão</b></td><td>${esc(program.current_version || 1)}</td><td><b>Situação</b></td><td>${esc(program.status)}</td></tr><tr><td><b>PGR de referência</b></td><td>${esc(program.pgr_title || "-")}</td><td><b>Sincronização</b></td><td>${esc(program.pgr_synced_at || "-")}</td></tr></tbody></table>
+  <h2>Identificação da organização</h2><p><b>Empresa:</b> ${esc(program.company_name)}<br><b>CNPJ:</b> ${esc(program.cnpj || "-")}<br><b>Endereço:</b> ${esc(program.address || "-")}<br><b>Médico responsável:</b> ${esc(program.doctor_name || "-")} · ${esc(program.doctor_crm || "-")}</p>
+  <h2>Sumário</h2><ol class="toc">${sumario.map(item => `<li>${esc(item)}</li>`).join("")}</ol>
+  <h2>1. Apresentação</h2><p>${esc(program.introduction || "O PCMSO estabelece o acompanhamento médico ocupacional integrado aos riscos identificados no PGR.")}</p>
+  <h2>2. Objetivo</h2><p>${esc(program.objective || "Proteger e preservar a saúde dos trabalhadores em relação aos riscos ocupacionais.")}</p>
+  <h2>3. Campo de aplicação</h2><p>${esc(program.field_of_application || `Aplica-se aos trabalhadores abrangidos pelos ${groups.size} GSE(s) importados do PGR de referência.`)}</p>
+  <h2>4. Base normativa</h2><p>NR-07 - Programa de Controle Médico de Saúde Ocupacional, NR-01 - Gerenciamento de Riscos Ocupacionais e demais referências legais e técnicas aplicáveis ao escopo. O documento apresenta requisitos pertinentes sem reproduzir integralmente as normas.</p>
+  <h2>5. Diretrizes do PCMSO</h2><p>${esc(program.guidelines || "Rastrear e detectar precocemente agravos relacionados ao trabalho, definir ações de vigilância, subsidiar medidas preventivas e manter documentação médica ocupacional sob confidencialidade.")}</p>
+  <h2>6. Responsabilidades</h2><p><b>Organização:</b> garantir elaboração e implementação do programa, custear os procedimentos e fornecer informações atualizadas do PGR.<br><b>Médico responsável:</b> definir critérios médicos, validar o planejamento, analisar resultados consolidados e assinar o programa.<br><b>Médicos examinadores:</b> executar os exames conforme diretrizes e registrar os atos clínicos.<br><b>SESMT:</b> manter o PGR, apoiar controles, vacinação operacional e tratar solicitações de revisão.</p>
+  <h2>7. Metodologia de elaboração</h2><p>${esc(program.methodology || "Os riscos foram importados do PGR, agrupados por GSE e submetidos à análise médica para definição dos possíveis agravos, controles médicos e periodicidades.")}</p>
+  <div class="notice">A inteligência artificial foi utilizada apenas como apoio de estruturação e consistência. Sugestões não substituem decisão médica, diagnóstico, avaliação clínica ou responsabilidade técnica.</div>
+  <h2>8. Integração entre PGR e PCMSO</h2><p>O PCMSO utiliza os GSEs, riscos, fontes geradoras, possíveis danos, classificações e detalhamentos técnicos do PGR. Alterações posteriores no PGR devem provocar nova revisão do programa. Divergências identificadas pelo médico são encaminhadas ao SESMT de forma rastreável.</p>
+  <h2>9. Caracterização dos GSEs e planejamento médico</h2>${matrix || "<p>Nenhum risco importado.</p>"}
+  <h2>10. Exames médicos ocupacionais</h2><p>O programa contempla os cinco exames ocupacionais previstos na NR-07, aplicados conforme os critérios e periodicidades definidos pelo médico:</p><ol>${examTypes.map(item => `<li>${item}</li>`).join("")}</ol>
+  <h2>11. Critérios de interpretação e conduta</h2><p>${esc(program.conduct_criteria || "Os achados clínicos e complementares devem ser interpretados pelo médico considerando história ocupacional, exposição, resultados anteriores, referências aplicáveis e condições individuais. Achados relevantes podem resultar em orientação, investigação, encaminhamento, restrição, acompanhamento ou solicitação de revisão do PGR, conforme julgamento médico.")}</p>
+  <h2>12. Vigilância ativa e passiva</h2><p>${esc(program.surveillance_methodology || "A vigilância passiva considera atendimentos espontâneos, queixas, atestados e registros clínicos. A vigilância ativa utiliza exames ocupacionais, acompanhamento programado, análise epidemiológica e busca de tendências relacionadas aos riscos do trabalho.")}</p>
+  <h2>13. Atividades críticas</h2><p>${esc(program.critical_activities || "Aptidão para atividades críticas deve ser avaliada de forma individual, considerando os riscos da tarefa, requisitos legais, condições clínicas e controles existentes, sem decisões automáticas pela plataforma.")}</p>
+  <h2>14. Imunização</h2><p>${esc(program.immunization_methodology || "Quando aplicável aos riscos e atividades, o SESMT organiza campanhas, registros e alertas de vacinação. O médico consulta o histórico para apoio à vigilância e orientação ocupacional.")}</p>
+  <h2>15. Relatório analítico</h2>${analyticalReport ? `<p>${esc(analyticalReport.narrative)}</p><p><b>Recomendações validadas:</b> ${esc(analyticalReport.recommendations)}</p><p>Período: ${esc(analyticalReport.period_start)} a ${esc(analyticalReport.period_end)}</p>` : "<p>Não há relatório analítico aprovado associado a esta versão.</p>"}
+  ${chapters.map((chapter, index) => `<h2>${16 + index}. ${esc(chapter.title)}</h2><p>${esc(chapter.content)}</p>`).join("")}
+  <h2>Conclusão</h2><p>${esc(program.conclusion || "O programa deverá ser acompanhado continuamente e revisto quando houver alterações relevantes no PGR, nos processos, nos riscos ou no perfil de saúde consolidado dos trabalhadores.")}</p>
+  <h2>Anexos associados</h2><ol>${annexes.map(item => `<li>Anexo ${item.annex_number}: ${esc(item.title || item.file_name)}</li>`).join("") || "<li>Nenhum anexo associado.</li>"}</ol>
+  <div class="signature"><div class="signature-line"></div><b>${esc(program.doctor_name || "Médico responsável")}</b><br>${esc(program.doctor_crm || "CRM não informado")}<br>Assinatura eletrônica: ${esc(program.signature_hash || "documento ainda não assinado")}</div>
+  </body></html>`;
+}
+
 const dateInput = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const dateTimeInput = z.string().min(10).max(40);
 
@@ -471,7 +687,7 @@ export const medicalRouter = router({
   }),
 
   listCollaborators: protectedProcedure.query(async ({ ctx }) => {
-    requireDoctor(ctx);
+    requireDossierAccess(ctx);
     await ensureTables();
     const db = await getDb();
     const companyId = companyOf(ctx);
@@ -564,8 +780,21 @@ export const medicalRouter = router({
       const companyId = companyOf(ctx);
       if (!db) return null;
       const program: any = await db.execute(
-        drzSql`SELECT * FROM pcmso_programs_v2 WHERE id=${input.id} AND company_id=${companyId} LIMIT 1`
+        drzSql`SELECT p.*,g.title pgr_title,g.updated_at pgr_updated_at FROM pcmso_programs_v2 p LEFT JOIN pgr_documents g ON g.id=p.pgr_id WHERE p.id=${input.id} AND p.company_id=${companyId} LIMIT 1`
       );
+      const programRow = rowsOf(program)[0] || null;
+      if (
+        programRow?.pgr_updated_at &&
+        programRow?.pgr_synced_at &&
+        new Date(programRow.pgr_updated_at).getTime() >
+          new Date(programRow.pgr_synced_at).getTime() &&
+        !Number(programRow.review_required)
+      ) {
+        await db.execute(
+          drzSql`UPDATE pcmso_programs_v2 SET review_required=1 WHERE id=${input.id} AND company_id=${companyId}`
+        );
+        programRow.review_required = 1;
+      }
       const monitoring: any = await db.execute(
         drzSql`SELECT m.*,e.name exam_name FROM pcmso_risk_monitoring_v2 m LEFT JOIN pcmso_exam_catalog_v2 e ON e.id=m.exam_id WHERE m.pcmso_id=${input.id} AND m.company_id=${companyId} ORDER BY m.gse_name,m.risk_name`
       );
@@ -575,11 +804,49 @@ export const medicalRouter = router({
       const versions: any = await db.execute(
         drzSql`SELECT id,version_number,generated_by,generated_at FROM pcmso_versions_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId} ORDER BY version_number DESC`
       );
+      const audits: any = await db.execute(
+        drzSql`SELECT id,score,result_json,ai_commentary,created_at FROM pcmso_ai_audits_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId} ORDER BY id DESC LIMIT 10`
+      );
+      const reports: any = await db.execute(
+        drzSql`SELECT id,period_start,period_end,metrics_json,narrative,recommendations,status,reviewed_at,created_at FROM pcmso_analytical_reports_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId} ORDER BY period_end DESC,id DESC`
+      );
+      const reviewRequests: any = await db.execute(
+        drzSql`SELECT id,gse_name,risk_name,description,status,created_at,resolved_at FROM pcmso_pgr_review_requests_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId} ORDER BY id DESC`
+      );
+      const referenceSummary: any = await db.execute(
+        drzSql`SELECT COUNT(DISTINCT g.id) gses,COUNT(DISTINCT r.id) risks,COUNT(DISTINCT gs.sector_id) sectors FROM pgr_gse g LEFT JOIN pgr_gse_riscos r ON r.gse_id=g.id LEFT JOIN pgr_gse_setores gs ON gs.gse_id=g.id WHERE g.pgr_id=${programRow?.pgr_id || 0}`
+      );
       return {
-        program: rowsOf(program)[0] || null,
+        program: programRow,
         monitoring: rowsOf(monitoring),
         annexes: rowsOf(annexes),
         versions: rowsOf(versions),
+        audits: rowsOf(audits).map((row: any) => ({
+          ...row,
+          result: (() => {
+            try {
+              return JSON.parse(row.result_json || "{}");
+            } catch {
+              return {};
+            }
+          })(),
+        })),
+        analyticalReports: rowsOf(reports).map((row: any) => ({
+          ...row,
+          metrics: (() => {
+            try {
+              return JSON.parse(row.metrics_json || "{}");
+            } catch {
+              return {};
+            }
+          })(),
+        })),
+        reviewRequests: rowsOf(reviewRequests),
+        referenceSummary: rowsOf(referenceSummary)[0] || {
+          gses: 0,
+          risks: 0,
+          sectors: 0,
+        },
       };
     }),
 
@@ -588,7 +855,7 @@ export const medicalRouter = router({
       z.object({
         id: z.number().int().positive().optional(),
         pgrId: z.number().int().positive().nullable().optional(),
-        title: z.string().min(3).max(255),
+        title: z.string().max(255).optional().default(""),
         status: z
           .enum(["rascunho", "em_revisao", "vigente", "arquivado"])
           .default("rascunho"),
@@ -625,6 +892,17 @@ export const medicalRouter = router({
           code: "PRECONDITION_FAILED",
           message: "Cadastre CRM e UF no perfil médico antes de criar o PCMSO.",
         });
+      const companyResult: any = await db.execute(
+        drzSql`SELECT c.name,COALESCE(b.name,'') branch_name FROM companies c LEFT JOIN pgr_documents p ON p.id=${input.pgrId || 0} AND p.company_id=c.id LEFT JOIN branches b ON b.id=p.branch_id WHERE c.id=${companyId} LIMIT 1`
+      );
+      const company = rowsOf(companyResult)[0] || {};
+      const title =
+        String(input.title || "").trim() ||
+        buildPcmsoTitle({
+          companyName: company.name,
+          branchName: company.branch_name,
+          validFrom: input.validFrom,
+        });
       let id = input.id || 0;
       if (id) {
         const own: any = await db.execute(
@@ -632,7 +910,7 @@ export const medicalRouter = router({
         );
         if (!rowsOf(own).length) throw new TRPCError({ code: "NOT_FOUND" });
         await db.execute(
-          drzSql`UPDATE pcmso_programs_v2 SET pgr_id=${input.pgrId || null},title=${input.title},status=${input.status},valid_from=${input.validFrom || null},valid_until=${input.validUntil || null},introduction=${input.introduction || null},objective=${input.objective || null},methodology=${input.methodology || null},chapters_json=${JSON.stringify(input.chapters)},header_text=${input.headerText || null},footer_text=${input.footerText || null},doctor_user_id=${Number(ctx.user.id)},doctor_name=${doctor.name},doctor_crm=${`${doctor.crm}/${doctor.crm_state}`},doctor_signature_private_path=${doctor.signature_private_path || null} WHERE id=${id} AND company_id=${companyId}`
+          drzSql`UPDATE pcmso_programs_v2 SET pgr_id=${input.pgrId || null},title=${title},status=${input.status},valid_from=${input.validFrom || null},valid_until=${input.validUntil || null},introduction=${input.introduction || null},objective=${input.objective || null},methodology=${input.methodology || null},chapters_json=${JSON.stringify(input.chapters)},header_text=${input.headerText || null},footer_text=${input.footerText || null},doctor_user_id=${Number(ctx.user.id)},doctor_name=${doctor.name},doctor_crm=${`${doctor.crm}/${doctor.crm_state}`},doctor_signature_private_path=${doctor.signature_private_path || null} WHERE id=${id} AND company_id=${companyId}`
         );
         await audit(db, ctx, "pcmso_updated", "pcmso", id, null, {
           status: input.status,
@@ -640,11 +918,11 @@ export const medicalRouter = router({
       } else {
         const result: any =
           await db.execute(drzSql`INSERT INTO pcmso_programs_v2 (company_id,pgr_id,title,status,valid_from,valid_until,introduction,objective,methodology,chapters_json,header_text,footer_text,doctor_user_id,doctor_name,doctor_crm,doctor_signature_private_path,created_by)
-        VALUES (${companyId},${input.pgrId || null},${input.title},${input.status},${input.validFrom || null},${input.validUntil || null},${input.introduction || null},${input.objective || null},${input.methodology || null},${JSON.stringify(input.chapters)},${input.headerText || null},${input.footerText || null},${Number(ctx.user.id)},${doctor.name},${`${doctor.crm}/${doctor.crm_state}`},${doctor.signature_private_path || null},${Number(ctx.user.id)})`);
+        VALUES (${companyId},${input.pgrId || null},${title},${input.status},${input.validFrom || null},${input.validUntil || null},${input.introduction || null},${input.objective || null},${input.methodology || null},${JSON.stringify(input.chapters)},${input.headerText || null},${input.footerText || null},${Number(ctx.user.id)},${doctor.name},${`${doctor.crm}/${doctor.crm_state}`},${doctor.signature_private_path || null},${Number(ctx.user.id)})`);
         id = Number((result as any)[0]?.insertId || 0);
         await audit(db, ctx, "pcmso_created", "pcmso", id);
       }
-      return { ok: true, id };
+      return { ok: true, id, title };
     }),
 
   importPgr: protectedProcedure
@@ -671,7 +949,7 @@ export const medicalRouter = router({
 
       const sourceRows: any[] = [];
       const normalized: any =
-        await db.execute(drzSql`SELECT g.id gse_id,g.nome gse_name,r.id risk_id,r.nome risk_name,r.tipo risk_type,r.classificacao risk_classification,d.descricao_tecnica technical_detail
+        await db.execute(drzSql`SELECT g.id gse_id,g.nome gse_name,r.id risk_id,r.agente risk_name,r.tipo risk_type,r.risco_final risk_classification,CONCAT_WS('\n',d.metodologia,d.resultado_medicao,d.criterio_ia,d.justificativa_ia) technical_detail
       FROM pgr_gse g JOIN pgr_documents p ON p.id=g.pgr_id LEFT JOIN pgr_gse_riscos r ON r.gse_id=g.id LEFT JOIN pgr_gse_riscos_detalhe d ON d.risco_id=r.id
       WHERE p.id=${input.pgrId} AND p.company_id=${companyId}`);
       for (const row of rowsOf(normalized))
@@ -698,13 +976,15 @@ export const medicalRouter = router({
       }
       let imported = 0;
       for (const row of sourceRows) {
+        const suggestion = suggestMedicalResponse(row);
         const result: any =
-          await db.execute(drzSql`INSERT IGNORE INTO pcmso_risk_monitoring_v2 (company_id,pcmso_id,pgr_id,pgr_gse_id,pgr_risk_id,branch_name,sector_name,gse_name,risk_name,risk_type,risk_classification,technical_detail,monitoring_kind)
-        VALUES (${companyId},${input.pcmsoId},${input.pgrId},${row.gse_id || null},${row.risk_id || null},${row.branch_name || null},${row.sector_name || null},${row.gse_name || "Sem GSE"},${row.risk_name},${row.risk_type || null},${row.risk_classification || null},${row.technical_detail || null},'nao_definido')`);
+          await db.execute(drzSql`INSERT INTO pcmso_risk_monitoring_v2 (company_id,pcmso_id,pgr_id,pgr_gse_id,pgr_risk_id,branch_name,sector_name,gse_name,risk_name,risk_type,risk_classification,technical_detail,monitoring_kind,possible_aggravations,suggested_monitoring_kind,suggested_monitoring_name,suggested_periodicity,ai_rationale,suggestion_status,ai_generated_at)
+        VALUES (${companyId},${input.pcmsoId},${input.pgrId},${row.gse_id || null},${row.risk_id || null},${row.branch_name || null},${row.sector_name || null},${row.gse_name || "Sem GSE"},${row.risk_name},${row.risk_type || null},${row.risk_classification || null},${row.technical_detail || null},'nao_definido',${suggestion.possibleAggravations},${suggestion.monitoringKind},${suggestion.monitoringName},${suggestion.periodicity},${suggestion.rationale},'revisar',NOW())
+        ON DUPLICATE KEY UPDATE pgr_id=VALUES(pgr_id),branch_name=VALUES(branch_name),sector_name=VALUES(sector_name),gse_name=VALUES(gse_name),risk_name=VALUES(risk_name),risk_type=VALUES(risk_type),risk_classification=VALUES(risk_classification),technical_detail=VALUES(technical_detail),possible_aggravations=COALESCE(possible_aggravations,VALUES(possible_aggravations)),suggested_monitoring_kind=VALUES(suggested_monitoring_kind),suggested_monitoring_name=VALUES(suggested_monitoring_name),suggested_periodicity=VALUES(suggested_periodicity),ai_rationale=VALUES(ai_rationale),ai_generated_at=NOW()`);
         imported += Number((result as any)[0]?.affectedRows || 0);
       }
       await db.execute(
-        drzSql`UPDATE pcmso_programs_v2 SET pgr_id=${input.pgrId} WHERE id=${input.pcmsoId} AND company_id=${companyId}`
+        drzSql`UPDATE pcmso_programs_v2 p JOIN pgr_documents g ON g.id=${input.pgrId} SET p.pgr_id=${input.pgrId},p.pgr_synced_at=NOW(),p.pgr_source_updated_at=g.updated_at,p.review_required=0,p.integration_score=100 WHERE p.id=${input.pcmsoId} AND p.company_id=${companyId}`
       );
       await audit(
         db,
@@ -783,6 +1063,11 @@ export const medicalRouter = router({
         periodicity: z.string().max(120).optional(),
         applicability: z.string().max(120).optional(),
         observations: z.string().max(10000).optional(),
+        possibleAggravations: z.string().max(50000).optional(),
+        aiRationale: z.string().max(50000).optional(),
+        suggestionStatus: z
+          .enum(["revisar", "aprovada", "editada", "ignorada"])
+          .default("editada"),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -791,13 +1076,8 @@ export const medicalRouter = router({
       const db = await getDb();
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      if (input.monitoringKind === "exame_complementar" && !input.examId)
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "Selecione o exame complementar.",
-        });
       await db.execute(
-        drzSql`UPDATE pcmso_risk_monitoring_v2 SET monitoring_kind=${input.monitoringKind},exam_id=${input.examId || null},monitoring_name=${input.monitoringName || null},periodicity=${input.periodicity || null},applicability=${input.applicability || null},observations=${input.observations || null},decision_by=${Number(ctx.user.id)},decision_at=NOW() WHERE id=${input.id} AND company_id=${companyId}`
+        drzSql`UPDATE pcmso_risk_monitoring_v2 SET monitoring_kind=${input.monitoringKind},exam_id=${input.examId || null},monitoring_name=${input.monitoringName || null},periodicity=${input.periodicity || null},applicability=${input.applicability || null},observations=${input.observations || null},possible_aggravations=COALESCE(${input.possibleAggravations || null},possible_aggravations),ai_rationale=COALESCE(${input.aiRationale || null},ai_rationale),suggestion_status=${input.suggestionStatus},decision_by=${Number(ctx.user.id)},decision_at=NOW() WHERE id=${input.id} AND company_id=${companyId}`
       );
       await audit(
         db,
@@ -810,6 +1090,352 @@ export const medicalRouter = router({
       );
       return { ok: true };
     }),
+
+  generatePcmsoWithAi: protectedProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ ctx, input }) => {
+      requireDoctor(ctx);
+      await ensureTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const programResult: any = await db.execute(
+        drzSql`SELECT p.*,c.name company_name,g.title pgr_title FROM pcmso_programs_v2 p JOIN companies c ON c.id=p.company_id LEFT JOIN pgr_documents g ON g.id=p.pgr_id WHERE p.id=${input.id} AND p.company_id=${companyId} LIMIT 1`
+      );
+      const program = rowsOf(programResult)[0];
+      if (!program) throw new TRPCError({ code: "NOT_FOUND" });
+      const monitoringResult: any = await db.execute(
+        drzSql`SELECT * FROM pcmso_risk_monitoring_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId} ORDER BY gse_name,risk_name`
+      );
+      const monitoring = rowsOf(monitoringResult);
+      if (!program.pgr_id || !monitoring.length)
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Selecione e importe o PGR antes de gerar o PCMSO com IA.",
+        });
+      let draft = buildPcmsoDraft({
+        companyName: program.company_name,
+        pgrTitle: program.pgr_title,
+        riskRows: monitoring,
+      });
+      let usedAi = false;
+      const apiKey = String(process.env.OPENROUTER_API_KEY || "").trim();
+      if (apiKey) {
+        try {
+          const compactRisks = monitoring.slice(0, 120).map((row: any) => ({
+            gse: row.gse_name,
+            risco: row.risk_name,
+            tipo: row.risk_type,
+            classificacao: row.risk_classification,
+            detalhe: String(row.technical_detail || "").slice(0, 800),
+          }));
+          const raw = await orChat(
+            [
+              {
+                role: "system",
+                content:
+                  "Você é assistente técnico de Medicina do Trabalho no Brasil. Estruture um PCMSO conforme NR-07 a partir do PGR fornecido. Não prescreva automaticamente, não invente medições, exames, normas, datas ou fatos. Toda sugestão exige validação do médico. Responda apenas JSON válido com introduction, objective, methodology e chapters (array de title/content). Inclua campo de aplicação, base normativa, diretrizes, responsabilidades, cinco exames ocupacionais, vigilância ativa/passiva, atividades críticas, critérios de interpretação e conduta, imunização quando aplicável, relatório analítico e conclusão.",
+              },
+              {
+                role: "user",
+                content: JSON.stringify({
+                  empresa: program.company_name,
+                  pgr: program.pgr_title,
+                  riscos: compactRisks,
+                }),
+              },
+            ],
+            apiKey,
+            true
+          );
+          const cleanJson = raw
+            .trim()
+            .replace(/^```json\s*/i, "")
+            .replace(/```$/i, "");
+          const ai = JSON.parse(cleanJson);
+          if (
+            typeof ai.introduction === "string" &&
+            typeof ai.objective === "string" &&
+            typeof ai.methodology === "string" &&
+            Array.isArray(ai.chapters)
+          ) {
+            draft = {
+              introduction: ai.introduction,
+              objective: ai.objective,
+              methodology: ai.methodology,
+              chapters: ai.chapters
+                .filter(
+                  (item: any) =>
+                    typeof item?.title === "string" &&
+                    typeof item?.content === "string"
+                )
+                .slice(0, 30),
+            };
+            usedAi = true;
+          }
+        } catch (error: any) {
+          console.warn(
+            "[PCMSO] geração OpenRouter indisponível; usando estrutura segura:",
+            String(error?.message || error).slice(0, 180)
+          );
+        }
+      }
+      const chapterText = (title: string) =>
+        draft.chapters.find((item: any) =>
+          String(item.title || "")
+            .toLowerCase()
+            .includes(title)
+        )?.content || null;
+      await db.execute(
+        drzSql`UPDATE pcmso_programs_v2 SET introduction=${draft.introduction},objective=${draft.objective},methodology=${draft.methodology},chapters_json=${JSON.stringify(draft.chapters)},guidelines=${chapterText("diretr")},surveillance_methodology=${chapterText("vigil")},conduct_criteria=${chapterText("conduta")},critical_activities=${chapterText("atividades cr")},immunization_methodology=${chapterText("imuniza")},conclusion=${chapterText("conclus")},status='em_revisao' WHERE id=${input.id} AND company_id=${companyId}`
+      );
+      for (const row of monitoring) {
+        const suggestion = suggestMedicalResponse(row);
+        await db.execute(
+          drzSql`UPDATE pcmso_risk_monitoring_v2 SET possible_aggravations=COALESCE(possible_aggravations,${suggestion.possibleAggravations}),suggested_monitoring_kind=${suggestion.monitoringKind},suggested_monitoring_name=${suggestion.monitoringName},suggested_periodicity=${suggestion.periodicity},ai_rationale=${suggestion.rationale},ai_generated_at=NOW() WHERE id=${Number(row.id)} AND company_id=${companyId} AND suggestion_status IN ('revisar','ignorada')`
+        );
+      }
+      await audit(db, ctx, "pcmso_ai_draft_generated", "pcmso", input.id, null, {
+        usedAi,
+        risks: monitoring.length,
+      });
+      return { ok: true, usedAi, risks: monitoring.length };
+    }),
+
+  auditPcmso: protectedProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ ctx, input }) => {
+      requireDoctor(ctx);
+      await ensureTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const programResult: any = await db.execute(
+        drzSql`SELECT * FROM pcmso_programs_v2 WHERE id=${input.id} AND company_id=${companyId} LIMIT 1`
+      );
+      const program = rowsOf(programResult)[0];
+      if (!program) throw new TRPCError({ code: "NOT_FOUND" });
+      const monitoringResult: any = await db.execute(
+        drzSql`SELECT * FROM pcmso_risk_monitoring_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId}`
+      );
+      const countsResult: any = await db.execute(
+        drzSql`SELECT (SELECT COUNT(*) FROM pcmso_attachments_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId}) annexes,(SELECT COUNT(*) FROM pcmso_analytical_reports_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId}) reports`
+      );
+      const counts = rowsOf(countsResult)[0] || {};
+      const result = auditPcmso({
+        program,
+        monitoring: rowsOf(monitoringResult),
+        annexCount: Number(counts.annexes || 0),
+        analyticalReportCount: Number(counts.reports || 0),
+      });
+      const aiCommentary = `${result.pending.length} pendência(s) exigem revisão humana. A auditoria verifica completude e coerência estrutural, sem certificar conformidade legal.`;
+      await db.execute(
+        drzSql`INSERT INTO pcmso_ai_audits_v2 (company_id,pcmso_id,score,result_json,ai_commentary,created_by) VALUES (${companyId},${input.id},${result.score},${JSON.stringify(result)},${aiCommentary},${Number(ctx.user.id)})`
+      );
+      await db.execute(
+        drzSql`UPDATE pcmso_programs_v2 SET ai_audit_score=${result.score},pending_count=${result.pending.length} WHERE id=${input.id} AND company_id=${companyId}`
+      );
+      await audit(db, ctx, "pcmso_audited", "pcmso", input.id, null, {
+        score: result.score,
+        pending: result.pending.length,
+      });
+      return { ...result, aiCommentary };
+    }),
+
+  generateAnalyticalReport: protectedProcedure
+    .input(
+      z.object({
+        pcmsoId: z.number().int().positive(),
+        periodStart: dateInput,
+        periodEnd: dateInput,
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      requireDoctor(ctx);
+      await ensureTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const own: any = await db.execute(
+        drzSql`SELECT id,title FROM pcmso_programs_v2 WHERE id=${input.pcmsoId} AND company_id=${companyId} LIMIT 1`
+      );
+      if (!rowsOf(own).length) throw new TRPCError({ code: "NOT_FOUND" });
+      const examsResult: any = await db.execute(
+        drzSql`SELECT COUNT(*) total,SUM(COALESCE(fitness_status,'') NOT IN ('apto','normal')) altered,COUNT(DISTINCT collaborator_id) workers FROM medical_occupational_exams_v2 WHERE company_id=${companyId} AND pcmso_id=${input.pcmsoId} AND DATE(performed_at) BETWEEN ${input.periodStart} AND ${input.periodEnd}`
+      );
+      const kindsResult: any = await db.execute(
+        drzSql`SELECT exam_kind,COUNT(*) total FROM medical_occupational_exams_v2 WHERE company_id=${companyId} AND pcmso_id=${input.pcmsoId} AND DATE(performed_at) BETWEEN ${input.periodStart} AND ${input.periodEnd} GROUP BY exam_kind`
+      );
+      const encountersResult: any = await db.execute(
+        drzSql`SELECT COUNT(*) total FROM medical_encounters_v2 WHERE company_id=${companyId} AND DATE(encounter_at) BETWEEN ${input.periodStart} AND ${input.periodEnd}`
+      );
+      const certificatesResult: any = await db.execute(
+        drzSql`SELECT COUNT(*) total,SUM(total_days) days_lost,SUM(total_hours) hours_lost FROM medical_certificates_v2 WHERE company_id=${companyId} AND issue_date BETWEEN ${input.periodStart} AND ${input.periodEnd}`
+      );
+      const monitoringResult: any = await db.execute(
+        drzSql`SELECT COUNT(*) total,SUM(monitoring_kind='nao_definido') pending FROM pcmso_risk_monitoring_v2 WHERE company_id=${companyId} AND pcmso_id=${input.pcmsoId}`
+      );
+      const metrics = {
+        exams: rowsOf(examsResult)[0] || {},
+        examKinds: rowsOf(kindsResult),
+        encounters: rowsOf(encountersResult)[0] || {},
+        certificates: rowsOf(certificatesResult)[0] || {},
+        monitoring: rowsOf(monitoringResult)[0] || {},
+      };
+      const narrative = `No período de ${input.periodStart} a ${input.periodEnd}, foram registrados ${Number(metrics.exams.total || 0)} exames ocupacionais para ${Number(metrics.exams.workers || 0)} trabalhador(es), ${Number(metrics.encounters.total || 0)} atendimento(s) e ${Number(metrics.certificates.total || 0)} atestado(s). Foram contabilizados ${Number(metrics.certificates.days_lost || 0)} dia(s) e ${Number(metrics.certificates.hours_lost || 0)} hora(s) de afastamento. Os dados devem ser interpretados pelo médico responsável em conjunto com o PGR, perfil epidemiológico e qualidade dos registros disponíveis.`;
+      const recommendations = Number(metrics.monitoring.pending || 0)
+        ? `Revisar ${Number(metrics.monitoring.pending)} risco(s) ainda sem decisão médica e avaliar tendências antes da apresentação ao SESMT/CIPA.`
+        : "Manter o acompanhamento periódico, comparar a evolução com o período anterior e comunicar ao PGR alterações relevantes identificadas na análise médica consolidada.";
+      const inserted: any = await db.execute(
+        drzSql`INSERT INTO pcmso_analytical_reports_v2 (company_id,pcmso_id,period_start,period_end,metrics_json,narrative,recommendations,status,created_by) VALUES (${companyId},${input.pcmsoId},${input.periodStart},${input.periodEnd},${JSON.stringify(metrics)},${narrative},${recommendations},'em_revisao',${Number(ctx.user.id)})`
+      );
+      const id = Number((inserted as any)[0]?.insertId || 0);
+      await audit(db, ctx, "pcmso_analytical_report_generated", "pcmso_report", id, null, {
+        pcmsoId: input.pcmsoId,
+      });
+      return { ok: true, id, metrics, narrative, recommendations };
+    }),
+
+  reviewAnalyticalReport: protectedProcedure
+    .input(
+      z.object({
+        id: z.number().int().positive(),
+        narrative: z.string().max(100000),
+        recommendations: z.string().max(100000),
+        status: z.enum(["em_revisao", "aprovado"]),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      requireDoctor(ctx);
+      await ensureTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      await db.execute(
+        drzSql`UPDATE pcmso_analytical_reports_v2 SET narrative=${input.narrative},recommendations=${input.recommendations},status=${input.status},reviewed_by=${Number(ctx.user.id)},reviewed_at=NOW() WHERE id=${input.id} AND company_id=${companyId}`
+      );
+      await audit(db, ctx, "pcmso_analytical_report_reviewed", "pcmso_report", input.id, null, {
+        status: input.status,
+      });
+      return { ok: true };
+    }),
+
+  requestPgrReview: protectedProcedure
+    .input(
+      z.object({
+        pcmsoId: z.number().int().positive(),
+        gseName: z.string().max(255).optional(),
+        riskName: z.string().max(500).optional(),
+        description: z.string().min(10).max(100000),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      requireDoctor(ctx);
+      await ensureTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const own: any = await db.execute(
+        drzSql`SELECT pgr_id FROM pcmso_programs_v2 WHERE id=${input.pcmsoId} AND company_id=${companyId} LIMIT 1`
+      );
+      const program = rowsOf(own)[0];
+      if (!program?.pgr_id)
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "O PCMSO não possui PGR de referência.",
+        });
+      const inserted: any = await db.execute(
+        drzSql`INSERT INTO pcmso_pgr_review_requests_v2 (company_id,pcmso_id,pgr_id,gse_name,risk_name,description,requested_by) VALUES (${companyId},${input.pcmsoId},${program.pgr_id},${input.gseName || null},${input.riskName || null},${input.description},${Number(ctx.user.id)})`
+      );
+      const id = Number((inserted as any)[0]?.insertId || 0);
+      await audit(db, ctx, "pgr_review_requested", "pgr_review_request", id, null, {
+        pcmsoId: input.pcmsoId,
+      });
+      return { ok: true, id };
+    }),
+
+  signAndPublishPcmso: protectedProcedure
+    .input(
+      z.object({
+        id: z.number().int().positive(),
+        confirmation: z.literal(true),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      requireDoctor(ctx);
+      await ensureTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const programResult: any = await db.execute(
+        drzSql`SELECT * FROM pcmso_programs_v2 WHERE id=${input.id} AND company_id=${companyId} LIMIT 1`
+      );
+      const program = rowsOf(programResult)[0];
+      if (!program) throw new TRPCError({ code: "NOT_FOUND" });
+      const pendingResult: any = await db.execute(
+        drzSql`SELECT COUNT(*) pending FROM pcmso_risk_monitoring_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId} AND monitoring_kind='nao_definido'`
+      );
+      const reportResult: any = await db.execute(
+        drzSql`SELECT COUNT(*) total FROM pcmso_analytical_reports_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId} AND status='aprovado'`
+      );
+      if (Number(rowsOf(pendingResult)[0]?.pending || 0))
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Revise todos os riscos antes de assinar o PCMSO.",
+        });
+      if (!Number(rowsOf(reportResult)[0]?.total || 0))
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Aprove ao menos um relatório analítico antes da assinatura.",
+        });
+      if (Number(program.ai_audit_score || 0) < 70)
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Execute a auditoria e corrija as pendências críticas antes da assinatura.",
+        });
+      const signatureHash = crypto
+        .createHash("sha256")
+        .update(
+          `${companyId}:${input.id}:${ctx.user.id}:${Date.now()}:${program.current_version}`
+        )
+        .digest("hex");
+      await db.execute(
+        drzSql`UPDATE pcmso_programs_v2 SET status='vigente',signed_at=NOW(),signature_hash=${signatureHash},review_required=0 WHERE id=${input.id} AND company_id=${companyId}`
+      );
+      await audit(db, ctx, "pcmso_signed_published", "pcmso", input.id, null, {
+        signatureHash,
+      });
+      return { ok: true, signatureHash };
+    }),
+
+  archivePcmso: protectedProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ ctx, input }) => {
+      requireDoctor(ctx);
+      await ensureTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      await db.execute(
+        drzSql`UPDATE pcmso_programs_v2 SET status='arquivado',archived_at=NOW() WHERE id=${input.id} AND company_id=${companyId}`
+      );
+      await audit(db, ctx, "pcmso_archived", "pcmso", input.id);
+      return { ok: true };
+    }),
+
+  listSharedPcmso: protectedProcedure.query(async ({ ctx }) => {
+    requirePcmsoRead(ctx);
+    await ensureTables();
+    const db = await getDb();
+    const companyId = companyOf(ctx);
+    if (!db) return [];
+    const result: any = await db.execute(
+      drzSql`SELECT p.id,p.title,p.status,p.valid_from,p.valid_until,p.doctor_name,p.doctor_crm,p.current_version,p.signed_at,p.updated_at,
+        (SELECT v.id FROM pcmso_versions_v2 v WHERE v.pcmso_id=p.id AND v.company_id=p.company_id ORDER BY v.version_number DESC LIMIT 1) latest_version_id
+        FROM pcmso_programs_v2 p WHERE p.company_id=${companyId} ORDER BY (p.status='vigente') DESC,p.updated_at DESC`
+    );
+    return rowsOf(result);
+  }),
 
   addAnnex: protectedProcedure
     .input(
@@ -858,7 +1484,7 @@ export const medicalRouter = router({
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       const programResult: any = await db.execute(
-        drzSql`SELECT p.*,c.name company_name,c.cnpj,c.address FROM pcmso_programs_v2 p JOIN companies c ON c.id=p.company_id WHERE p.id=${input.id} AND p.company_id=${companyId} LIMIT 1`
+        drzSql`SELECT p.*,c.name company_name,c.cnpj,c.address,g.title pgr_title FROM pcmso_programs_v2 p JOIN companies c ON c.id=p.company_id LEFT JOIN pgr_documents g ON g.id=p.pgr_id WHERE p.id=${input.id} AND p.company_id=${companyId} LIMIT 1`
       );
       const program = rowsOf(programResult)[0];
       if (!program) throw new TRPCError({ code: "NOT_FOUND" });
@@ -867,6 +1493,9 @@ export const medicalRouter = router({
       );
       const annexesResult: any = await db.execute(
         drzSql`SELECT annex_number,title,file_name FROM pcmso_attachments_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId} ORDER BY annex_number,sort_order,id`
+      );
+      const analyticalResult: any = await db.execute(
+        drzSql`SELECT * FROM pcmso_analytical_reports_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId} AND status='aprovado' ORDER BY period_end DESC,id DESC LIMIT 1`
       );
       const monitoring = rowsOf(monitoringResult);
       const annexes = rowsOf(annexesResult);
@@ -878,17 +1507,12 @@ export const medicalRouter = router({
           code: "PRECONDITION_FAILED",
           message: `Existem ${undecided} risco(s) sem decisão médica de monitoramento.`,
         });
-      let chapters: any[] = [];
-      try {
-        chapters = JSON.parse(program.chapters_json || "[]");
-      } catch {}
-      const rows = monitoring
-        .map(
-          (row: any) =>
-            `<tr><td>${esc(row.gse_name || "-")}</td><td><b>${esc(row.risk_name)}</b><br><span>${esc(row.technical_detail || "Sem detalhamento no PGR")}</span></td><td>${esc(row.risk_classification || "-")}</td><td>${esc(row.monitoring_kind.replaceAll("_", " "))}<br><b>${esc(row.exam_name || row.monitoring_name || "-")}</b><br>${esc(row.periodicity || "-")}</td><td>${esc(row.observations || "-")}</td></tr>`
-        )
-        .join("");
-      const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>@page{size:A4;margin:20mm 16mm}body{font-family:Arial,sans-serif;color:#172b3a;font-size:10pt;line-height:1.45}h1{font-size:25pt;color:#0e2c46}h2{margin-top:10mm;color:#0e2c46;border-bottom:2px solid #0096a6;padding-bottom:2mm}table{width:100%;border-collapse:collapse;font-size:8pt}th,td{border:1px solid #d7e1e8;padding:2mm;vertical-align:top}th{background:#0e2c46;color:#fff}.cover{height:240mm;display:flex;flex-direction:column;justify-content:center;text-align:center;page-break-after:always}.meta{color:#607486}.signature{margin-top:18mm;text-align:center}.signature-line{border-top:1px solid #172b3a;width:75mm;margin:0 auto 2mm}.page-break{page-break-before:always}</style></head><body><section class="cover"><h1>${esc(program.title)}</h1><h2>${esc(program.company_name)}</h2><p>CNPJ: ${esc(program.cnpj || "-")}<br>Vigência: ${esc(program.valid_from || "-")} a ${esc(program.valid_until || "-")}</p><p class="meta">Programa de Controle Médico de Saúde Ocupacional</p></section><h2>1. Identificação</h2><p><b>Empresa:</b> ${esc(program.company_name)}<br><b>CNPJ:</b> ${esc(program.cnpj || "-")}<br><b>Endereço:</b> ${esc(program.address || "-")}<br><b>Médico responsável:</b> ${esc(program.doctor_name)} - ${esc(program.doctor_crm)}</p><h2>2. Introdução</h2><p>${esc(program.introduction || "")}</p><h2>3. Objetivo</h2><p>${esc(program.objective || "")}</p><h2>4. Metodologia</h2><p>${esc(program.methodology || "")}</p>${chapters.map((chapter, index) => `<h2>${index + 5}. ${esc(chapter.title)}</h2><p>${esc(chapter.content)}</p>`).join("")}<div class="page-break"></div><h2>Monitoramento por GSE e risco</h2><table><thead><tr><th>GSE</th><th>Risco e detalhamento</th><th>Classificação</th><th>Monitoramento</th><th>Observações</th></tr></thead><tbody>${rows || '<tr><td colspan="5">Nenhum risco importado.</td></tr>'}</tbody></table><h2>Anexos associados</h2><ol>${annexes.map((item: any) => `<li>Anexo ${item.annex_number}: ${esc(item.title || item.file_name)}</li>`).join("") || "<li>Nenhum anexo associado.</li>"}</ol><div class="signature"><div class="signature-line"></div><b>${esc(program.doctor_name)}</b><br>${esc(program.doctor_crm)}</div></body></html>`;
+      const html = buildPcmsoPdfHtml({
+        program,
+        monitoring,
+        annexes,
+        analyticalReport: rowsOf(analyticalResult)[0],
+      });
       const puppeteer = (await import("puppeteer")).default;
       const browser = await puppeteer.launch({
         headless: true,
@@ -1120,7 +1744,7 @@ export const medicalRouter = router({
     }),
 
   listVaccines: protectedProcedure.query(async ({ ctx }) => {
-    requireDoctor(ctx);
+    requireVaccinationRead(ctx);
     await ensureTables();
     const db = await getDb();
     const companyId = companyOf(ctx);
@@ -1146,7 +1770,7 @@ export const medicalRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      requireDoctor(ctx);
+      requireVaccinationManager(ctx);
       await ensureTables();
       const db = await getDb();
       const companyId = companyOf(ctx);
@@ -1173,7 +1797,7 @@ export const medicalRouter = router({
     }),
 
   listVaccinePartners: protectedProcedure.query(async ({ ctx }) => {
-    requireDoctor(ctx);
+    requireVaccinationRead(ctx);
     await ensureTables();
     const db = await getDb();
     const companyId = companyOf(ctx);
@@ -1197,7 +1821,7 @@ export const medicalRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      requireDoctor(ctx);
+      requireVaccinationManager(ctx);
       await ensureTables();
       const db = await getDb();
       const companyId = companyOf(ctx);
@@ -1224,13 +1848,31 @@ export const medicalRouter = router({
     }),
 
   listVaccineCampaigns: protectedProcedure.query(async ({ ctx }) => {
-    requireDoctor(ctx);
+    requireVaccinationRead(ctx);
     await ensureTables();
     const db = await getDb();
     const companyId = companyOf(ctx);
     if (!db) return [];
     const result: any = await db.execute(
       drzSql`SELECT c.*,v.name vaccine_name,p.name partner_name,b.name branch_name,s.name sector_name FROM medical_vaccine_campaigns_v2 c JOIN medical_vaccines_v2 v ON v.id=c.vaccine_id LEFT JOIN medical_vaccine_partners_v2 p ON p.id=c.partner_id LEFT JOIN branches b ON b.id=c.branch_id LEFT JOIN sectors s ON s.id=c.sector_id WHERE c.company_id=${companyId} ORDER BY c.campaign_at DESC`
+    );
+    return rowsOf(result);
+  }),
+
+  listVaccinationRecords: protectedProcedure.query(async ({ ctx }) => {
+    requireVaccinationRead(ctx);
+    await ensureTables();
+    const db = await getDb();
+    const companyId = companyOf(ctx);
+    if (!db) return [];
+    const result: any = await db.execute(
+      drzSql`SELECT r.*,u.name collaborator_name,u.cpf,v.name vaccine_name,c.name campaign_name
+        FROM medical_vaccination_records_v2 r
+        JOIN users u ON u.id=r.collaborator_id AND u.company_id=r.company_id
+        JOIN medical_vaccines_v2 v ON v.id=r.vaccine_id AND v.company_id=r.company_id
+        LEFT JOIN medical_vaccine_campaigns_v2 c ON c.id=r.campaign_id
+        WHERE r.company_id=${companyId}
+        ORDER BY r.vaccination_date DESC,r.id DESC LIMIT 5000`
     );
     return rowsOf(result);
   }),
@@ -1251,7 +1893,7 @@ export const medicalRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      requireDoctor(ctx);
+      requireVaccinationManager(ctx);
       await ensureTables();
       const db = await getDb();
       const companyId = companyOf(ctx);
@@ -1281,7 +1923,7 @@ export const medicalRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      requireDoctor(ctx);
+      requireVaccinationManager(ctx);
       await ensureTables();
       const db = await getDb();
       const companyId = companyOf(ctx);
@@ -1379,9 +2021,125 @@ export const medicalRouter = router({
           drzSql`SELECT r.id,v.name title,r.vaccination_date created_at,r.dose_number FROM medical_vaccination_records_v2 r JOIN medical_vaccines_v2 v ON v.id=r.vaccine_id WHERE r.company_id=${companyId} AND r.collaborator_id=${input.collaboratorId} ORDER BY r.vaccination_date DESC`
         )
         .catch(() => [[]]);
+      const progress: any = await db
+        .execute(
+          drzSql`SELECT COUNT(*) total,SUM(isCompleted=1) completed,SUM(isCompleted=0) pending FROM user_progress WHERE userId=${input.collaboratorId}`
+        )
+        .catch(() => [[]]);
+      const pendingEpi: any = await db
+        .execute(
+          drzSql`SELECT COUNT(*) total FROM epi_epc_deliveries WHERE company_id=${companyId} AND collaborator_id=${input.collaboratorId} AND signature_status NOT IN ('signed','assinado','comprovado')`
+        )
+        .catch(() => [[]]);
+      const relatedTechnical: any = await db
+        .execute(drzSql`SELECT COUNT(DISTINCT d.id) total
+          FROM technical_documents_v2 d
+          JOIN technical_document_risks_v2 r ON r.document_id=d.id AND r.company_id=d.company_id
+          JOIN pgr_gse_setores gs ON gs.gse_id=r.pgr_gse_id
+          JOIN users u ON u.id=${input.collaboratorId} AND u.company_id=d.company_id AND u.sector_id=gs.sector_id
+          WHERE d.company_id=${companyId}`)
+        .catch(() => [[]]);
+      const progressRow = rowsOf(progress)[0] || {};
+      const pendingEpiCount = Number(rowsOf(pendingEpi)[0]?.total || 0);
+      const technicalCount = Number(rowsOf(relatedTechnical)[0]?.total || 0);
+      const documentCount = rowsOf(docs).length;
+      const certificateCount = rowsOf(certificates).length;
+      const epiCount = rowsOf(epi).length;
+      const leaveRows = rowsOf(leaves);
+      const vaccinationRows = rowsOf(vaccinations);
+      const pendingLeaves = leaveRows.filter(row =>
+        ["pendente", "em_analise", "retorno_pendente"].includes(
+          String(row.status || "")
+        )
+      ).length;
+      const upcomingVaccines = vaccinationRows.filter(row => {
+        if (!row.next_dose_date) return false;
+        const days =
+          (new Date(row.next_dose_date).getTime() - Date.now()) / 86_400_000;
+        return days >= 0 && days <= 30;
+      }).length;
+      const shortcuts = [
+        {
+          key: "overview",
+          label: "Visão 360",
+          description: "Resumo funcional e histórico integrado",
+          href: `/admin/colaboradores/${input.collaboratorId}`,
+          count: null,
+          priority: 1,
+          status: "normal",
+        },
+        {
+          key: "leaves",
+          label: "Atestados e afastamentos",
+          description: "Ausências, validações e retorno ao trabalho",
+          href: `/admin/atestados-afastamentos?collaboratorId=${input.collaboratorId}`,
+          count: leaveRows.length,
+          priority: pendingLeaves ? 2 : 7,
+          status: pendingLeaves ? "attention" : "normal",
+        },
+        {
+          key: "epi",
+          label: "EPI / EPC",
+          description: "Entregas, recibos, trocas e pendências",
+          href: `/admin/gestao-epi-epc?collaboratorId=${input.collaboratorId}`,
+          count: epiCount,
+          priority: pendingEpiCount ? 3 : 8,
+          status: pendingEpiCount ? "attention" : "normal",
+        },
+        {
+          key: "courses",
+          label: "Cursos e certificados",
+          description: "Progresso, conclusões e evidências",
+          href: `/admin/usuarios/${input.collaboratorId}/historico`,
+          count: Number(progressRow.pending || 0),
+          priority: Number(progressRow.pending || 0) ? 4 : 9,
+          status: Number(progressRow.pending || 0) ? "attention" : "normal",
+        },
+        {
+          key: "vaccination",
+          label: "Vacinação",
+          description: "Doses, próximas aplicações e comprovantes",
+          href: `/admin/vacinacao?collaboratorId=${input.collaboratorId}`,
+          count: vaccinationRows.length,
+          priority: upcomingVaccines ? 5 : 10,
+          status: upcomingVaccines ? "attention" : "normal",
+        },
+        {
+          key: "technical",
+          label: "Documentos técnicos relacionados",
+          description: "PGR, GSE e laudos aplicáveis ao setor",
+          href: `/admin/documentos-tecnicos?collaboratorId=${input.collaboratorId}`,
+          count: technicalCount,
+          priority: 11,
+          status: "normal",
+        },
+        {
+          key: "documents",
+          label: "Arquivo documental",
+          description: "Documentos externos arquivados no dossiê",
+          href: `/admin/colaboradores/${input.collaboratorId}/dossie#documentos`,
+          count: documentCount,
+          priority: 12,
+          status: "normal",
+        },
+      ].sort((a, b) => a.priority - b.priority);
       return {
         patient: rowsOf(patient)[0],
         documents: rowsOf(docs),
+        summary: {
+          documents: documentCount,
+          certificates: certificateCount,
+          epiDeliveries: epiCount,
+          epiPendingSignature: pendingEpiCount,
+          leaves: leaveRows.length,
+          pendingLeaves,
+          vaccinations: vaccinationRows.length,
+          upcomingVaccines,
+          courses: Number(progressRow.total || 0),
+          completedCourses: Number(progressRow.completed || 0),
+          technicalDocuments: technicalCount,
+        },
+        shortcuts,
         integrations: {
           certificates: rowsOf(certificates),
           epiEpc: rowsOf(epi),
@@ -1462,7 +2220,7 @@ export const medicalRouter = router({
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       let query: any;
       if (input.kind === "pcmso_annex" || input.kind === "pcmso_version")
-        requireDoctor(ctx);
+        requirePcmsoRead(ctx);
       else if (input.kind === "dossier") requireDossierAccess(ctx);
       if (input.kind === "pcmso_annex")
         query = await db.execute(

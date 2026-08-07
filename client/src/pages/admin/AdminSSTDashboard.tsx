@@ -5,8 +5,10 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock,
+  FileCheck2,
   ShieldAlert,
 } from "lucide-react"
+import { Button } from "@/components/ui/button"
 
 const STATUS_LABELS: Record<string, string> = {
   programado: "Programado",
@@ -39,6 +41,9 @@ export default function AdminSSTDashboard() {
     trpc.admin.listModules.useQuery(undefined, {
       staleTime: 60000,
     })
+
+  const { data: technicalSummary } =
+    trpc.technicalDocuments.summary.useQuery()
 
   const today = useMemo(() => new Date(), [])
 
@@ -161,6 +166,45 @@ export default function AdminSSTDashboard() {
             Indicadores de Segurança e Saúde no Trabalho
           </p>
         </div>
+
+        <section className="border bg-white p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <FileCheck2 className="h-5 w-5 text-teal-700" />
+                <h2 className="font-semibold text-slate-900">
+                  Documentos tecnicos ocupacionais
+                </h2>
+              </div>
+              <p className="mt-1 text-xs text-slate-500">
+                LTCAT, laudos de insalubridade e periculosidade integrados ao PGR.
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              onClick={() => (window.location.href = "/admin/documentos-tecnicos")}
+            >
+              Abrir documentos
+            </Button>
+          </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+            {[
+              ["Total", technicalSummary?.total ?? 0],
+              ["LTCAT", technicalSummary?.ltcat ?? 0],
+              ["Insalubridade", technicalSummary?.insalubridade ?? 0],
+              ["Periculosidade", technicalSummary?.periculosidade ?? 0],
+              ["Vigentes", technicalSummary?.vigente ?? 0],
+              ["Revisar apos PGR", technicalSummary?.revisar_pgr ?? 0],
+            ].map(([label, value]) => (
+              <div className="min-h-16 border bg-slate-50 p-3" key={String(label)}>
+                <div className="text-xs text-slate-500">{label}</div>
+                <div className="mt-1 text-xl font-bold text-slate-950">
+                  {String(value)}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
 
         {isLoading ? (
           <div className="flex items-center justify-center h-64">

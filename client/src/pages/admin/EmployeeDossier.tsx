@@ -1,12 +1,19 @@
 import { useState } from "react";
 import { useLocation } from "wouter";
 import {
+  Activity,
+  AlertTriangle,
   ArrowLeft,
   Download,
   FileArchive,
   FileText,
+  FolderOpen,
+  GraduationCap,
+  HardHat,
+  HeartPulse,
   Plus,
   ShieldCheck,
+  Syringe,
 } from "lucide-react";
 import { toast } from "sonner";
 import AppLayout from "@/components/AppLayout";
@@ -169,7 +176,16 @@ export default function EmployeeDossier({ id }: { id: number }) {
     );
   }
 
-  const { patient, documents, integrations } = dossier.data as any;
+  const { patient, documents, integrations, summary, shortcuts } = dossier.data as any;
+  const shortcutIcons: Record<string, React.ReactNode> = {
+    overview: <Activity size={18} />,
+    leaves: <HeartPulse size={18} />,
+    epi: <HardHat size={18} />,
+    courses: <GraduationCap size={18} />,
+    vaccination: <Syringe size={18} />,
+    technical: <FileText size={18} />,
+    documents: <FolderOpen size={18} />,
+  };
 
   return (
     <AppLayout>
@@ -201,6 +217,82 @@ export default function EmployeeDossier({ id }: { id: number }) {
           </Button>
         </header>
 
+        <section className="border bg-white">
+          <header className="border-b px-4 py-3">
+            <h2 className="font-semibold text-slate-900">
+              Resumo inteligente do colaborador
+            </h2>
+            <p className="mt-1 text-xs text-slate-500">
+              Indicadores administrativos consolidados dos módulos de origem,
+              sem expor conteúdo clínico do prontuário.
+            </p>
+          </header>
+          <div className="grid gap-px bg-slate-200 sm:grid-cols-3 lg:grid-cols-6">
+            {[
+              ["Cursos concluídos", summary?.completedCourses || 0],
+              ["Certificados", summary?.certificates || 0],
+              ["Entregas EPI/EPC", summary?.epiDeliveries || 0],
+              ["Atestados/afastamentos", summary?.leaves || 0],
+              ["Vacinas", summary?.vaccinations || 0],
+              ["Documentos", summary?.documents || 0],
+            ].map(([label, value]) => (
+              <div className="min-h-20 bg-white p-3" key={String(label)}>
+                <div className="text-xs text-slate-500">{label}</div>
+                <div className="mt-2 text-xl font-bold text-slate-950">
+                  {value}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="border bg-white">
+          <header className="border-b px-4 py-3">
+            <h2 className="font-semibold text-slate-900">
+              Atalhos do colaborador
+            </h2>
+            <p className="mt-1 text-xs text-slate-500">
+              As pendências aparecem primeiro. Cada atalho abre o módulo
+              original já contextualizado para este colaborador.
+            </p>
+          </header>
+          <div className="grid gap-px bg-slate-200 sm:grid-cols-2 lg:grid-cols-4">
+            {(shortcuts || []).map((shortcut: any) => (
+              <button
+                className="min-h-28 bg-white p-4 text-left hover:bg-slate-50"
+                key={shortcut.key}
+                onClick={() => setLocation(shortcut.href)}
+                type="button"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <span
+                    className={
+                      shortcut.status === "attention"
+                        ? "text-amber-700"
+                        : "text-teal-700"
+                    }
+                  >
+                    {shortcutIcons[shortcut.key] || <FileText size={18} />}
+                  </span>
+                  {shortcut.status === "attention" ? (
+                    <AlertTriangle className="text-amber-600" size={16} />
+                  ) : shortcut.count !== null ? (
+                    <Badge variant="outline" className="rounded-sm">
+                      {shortcut.count}
+                    </Badge>
+                  ) : null}
+                </div>
+                <div className="mt-3 text-sm font-semibold text-slate-950">
+                  {shortcut.label}
+                </div>
+                <div className="mt-1 text-xs text-slate-500">
+                  {shortcut.description}
+                </div>
+              </button>
+            ))}
+          </div>
+        </section>
+
         <div className="border-l-4 border-teal-600 bg-teal-50 p-4 text-sm text-teal-950">
           <div className="flex gap-3">
             <ShieldCheck className="mt-0.5 shrink-0" size={20} />
@@ -213,7 +305,7 @@ export default function EmployeeDossier({ id }: { id: number }) {
           </div>
         </div>
 
-        <section className="border bg-white">
+        <section className="border bg-white" id="documentos">
           <header className="flex items-center justify-between gap-3 border-b px-4 py-3">
             <div>
               <h2 className="font-semibold text-slate-900">

@@ -134,6 +134,7 @@ const adminSections: NavSection[] = [
       { label: "Gerador de PGR", href: "/admin/pgr", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <FileCheck size={16} />, feature: "pgr" ,},
       { label: "Dashboard PGR", href: "/admin/pgr/executivo", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <BarChart3 size={16} />, feature: "pgr" ,},
       { label: "Auditoria PGR", href: "/admin/pgr/auditoria", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <ShieldCheck size={16} />, feature: "pgr" ,},
+      { label: "Documentos Tecnicos", href: "/admin/documentos-tecnicos", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <FileSearch size={16} />, feature: "pgr" ,},
       { label: "Revisoes PGR", href: "/admin/pgr-revisoes", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <RotateCcw size={16} />, feature: "risk_assessment" ,},
       { label: "Arquivos SST", href: "/admin/arquivos", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <FolderOpen size={16} /> ,},
       { label: "Responsaveis Tecnicos", href: "/admin/responsaveis-tecnicos", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <Signature size={16} /> ,},
@@ -146,6 +147,7 @@ const adminSections: NavSection[] = [
     items: [
       { label: "Atestados e Afastamentos", href: "/admin/atestados-afastamentos", roles: ["admin", "rh", "sesmt", "company_admin", "admin_global", "super_admin", "chefia",], icon: <Stethoscope size={16} /> ,
        },
+      { label: "Gestao de Vacinacao", href: "/admin/vacinacao", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <Syringe size={16} /> },
       // P15 #5 — Kit de Primeiros Socorros (NR-07)
       { label: "Kit Primeiros Socorros", href: "/admin/primeiros-socorros", notRoles: ["chefia", "psicologo"], icon: <HeartHandshake size={16} /> ,},
       { label: "Vencimentos", href: "/admin/vencimentos", notRoles: ["chefia", "sesmt", "psicologo"], icon: <Clock size={16} /> ,},

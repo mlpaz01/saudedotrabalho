@@ -95,6 +95,8 @@ import AdminGHEGSE from "@/pages/admin/AdminGHEGSE";
 import AdminEPCEPI from "@/pages/admin/AdminEPCEPI";
 import AdminPGRRevision from "@/pages/admin/AdminPGRRevision";
 import AdminSSTDashboard from "@/pages/admin/AdminSSTDashboard";
+import TechnicalDocuments from "@/pages/admin/TechnicalDocuments";
+import AdminVaccination from "@/pages/admin/AdminVaccination";
 import AdminAcoesVinculadas from "@/pages/admin/AdminAcoesVinculadas";
 import AdminRiskAssessments from "@/pages/admin/AdminRiskAssessments";
 import AdminAepGestao from "@/pages/admin/AdminAepGestao";
@@ -311,6 +313,8 @@ function Router() {
       <Route path="/admin/epc-epi" component={() => <ProtectedRoute component={AdminEPCEPI} adminOnly />} />
       <Route path="/admin/pgr-revisoes" component={() => (<ProtectedRoute component={AdminPGRRevision} adminOnly />)} />
       <Route path="/admin/sst-dashboard" component={() => (<ProtectedRoute component={AdminSSTDashboard} adminOnly />)} />
+      <Route path="/admin/documentos-tecnicos" component={() => (<ProtectedRoute component={TechnicalDocuments} adminOnly />)} />
+      <Route path="/admin/vacinacao" component={() => (<ProtectedRoute component={AdminVaccination} adminOnly />)} />
       <Route path="/admin/acoes-vinculadas" component={() => (<ProtectedRoute component={AdminAcoesVinculadas} adminOnly />)} />
       <Route path="/admin/analise-risco" component={() => (<ProtectedRoute component={AdminRiskAssessments} adminOnly />)} />
       <Route path="/admin/analise-risco/:id" component={(p: any) => (<ProtectedRoute component={() => (<AdminRiskAssessmentDetail id={Number(p.params?.id)} />)} adminOnly />)} />

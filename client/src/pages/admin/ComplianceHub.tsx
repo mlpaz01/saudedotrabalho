@@ -4,14 +4,14 @@ import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
-  ShieldCheck, AlertTriangle, AlertOctagon, CheckCircle2,
+  ShieldCheck, AlertTriangle, AlertOctagon, CheckCircle2, FileCheck2,
   FileText, Download, Loader2,
   ClipboardCheck, Users, BookOpen, FileSearch, Printer,
   ChevronDown, ChevronRight, BarChart3, Building2, Layers,
   ExternalLink, ShieldAlert, ListChecks, ScrollText, GraduationCap,
 } from "lucide-react";
 
-type TabId = "overview" | "fiscalizacao" | "evidencias" | "dossie" | "documentos" | "maturidade" | "primeiros_socorros" | "epi_epc";
+type TabId = "overview" | "fiscalizacao" | "evidencias" | "dossie" | "documentos" | "maturidade" | "primeiros_socorros" | "epi_epc" | "occupational_docs";
 
 const AXIS_ICONS: Record<string, any> = {
   ciclo: ShieldCheck,
@@ -192,6 +192,138 @@ function EpiEpcCompliancePanel() {
   );
 }
 
+function OccupationalDocumentsCompliancePanel() {
+  const summaryQ = trpc.technicalDocuments.complianceSummary.useQuery();
+  const data = summaryQ.data as any;
+  const documentsByType = new Map(
+    ((data?.documentsByType || []) as any[]).map(row => [
+      String(row.document_type),
+      row,
+    ])
+  );
+  const pcmso = data?.pcmso || {};
+  if (summaryQ.isLoading)
+    return (
+      <div className="flex justify-center py-12">
+        <Loader2 className="animate-spin text-slate-400" />
+      </div>
+    );
+  const technicalRow = (type: string, label: string) => {
+    const summary: any = documentsByType.get(type) || {};
+    return {
+      label,
+      total: Number(summary.total || 0),
+      active: Number(summary.vigente || 0),
+      review: Number(summary.revisar_pgr || 0),
+      score: Math.round(Number(summary.score || 0)),
+      pending: Number(summary.pendencias || 0),
+    };
+  };
+  const rows = [
+    {
+      label: "PCMSO",
+      total: Number(pcmso.total || 0),
+      active: Number(pcmso.vigente || 0),
+      review: Number(pcmso.revisar_pgr || 0),
+      score: Math.round(Number(pcmso.score || 0)),
+      pending: Number(pcmso.pendencias || 0),
+    },
+    technicalRow("ltcat", "LTCAT"),
+    technicalRow("insalubridade", "Insalubridade"),
+    technicalRow("periculosidade", "Periculosidade"),
+  ];
+  const checklistRows = [
+    ["PCMSO", data?.checklists?.pcmso],
+    ["LTCAT", data?.checklists?.technical?.ltcat],
+    ["Insalubridade", data?.checklists?.technical?.insalubridade],
+    ["Periculosidade", data?.checklists?.technical?.periculosidade],
+  ] as Array<[string, any]>;
+  return (
+    <div className="space-y-4">
+      <div className="border bg-white p-5">
+        <h2 className="text-lg font-semibold">PCMSO e Documentos Técnicos</h2>
+        <p className="mt-1 text-sm text-slate-500">
+          Conformidade calculada sobre programas e laudos reais, integração com
+          o PGR, decisões técnicas, auditorias e versões vigentes.
+        </p>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+        {rows.map(row => {
+          const status = row.score >= 80 ? "Conforme" : row.score >= 50 ? "Atenção" : "Não conforme";
+          const toneClass =
+            row.score >= 80
+              ? "text-emerald-700"
+              : row.score >= 50
+                ? "text-amber-700"
+                : "text-rose-700";
+          return (
+            <div className="border bg-white p-4" key={row.label}>
+              <div className="flex items-start justify-between gap-2">
+                <h3 className="font-semibold">{row.label}</h3>
+                <span className={`text-xs font-semibold ${toneClass}`}>
+                  {status}
+                </span>
+              </div>
+              <div className="mt-4 text-3xl font-bold">{row.score}%</div>
+              <div className="mt-3 space-y-1 text-xs text-slate-500">
+                <div>Total cadastrado: {row.total}</div>
+                <div>Vigentes: {row.active}</div>
+                <div>Pendencias registradas: {row.pending}</div>
+                <div>Revisões após alteração do PGR: {row.review}</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="grid gap-3 lg:grid-cols-2">
+        {checklistRows.map(([label, audit]) => {
+          const checks = (audit?.requirements || audit?.checks || []) as any[];
+          return (
+            <section className="border bg-white p-4" key={label}>
+              <h3 className="font-semibold">Checklist {label}</h3>
+              <p className="mt-1 line-clamp-1 text-xs text-slate-500">
+                {audit?.title || "Nenhuma auditoria registrada"}
+              </p>
+              {checks.length ? (
+                <div className="mt-3 divide-y border text-xs">
+                  {checks.map((check, index) => {
+                    const passed = Boolean(check.passed ?? check.ok);
+                    return (
+                      <div
+                        className="flex items-start justify-between gap-3 p-2"
+                        key={`${label}-${check.key || index}`}
+                      >
+                        <span>{check.label}</span>
+                        <span
+                          className={
+                            passed
+                              ? "font-semibold text-emerald-700"
+                              : "font-semibold text-rose-700"
+                          }
+                        >
+                          {passed ? "Conforme" : "Pendente"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="mt-3 border border-dashed p-3 text-xs text-slate-500">
+                  Execute a auditoria no documento para gerar o checklist por requisito.
+                </p>
+              )}
+            </section>
+          );
+        })}
+      </div>
+      <div className="border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900">
+        Os índices verificam completude e rastreabilidade. Não representam
+        certificação, perícia ou aprovação automática do conteúdo técnico.
+      </div>
+    </div>
+  );
+}
+
 export default function ComplianceHub() {
   const [tab, setTab] = useState<TabId>("overview");
   const [simRunning, setSimRunning] = useState(false);
@@ -220,6 +352,7 @@ export default function ComplianceHub() {
     { id: "evidencias",   label: "Evidências",           icon: FileSearch },
     { id: "primeiros_socorros", label: "Primeiros Socorros", icon: FileText },
     { id: "epi_epc", label: "EPI / EPC", icon: ShieldAlert },
+    { id: "occupational_docs", label: "PCMSO e Laudos", icon: FileCheck2 },
     { id: "dossie",       label: "Dossiê Individual",    icon: Users },
     { id: "documentos",   label: "Documentos Oficiais",  icon: Download },
   ];
@@ -532,6 +665,8 @@ export default function ComplianceHub() {
         {tab === "primeiros_socorros" && <FirstAidCompliancePanel />}
 
         {tab === "epi_epc" && <EpiEpcCompliancePanel />}
+
+        {tab === "occupational_docs" && <OccupationalDocumentsCompliancePanel />}
 
         {/* ── DOSSIÊ INDIVIDUAL ─────────────────────────────────────────────── */}
         {tab === "dossie" && (

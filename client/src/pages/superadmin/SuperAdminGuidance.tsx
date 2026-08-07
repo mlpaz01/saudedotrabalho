@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import AppLayout from "@/components/AppLayout";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -11,7 +12,17 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { BookOpen, Pencil, Plus, Trash2, Video } from "lucide-react";
+import {
+  BookOpen,
+  CheckCircle2,
+  FileSearch,
+  Pencil,
+  Plus,
+  Search,
+  Sheet,
+  Trash2,
+  Video,
+} from "lucide-react";
 
 const roleOptions = [
   ["user", "Colaborador"],
@@ -43,6 +54,11 @@ const blank = {
   videoUrl: null,
   isActive: true,
   sortOrder: 0,
+  workflowStatus: "rascunho",
+  auditStatus: "nao_auditado",
+  auditNotes: "",
+  sourceName: null,
+  sourceRow: null,
 };
 const lines = (value: string) =>
   value
@@ -52,22 +68,74 @@ const lines = (value: string) =>
 
 export default function SuperAdminGuidance() {
   const query = trpc.guidance.listAdmin.useQuery();
+  const statsQ = trpc.guidance.catalogStats.useQuery();
   const [editing, setEditing] = useState<any | null>(null);
+  const [search, setSearch] = useState("");
+  const [status, setStatus] = useState("");
+  const [auditFilter, setAuditFilter] = useState("");
   const save = trpc.guidance.upsert.useMutation({
     onSuccess: () => {
       query.refetch();
       setEditing(null);
-      toast.success("Orientação publicada na base da IA.");
+      statsQ.refetch();
+      toast.success("Artigo salvo no fluxo editorial.");
     },
     onError: e => toast.error(e.message),
   });
   const remove = trpc.guidance.remove.useMutation({
-    onSuccess: () => query.refetch(),
+    onSuccess: () => {
+      query.refetch();
+      statsQ.refetch();
+    },
   });
+  const importCatalog = trpc.guidance.importCatalog.useMutation({
+    onSuccess: result => {
+      query.refetch();
+      statsQ.refetch();
+      toast.success(
+        result.inserted
+          ? `${result.inserted} artigo(s) importado(s) para validação.`
+          : "O catálogo de 163 artigos já está carregado."
+      );
+    },
+    onError: error => toast.error(error.message),
+  });
+  const auditCatalog = trpc.guidance.auditCatalog.useMutation({
+    onSuccess: result => {
+      query.refetch();
+      statsQ.refetch();
+      toast.success(
+        `${result.structurallyOk} artigo(s) com estrutura adequada; ${result.reviewed} exigem revisão.`
+      );
+    },
+    onError: error => toast.error(error.message),
+  });
+  const changeStatus = trpc.guidance.changeStatus.useMutation({
+    onSuccess: () => {
+      query.refetch();
+      statsQ.refetch();
+      toast.success("Status editorial atualizado.");
+    },
+    onError: error => toast.error(error.message),
+  });
+  const articles = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return ((query.data || []) as any[]).filter(row => {
+      if (status && row.workflowStatus !== status) return false;
+      if (auditFilter && row.auditStatus !== auditFilter) return false;
+      if (!needle) return true;
+      return [row.title, row.slug, row.module, row.summary].some(value =>
+        String(value || "")
+          .toLowerCase()
+          .includes(needle)
+      );
+    });
+  }, [query.data, search, status, auditFilter]);
+  const stats = (statsQ.data || {}) as any;
   return (
     <AppLayout>
       <div className="mx-auto max-w-7xl space-y-5 p-6">
-        <header className="flex items-start justify-between">
+        <header className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold">Manuais e Orientações</h1>
             <p className="mt-1 text-sm text-slate-500">
@@ -75,12 +143,81 @@ export default function SuperAdminGuidance() {
               camada de suporte por IA.
             </p>
           </div>
-          <Button onClick={() => setEditing({ ...blank })}>
-            <Plus size={15} className="mr-1" /> Criar artigo
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              disabled={importCatalog.isPending}
+              onClick={() => importCatalog.mutate()}
+            >
+              <Sheet size={15} className="mr-1" /> Importar catálogo
+            </Button>
+            <Button
+              variant="outline"
+              disabled={auditCatalog.isPending}
+              onClick={() => auditCatalog.mutate()}
+            >
+              <FileSearch size={15} className="mr-1" /> Auditar catálogo
+            </Button>
+            <Button onClick={() => setEditing({ ...blank })}>
+              <Plus size={15} className="mr-1" /> Criar artigo
+            </Button>
+          </div>
         </header>
+        <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-7">
+          {[
+            ["Total", stats.total || 0],
+            ["Rascunho", stats.rascunho || 0],
+            ["Em validação", stats.em_validacao || 0],
+            ["Aprovados", stats.aprovado || 0],
+            ["Publicados", stats.publicado || 0],
+            ["Revisar", stats.revisar || 0],
+            ["Auditados", stats.auditados || 0],
+          ].map(([label, value]) => (
+            <div className="min-h-20 border bg-white p-3" key={String(label)}>
+              <div className="text-xs text-slate-500">{label}</div>
+              <div className="mt-2 text-xl font-bold">{value}</div>
+            </div>
+          ))}
+        </div>
+        <div className="grid gap-3 border bg-white p-3 md:grid-cols-[1fr_220px_220px]">
+          <div className="relative">
+            <Search
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+              size={16}
+            />
+            <Input
+              className="pl-9"
+              value={search}
+              onChange={event => setSearch(event.target.value)}
+              placeholder="Buscar título, módulo, slug ou conteúdo"
+            />
+          </div>
+          <select
+            className="h-10 border bg-white px-2 text-sm"
+            value={status}
+            onChange={event => setStatus(event.target.value)}
+          >
+            <option value="">Todos os status</option>
+            <option value="rascunho">Rascunho</option>
+            <option value="em_validacao">Em validação</option>
+            <option value="aprovado">Aprovado</option>
+            <option value="publicado">Publicado</option>
+            <option value="arquivado">Arquivado</option>
+          </select>
+          <select
+            className="h-10 border bg-white px-2 text-sm"
+            value={auditFilter}
+            onChange={event => setAuditFilter(event.target.value)}
+          >
+            <option value="">Todas as auditorias</option>
+            <option value="nao_auditado">Não auditado</option>
+            <option value="revisar">Revisar</option>
+            <option value="estrutura_ok">Estrutura adequada</option>
+            <option value="aprovado">Aprovado</option>
+          </select>
+        </div>
         <div className="overflow-auto border bg-white">
-          <table className="w-full min-w-[850px] text-sm">
+          <table className="w-full min-w-[1100px] text-sm">
             <thead className="bg-slate-50">
               <tr>
                 <th className="p-3 text-left">Artigo</th>
@@ -88,11 +225,13 @@ export default function SuperAdminGuidance() {
                 <th className="p-3 text-left">Perfis</th>
                 <th className="p-3 text-left">Vídeo</th>
                 <th className="p-3 text-left">Status</th>
+                <th className="p-3 text-left">Auditoria</th>
+                <th className="p-3 text-left">Origem</th>
                 <th className="p-3"></th>
               </tr>
             </thead>
             <tbody>
-              {((query.data || []) as any[]).map(row => (
+              {articles.map(row => (
                 <tr className="border-t" key={row.id}>
                   <td className="p-3">
                     <b>{row.title}</b>
@@ -108,9 +247,51 @@ export default function SuperAdminGuidance() {
                     )}
                   </td>
                   <td className="p-3">
-                    {row.isActive ? "Publicado" : "Inativo"}
+                    <Badge variant="outline" className="rounded-sm">
+                      {row.workflowStatus}
+                    </Badge>
+                  </td>
+                  <td className="max-w-xs p-3">
+                    <div
+                      className={
+                        row.auditStatus === "revisar"
+                          ? "font-medium text-amber-700"
+                          : "font-medium text-emerald-700"
+                      }
+                    >
+                      {row.auditStatus}
+                    </div>
+                    {row.auditNotes ? (
+                      <div className="mt-1 line-clamp-2 text-xs text-slate-500">
+                        {row.auditNotes}
+                      </div>
+                    ) : null}
+                  </td>
+                  <td className="p-3 text-xs text-slate-500">
+                    {row.sourceName ? `Excel · linha ${row.sourceRow}` : "Manual"}
                   </td>
                   <td className="p-3 text-right">
+                    {row.workflowStatus !== "publicado" ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        title="Aprovar e publicar"
+                        onClick={() =>
+                          confirm(
+                            row.auditStatus === "revisar"
+                              ? "A auditoria ainda recomenda revisão. Publicar mesmo assim?"
+                              : "Publicar este artigo no Manual e na base da IA?"
+                          ) &&
+                          changeStatus.mutate({
+                            id: row.id,
+                            status: "publicado",
+                            confirmation: true,
+                          })
+                        }
+                      >
+                        <CheckCircle2 size={15} className="text-emerald-700" />
+                      </Button>
+                    ) : null}
                     <Button
                       size="icon"
                       variant="ghost"
@@ -133,6 +314,11 @@ export default function SuperAdminGuidance() {
               ))}
             </tbody>
           </table>
+          {!articles.length ? (
+            <p className="p-6 text-center text-sm text-slate-500">
+              Nenhum artigo corresponde aos filtros.
+            </p>
+          ) : null}
         </div>
         {editing && (
           <ArticleEditor
@@ -201,7 +387,40 @@ function ArticleEditor({
                 onChange={e => set("route", e.target.value)}
               />
             </Label>
+            <Label text="Status editorial">
+              <select
+                className="h-10 w-full border bg-white px-2 text-sm"
+                value={form.workflowStatus}
+                onChange={e => set("workflowStatus", e.target.value)}
+              >
+                <option value="rascunho">Rascunho</option>
+                <option value="em_validacao">Em validação</option>
+                <option value="aprovado">Aprovado</option>
+                {form.workflowStatus === "publicado" ? (
+                  <option value="publicado">Publicado</option>
+                ) : null}
+                <option value="arquivado">Arquivado</option>
+              </select>
+            </Label>
+            <Label text="Resultado da auditoria">
+              <select
+                className="h-10 w-full border bg-white px-2 text-sm"
+                value={form.auditStatus}
+                onChange={e => set("auditStatus", e.target.value)}
+              >
+                <option value="nao_auditado">Não auditado</option>
+                <option value="revisar">Revisar</option>
+                <option value="estrutura_ok">Estrutura adequada</option>
+                <option value="aprovado">Aprovado</option>
+              </select>
+            </Label>
           </div>
+          <Label text="Notas da auditoria">
+            <Textarea
+              value={form.auditNotes || ""}
+              onChange={e => set("auditNotes", e.target.value)}
+            />
+          </Label>
           <Label text="Resumo">
             <Textarea
               value={form.summary}
@@ -303,14 +522,11 @@ function ArticleEditor({
               />
             </Label>
           </div>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={form.isActive}
-              onChange={e => set("isActive", e.target.checked)}
-            />{" "}
-            Artigo publicado
-          </label>
+          {form.sourceName ? (
+            <div className="border bg-slate-50 p-3 text-xs text-slate-600">
+              Origem: {form.sourceName} · linha {form.sourceRow}
+            </div>
+          ) : null}
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={close}>
               Cancelar
@@ -325,7 +541,7 @@ function ArticleEditor({
               }
               onClick={() => save(form)}
             >
-              Salvar e publicar
+              Salvar artigo
             </Button>
           </div>
         </div>
