@@ -168,16 +168,22 @@ function NewTicketForm({ onCancel, onCreated }: { onCancel: () => void; onCreate
   const [subject, setSubject] = useState("");
   const [category, setCategory] = useState("");
   const [firstMessage, setFirstMessage] = useState("");
+  const [assistantResult, setAssistantResult] = useState<any>(null);
 
   const createMut = trpc.support.createTicket.useMutation({
     onSuccess: (r) => { onCreated(r.ticketId); },
     onError: (e) => toast.error(e.message),
   });
+  const askMut = (trpc.knowledge as any).ask.useMutation({
+    onSuccess: (result: any) => setAssistantResult(result),
+    onError: (error: any) => toast.error(error?.message || "Não foi possível consultar o assistente."),
+  });
 
-  const submit = () => {
+  const consultAssistant = () => {
     if (!subject.trim() || !firstMessage.trim()) { toast.error("Preencha o assunto e a mensagem."); return; }
-    createMut.mutate({ subject: subject.trim(), category: category.trim() || undefined, firstMessage: firstMessage.trim() });
+    askMut.mutate({ question: `${subject.trim()}\n\n${firstMessage.trim()}` });
   };
+  const escalate = () => createMut.mutate({ subject: subject.trim(), category: category.trim() || undefined, firstMessage: firstMessage.trim(), escalateToHuman: true });
 
   return (
     <div style={{ padding: 24, maxWidth: 720, margin: "0 auto" }}>
@@ -194,7 +200,7 @@ function NewTicketForm({ onCancel, onCreated }: { onCancel: () => void; onCreate
         <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#0E2C46", marginBottom: 6 }}>Assunto *</label>
         <input
           value={subject}
-          onChange={(e) => setSubject(e.target.value)}
+          onChange={(e) => { setSubject(e.target.value); setAssistantResult(null); }}
           placeholder="Ex.: Não consigo acessar meu certificado"
           maxLength={255}
           style={inputStyle}
@@ -214,22 +220,29 @@ function NewTicketForm({ onCancel, onCreated }: { onCancel: () => void; onCreate
         <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#0E2C46", margin: "16px 0 6px" }}>Mensagem *</label>
         <textarea
           value={firstMessage}
-          onChange={(e) => setFirstMessage(e.target.value)}
+          onChange={(e) => { setFirstMessage(e.target.value); setAssistantResult(null); }}
           placeholder="Conte com detalhes o que está acontecendo..."
           rows={5}
           style={{ ...inputStyle, resize: "vertical", lineHeight: 1.5 }}
         />
 
+        {assistantResult && <div style={{ marginTop: 18, border: "1px solid #b9ead0", background: "#f2fbf6", borderRadius: 10, padding: 16 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 700, color: "#176b45", marginBottom: 8 }}><Bot size={17}/>Orientação do assistente</div>
+          <div style={{ whiteSpace: "pre-wrap", fontSize: 14, lineHeight: 1.6, color: "#234" }}>{assistantResult.answer}</div>
+          {assistantResult.references?.length > 0 && <div style={{ marginTop: 14 }}><div style={{ fontSize: 12, fontWeight: 700, color: "#64748b", marginBottom: 6 }}>MANUAL RELACIONADO</div>{assistantResult.references.map((article:any)=><a key={article.slug} href={`/manual?artigo=${article.slug}`} style={{ display: "block", color: "#0E2C46", fontWeight: 700, fontSize: 13, marginTop: 5, textDecoration: "underline" }}>{article.title}</a>)}</div>}
+          <div style={{ marginTop: 16, display: "flex", flexWrap: "wrap", gap: 8 }}><button onClick={onCancel} style={{ background: "#fff", border: "1px solid #9dd9b9", color: "#176b45", borderRadius: 8, padding: "8px 13px", fontWeight: 700, cursor: "pointer" }}><CheckCircle2 size={15} style={{ display: "inline", marginRight: 5 }}/>Resolvi</button><button onClick={escalate} disabled={createMut.isPending} style={{ background: "#0E2C46", border: 0, color: "#fff", borderRadius: 8, padding: "8px 13px", fontWeight: 700, cursor: "pointer" }}>{createMut.isPending ? "Encaminhando..." : "Ainda preciso de ajuda"}</button></div>
+        </div>}
+
         <div style={{ display: "flex", gap: 10, marginTop: 20, justifyContent: "flex-end" }}>
           <button onClick={onCancel} style={{ background: "transparent", border: "1px solid #d7dde5", color: "#475569", borderRadius: 10, padding: "10px 18px", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Cancelar</button>
-          <button
-            onClick={submit}
-            disabled={createMut.isPending}
+          {!assistantResult && <button
+            onClick={consultAssistant}
+            disabled={askMut.isPending}
             style={{ display: "flex", alignItems: "center", gap: 8, background: "#43C285", color: "#fff", border: "none", borderRadius: 10, padding: "10px 20px", fontSize: 14, fontWeight: 700, cursor: createMut.isPending ? "default" : "pointer", opacity: createMut.isPending ? 0.7 : 1 }}
           >
-            {createMut.isPending ? <Loader2 className="animate-spin" size={16} /> : <Send size={16} />}
-            {createMut.isPending ? "Enviando..." : "Iniciar conversa"}
-          </button>
+            {askMut.isPending ? <Loader2 className="animate-spin" size={16} /> : <Sparkles size={16} />}
+            {askMut.isPending ? "Consultando..." : "Consultar assistente"}
+          </button>}
         </div>
       </div>
     </div>

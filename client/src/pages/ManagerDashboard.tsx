@@ -1,4 +1,5 @@
 import { trpc } from "@/lib/trpc";
+import { useWhiteLabelBranding } from "@/lib/whiteLabelBranding";
 import AppLayout from "@/components/AppLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -25,6 +26,9 @@ function StatusBadge({ status }: { status: string }) {
 
 export default function ManagerDashboard() {
   const { data, isLoading } = trpc.dashboard.managerOverview.useQuery();
+  const { branding } = useWhiteLabelBranding();
+  const isWhiteLabel = branding.found && branding.hideSdtBrand;
+  const brandName = branding.brandName || "Saúde do Trabalho";
   // Bruno R5-P5 final — usa MESMA fonte da Central de Conformidade NR-01
   // (`compliance.nr01Status` retorna `score`). `compliance.score` antigo dava
   // número diferente (média de completion_percent) e gerava o "10% vs 69%".
@@ -48,7 +52,9 @@ export default function ManagerDashboard() {
           <h1 className="text-2xl font-bold" style={{ fontFamily: "'Playfair Display', serif" }}>
             Painel de Gestão
           </h1>
-          <p className="text-muted-foreground text-sm mt-1">Visão geral da sua operação de Saúde do Trabalho</p>
+          <p className="text-muted-foreground text-sm mt-1">
+            {isWhiteLabel ? `Visão geral da operação ${brandName}` : "Visão geral da sua operação de Saúde do Trabalho"}
+          </p>
         </div>
 
         {/* Red alert */}

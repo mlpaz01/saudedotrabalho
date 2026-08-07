@@ -6,14 +6,23 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { CheckCircle2 } from "lucide-react";
+import { useAuth } from "@/_core/hooks/useAuth";
 
 export default function SurveyAnswer() {
+  const { user } = useAuth();
   const [, params] = useRoute("/pesquisas/:id/responder");
   const [, setLocation] = useLocation();
   const id = Number(params?.id ?? 0);
   const sQ = trpc.surveys.get.useQuery({ id }, { enabled: !!id });
   const submitMut = trpc.surveys.submit.useMutation({
-    onSuccess: () => { toast.success("Obrigado por participar!"); setLocation("/pesquisas"); },
+    onSuccess: () => {
+      const category = String((sQ.data as any)?.category || "").toLowerCase();
+      const isDrps = category.includes("psico") || category.includes("drps") || category.includes("nr-01") || category.includes("nr01");
+      if (isDrps && (sQ.data as any)?.isAnonymous && user?.id) {
+        window.localStorage.setItem(`sdt.drps.receipt.${user.id}.${id}`, "completed");
+      }
+      toast.success("Obrigado por participar!"); setLocation("/pesquisas");
+    },
     onError: (e) => toast.error(e.message),
   });
   const [answers, setAnswers] = useState<Record<number, string>>({});
@@ -48,7 +57,7 @@ export default function SurveyAnswer() {
         <div>
           <h1 className="text-2xl font-bold text-primary" style={{ fontFamily: "'Playfair Display', serif" }}>{s.title}</h1>
           <p className="text-muted-foreground text-sm">{s.description}</p>
-          {s.isAnonymous && <p className="text-xs text-green-700 mt-1">🔒 Suas respostas são anônimas.</p>}
+          {s.isAnonymous && <p className="text-xs text-green-700 mt-1">Suas respostas são anônimas. No DRPS, a plataforma não mantém lista nominal de quem respondeu ou deixou de responder.</p>}
         </div>
 
         <div className="space-y-4">

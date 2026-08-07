@@ -214,6 +214,26 @@ async function seedScope(scope: CommercialScope) {
       }
     }
   }
+
+  // Corrige somente o defeito conhecido do seed padrão: Profissional e Completo
+  // com conjuntos idênticos. Planos personalizados com outros nomes não são tocados.
+  const defaultsResult: any = await db.execute(drzSql`SELECT p.id,p.name,GROUP_CONCAT(pf.feature_id ORDER BY pf.feature_id) feature_ids
+    FROM commercial_plan_catalog p LEFT JOIN commercial_plan_features pf ON pf.plan_id=p.id
+    WHERE p.owner_type=${scope.ownerType} AND p.owner_id=${scope.ownerId}
+      AND p.name IN ('Plano Profissional','Plano Completo')
+    GROUP BY p.id,p.name`);
+  const defaultPlans = rowsOf(defaultsResult);
+  const professional = defaultPlans.find((row: any) => row.name === "Plano Profissional");
+  const complete = defaultPlans.find((row: any) => row.name === "Plano Completo");
+  if (professional && complete && professional.feature_ids && professional.feature_ids === complete.feature_ids) {
+    const featureResult: any = await db.execute(drzSql`SELECT id FROM commercial_feature_catalog WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} AND is_active=1 ORDER BY sort_order,id`);
+    const featureIds = rowsOf(featureResult).map((row: any) => Number(row.id));
+    if (featureIds.length >= 15) {
+      await db.execute(drzSql`DELETE FROM commercial_plan_features WHERE plan_id IN (${Number(professional.id)},${Number(complete.id)})`);
+      for (const featureId of featureIds.slice(0, 8)) await db.execute(drzSql`INSERT IGNORE INTO commercial_plan_features (plan_id,feature_id) VALUES (${Number(professional.id)},${featureId})`);
+      for (const featureId of featureIds.slice(0, 15)) await db.execute(drzSql`INSERT IGNORE INTO commercial_plan_features (plan_id,feature_id) VALUES (${Number(complete.id)},${featureId})`);
+    }
+  }
 }
 
 const commercialProcedure = protectedProcedure.use(async ({ ctx, next }) => {
@@ -282,11 +302,8 @@ async function createProposalPdf(scope: CommercialScope, proposalId: number) {
   if (!p) throw new TRPCError({ code: "NOT_FOUND", message: "Proposta não encontrada." });
   const brandResult: any = await db.execute(drzSql`SELECT * FROM commercial_brand_settings WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} LIMIT 1`);
   const brand = rowsOf(brandResult)[0] || {};
-  const selectedFeatureIds = (() => { try { return JSON.parse(p.selected_features_json || "[]") as number[]; } catch { return []; } })();
-  const featuresResult: any = selectedFeatureIds.length
-    ? await db.execute(drzSql`SELECT category, name, description FROM commercial_feature_catalog WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} AND id IN (${drzSql.join(selectedFeatureIds.map((id) => drzSql`${id}`), drzSql`,`)}) ORDER BY category, sort_order`)
-    : [[], []];
-  const features = rowsOf(featuresResult);
+  const allFeaturesResult: any = await db.execute(drzSql`SELECT id,category,name,description FROM commercial_feature_catalog WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} AND is_active=1 ORDER BY category,sort_order,id`);
+  const features = rowsOf(allFeaturesResult);
   const grouped = new Map<string, any[]>();
   for (const f of features) grouped.set(String(f.category), [...(grouped.get(String(f.category)) || []), f]);
   const services = (() => { try { return JSON.parse(p.services_json || "[]"); } catch { return []; } })();
@@ -298,18 +315,18 @@ async function createProposalPdf(scope: CommercialScope, proposalId: number) {
   const discount = Number(p.discount_value || 0);
   const servicesTotal = services.reduce((sum: number, item: any) => sum + Number(item.value || 0), 0);
   const total = Math.max(0, setup + monthly + servicesTotal - discount);
-  const categoryHtml = [...grouped.entries()].map(([category, items]) => `<section><h2>${esc(category)}</h2><div class="feature-grid">${items.map((f) => `<div class="feature"><b>${esc(f.name)}</b><span>${esc(f.description || "Incluído na proposta")}</span></div>`).join("")}</div></section>`).join("");
+  const categoryHtml = [...grouped.entries()].map(([category, items]) => `<section><h2>${esc(category)}</h2><div class="feature-grid">${items.map((f) => `<div class="feature"><b>${esc(f.name)}</b><span>${esc(f.description || "Disponível no ecossistema da plataforma")}</span></div>`).join("")}</div></section>`).join("");
   const allPlansResult: any = await db.execute(drzSql`SELECT pl.*, GROUP_CONCAT(pf.feature_id) AS feature_ids FROM commercial_plan_catalog pl LEFT JOIN commercial_plan_features pf ON pf.plan_id=pl.id WHERE pl.owner_type=${scope.ownerType} AND pl.owner_id=${scope.ownerId} AND pl.is_active=1 GROUP BY pl.id ORDER BY pl.sort_order, pl.id`);
   const plans = rowsOf(allPlansResult);
-  const allFeaturesResult: any = await db.execute(drzSql`SELECT id, name FROM commercial_feature_catalog WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} AND is_active=1 ORDER BY sort_order LIMIT 14`);
-  const matrixFeatures = rowsOf(allFeaturesResult);
-  const matrix = plans.length ? `<section><h2>Matriz de planos</h2><table><thead><tr><th>Funcionalidade</th>${plans.map((x) => `<th>${esc(x.name)}</th>`).join("")}</tr></thead><tbody>${matrixFeatures.map((f) => `<tr><td>${esc(f.name)}</td>${plans.map((pl) => `<td class="center">${String(pl.feature_ids || "").split(",").includes(String(f.id)) ? "Incluído" : "-"}</td>`).join("")}</tr>`).join("")}</tbody></table></section>` : "";
+  const matrixFeatures = features;
+  const matrix = plans.length ? `<section><h2>Matriz de planos</h2><p class="small">A matriz comercial cadastrada é a fonte única de verdade para o CRM e para este documento.</p><table><thead><tr><th>Funcionalidade</th>${plans.map((x) => `<th>${esc(x.name)}</th>`).join("")}</tr></thead><tbody>${matrixFeatures.map((f) => `<tr><td><span class="small">${esc(f.category)}</span><br>${esc(f.name)}</td>${plans.map((pl) => `<td class="center">${String(pl.feature_ids || "").split(",").includes(String(f.id)) ? "Incluído" : "-"}</td>`).join("")}</tr>`).join("")}</tbody></table></section>` : "";
   const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
     @page{size:A4;margin:18mm 16mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#243447;margin:0;font-size:10.5pt;line-height:1.5}.cover{height:250mm;display:flex;flex-direction:column;justify-content:space-between;page-break-after:always;background:${primary};color:#fff;margin:-18mm -16mm;padding:28mm 22mm}.cover img{max-width:210px;max-height:90px;object-fit:contain;object-position:left center}.eyebrow{font-size:10pt;text-transform:uppercase;letter-spacing:1.5px;color:${secondary};font-weight:700}.cover h1{font-size:36pt;line-height:1.08;margin:24mm 0 8mm}.cover .client{font-size:19pt}.cover .meta{border-top:1px solid rgba(255,255,255,.35);padding-top:8mm}h2{font-size:18pt;color:${primary};border-bottom:3px solid ${secondary};padding-bottom:3mm;margin:10mm 0 5mm}h3{color:${primary};font-size:13pt}.lead{font-size:13pt;color:#475569}.feature-grid{display:grid;grid-template-columns:1fr 1fr;gap:4mm}.feature{border:1px solid #dbe5ea;padding:4mm;border-radius:6px;min-height:24mm}.feature b{display:block;color:${primary};font-size:11pt}.feature span{display:block;color:#64748b;font-size:9pt;margin-top:2mm}.investment{background:#f3f7f9;border-left:5px solid ${secondary};padding:6mm;margin:6mm 0}.price{font-size:24pt;color:${primary};font-weight:800}.small{font-size:8.5pt;color:#64748b}table{width:100%;border-collapse:collapse;font-size:8.5pt}th{background:${primary};color:white;text-align:left;padding:2.5mm}td{border-bottom:1px solid #dbe5ea;padding:2.5mm}.center{text-align:center}.footer{margin-top:14mm;border-top:1px solid #dbe5ea;padding-top:5mm;color:#64748b}.page-break{page-break-before:always}section{break-inside:avoid}
   </style></head><body>
   <div class="cover"><div>${logo ? `<img src="${logo}">` : `<div style="font-size:22pt;font-weight:800">${esc(brand.brand_name)}</div>`}</div><div><div class="eyebrow">Proposta comercial</div><h1>${esc(p.proposal_title || "Solução integrada em Saúde e Segurança do Trabalho")}</h1><div class="client">Preparada para ${esc(p.razao_social)}</div></div><div class="meta">Validade: ${Number(p.validade_dias || 15)} dias<br>Emissão: ${new Date().toLocaleDateString("pt-BR")}</div></div>
   <section><div class="eyebrow">Apresentação</div><h2>${esc(brand.brand_name || "Nossa plataforma")}</h2><p class="lead">${esc(p.presentation_text || brand.presentation_text || "")}</p><h3>Objetivo da proposta</h3><p>${esc(p.objective_text || brand.objective_text || "")}</p><p><b>Cliente:</b> ${esc(p.razao_social)}${p.cnpj ? ` | <b>CNPJ:</b> ${esc(p.cnpj)}` : ""}<br><b>Responsável:</b> ${esc(p.responsavel || "A definir")} | <b>Colaboradores:</b> ${Number(p.qtd_colaboradores || 0).toLocaleString("pt-BR")}</p></section>
-  ${categoryHtml || `<section><h2>Funcionalidades selecionadas</h2><p>As funcionalidades serão detalhadas durante o alinhamento comercial.</p></section>`}
+  <section><div class="eyebrow">Ecossistema completo</div><h2>Todas as funcionalidades disponíveis</h2><p>Conheça o universo completo da plataforma. A matriz seguinte demonstra com transparência o que está incluído em cada plano comercial.</p></section>
+  ${categoryHtml || `<section><h2>Funcionalidades disponíveis</h2><p>O catálogo comercial ainda não possui funcionalidades ativas.</p></section>`}
   <div class="page-break"></div>${matrix}
   <section><h2>Investimento personalizado</h2><div class="investment"><div class="small">PLANO SELECIONADO</div><h3>${esc(p.plan_name || "Plano personalizado")}</h3><p>${esc(p.plan_description || "")}</p><div class="price">${money(monthly)}<span style="font-size:11pt"> / mês</span></div>${setup ? `<p><b>Implantação:</b> ${money(setup)}</p>` : ""}${discount ? `<p><b>Desconto comercial:</b> ${money(discount)}</p>` : ""}${services.map((s: any) => `<p><b>${esc(s.name)}:</b> ${money(s.value)} ${esc(s.description || "")}</p>`).join("")}<p><b>Investimento inicial estimado:</b> ${money(total)}</p></div><p>${Number(p.qtd_colaboradores || 0) > 0 ? `O investimento recorrente corresponde a aproximadamente <b>${money(monthly / Number(p.qtd_colaboradores))} por colaborador/mês</b> e ${money(monthly / Number(p.qtd_colaboradores) / 30)} por colaborador/dia.` : ""}</p></section>
   <section><h2>Condições comerciais</h2><p>${esc(p.conditions_text || brand.commercial_terms || "")}</p><h2>Próximos passos</h2><p>${esc(p.next_steps_text || brand.next_steps_text || "")}</p></section>

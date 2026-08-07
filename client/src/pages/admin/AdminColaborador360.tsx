@@ -5,7 +5,7 @@ import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter ,} from "@/components/ui/dialog";
 import { toast } from "sonner";
 import {
   ArrowLeft, CalendarPlus, Plus, AlertTriangle, ShieldAlert, Activity,
@@ -21,14 +21,14 @@ import {
 
 function initials(name?: string | null) {
   if (!name) return "?";
-  return name.trim().split(/\s+/).slice(0, 2).map((p) => p[0]?.toUpperCase()).join("");
+  return name.trim().split(/\s+/).slice(0, 2).map(p => p[0]?.toUpperCase()).join("");
 }
 
 function fmtDate(d?: string | Date | null) {
   if (!d) return "—";
   const dt = new Date(d);
   if (isNaN(dt.getTime())) return String(d);
-  return dt.toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" });
+  return dt.toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" ,});
 }
 
 function fmtMonth(d?: string | null) {
@@ -40,11 +40,11 @@ function fmtMonth(d?: string | null) {
 
 // Semantic colors keyed to the wellbeing severity buckets.
 const SEV = {
-  bom: { ring: "#10b981", text: "text-emerald-600", bg: "bg-emerald-50", border: "border-emerald-200", chip: "bg-emerald-100 text-emerald-700" },
-  moderado: { ring: "#f59e0b", text: "text-amber-600", bg: "bg-amber-50", border: "border-amber-200", chip: "bg-amber-100 text-amber-700" },
-  alto: { ring: "#f97316", text: "text-orange-600", bg: "bg-orange-50", border: "border-orange-200", chip: "bg-orange-100 text-orange-700" },
-  critico: { ring: "#ef4444", text: "text-rose-600", bg: "bg-rose-50", border: "border-rose-200", chip: "bg-rose-100 text-rose-700" },
-  neutro: { ring: "#94a3b8", text: "text-slate-500", bg: "bg-slate-50", border: "border-slate-200", chip: "bg-slate-100 text-slate-600" },
+  bom: { ring: "#10b981", text: "text-emerald-600", bg: "bg-emerald-50", border: "border-emerald-200", chip: "bg-emerald-100 text-emerald-700" ,},
+  moderado: { ring: "#f59e0b", text: "text-amber-600", bg: "bg-amber-50", border: "border-amber-200", chip: "bg-amber-100 text-amber-700" ,},
+  alto: { ring: "#f97316", text: "text-orange-600", bg: "bg-orange-50", border: "border-orange-200", chip: "bg-orange-100 text-orange-700" ,},
+  critico: { ring: "#ef4444", text: "text-rose-600", bg: "bg-rose-50", border: "border-rose-200", chip: "bg-rose-100 text-rose-700" ,},
+  neutro: { ring: "#94a3b8", text: "text-slate-500", bg: "bg-slate-50", border: "border-slate-200", chip: "bg-slate-100 text-slate-600" ,},
 } as const;
 
 function sevFor(score: number | null): keyof typeof SEV {
@@ -82,7 +82,7 @@ function ScoreCircle({ score }: { score: number | null }) {
 const TECH_ICONS: Record<string, any> = {
   "Escuta ativa": MessageSquareHeart,
   "Pausas programadas": Coffee,
-  "Mindfulness": Brain,
+  Mindfulness: Brain,
   "TCC breve": Brain,
   "Ergonomia cognitiva": Activity,
   "Redistribuição de carga": Users,
@@ -112,13 +112,13 @@ function trendIcon(trend?: string | null) {
   return <Minus size={14} className="text-slate-400" />;
 }
 
-const SEV_PT: Record<string, string> = { baixo: "Baixo", moderado: "Moderado", alto: "Alto", critico: "Crítico" };
+const SEV_PT: Record<string, string> = { baixo: "Baixo", moderado: "Moderado", alto: "Alto", critico: "Crítico" ,};
 function CalcMemorySection({ cm }: { cm: any }) {
   const [open, setOpen] = useState(false);
   if (!cm) return null;
   return (
     <div className="rounded-2xl border border-border bg-white">
-      <button onClick={() => setOpen((o) => !o)}
+      <button onClick={() => setOpen(o => !o)}
         className="w-full flex items-center gap-2 px-5 py-4 text-left">
         <Calculator size={18} className="text-primary" />
         <span className="font-semibold text-foreground flex-1">Memória de Cálculo e Critérios de Recomendação</span>
@@ -138,7 +138,7 @@ function CalcMemorySection({ cm }: { cm: any }) {
                 <tr className="border-b border-border/50"><td className="py-1.5 text-slate-700">Base inicial</td><td>—</td><td className="text-center">—</td><td className="text-right text-emerald-600 font-medium">+{cm.base}</td></tr>
                 {(cm.signalsApplied ?? []).map((s: any, i: number) => (
                   <tr key={i} className="border-b border-border/50">
-                    <td className="py-1.5 text-slate-700">{s.label}{s.value != null ? <span className="text-slate-400"> ({s.value})</span> : null}</td>
+                    <td className="py-1.5 text-slate-700">{s.label}{s.value != null ? (<span className="text-slate-400"> ({s.value})</span> ): null}</td>
                     <td>{SEV_PT[s.severity] ?? s.severity}</td>
                     <td className="text-center">{s.weight}</td>
                     <td className={`text-right font-medium ${s.penalty > 0 ? "text-rose-600" : "text-slate-400"}`}>{s.penalty > 0 ? `−${s.penalty}` : "0"}</td>
@@ -169,9 +169,12 @@ function CalcMemorySection({ cm }: { cm: any }) {
           <div>
             <div className="text-sm font-semibold text-slate-800 mb-2">Dimensões derivadas</div>
             <ul className="text-sm text-slate-600 space-y-1">
-              <li><strong>Risco de burnout:</strong> {cap(cm.derived?.burnoutRisk?.value)} <span className="text-slate-400">— {cm.derived?.burnoutRisk?.rule}</span></li>
-              <li><strong>Carga de trabalho:</strong> {cap(cm.derived?.workloadLevel?.value) || "—"} <span className="text-slate-400">— {cm.derived?.workloadLevel?.rule}</span></li>
-              <li><strong>Engajamento:</strong> {cm.derived?.engagementPct?.value != null ? `${cm.derived.engagementPct.value}%` : "—"} <span className="text-slate-400">— {cm.derived?.engagementPct?.rule}</span></li>
+              <li><strong>Risco de burnout:</strong> {" "}
+                {cap(cm.derived?.burnoutRisk?.value)}{" "} <span className="text-slate-400">— {cm.derived?.burnoutRisk?.rule}</span></li>
+              <li><strong>Carga de trabalho:</strong> {" "}
+                {cap(cm.derived?.workloadLevel?.value) || "—"}{" "} <span className="text-slate-400">— {cm.derived?.workloadLevel?.rule}</span></li>
+              <li><strong>Engajamento:</strong> {" "}
+                {cm.derived?.engagementPct?.value != null ? `${cm.derived.engagementPct.value}%` : "—"}{" "} <span className="text-slate-400">— {cm.derived?.engagementPct?.rule}</span></li>
             </ul>
           </div>
           {/* Gatilhos da recomendacao */}
@@ -214,7 +217,7 @@ export default function AdminColaborador360({ id }: { id: number }) {
       setShowIntervention(false);
       utils.lessons.collaborator360.invalidate({ userId: id });
     },
-    onError: (e) => toast.error(e.message),
+    onError: e => toast.error(e.message),
   });
   const scheduleConversation = trpc.lessons.scheduleConversation.useMutation({
     onSuccess: () => {
@@ -222,7 +225,7 @@ export default function AdminColaborador360({ id }: { id: number }) {
       setShowSchedule(false);
       utils.lessons.collaborator360.invalidate({ userId: id });
     },
-    onError: (e) => toast.error(e.message),
+    onError: e => toast.error(e.message),
   });
 
   if (q.isLoading) {
@@ -245,7 +248,7 @@ export default function AdminColaborador360({ id }: { id: number }) {
   const idx = d.index;
   const sev = idx.severity as keyof typeof SEV;
   const sevc = SEV[sev] ?? SEV.neutro;
-  const location = [u.unitName, u.unitCity && u.unitState ? `${u.unitCity}/${u.unitState}` : u.unitCity]
+  const location = [u.unitName, u.unitCity && u.unitState ? `${u.unitCity}/${u.unitState}` : u.unitCity,]
     .filter(Boolean).join(" · ");
 
   const alertColor =
@@ -253,8 +256,8 @@ export default function AdminColaborador360({ id }: { id: number }) {
     d.alert?.level === "alto" ? SEV.alto : SEV.moderado;
 
   // Bruno R5-P6 #2 — Banner de aviso quando setor do colaborador tem risco alto/crítico no último ciclo
-  const sectorRisks = (sectorRisksQ.data as any);
-  const planAcao = (planAcaoQ.data as any);
+  const sectorRisks = sectorRisksQ.data as any;
+  const planAcao = planAcaoQ.data as any;
   const hasHighRisks = sectorRisks?.alerts?.length > 0;
   const prioritarios = (planAcao?.prioritarios ?? []) as any[];
 
@@ -271,18 +274,19 @@ export default function AdminColaborador360({ id }: { id: number }) {
                   Setor com exposição elevada — Direitos do Plano de Ação ativados
                 </h3>
                 <p className="text-sm text-rose-800 mt-1">
-                  O setor <b>{sectorRisks.sectorName}</b> apresentou exposição elevada aos seguintes riscos no ciclo psicossocial <b>{sectorRisks.cycle?.name}</b>:
+                  O setor <b>{sectorRisks.sectorName}</b> apresentou exposição elevada aos seguintes riscos no ciclo psicossocial {" "}<b>{sectorRisks.cycle?.name}</b>:
                 </p>
                 <ul className="text-sm text-rose-900 mt-2 space-y-0.5">
                   {(sectorRisks.alerts || []).map((a: any, i: number) => (
                     <li key={i} className="flex items-center gap-2">
                       <span className="inline-block w-2 h-2 rounded-full bg-rose-500"/>
-                      <span><b>{a.factorName}</b> — {String(a.riskLevel).toUpperCase()}</span>
+                      <span><b>{a.factorName}</b> — {" "}
+                        {String(a.riskLevel).toUpperCase()}</span>
                     </li>
                   ))}
                 </ul>
                 <p className="text-xs text-rose-700 mt-3 italic">
-                  Em razão dessa condição, o colaborador possui <b>direito ao atendimento psicológico</b> e deverá concluir os <b>cursos obrigatórios</b> definidos no Plano de Ação.
+                  Em razão dessa condição, o colaborador possui {" "}<b>direito ao atendimento psicológico</b> e deverá concluir os {" "}<b>cursos obrigatórios</b> definidos no Plano de Ação.
                 </p>
 
                 {/* Bruno R5-P7 #2 — Bloco DIRETO de atendimento psicológico */}
@@ -292,7 +296,7 @@ export default function AdminColaborador360({ id }: { id: number }) {
                     <div className="flex-1">
                       <div className="text-sm font-bold text-emerald-900">Atendimento Psicológico Disponível</div>
                       <div className="text-xs text-emerald-800 mt-1">
-                        Liberado em razão do ciclo <b>{sectorRisks.cycle?.name}</b>. O agendamento é sigiloso e ocorre durante o expediente.
+                        Liberado em razão do ciclo {" "}<b>{sectorRisks.cycle?.name}</b>. O agendamento é sigiloso e ocorre durante o expediente.
                         A chefia é notificada apenas com data/hora/profissional — nenhum conteúdo da conversa.
                       </div>
                       <button onClick={() => setShowSchedule(true)}
@@ -355,7 +359,7 @@ export default function AdminColaborador360({ id }: { id: number }) {
                   {u.companyName ? <span>· {u.companyName}</span> : null}
                 </div>
                 <div className="text-xs text-muted-foreground mt-2 flex items-center gap-4 flex-wrap">
-                  {location && <span className="inline-flex items-center gap-1"><MapPin size={12} /> {location}</span>}
+                  {location && (<span className="inline-flex items-center gap-1"><MapPin size={12} /> {location}</span>)}
                   <span className="inline-flex items-center gap-1"><Clock size={12} /> Último acesso {fmtDate(u.lastSignedIn)}</span>
                   <span className="inline-flex items-center gap-1">{trendIcon(idx.trend)} Tendência {idx.trend ?? "—"}</span>
                 </div>
@@ -371,6 +375,15 @@ export default function AdminColaborador360({ id }: { id: number }) {
                 <Button variant="outline" onClick={() => setShowIntervention(true)} className="gap-2">
                   <Plus size={16} /> Nova intervenção
                 </Button>
+              <Button
+                  variant="outline"
+                  onClick={() =>
+                    setLocation(`/admin/colaboradores/${id}/dossie`)
+                  }
+                  className="gap-2"
+                >
+                  <FileText size={16} /> Dossiê do colaborador
+                </Button>
               </div>
             </div>
           </div>
@@ -380,7 +393,7 @@ export default function AdminColaborador360({ id }: { id: number }) {
         {d.alert && (
           <div className={`rounded-2xl border ${alertColor.border} ${alertColor.bg} p-5 flex gap-4`}>
             <div className={`shrink-0 ${alertColor.text}`}>
-              {d.alert.level === "critico" ? <ShieldAlert size={28} /> : <AlertTriangle size={28} />}
+              {d.alert.level === "critico" ? (<ShieldAlert size={28} /> ): (<AlertTriangle size={28} />)}
             </div>
             <div className="flex-1">
               <div className={`font-semibold ${alertColor.text}`}>{d.alert.title}</div>
@@ -429,7 +442,7 @@ export default function AdminColaborador360({ id }: { id: number }) {
           ) : (
             <div className="h-64">
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={d.history.map((h: any) => ({ mes: fmtMonth(h.month), score: h.score }))}>
+                <AreaChart data={d.history.map((h: any) => ({ mes: fmtMonth(h.month), score: h.score ,}))}>
                   <defs>
                     <linearGradient id="wbgrad" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="0%" stopColor={sevc.ring} stopOpacity={0.35} />
@@ -468,7 +481,7 @@ export default function AdminColaborador360({ id }: { id: number }) {
                         <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${st.chip}`}>{st.label}</span>
                       </div>
                       <div className="text-xs text-muted-foreground">{fmtDate(e.date)}</div>
-                      {e.description && <p className="text-xs text-slate-600 mt-1">{e.description}</p>}
+                      {e.description && (<p className="text-xs text-slate-600 mt-1">{e.description}</p>)}
                     </li>
                   );
                 })}
@@ -508,7 +521,7 @@ export default function AdminColaborador360({ id }: { id: number }) {
                       <CheckCircle2 size={15} className="text-amber-500 mt-0.5 shrink-0" />
                       <div>
                         <span className="font-medium text-foreground">{s.technique}</span>
-                        {s.notes && <span className="text-muted-foreground"> — {s.notes}</span>}
+                        {s.notes && (<span className="text-muted-foreground"> {" "}— {s.notes}</span>)}
                       </div>
                     </li>
                   ))}
@@ -522,7 +535,7 @@ export default function AdminColaborador360({ id }: { id: number }) {
         <div className="bg-white rounded-2xl border border-border shadow-sm p-6">
           <h2 className="font-semibold text-foreground mb-1 flex items-center gap-2"><Stethoscope size={18} className="text-primary" /> Saúde Ocupacional</h2>
           <p className="text-xs text-muted-foreground mb-4">Atestados, afastamentos, recorrências e retorno ao trabalho com rastreabilidade.</p>
-          {(occupationalQ.data ?? []).length === 0 ? <Empty>Nenhum caso registrado no novo fluxo digital.</Empty> : <div className="space-y-3">{(occupationalQ.data ?? []).map((c:any)=><div key={c.id} className="border-l-4 border-primary bg-slate-50 p-3"><div className="flex justify-between gap-3"><div><b className="text-sm capitalize">{c.document_type}</b><div className="text-xs text-muted-foreground mt-1">{fmtDate(c.start_date)} a {fmtDate(c.end_date)} · {c.total_days ? `${c.total_days} dia(s)` : `${c.total_hours} hora(s)`}</div></div><span className="text-xs font-semibold text-primary">{String(c.status).replaceAll("_"," ")}</span></div><div className="mt-2 text-xs">Retorno: {String(c.return_status).replaceAll("_"," ")} · previsto {fmtDate(c.return_expected_date)}{c.return_actual_date ? ` · efetivo ${fmtDate(c.return_actual_date)}` : ""}</div>{(c.benefit_review_required||c.recurrence_review_required)?<div className="mt-2 text-xs text-amber-700">{c.benefit_review_required?"Análise previdenciária recomendada. ":""}{c.recurrence_review_required?"Possível recorrência em 60 dias.":""}</div>:null}</div>)}</div>}
+          {(occupationalQ.data ?? []).length === 0 ? (<Empty>Nenhum caso registrado no novo fluxo digital.</Empty> ): (<div className="space-y-3">{(occupationalQ.data ?? []).map((c:any)=>(<div key={c.id} className="border-l-4 border-primary bg-slate-50 p-3"><div className="flex justify-between gap-3"><div><b className="text-sm capitalize">{c.document_type}</b><div className="text-xs text-muted-foreground mt-1">{fmtDate(c.start_date)} a {fmtDate(c.end_date)} · {" "}{c.total_days ? `${c.total_days} dia(s)` : `${c.total_hours} hora(s)`}</div></div><span className="text-xs font-semibold text-primary">{String(c.status).replaceAll("_"," ")}</span></div><div className="mt-2 text-xs">Retorno: {String(c.return_status).replaceAll("_"," ")} · previsto {fmtDate(c.return_expected_date)}{c.return_actual_date ? ` · efetivo ${fmtDate(c.return_actual_date)}` : ""}</div>{c.benefit_review_required||c.recurrence_review_required?(<div className="mt-2 text-xs text-amber-700">{c.benefit_review_required?"Análise previdenciária recomendada. ":""}{c.recurrence_review_required?"Possível recorrência em 60 dias.":""}</div>):null}</div>))}</div>)}
         </div>
 
         {/* LEAVE HISTORY */}
@@ -547,7 +560,7 @@ export default function AdminColaborador360({ id }: { id: number }) {
                       <td className="py-2.5 pr-4">{fmtDate(l.startDate)} → {fmtDate(l.endDate)}</td>
                       <td className="py-2.5 pr-4">{l.reason ?? "—"}</td>
                       <td className="py-2.5 pr-4">
-                        {l.cidGroup ? <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-600 text-xs font-mono">{l.cidGroup}</span> : "—"}
+                        {l.cidGroup ? (<span className="px-2 py-0.5 rounded bg-slate-100 text-slate-600 text-xs font-mono">{l.cidGroup}</span> ): ("—")}
                       </td>
                       <td className="py-2.5 text-right font-medium">{l.days ?? "—"}</td>
                     </tr>
@@ -636,7 +649,7 @@ export default function AdminColaborador360({ id }: { id: number }) {
                       <div className="text-[11px] text-muted-foreground mt-0.5 flex items-center gap-2 flex-wrap">
                         <span className="font-mono">{c.certificateCode}</span>
                         <span>· emitido {fmtDate(c.issuedAt)}</span>
-                        {c.expiresAt && <span>· válido até {fmtDate(c.expiresAt)}</span>}
+                        {c.expiresAt && (<span>· válido até {fmtDate(c.expiresAt)}</span>)}
                       </div>
                     </div>
                   ))}
@@ -655,7 +668,7 @@ export default function AdminColaborador360({ id }: { id: number }) {
       <InterventionDialog
         open={showIntervention}
         onClose={() => setShowIntervention(false)}
-        onSubmit={(technique: string, notes: string) => addIntervention.mutate({ userId: id, technique, notes: notes || undefined })}
+        onSubmit={(technique: string, notes: string) => addIntervention.mutate({ userId: id, technique, notes: notes || undefined ,})}
         loading={addIntervention.isPending}
       />
       {/* Agendar conversa dialog */}
@@ -663,7 +676,7 @@ export default function AdminColaborador360({ id }: { id: number }) {
         open={showSchedule}
         onClose={() => setShowSchedule(false)}
         onSubmit={(title: string, eventDate: string, description: string) =>
-          scheduleConversation.mutate({ userId: id, title: title || undefined, eventDate, description: description || undefined })
+          scheduleConversation.mutate({ userId: id, title: title || undefined, eventDate, description: description || undefined ,})
         }
         loading={scheduleConversation.isPending}
       />
@@ -688,8 +701,8 @@ function engTone(p?: number | null) {
   return "alto";
 }
 
-function KpiCard({ label, value, tone, icon }: { label: string; value: string; tone?: string | null; icon: React.ReactNode }) {
-  const c = SEV[(tone as keyof typeof SEV)] ?? SEV.neutro;
+function KpiCard({ label, value, tone, icon ,}: { label: string; value: string; tone?: string | null; icon: React.ReactNode ;}) {
+  const c = SEV[tone as keyof typeof SEV] ?? SEV.neutro;
   return (
     <div className="bg-white rounded-2xl border border-border shadow-sm p-4">
       <div className="flex items-center justify-between">
@@ -702,7 +715,7 @@ function KpiCard({ label, value, tone, icon }: { label: string; value: string; t
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="text-sm text-muted-foreground py-4 text-center">{children}</div>;
+  return (<div className="text-sm text-muted-foreground py-4 text-center">{children}</div>);
 }
 
 const TECHNIQUE_OPTIONS = [
@@ -714,7 +727,7 @@ function InterventionDialog({ open, onClose, onSubmit, loading }: any) {
   const [technique, setTechnique] = useState(TECHNIQUE_OPTIONS[0]);
   const [notes, setNotes] = useState("");
   return (
-    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+    <Dialog open={open} onOpenChange={o => !o && onClose()}>
       <DialogContent>
         <DialogHeader><DialogTitle>Nova intervenção</DialogTitle></DialogHeader>
         <div className="space-y-3">
@@ -722,15 +735,15 @@ function InterventionDialog({ open, onClose, onSubmit, loading }: any) {
             <Label>Técnica / protocolo</Label>
             <select
               value={technique}
-              onChange={(e) => setTechnique(e.target.value)}
+              onChange={e => setTechnique(e.target.value)}
               className="w-full mt-1 h-10 rounded-md border border-border px-3 text-sm bg-white"
             >
-              {TECHNIQUE_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
+              {TECHNIQUE_OPTIONS.map(t =>( <option key={t} value={t}>{t}</option>))}
             </select>
           </div>
           <div>
             <Label>Observações (opcional)</Label>
-            <Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Contexto da intervenção…" className="mt-1" />
+            <Input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Contexto da intervenção…" className="mt-1" />
           </div>
         </div>
         <DialogFooter>
@@ -759,7 +772,7 @@ function ScheduleDialog({ open, onClose, onSubmit, loading }: any) {
   );
   const bookMut = trpc.scheduling.bookAppointment.useMutation({
     onSuccess: () => { toast.success("Conversa agendada com sucesso!"); onClose(); },
-    onError: (e) => toast.error(e.message),
+    onError: e => toast.error(e.message),
   });
 
   const profs = profQuery.data ?? [];
@@ -768,7 +781,7 @@ function ScheduleDialog({ open, onClose, onSubmit, loading }: any) {
   function handleBook() {
     if (!date) { toast.error("Informe a data"); return; }
     if (profId && selectedTime) {
-      bookMut.mutate({ professionalId: profId, date, time: selectedTime, notes: description || undefined });
+      bookMut.mutate({ professionalId: profId, date, time: selectedTime, notes: description || undefined ,});
     } else {
       // Fallback to old calendar-note approach
       if (!date) { toast.error("Informe a data"); return; }
@@ -777,7 +790,7 @@ function ScheduleDialog({ open, onClose, onSubmit, loading }: any) {
   }
 
   return (
-    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+    <Dialog open={open} onOpenChange={o => !o && onClose()}>
       <DialogContent className="max-w-md">
         <DialogHeader><DialogTitle>Agendar conversa de acolhimento</DialogTitle></DialogHeader>
         <div className="space-y-3">
@@ -790,13 +803,13 @@ function ScheduleDialog({ open, onClose, onSubmit, loading }: any) {
                 className="w-full mt-1 h-10 rounded-md border border-border px-3 text-sm bg-white"
               >
                 <option value="">— Selecione um profissional —</option>
-                {profs.map((p: any) => <option key={p.id} value={p.id}>{p.name}{p.specialty ? ` (${p.specialty})` : ""}</option>)}
+                {profs.map((p: any) => (<option key={p.id} value={p.id}>{p.name}{p.specialty ? ` (${p.specialty})` : ""}</option>))}
               </select>
             </div>
           )}
           <div>
             <Label>Data</Label>
-            <Input type="date" value={date} onChange={(e) => { setDate(e.target.value); setSelectedTime(""); }} className="mt-1" />
+            <Input type="date" value={date} onChange={e => { setDate(e.target.value); setSelectedTime(""); }} className="mt-1" />
           </div>
           {profId && date && slots.length > 0 && (
             <div>
@@ -819,13 +832,13 @@ function ScheduleDialog({ open, onClose, onSubmit, loading }: any) {
             <>
               <div>
                 <Label>Título</Label>
-                <Input value={title} onChange={(e) => setTitle(e.target.value)} className="mt-1" />
+                <Input value={title} onChange={e => setTitle(e.target.value)} className="mt-1" />
               </div>
             </>
           )}
           <div>
             <Label>Observações (opcional)</Label>
-            <Input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Objetivo da conversa…" className="mt-1" />
+            <Input value={description} onChange={e => setDescription(e.target.value)} placeholder="Objetivo da conversa…" className="mt-1" />
           </div>
         </div>
         <DialogFooter>

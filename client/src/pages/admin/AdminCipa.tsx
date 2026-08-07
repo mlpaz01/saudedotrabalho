@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Users, Vote, Calendar, Plus, Save, Trash2, Loader2, ShieldCheck, BarChart3, User as UserIcon, Camera, Radio, FileText, Upload, Pencil, BookOpen, Mail, MessageCircle } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from "recharts";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 
 /**
  * P15 #4 — Gestão da CIPA (Comissão Interna de Prevenção de Acidentes).
@@ -57,6 +58,8 @@ function ElectionsTab() {
   const elections = (listQ.data ?? []) as any[];
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const selected = elections.find(e => e.id === selectedId) ?? null;
+  const audienceQ = (trpc.cipa as any).communicationAudience.useQuery();
+  const [pendingTransition, setPendingTransition] = useState<"inscricoes_abertas" | "votacao_aberta" | "apurada" | null>(null);
 
   const upsertMut = (trpc.cipa as any).upsertElection.useMutation({
     onSuccess: () => { toast.success("Eleição salva."); listQ.refetch(); },
@@ -83,7 +86,14 @@ function ElectionsTab() {
   }
 
   function save(status?: string) {
-    upsertMut.mutate({ id: selectedId ?? undefined, ...form, status });
+    upsertMut.mutate({ id: selectedId ?? undefined, ...form, status, confirmedCommunicationImpact: !!status });
+  }
+
+  function confirmTransition() {
+    if (!selected || !pendingTransition) return;
+    if (pendingTransition === "apurada") apurarMut.mutate({ electionId: selected.id, confirmedCommunicationImpact: true });
+    else save(pendingTransition);
+    setPendingTransition(null);
   }
 
   return (
@@ -116,10 +126,10 @@ function ElectionsTab() {
           <span className="text-xs text-slate-500">Status atual: <b>{selected?.status ?? "rascunho (nova)"}</b></span>
           <div className="flex gap-2">
             <button onClick={() => save()} disabled={upsertMut.isPending} className="px-3 py-1.5 border rounded text-sm font-semibold flex items-center gap-1"><Save size={13} /> Salvar</button>
-            {selected && selected.status === "rascunho" && <button onClick={() => save("inscricoes_abertas")} className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-semibold">Abrir inscrições</button>}
-            {selected && ["rascunho", "inscricoes_abertas"].includes(selected.status) && <button onClick={() => save("votacao_aberta")} className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded text-sm font-semibold">Abrir votação</button>}
+            {selected && selected.status === "rascunho" && <button onClick={() => setPendingTransition("inscricoes_abertas")} className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-semibold">Abrir inscrições</button>}
+            {selected && ["rascunho", "inscricoes_abertas"].includes(selected.status) && <button onClick={() => setPendingTransition("votacao_aberta")} className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded text-sm font-semibold">Abrir votação</button>}
             {selected && selected.status === "votacao_aberta" && (
-              <button onClick={() => { if (confirm("Apurar a eleição? Isso encerra a votação e define os eleitos.")) apurarMut.mutate({ electionId: selected.id }); }} disabled={apurarMut.isPending} className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-sm font-semibold flex items-center gap-1">
+              <button onClick={() => setPendingTransition("apurada")} disabled={apurarMut.isPending} className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-sm font-semibold flex items-center gap-1">
                 {apurarMut.isPending ? <Loader2 size={13} className="animate-spin" /> : null} Apurar eleição
               </button>
             )}
@@ -131,6 +141,19 @@ function ElectionsTab() {
       {selected && <PendingVotersActions electionId={selected.id} votingEnd={selected.voting_end} />}
       {selected && <CandidatesPanel electionId={selected.id} />}
       {selected && ["apurada", "encerrada"].includes(selected.status) && <ResultsPanel electionId={selected.id} />}
+      <AlertDialog open={!!pendingTransition} onOpenChange={(open) => !open && setPendingTransition(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Atenção: esta ação gera comunicações</AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2">
+              <span className="block">Ao confirmar, a plataforma alterará a etapa da eleição e enviará os comunicados institucionais configurados aos colaboradores elegíveis.</span>
+              <span className="block rounded-md bg-slate-50 p-3 text-slate-700">Base ativa: <b>{audienceQ.data?.total ?? 0}</b> colaborador(es). Com e-mail: <b>{audienceQ.data?.email ?? 0}</b>. Com WhatsApp cadastrado: <b>{audienceQ.data?.whatsapp ?? 0}</b>.</span>
+              <span className="block font-medium">Etapa solicitada: {pendingTransition === "inscricoes_abertas" ? "Abrir inscrições" : pendingTransition === "votacao_aberta" ? "Abrir votação" : "Apurar e divulgar resultado"}.</span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter><AlertDialogCancel>Cancelar</AlertDialogCancel><AlertDialogAction onClick={confirmTransition}>Confirmar e continuar</AlertDialogAction></AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import AppLayout from "@/components/AppLayout";
 import { trpc } from "@/lib/trpc";
+import { useWhiteLabelBranding } from "@/lib/whiteLabelBranding";
 
 // ── Donut SVG for status distribution ───────────────────────────────────────
 function DonutStatus({ active, pending, inactive }: { active: number; pending: number; inactive: number }) {
@@ -132,6 +133,10 @@ function CampaignEffectivenessCard({ CARD, CARD_PAD, GREEN }: { CARD: React.CSSP
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function AdminDashboard() {
+  const { branding } = useWhiteLabelBranding();
+  const institutionalBrand = branding.found && branding.hideSdtBrand
+    ? (branding.brandName || "Portal")
+    : "Saúde do Trabalho";
   const { data: stats, isLoading: statsLoading } = trpc.admin.stats.useQuery();
   const { data: sectorData } = trpc.admin.sectorEngagement.useQuery();
   const { data: usersResp } = trpc.admin.listUsers.useQuery({});
@@ -236,7 +241,7 @@ export default function AdminDashboard() {
               {/* Text */}
               <div style={{ position: "relative", zIndex: 1, flex: 1 }}>
                 <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: "rgba(255,255,255,0.75)", letterSpacing: "0.08em", textTransform: "uppercase" }}>
-                  Saúde do Trabalho
+                  {institutionalBrand}
                 </p>
                 <h2 style={{ ...SERIF, margin: "6px 0 8px", fontSize: 24, fontWeight: 700, color: "#fff", lineHeight: 1.25 }}>
                   Cuidando de quem cuida da sua empresa.

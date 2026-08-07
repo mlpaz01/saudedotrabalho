@@ -3947,8 +3947,8 @@ export async function listActiveSurveysForUser(userId: number) {
   const role = (userR as any)[0]?.[0]?.role;
   if (!cid) return [];
 
-  // Bruno R5-P2 #15 — Tabela de completion para anonymous surveys (preserva anonimato
-  // da RESPOSTA, mas registra QUEM completou para sumir da lista de pendências).
+  // A tabela permanece para AEP e pesquisas não-DRPS. O DRPS estrito não grava
+  // conclusão individual e a limpeza defensiva ocorre no ciclo e na submissão.
   try {
     await db.execute(_rawSql`CREATE TABLE IF NOT EXISTS survey_user_completions (
       user_id INT NOT NULL, survey_id INT NOT NULL,

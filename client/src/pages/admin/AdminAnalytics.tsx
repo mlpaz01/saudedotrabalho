@@ -354,13 +354,15 @@ function CoursesTab({ filters, drill, setDrill, filterOpts }: { filters: any; dr
   const [moduleId, setModuleId] = useState<number | undefined>(undefined);
   const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined);
   const [dimension, setDimension] = useState<"branch" | "sector" | "role">(drill.branchId ? "sector" : "branch");
+  const effectiveBranchId = drill.branchId ?? filters.branchId;
+  const effectiveSectorId = drill.sectorId ?? filters.sectorId;
 
   // courseFunnel only accepts branchId/sectorId per backend signature
   const funnelInput = useMemo(() => ({ branchId: filters.branchId, sectorId: filters.sectorId }), [filters.branchId, filters.sectorId]);
   const funnelQ = trpc.analytics.courseFunnel.useQuery(funnelInput);
-  const compQ = trpc.analytics.completionByDimension.useQuery({ dimension, branchId: drill.branchId, sectorId: drill.sectorId });
-  const topQ = trpc.analytics.topPerformers.useQuery({ limit: 20, branchId: drill.branchId, sectorId: drill.sectorId });
-  const botQ = trpc.analytics.bottomPerformers.useQuery({ limit: 20, branchId: drill.branchId, sectorId: drill.sectorId });
+  const compQ = trpc.analytics.completionByDimension.useQuery({ dimension, branchId: effectiveBranchId, sectorId: effectiveSectorId });
+  const topQ = trpc.analytics.topPerformers.useQuery({ limit: 20, branchId: effectiveBranchId, sectorId: effectiveSectorId });
+  const botQ = trpc.analytics.bottomPerformers.useQuery({ limit: 20, branchId: effectiveBranchId, sectorId: effectiveSectorId });
   const modulesQ = trpc.modules.list.useQuery();
 
   let funnelData = funnelQ.data ?? [];
@@ -371,11 +373,11 @@ function CoursesTab({ filters, drill, setDrill, filterOpts }: { filters: any; dr
   const bot = useSort(botQ.data ?? [], "modulesCompleted", "asc");
 
   // When in branch, dimension auto = sector; when in sector, dimension auto = user (-> list)
-  const effectiveDimension: "branch" | "sector" | "role" = drill.sectorId ? "sector" : drill.branchId ? "sector" : dimension;
-  const chartTitle = drill.sectorId
-    ? `Conclusão por Colaborador (Setor ${filterOpts?.sectors?.find((s: any) => s.id === drill.sectorId)?.name ?? ''})`
-    : drill.branchId
-      ? `Conclusão por Setor (Filial ${filterOpts?.branches?.find((b: any) => b.id === drill.branchId)?.name ?? ''})`
+  const effectiveDimension: "branch" | "sector" | "role" = effectiveSectorId ? "sector" : effectiveBranchId ? "sector" : dimension;
+  const chartTitle = effectiveSectorId
+    ? `Conclusão por Colaborador (Setor ${filterOpts?.sectors?.find((s: any) => s.id === effectiveSectorId)?.name ?? ''})`
+    : effectiveBranchId
+      ? `Conclusão por Setor (Filial ${filterOpts?.branches?.find((b: any) => b.id === effectiveBranchId)?.name ?? ''})`
       : `Conclusão por ${effectiveDimension === "branch" ? "Filial" : effectiveDimension === "sector" ? "Setor" : "Cargo"}`;
 
   return (

@@ -17,6 +17,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
+import { RiskCyclePendingTools } from "@/components/risk/RiskCyclePendingTools";
 import {
   ShieldAlert, ArrowLeft, Loader2, ChevronRight, Calculator, FileText, FileBarChart,
   CalendarRange, Trash2, Pencil, BarChart3, ListChecks, ClipboardCheck, Download, Wand2,
@@ -81,6 +82,9 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
   const [deletePlan, setDeletePlan] = useState<any | null>(null);
   const [pdfLink, setPdfLink] = useState<{ label: string; url: string } | null>(null);
   const [showImport, setShowImport] = useState(false);
+  const [showResponsibleEdit, setShowResponsibleEdit] = useState(false);
+  const [responsibleTechnician, setResponsibleTechnician] = useState("");
+  const [scheduleSectorId, setScheduleSectorId] = useState<number | "all">("all");
 
   const detailQ = trpc.riskAssessment.getAssessment.useQuery({ id });
   const coverageQ = trpc.riskAssessment.cycleSectorCoverage.useQuery({ assessmentId: id });
@@ -106,13 +110,6 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
   const genPlanMut = trpc.riskAssessment.generateActionPlan.useMutation({
     onSuccess: (d: any) => { toast.success(`Plano de ação gerado — ${d.created} ações`); detailQ.refetch(); },
     onError: (e: any) => toast.error(e?.message ?? "Erro ao gerar plano"),
-  });
-  const sendPendingMut = trpc.riskAssessment.sendPendingSurveyReminder.useMutation({
-    onSuccess: (d: any) => {
-      toast.success(d.sent > 0 ? `Cobrança enviada para ${d.sent} pendente(s).` : "Nenhum pendente encontrado.");
-      coverageQ.refetch();
-    },
-    onError: (e: any) => toast.error(e?.message ?? "Erro ao cobrar pesquisas pendentes"),
   });
   const upPlan = trpc.riskAssessment.updateActionPlanItem.useMutation({
     onSuccess: () => { toast.success("Ação atualizada"); detailQ.refetch(); setEditPlan(null); },
@@ -140,12 +137,13 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
     onError: (e: any) => toast.error(e?.message ?? "Erro ao gerar PDF"),
   });
   const updateCycleMut = trpc.riskAssessment.updateAssessment.useMutation({
-    onSuccess: () => { toast.success("Status do ciclo atualizado!"); detailQ.refetch(); },
+    onSuccess: () => { toast.success("Ciclo atualizado!"); detailQ.refetch(); setShowResponsibleEdit(false); },
     onError: (e: any) => toast.error(e?.message ?? "Erro ao atualizar ciclo"),
   });
 
   const { assessment, inventory, actionPlan, stats: statsRaw } = (detailQ.data ?? {}) as any;
   const a = assessment ?? {};
+  const cycleIsClosed = ["closed", "completed", "concluido", "encerrado", "cancelled", "archived"].includes(String(a.status || "").toLowerCase());
   const stats = statsRaw ?? { drpsResponses: 0, aepResponses: 0 };
   const inv = (inventory ?? []) as any[];
   const coverage = coverageQ.data as any;
@@ -202,6 +200,9 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
             {a.sector_name ? ` · ${a.sector_name}` : a.branch_name ? ` · ${a.branch_name}` : " · empresa toda"}
             {a.responsible_technician ? ` · Resp. Téc. ${a.responsible_technician}` : ""}
           </p>
+          <Button size="sm" variant="ghost" className="mt-1 -ml-2 gap-1 text-xs" disabled={cycleIsClosed} title={cycleIsClosed ? "O responsável técnico é histórico após o encerramento" : "Alterar responsável técnico"} onClick={() => { setResponsibleTechnician(String(a.responsible_technician || "")); setShowResponsibleEdit(true); }}>
+            <Pencil size={13} /> {cycleIsClosed ? "Responsável técnico consolidado" : "Editar responsável técnico"}
+          </Button>
         </div>
 
         <div className="bg-white rounded-xl border p-1 inline-flex flex-wrap gap-1">
@@ -242,12 +243,7 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
                   <p className="text-xs text-slate-500 mt-1">Setores sem pelo menos 1 DRPS e 1 AEP validos ficam pendentes e nao entram na matriz/plano tecnico do ciclo.</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <Button size="sm" variant="outline" className="gap-1" disabled={sendPendingMut.isPending} onClick={() => sendPendingMut.mutate({ assessmentId: a.id, target: "drps" })}>
-                    {sendPendingMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <AlertTriangle size={13} />} Cobrar DRPS
-                  </Button>
-                  <Button size="sm" variant="outline" className="gap-1" disabled={sendPendingMut.isPending} onClick={() => sendPendingMut.mutate({ assessmentId: a.id, target: "aep" })}>
-                    {sendPendingMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <AlertTriangle size={13} />} Cobrar AEP
-                  </Button>
+                  <RiskCyclePendingTools assessmentId={Number(a.id)} sectors={coverageSectors} onSent={() => coverageQ.refetch()} />
                 </div>
               </div>
               <div className="grid sm:grid-cols-4 gap-2 mt-3">
@@ -677,50 +673,35 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
         {tab === "schedule" && (
           <div className="space-y-3">
             <p className="text-sm text-slate-600">Cronograma 12 meses a partir da data de início da avaliação ({startDate.toLocaleDateString("pt-BR")}). Clique nas células para marcar/desmarcar.</p>
+            {planHasSectors && (
+              <div className="max-w-sm">
+                <Label>Setor do cronograma</Label>
+                <select className="mt-1 w-full rounded-md border bg-white px-3 py-2 text-sm" value={scheduleSectorId} onChange={(event) => setScheduleSectorId(event.target.value === "all" ? "all" : Number(event.target.value))}>
+                  <option value="all">Todos os setores, separados</option>
+                  {planGroups.filter((group) => group.sectorId != null).map((group) => <option key={group.sectorId} value={Number(group.sectorId)}>{group.sectorName}</option>)}
+                </select>
+              </div>
+            )}
             {plan.length === 0 ? (
               <div className="bg-white border rounded-xl p-8 text-center text-slate-500 text-sm">
                 Gere o plano de ação primeiro para visualizar o cronograma.
               </div>
             ) : (
-              <div className="bg-white border rounded-xl overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead className="bg-slate-50 text-slate-600">
-                    <tr>
-                      <th className="text-left px-3 py-2 sticky left-0 bg-slate-50 z-10 min-w-[260px]">Programa / Ação</th>
-                      {monthCols.map((m) => (
-                        <th key={m} className="px-2 py-2 text-center whitespace-nowrap">{monthLabel(m)}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {plan.map((p: any) => {
-                      const progress = (p.monthly_progress ?? {}) as Record<string, boolean>;
-                      return (
-                        <tr key={p.id} className="border-t hover:bg-slate-50/60">
-                          <td className="px-3 py-2 sticky left-0 bg-white z-10">
-                            <div className="font-medium text-slate-900">{p.program_title ?? p.action_description}</div>
-                            <div className="text-[10px] text-slate-500">{p.factor_name}</div>
-                          </td>
-                          {monthCols.map((m) => {
-                            const active = !!progress[m];
-                            return (
-                              <td key={m} className="text-center px-1 py-1">
-                                <button
-                                  onClick={() => {
-                                    const next = { ...progress, [m]: !active };
-                                    upPlan.mutate({ itemId: p.id, monthlyProgress: next });
-                                  }}
-                                  className={`w-4 h-4 rounded-full mx-auto block border ${active ? "bg-rose-500 border-rose-600" : "bg-white border-slate-300 hover:border-rose-400"}`}
-                                  title={monthLabel(m)}
-                                />
-                              </td>
-                            );
-                          })}
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+              <div className="space-y-4">
+                {planGroups.filter((group) => scheduleSectorId === "all" || group.sectorId === scheduleSectorId).map((group, index) => (
+                  <section key={group.sectorId ?? `legacy-${index}`} className="overflow-hidden rounded-xl border bg-white">
+                    {planHasSectors && <div className="border-b bg-slate-50 px-4 py-3"><div className="text-xs font-semibold uppercase text-slate-500">Setor</div><h3 className="font-semibold text-slate-900">{group.sectorName || "Sem setor informado"}</h3></div>}
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead className="bg-slate-50 text-slate-600"><tr><th className="sticky left-0 z-10 min-w-[260px] bg-slate-50 px-3 py-2 text-left">Programa / Ação</th>{monthCols.map((month) => <th key={month} className="whitespace-nowrap px-2 py-2 text-center">{monthLabel(month)}</th>)}</tr></thead>
+                        <tbody>{group.items.map((item: any) => {
+                          const progress = (item.monthly_progress ?? {}) as Record<string, boolean>;
+                          return <tr key={item.id} className="border-t hover:bg-slate-50/60"><td className="sticky left-0 z-10 bg-white px-3 py-2"><div className="font-medium text-slate-900">{item.program_title ?? item.action_description}</div><div className="text-[10px] text-slate-500">{item.factor_name}</div></td>{monthCols.map((month) => { const active = !!progress[month]; return <td key={month} className="px-1 py-1 text-center"><button onClick={() => upPlan.mutate({ itemId: item.id, monthlyProgress: { ...progress, [month]: !active } })} className={`mx-auto block h-4 w-4 rounded-full border ${active ? "border-rose-600 bg-rose-500" : "border-slate-300 bg-white hover:border-rose-400"}`} title={`${group.sectorName || "Setor"} - ${monthLabel(month)}`} /></td>; })}</tr>;
+                        })}</tbody>
+                      </table>
+                    </div>
+                  </section>
+                ))}
               </div>
             )}
           </div>
@@ -847,6 +828,22 @@ export default function AdminRiskAssessmentDetail({ id }: { id: number }) {
           assessment={a}
           onDone={() => detailQ.refetch()}
         />
+        <Dialog open={showResponsibleEdit} onOpenChange={setShowResponsibleEdit}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Alterar responsável técnico</DialogTitle>
+              <DialogDescription>A alteração será registrada na auditoria do ciclo. Após o encerramento, este dado passa a ser histórico.</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2">
+              <Label htmlFor="responsible-technician">Responsável técnico</Label>
+              <Input id="responsible-technician" value={responsibleTechnician} onChange={(event) => setResponsibleTechnician(event.target.value)} placeholder="Nome e registro profissional" />
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setShowResponsibleEdit(false)}>Cancelar</Button>
+              <Button disabled={!responsibleTechnician.trim() || updateCycleMut.isPending} onClick={() => updateCycleMut.mutate({ id: Number(a.id), responsibleTechnician: responsibleTechnician.trim() })}>{updateCycleMut.isPending && <Loader2 size={14} className="mr-2 animate-spin" />}Salvar alteração</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
       )}
     </AppLayout>

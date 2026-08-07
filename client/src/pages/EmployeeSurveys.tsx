@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
+import { useAuth } from "@/_core/hooks/useAuth";
 
 const UCG_STYLES = `@import url('https://fonts.googleapis.com/css2?family=Lora:wght@600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
 .ucg-page{background:#F4F6F9;min-height:100vh;font-family:'Plus Jakarta Sans',system-ui,sans-serif}
@@ -67,11 +68,17 @@ function surveyCategory(category: string | undefined) {
 const FILTERS = ['Todas', 'DRPS', 'AEP', 'Clima', 'Burnout', 'Assédio', 'Outras'] as const;
 
 export default function EmployeeSurveys() {
+  const { user } = useAuth();
   const { data: surveys, isLoading } = trpc.surveys.listForUser.useQuery();
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<string>('Todas');
 
-  const list: any[] = (surveys as any[]) || [];
+  const list: any[] = ((surveys as any[]) || []).filter((survey: any) => {
+    const category = String(survey.category || "").toLowerCase();
+    const isDrps = category.includes("psico") || category.includes("drps") || category.includes("nr-01") || category.includes("nr01");
+    if (!isDrps || !survey.isAnonymous || !user?.id) return true;
+    return window.localStorage.getItem(`sdt.drps.receipt.${user.id}.${survey.id}`) !== "completed";
+  });
 
   const counts = useMemo(() => {
     const m: Record<string, number> = { Todas: list.length, DRPS: 0, AEP: 0, Clima: 0, Burnout: 0, 'Assédio': 0, Outras: 0 };

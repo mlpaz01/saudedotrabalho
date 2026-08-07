@@ -75,17 +75,21 @@ export const supportRouter = router({
   }),
 
   createTicket: protectedProcedure
-    .input(z.object({ subject: z.string().min(3).max(255), category: z.string().max(100).optional(), firstMessage: z.string().min(1).max(20000) }))
+    .input(z.object({ subject: z.string().min(3).max(255), category: z.string().max(100).optional(), firstMessage: z.string().min(1).max(20000), escalateToHuman: z.boolean().default(false) }))
     .mutation(async ({ ctx, input }) => {
       await ensureSupportTables();
       const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       const result: any = await db.execute(drzSql`INSERT INTO support_tickets
         (company_id, user_id, subject, category, status, last_message_at)
-        VALUES (${(ctx.user as any).companyId ?? null}, ${ctx.user.id}, ${input.subject}, ${input.category ?? null}, 'open', NOW())`);
+        VALUES (${(ctx.user as any).companyId ?? null}, ${ctx.user.id}, ${input.subject}, ${input.category ?? null}, ${input.escalateToHuman ? "escalated" : "ai_handling"}, NOW())`);
       const ticketId = Number(result?.[0]?.insertId ?? result?.insertId ?? 0);
       await db.execute(drzSql`INSERT INTO support_messages
         (ticket_id, sender_type, sender_user_id, sender_name, body)
         VALUES (${ticketId}, 'user', ${ctx.user.id}, ${(ctx.user as any).name ?? (ctx.user as any).email ?? "Usuario"}, ${input.firstMessage})`);
+      if (input.escalateToHuman) {
+        await db.execute(drzSql`UPDATE support_tickets SET escalated_at=NOW() WHERE id=${ticketId}`);
+        await db.execute(drzSql`INSERT INTO support_messages (ticket_id, sender_type, sender_name, body) VALUES (${ticketId}, 'system', 'Sistema', 'A orientação da IA e o Manual foram apresentados. O usuário informou que ainda precisa de atendimento humano.')`);
+      }
       return { ticketId };
     }),
 

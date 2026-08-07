@@ -1021,6 +1021,7 @@ function AssignmentDialog({ user, onClose, onSaved }: { user: any; onClose: () =
               <option value="chefia">Chefia / Gestor</option>
               <option value="rh">RH / Saúde</option>
               <option value="sesmt">SESMT</option>
+              <option value="medico">Médico do Trabalho</option>
               <option value="cipa">CIPA</option>
               <option value="admin">Administrador</option>
             </select>

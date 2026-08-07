@@ -282,9 +282,9 @@ export default function AdminCorporateMinutes() {
                 <div className="bg-white border rounded-lg p-4 space-y-3">
                   <h3 className="font-bold">Anexos e evidencias</h3>
                   <div className="grid sm:grid-cols-2 gap-2">
-                    {["lista_presenca", "fotografia", "evidencia", "plano_acao", "documento"].map((kind) => (
+                    {["ata_assinada", "lista_presenca", "fotografia", "evidencia", "plano_acao", "documento"].map((kind) => (
                       <label key={kind} className="border rounded px-3 py-2 text-sm flex items-center gap-2 cursor-pointer hover:bg-slate-50">
-                        <Paperclip size={14} /> {kind.replaceAll("_", " ")}
+                        <Paperclip size={14} /> {kind === "ata_assinada" ? "Ata impressa com assinaturas" : kind.replaceAll("_", " ")}
                         <input type="file" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadFile(f, kind); e.currentTarget.value = ""; }} />
                       </label>
                     ))}
