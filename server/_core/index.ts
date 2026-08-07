@@ -65,7 +65,7 @@ app.use("/pdfs", express.static("/var/www/saudedotrabalho/public/pdfs"));
   // ── Redirect helper: SPA roda sob /plataforma/ no nginx. Se alguém acessa
   // /campanhas, /admin/*, etc direto (link de e-mail antigo, digitação manual),
   // redireciona pro path correto. Evita 404 confuso pro Bruno.
-  app.get(["/login", "/dashboard", "/campanhas", "/campanhas/*", "/admin", "/admin/*", "/inicio", "/cursos", "/cursos/*", "/pesquisas", "/pesquisas/*", "/certificados", "/perfil", "/suporte", "/super-admin", "/super-admin/*"], (req, res, next) => {
+  app.get(["/login", "/dashboard", "/campanhas", "/campanhas/*", "/admin", "/admin/*", "/inicio", "/cursos", "/cursos/*", "/pesquisas", "/pesquisas/*", "/certificados", "/perfil", "/suporte", "/manual", "/manual/*", "/medico", "/minhas-vacinas", "/super-admin", "/super-admin/*"], (req, res, next) => {
     // Só redireciona pra navegação tipo browser (não API/JSON)
     if (req.path.startsWith("/api/") || req.path.startsWith("/plataforma/")) return next();
     const accept = String(req.headers.accept || "");
