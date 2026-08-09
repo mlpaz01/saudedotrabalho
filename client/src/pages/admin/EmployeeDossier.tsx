@@ -183,6 +183,7 @@ export default function EmployeeDossier({ id }: { id: number }) {
     epi: <HardHat size={18} />,
     courses: <GraduationCap size={18} />,
     vaccination: <Syringe size={18} />,
+    occupational: <HeartPulse size={18} />,
     technical: <FileText size={18} />,
     documents: <FolderOpen size={18} />,
   };
@@ -373,6 +374,26 @@ export default function EmployeeDossier({ id }: { id: number }) {
             title="Atestados e afastamentos"
             rows={integrations.leaves || []}
             empty="Nenhum afastamento administrativo registrado."
+          />
+          <SourceList
+            title="Histórico de GSE"
+            rows={integrations.gseHistory || []}
+            empty="Nenhuma atribuição de GSE registrada."
+          />
+          <SourceList
+            title="Requisições de exames"
+            rows={integrations.examOrders || []}
+            empty="Nenhuma requisição ocupacional emitida."
+          />
+          <SourceList
+            title="ASOs emitidos"
+            rows={integrations.asos || []}
+            empty="Nenhum ASO registrado."
+          />
+          <SourceList
+            title="Comunicações de acidente"
+            rows={integrations.cats || []}
+            empty="Nenhuma CAT registrada."
           />
         </div>
       </main>

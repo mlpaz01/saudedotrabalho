@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -61,33 +62,17 @@ function inferRiskType(text: string, fallback = "fisico") {
 }
 
 export default function AdminPGRGseManager({ pgrId, companyId }: { pgrId: number; companyId: number | null }) {
-  const utils = trpc.useUtils();
+  const [, setLocation] = useLocation();
   const listQ = trpc.pgr.gse.list.useQuery({ pgrId }, { enabled: pgrId > 0 });
   const gseList = (listQ.data ?? []) as any[];
 
-  const [showNew, setShowNew] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
 
-  const createMut = trpc.pgr.gse.create.useMutation({
-    onSuccess: (r: any) => { toast.success("GSE criado."); setShowNew(false); setEditingId(r.id); listQ.refetch(); },
-    onError: (e: any) => toast.error(e?.message ?? "Erro ao criar GSE"),
-  });
   const removeMut = trpc.pgr.gse.remove.useMutation({
     onSuccess: () => { toast.success("GSE removido."); setConfirmDelete(null); listQ.refetch(); },
     onError: (e: any) => toast.error(e?.message ?? "Erro ao remover"),
   });
-
-  // Form do "Novo GSE"
-  const [newForm, setNewForm] = useState({ nome: "", descricao: "", numTrabalhadores: 0, numHomens: 0, numMulheres: 0 });
-  function openNew() {
-    setNewForm({ nome: "", descricao: "", numTrabalhadores: 0, numHomens: 0, numMulheres: 0 });
-    setShowNew(true);
-  }
-  function saveNew() {
-    if (!newForm.nome.trim()) { toast.error("Informe o nome do GSE."); return; }
-    createMut.mutate({ pgrId, ...newForm });
-  }
 
   return (
     <section className="bg-white border rounded-xl p-5 space-y-3">
@@ -102,13 +87,15 @@ export default function AdminPGRGseManager({ pgrId, companyId }: { pgrId: number
             concentra riscos, EPC, EPI, ações, evidências e treinamentos.
           </p>
         </div>
-        <Button size="sm" onClick={openNew} className="gap-1"><Plus size={14} /> Novo GSE</Button>
+        <Button size="sm" onClick={() => setLocation("/admin/ghe-gse")} className="gap-1">
+          <Layers size={14} /> Gerenciar catálogo mestre
+        </Button>
       </div>
 
       {listQ.isLoading && <p className="text-xs text-slate-400">Carregando GSEs...</p>}
       {!listQ.isLoading && gseList.length === 0 && (
         <div className="text-center py-8 text-slate-400 text-sm">
-          Nenhum GSE cadastrado. Clique em "Novo GSE" para iniciar.
+          Nenhum GSE mestre foi vinculado a este PGR. Faça o vínculo pelo catálogo mestre de GSE.
         </div>
       )}
 
@@ -135,59 +122,15 @@ export default function AdminPGRGseManager({ pgrId, companyId }: { pgrId: number
             </div>
             <div className="flex gap-1 shrink-0">
               <Button size="sm" variant="outline" onClick={() => setEditingId(g.id)}><Pencil size={13} /></Button>
-              <Button size="sm" variant="ghost" onClick={() => setConfirmDelete(g.id)}>
-                <Trash2 size={13} className="text-rose-600" />
-              </Button>
+              {!g.masterGseId && (
+                <Button size="sm" variant="ghost" onClick={() => setConfirmDelete(g.id)} title="Remover contexto legado não vinculado">
+                  <Trash2 size={13} className="text-rose-600" />
+                </Button>
+              )}
             </div>
           </div>
         ))}
       </div>
-
-      {/* Dialog: Novo GSE */}
-      <Dialog open={showNew} onOpenChange={setShowNew}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Novo Grupo Similar de Exposição</DialogTitle>
-            <DialogDescription>Identifique o grupo. Você adicionará cargos/setores/riscos depois.</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-3 pt-1">
-            <div>
-              <Label>Nome *</Label>
-              <Input value={newForm.nome} onChange={e => setNewForm(f => ({ ...f, nome: e.target.value }))}
-                placeholder="GSE 01 — Administrativo" />
-            </div>
-            <div>
-              <Label>Descrição</Label>
-              <Textarea rows={2} value={newForm.descricao}
-                onChange={e => setNewForm(f => ({ ...f, descricao: e.target.value }))}
-                placeholder="Setores administrativos com exposição semelhante (postos sentados, baixa exposição química)." />
-            </div>
-            <div className="grid grid-cols-3 gap-2">
-              <div>
-                <Label className="text-xs">Trabalhadores</Label>
-                <Input type="number" min={0} value={newForm.numTrabalhadores}
-                  onChange={e => setNewForm(f => ({ ...f, numTrabalhadores: Number(e.target.value || 0) }))} />
-              </div>
-              <div>
-                <Label className="text-xs">Homens</Label>
-                <Input type="number" min={0} value={newForm.numHomens}
-                  onChange={e => setNewForm(f => ({ ...f, numHomens: Number(e.target.value || 0) }))} />
-              </div>
-              <div>
-                <Label className="text-xs">Mulheres</Label>
-                <Input type="number" min={0} value={newForm.numMulheres}
-                  onChange={e => setNewForm(f => ({ ...f, numMulheres: Number(e.target.value || 0) }))} />
-              </div>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowNew(false)}>Cancelar</Button>
-            <Button onClick={saveNew} disabled={createMut.isPending}>
-              {createMut.isPending && <Loader2 size={14} className="animate-spin mr-1" />} Criar
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {/* Dialog: Confirmar remoção */}
       <Dialog open={confirmDelete != null} onOpenChange={(o) => !o && setConfirmDelete(null)}>
@@ -226,6 +169,7 @@ function GseEditorDialog({
 }: { gseId: number; companyId: number | null; onClose: () => void; onSaved: () => void }) {
   const detailQ = trpc.pgr.gse.get.useQuery({ id: gseId }, { enabled: gseId > 0 });
   const data: any = detailQ.data ?? {};
+  const isMasterLinked = Boolean(data?.gse?.masterGseId);
 
   // Estados locais (espelham o que está no servidor — salvamos via set*)
   const [tab, setTab] = useState<TabId>("cargos");
@@ -422,7 +366,9 @@ function GseEditorDialog({
                 {meta.nome ? <span className="text-slate-500 font-normal truncate"> — {meta.nome}</span> : null}
               </DialogTitle>
               <DialogDescription className="text-xs">
-                Tela cheia para edição completa do GSE. Use as abas abaixo. Tudo é salvo de uma vez ao clicar em "Salvar tudo".
+                {isMasterLinked
+                  ? "Nome e descrição vêm do catálogo mestre. Neste PGR, edite riscos, controles, ações, evidências e treinamentos do contexto técnico."
+                  : "Contexto legado ainda não vinculado ao catálogo mestre. Migre-o antes de continuar a evolução ocupacional."}
               </DialogDescription>
             </div>
             <Button
@@ -454,11 +400,11 @@ function GseEditorDialog({
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
                   <Label className="text-xs">Nome *</Label>
-                  <Input value={meta.nome} onChange={e => setMeta(m => ({ ...m, nome: e.target.value }))} />
+                  <Input value={meta.nome} disabled={isMasterLinked} onChange={e => setMeta(m => ({ ...m, nome: e.target.value }))} />
                 </div>
                 <div>
                   <Label className="text-xs">Descrição</Label>
-                  <Input value={meta.descricao} onChange={e => setMeta(m => ({ ...m, descricao: e.target.value }))} />
+                  <Input value={meta.descricao} disabled={isMasterLinked} onChange={e => setMeta(m => ({ ...m, descricao: e.target.value }))} />
                 </div>
               </div>
               <div className="grid grid-cols-3 gap-3 max-w-2xl">

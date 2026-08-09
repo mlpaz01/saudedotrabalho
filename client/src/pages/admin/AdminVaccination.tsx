@@ -11,10 +11,10 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
-import { Building2, CalendarDays, Plus, Syringe, UserRound } from "lucide-react";
+import { Building2, CalendarDays, Download, Mail, Plus, Syringe, UserRound } from "lucide-react";
 import { toast } from "sonner";
 
-type Tab = "vacinas" | "parceiros" | "campanhas" | "registros";
+type Tab = "vacinas" | "parceiros" | "campanhas" | "populacao" | "registros";
 type DialogKind = "vacina" | "parceiro" | "campanha" | "registro" | null;
 
 function nowLocal() {
@@ -29,11 +29,22 @@ function today() {
 export default function AdminVaccination() {
   const [tab, setTab] = useState<Tab>("vacinas");
   const [dialog, setDialog] = useState<DialogKind>(null);
+  const [campaignId, setCampaignId] = useState(0);
+  const [workerSearch, setWorkerSearch] = useState("");
+  const [branchId, setBranchId] = useState(0);
+  const [sectorId, setSectorId] = useState(0);
+  const [gseId, setGseId] = useState(0);
+  const [selectedWorkers, setSelectedWorkers] = useState<number[]>([]);
+  const [selectedParticipants, setSelectedParticipants] = useState<number[]>([]);
   const vaccinesQ = trpc.medical.listVaccines.useQuery();
   const partnersQ = trpc.medical.listVaccinePartners.useQuery();
   const campaignsQ = trpc.medical.listVaccineCampaigns.useQuery();
   const recordsQ = trpc.medical.listVaccinationRecords.useQuery();
   const collaboratorsQ = trpc.medical.listCollaborators.useQuery();
+  const workersQ = trpc.occupationalLifecycle.listWorkers.useQuery({ query: workerSearch || undefined });
+  const structureQ = trpc.occupationalLifecycle.listStructure.useQuery();
+  const gsesQ = trpc.occupationalLifecycle.listGses.useQuery();
+  const populationQ = trpc.occupationalLifecycle.listVaccineCampaignPopulation.useQuery({ campaignId: campaignId || 1 }, { enabled: Boolean(campaignId) });
   const refresh = () => {
     vaccinesQ.refetch();
     partnersQ.refetch();
@@ -72,10 +83,15 @@ export default function AdminVaccination() {
     },
     onError: error => toast.error(error.message),
   });
+  const populationSave = trpc.occupationalLifecycle.setVaccineCampaignPopulation.useMutation({ onSuccess: result => { populationQ.refetch(); setSelectedWorkers([]); toast.success(`${result.selected} colaborador(es) incluído(s) na convocação.`); }, onError: error => toast.error(error.message) });
+  const attendanceSave = trpc.occupationalLifecycle.updateVaccinationAttendance.useMutation({ onSuccess: () => populationQ.refetch(), onError: error => toast.error(error.message) });
+  const emailPopulation = trpc.occupationalLifecycle.sendVaccineCampaignEmails.useMutation({ onSuccess: result => { populationQ.refetch(); toast.success(`${result.sent} comunicação(ões) processada(s); ${result.failed} falha(s).`); }, onError: error => toast.error(error.message) });
+  const proofPopulation = trpc.occupationalLifecycle.generateVaccineCampaignProofs.useMutation({ onSuccess: result => { const anchor = document.createElement("a"); anchor.href = result.dataBase64; anchor.download = result.fileName; anchor.click(); toast.success(`${result.total} comprovante(s) gerado(s).`); }, onError: error => toast.error(error.message) });
   const tabs: Array<{ id: Tab; label: string }> = [
     { id: "vacinas", label: "Vacinas" },
     { id: "parceiros", label: "Parceiros" },
     { id: "campanhas", label: "Campanhas" },
+    { id: "populacao", label: "População e presença" },
     { id: "registros", label: "Doses registradas" },
   ];
   const action =
@@ -85,7 +101,7 @@ export default function AdminVaccination() {
         ? () => setDialog("parceiro")
         : tab === "campanhas"
           ? () => setDialog("campanha")
-          : () => setDialog("registro");
+          : tab === "registros" ? () => setDialog("registro") : null;
   return (
     <AppLayout>
       <div className="mx-auto max-w-[1450px] space-y-4 p-4 md:p-6">
@@ -101,9 +117,9 @@ export default function AdminVaccination() {
               Catálogo, parceiros, campanhas, doses, alertas e comprovantes.
             </p>
           </div>
-          <Button onClick={action}>
+          {action ? <Button onClick={action}>
             <Plus className="mr-1" size={15} /> Novo registro
-          </Button>
+          </Button> : null}
         </header>
 
         <div className="grid gap-3 sm:grid-cols-4">
@@ -177,6 +193,32 @@ export default function AdminVaccination() {
                 ])}
               />
             ) : null}
+            {tab === "populacao" ? <VaccinationPopulation
+              campaigns={(campaignsQ.data || []) as any[]}
+              campaignId={campaignId}
+              setCampaignId={setCampaignId}
+              workers={(workersQ.data || []) as any[]}
+              structure={structureQ.data as any}
+              gses={(gsesQ.data || []) as any[]}
+              search={workerSearch}
+              setSearch={setWorkerSearch}
+              branchId={branchId}
+              setBranchId={setBranchId}
+              sectorId={sectorId}
+              setSectorId={setSectorId}
+              gseId={gseId}
+              setGseId={setGseId}
+              selectedWorkers={selectedWorkers}
+              setSelectedWorkers={setSelectedWorkers}
+              participants={(populationQ.data || []) as any[]}
+              selectedParticipants={selectedParticipants}
+              setSelectedParticipants={setSelectedParticipants}
+              savePopulation={(ids: number[]) => populationSave.mutate({ campaignId, collaboratorIds: ids })}
+              saveAttendance={(id: number, status: any) => attendanceSave.mutate({ id, status })}
+              sendEmails={() => emailPopulation.mutate({ campaignId, participantIds: selectedParticipants })}
+              generateProofs={() => proofPopulation.mutate({ campaignId, participantIds: selectedParticipants })}
+              busy={populationSave.isPending || attendanceSave.isPending || emailPopulation.isPending || proofPopulation.isPending}
+            /> : null}
           </div>
         </section>
       </div>
@@ -201,6 +243,26 @@ export default function AdminVaccination() {
       />
     </AppLayout>
   );
+}
+
+function VaccinationPopulation(props: any) {
+  const filteredWorkers = props.workers.filter((row: any) => (!props.branchId || Number(row.branch_id) === props.branchId) && (!props.sectorId || Number(row.sector_id) === props.sectorId) && (!props.gseId || Number(row.gse_id) === props.gseId));
+  const participantWorkerIds = new Set(props.participants.map((row: any) => Number(row.collaborator_id)));
+  const availableWorkers = filteredWorkers.filter((row: any) => !participantWorkerIds.has(Number(row.id)));
+  const coverage = props.participants.length ? Math.round(props.participants.filter((row: any) => row.status === "vacinado").length / props.participants.length * 100) : 0;
+  return <div className="space-y-4">
+    <div className="grid gap-3 md:grid-cols-[minmax(260px,1fr)_repeat(3,minmax(150px,220px))]">
+      <label className="text-xs font-semibold">Campanha<select className="mt-1 h-10 w-full border bg-white px-3 text-sm" value={props.campaignId} onChange={event => { props.setCampaignId(Number(event.target.value)); props.setSelectedParticipants([]); props.setSelectedWorkers([]); }}><option value={0}>Selecione a campanha</option>{props.campaigns.map((row: any) => <option key={row.id} value={row.id}>{row.name} · {new Date(row.campaign_at).toLocaleDateString("pt-BR")}</option>)}</select></label>
+      <label className="text-xs font-semibold">Filial<select className="mt-1 h-10 w-full border bg-white px-3 text-sm" value={props.branchId} onChange={event => props.setBranchId(Number(event.target.value))}><option value={0}>Todas</option>{(props.structure?.branches || []).map((row: any) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label>
+      <label className="text-xs font-semibold">Setor<select className="mt-1 h-10 w-full border bg-white px-3 text-sm" value={props.sectorId} onChange={event => props.setSectorId(Number(event.target.value))}><option value={0}>Todos</option>{(props.structure?.sectors || []).filter((row: any) => !props.branchId || Number(row.branch_id) === props.branchId).map((row: any) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label>
+      <label className="text-xs font-semibold">GSE<select className="mt-1 h-10 w-full border bg-white px-3 text-sm" value={props.gseId} onChange={event => props.setGseId(Number(event.target.value))}><option value={0}>Todos</option>{props.gses.map((row: any) => <option key={row.id} value={row.id}>{row.code} · {row.name}</option>)}</select></label>
+    </div>
+    {!props.campaignId ? <div className="border-l-4 border-amber-400 bg-amber-50 p-4 text-sm">Selecione uma campanha para montar a população convocada.</div> : <>
+      <div className="grid gap-3 sm:grid-cols-4"><Metric icon={<UserRound size={17} />} label="Convocados" value={props.participants.length} /><Metric icon={<Syringe size={17} />} label="Vacinados" value={props.participants.filter((row: any) => row.status === "vacinado").length} /><Metric icon={<CalendarDays size={17} />} label="Ausentes / pendentes" value={props.participants.filter((row: any) => row.status !== "vacinado").length} /><Metric icon={<Syringe size={17} />} label="Cobertura" value={coverage} /></div>
+      <section className="border"><div className="flex flex-wrap items-center justify-between gap-3 border-b bg-slate-50 p-3"><div><b>Selecionar população</b><p className="text-xs text-slate-500">Filtros estruturais usam os mesmos cadastros de filial, setor e GSE da plataforma.</p></div><Button disabled={props.busy || !props.selectedWorkers.length} onClick={() => props.savePopulation(props.selectedWorkers)}>Incluir {props.selectedWorkers.length} convocado(s)</Button></div><div className="p-3"><Input className="mb-3" placeholder="Buscar nome, CPF, matrícula ou cargo" value={props.search} onChange={event => props.setSearch(event.target.value)} /><div className="max-h-56 overflow-auto border"><table className="w-full min-w-[760px] text-sm"><thead className="sticky top-0 bg-white text-xs"><tr><th className="w-10 p-2"><input type="checkbox" checked={Boolean(availableWorkers.length) && props.selectedWorkers.length === availableWorkers.length} onChange={event => props.setSelectedWorkers(event.target.checked ? availableWorkers.map((row: any) => Number(row.id)) : [])} /></th><th className="p-2 text-left">Trabalhador</th><th className="p-2 text-left">Filial / Setor</th><th className="p-2 text-left">Cargo</th><th className="p-2 text-left">GSE</th></tr></thead><tbody>{availableWorkers.map((row: any) => <tr key={row.id} className="border-t"><td className="p-2 text-center"><input type="checkbox" checked={props.selectedWorkers.includes(Number(row.id))} onChange={() => props.setSelectedWorkers((current: number[]) => current.includes(Number(row.id)) ? current.filter(id => id !== Number(row.id)) : [...current, Number(row.id)])} /></td><td className="p-2 font-medium">{row.name}<br /><span className="text-xs text-slate-500">{row.cpf || row.employee_registration || "Sem identificador"}</span></td><td className="p-2">{row.branch_name || "-"} / {row.sector_name || "-"}</td><td className="p-2">{row.position || "-"}</td><td className="p-2">{row.gse_code || "Sem GSE"}</td></tr>)}</tbody></table></div></div></section>
+      <section className="border"><div className="flex flex-wrap items-center justify-between gap-3 border-b bg-slate-50 p-3"><div><b>Convocados e presença</b><p className="text-xs text-slate-500">A comunicação e os comprovantes são individuais, ainda que gerados em lote.</p></div><div className="flex gap-2"><Button variant="outline" disabled={props.busy || !props.selectedParticipants.length} onClick={props.generateProofs}><Download className="mr-2" size={14} /> Comprovantes ({props.selectedParticipants.length})</Button><Button disabled={props.busy || !props.selectedParticipants.length} onClick={props.sendEmails}><Mail className="mr-2" size={14} /> Enviar e-mail ({props.selectedParticipants.length})</Button></div></div><div className="overflow-auto"><table className="w-full min-w-[980px] text-sm"><thead className="text-xs"><tr><th className="w-10 p-2"><input type="checkbox" checked={Boolean(props.participants.length) && props.selectedParticipants.length === props.participants.length} onChange={event => props.setSelectedParticipants(event.target.checked ? props.participants.map((row: any) => Number(row.id)) : [])} /></th><th className="p-2 text-left">Trabalhador</th><th className="p-2 text-left">Filial / Setor</th><th className="p-2 text-left">Comunicação</th><th className="p-2 text-left">Situação</th><th className="p-2 text-left">Motivo</th></tr></thead><tbody>{props.participants.map((row: any) => <tr key={row.id} className="border-t"><td className="p-2 text-center"><input type="checkbox" checked={props.selectedParticipants.includes(Number(row.id))} onChange={() => props.setSelectedParticipants((current: number[]) => current.includes(Number(row.id)) ? current.filter(id => id !== Number(row.id)) : [...current, Number(row.id)])} /></td><td className="p-2 font-medium">{row.collaborator_name}<br /><span className="text-xs text-slate-500">{row.cpf || "Sem CPF"}</span></td><td className="p-2">{row.branch_name || "-"} / {row.sector_name || "-"}</td><td className="p-2"><Badge className="rounded-sm bg-slate-100 text-slate-700">{row.notification_status}</Badge></td><td className="p-2"><select className="h-9 border bg-white px-2 text-sm" value={row.status} onChange={event => props.saveAttendance(Number(row.id), event.target.value)}><option value="convocado">Convocado</option><option value="vacinado">Vacinado</option><option value="ausente">Ausente</option><option value="recusou">Recusou</option><option value="afastado">Afastado</option><option value="ferias">Férias</option><option value="outro">Outro</option></select></td><td className="p-2">{row.absence_reason || "-"}</td></tr>)}</tbody></table>{!props.participants.length && <p className="p-6 text-center text-sm text-slate-500">Nenhum colaborador convocado.</p>}</div></section>
+    </>}
+  </div>;
 }
 
 function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; value: number }) {

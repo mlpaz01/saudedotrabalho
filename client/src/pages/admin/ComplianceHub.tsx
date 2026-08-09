@@ -8,10 +8,10 @@ import {
   FileText, Download, Loader2,
   ClipboardCheck, Users, BookOpen, FileSearch, Printer,
   ChevronDown, ChevronRight, BarChart3, Building2, Layers,
-  ExternalLink, ShieldAlert, ListChecks, ScrollText, GraduationCap,
+  ExternalLink, ShieldAlert, ListChecks, ScrollText, GraduationCap, Stethoscope,
 } from "lucide-react";
 
-type TabId = "overview" | "fiscalizacao" | "evidencias" | "dossie" | "documentos" | "maturidade" | "primeiros_socorros" | "epi_epc" | "occupational_docs";
+type TabId = "overview" | "fiscalizacao" | "evidencias" | "dossie" | "documentos" | "maturidade" | "primeiros_socorros" | "epi_epc" | "occupational_docs" | "occupational_lifecycle";
 
 const AXIS_ICONS: Record<string, any> = {
   ciclo: ShieldCheck,
@@ -192,6 +192,22 @@ function EpiEpcCompliancePanel() {
   );
 }
 
+function OccupationalLifecycleCompliancePanel() {
+  const dashboardQ = trpc.occupationalLifecycle.dashboard.useQuery();
+  const populationQ = trpc.occupationalLifecycle.listExamPopulation.useQuery();
+  const data = dashboardQ.data as any;
+  const population = (populationQ.data || []) as any[];
+  const cards = [
+    ["Cobertura GSE", `${Number(data?.gse_coverage || 0)}%`, Number(data?.workers_without_gse || 0) === 0],
+    ["Trabalhadores sem GSE", Number(data?.workers_without_gse || 0), Number(data?.workers_without_gse || 0) === 0],
+    ["Exames previstos", population.length, true],
+    ["Exames sem requisição", population.filter(row => row.operational_status === "requisicao_pendente").length, !population.some(row => row.operational_status === "requisicao_pendente")],
+    ["Resultados a revisar", Number(data?.pending_results || 0), Number(data?.pending_results || 0) === 0],
+    ["CATs sem transmissão", Number(data?.pending_cats || 0), Number(data?.pending_cats || 0) === 0],
+  ];
+  return <div className="space-y-4"><div className="flex flex-wrap items-start justify-between gap-3 border bg-white p-5"><div><h2 className="text-lg font-semibold">Conformidade da Saúde Ocupacional</h2><p className="mt-1 text-sm text-slate-500">GSE mestre, PCMSO, exames, resultados, ASO e CAT em uma única cadeia rastreável.</p></div><a className="inline-flex h-10 items-center border px-4 text-sm font-semibold text-teal-800" href="/admin/saude-ocupacional">Abrir operação ocupacional</a></div><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">{cards.map(([label, value, compliant]) => <div key={String(label)} className={`border p-4 ${compliant ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50"}`}><div className="text-xs font-semibold uppercase text-slate-500">{label}</div><div className="mt-2 text-2xl font-bold text-slate-950">{value as any}</div><div className={`mt-2 text-xs font-semibold ${compliant ? "text-emerald-700" : "text-amber-700"}`}>{compliant ? "Conforme" : "Requer atenção"}</div></div>)}</div><div className="border-l-4 border-sky-500 bg-sky-50 p-4 text-sm">Os indicadores são calculados sobre os dados atuais da empresa. Eventos S-2210, S-2220 e S-2240 permanecem marcados como pendentes até que a integração oficial com o eSocial seja disponibilizada.</div></div>;
+}
+
 function OccupationalDocumentsCompliancePanel() {
   const summaryQ = trpc.technicalDocuments.complianceSummary.useQuery();
   const data = summaryQ.data as any;
@@ -352,6 +368,7 @@ export default function ComplianceHub() {
     { id: "evidencias",   label: "Evidências",           icon: FileSearch },
     { id: "primeiros_socorros", label: "Primeiros Socorros", icon: FileText },
     { id: "epi_epc", label: "EPI / EPC", icon: ShieldAlert },
+    { id: "occupational_lifecycle", label: "Saúde Ocupacional", icon: Stethoscope },
     { id: "occupational_docs", label: "PCMSO e Laudos", icon: FileCheck2 },
     { id: "dossie",       label: "Dossiê Individual",    icon: Users },
     { id: "documentos",   label: "Documentos Oficiais",  icon: Download },
@@ -667,6 +684,7 @@ export default function ComplianceHub() {
         {tab === "epi_epc" && <EpiEpcCompliancePanel />}
 
         {tab === "occupational_docs" && <OccupationalDocumentsCompliancePanel />}
+        {tab === "occupational_lifecycle" && <OccupationalLifecycleCompliancePanel />}
 
         {/* ── DOSSIÊ INDIVIDUAL ─────────────────────────────────────────────── */}
         {tab === "dossie" && (

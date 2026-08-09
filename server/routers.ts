@@ -38,6 +38,7 @@ import { ehsRouter } from "./_core/ehsRouter";
 import { whiteLabelNetworkRouter } from "./_core/whiteLabelNetworkRouter";
 import { commercialRouter } from "./_core/commercialRouter";
 import { occupationalHealthRouter } from "./_core/occupationalHealthRouter";
+import { ensureOccupationalTables, occupationalLifecycleRouter } from "./_core/occupationalLifecycleRouter";
 
 
 
@@ -4960,6 +4961,7 @@ export const appRouter = router({
   whiteLabelNetwork: whiteLabelNetworkRouter,
   commercial: commercialRouter,
   occupationalHealth: occupationalHealthRouter,
+  occupationalLifecycle: occupationalLifecycleRouter,
   medical: medicalRouter,
   technicalDocuments: technicalDocumentsRouter,
   ehs: ehsRouter,
@@ -26739,6 +26741,7 @@ Return only the JSON content object (no wrapper). Format per type:
       list: adminOrRhProcedure
         .input(z.object({ pgrId: z.number().int() }))
         .query(async ({ ctx, input }) => {
+          await ensureOccupationalTables();
           const cid = (ctx.user as any).companyId;
           const db = await getDb();
           if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
@@ -26754,7 +26757,9 @@ Return only the JSON content object (no wrapper). Format per type:
           if (Number(own.company_id) !== Number(cid))
             throw new TRPCError({ code: "FORBIDDEN" });
           const r: any = await db.execute(drzSql`
-            SELECT g.id, g.nome, g.descricao, g.num_trabalhadores AS numTrabalhadores,
+            SELECT g.id, g.nome, g.descricao, g.master_gse_id AS masterGseId,
+                   mg.code AS masterGseCode,
+                   g.num_trabalhadores AS numTrabalhadores,
                    g.num_homens AS numHomens, g.num_mulheres AS numMulheres,
                    g.ai_suggested AS aiSuggested, g.migrated_from_legacy AS migratedFromLegacy,
                    (SELECT COUNT(*) FROM pgr_gse_cargos    WHERE gse_id=g.id) AS cargosCount,
@@ -26765,7 +26770,9 @@ Return only the JSON content object (no wrapper). Format per type:
                    (SELECT COUNT(*) FROM pgr_gse_acoes     WHERE gse_id=g.id) AS acoesCount,
                    (SELECT COUNT(*) FROM pgr_gse_evidencias WHERE gse_id=g.id) AS evidenciasCount,
                    (SELECT COUNT(*) FROM pgr_gse_treinamentos WHERE gse_id=g.id) AS treinamentosCount
-            FROM pgr_gse g WHERE g.pgr_id=${input.pgrId} ORDER BY g.id`);
+            FROM pgr_gse g
+            LEFT JOIN occupational_gse_master mg ON mg.id=g.master_gse_id
+            WHERE g.pgr_id=${input.pgrId} ORDER BY g.id`);
           return (r as any)[0] ?? [];
         }),
 
@@ -26774,6 +26781,7 @@ Return only the JSON content object (no wrapper). Format per type:
       get: adminOrRhProcedure
         .input(z.object({ id: z.number().int() }))
         .query(async ({ ctx, input }) => {
+          await ensureOccupationalTables();
           const cid = (ctx.user as any).companyId;
           const db = await getDb();
           if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
@@ -26830,6 +26838,7 @@ Return only the JSON content object (no wrapper). Format per type:
               numMulheres: gse.num_mulheres,
               aiSuggested: !!gse.ai_suggested,
               migratedFromLegacy: !!gse.migrated_from_legacy,
+              masterGseId: gse.master_gse_id ? Number(gse.master_gse_id) : null,
             },
             cargos: (cargos as any)[0] ?? [],
             setores: (setores as any)[0] ?? [],
@@ -26854,23 +26863,11 @@ Return only the JSON content object (no wrapper). Format per type:
             aiSuggested: z.boolean().default(false),
           })
         )
-        .mutation(async ({ ctx, input }) => {
-          const cid = (ctx.user as any).companyId;
-          const db = await getDb();
-          if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-          const ownr: any = await db.execute(
-            drzSql`SELECT company_id FROM pgr_documents WHERE id=${input.pgrId} LIMIT 1`
-          );
-          const own = (ownr as any)[0]?.[0];
-          if (!own) throw new TRPCError({ code: "NOT_FOUND" });
-          if (Number(own.company_id) !== Number(cid))
-            throw new TRPCError({ code: "FORBIDDEN" });
-          const res: any = await db.execute(drzSql`
-            INSERT INTO pgr_gse (pgr_id, nome, descricao, num_trabalhadores, num_homens, num_mulheres, ai_suggested)
-            VALUES (${input.pgrId}, ${input.nome}, ${input.descricao ?? null},
-                    ${input.numTrabalhadores}, ${input.numHomens}, ${input.numMulheres},
-                    ${input.aiSuggested ? 1 : 0})`);
-          return { ok: true, id: Number((res as any)[0]?.insertId ?? 0) };
+        .mutation(async () => {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "Cadastre o GSE no catálogo mestre e vincule-o ao PGR. A criação de GSE isolado foi desativada.",
+          });
         }),
 
       update: adminOrRhProcedure
@@ -26885,18 +26882,23 @@ Return only the JSON content object (no wrapper). Format per type:
           })
         )
         .mutation(async ({ ctx, input }) => {
+          await ensureOccupationalTables();
           const cid = (ctx.user as any).companyId;
           const db = await getDb();
           if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
           const r: any = await db.execute(drzSql`
-            SELECT p.company_id FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
+            SELECT p.company_id,g.master_gse_id,mg.name master_name,mg.description master_description
+            FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
+            LEFT JOIN occupational_gse_master mg ON mg.id=g.master_gse_id
             WHERE g.id=${input.id} LIMIT 1`);
           const own = (r as any)[0]?.[0];
           if (!own) throw new TRPCError({ code: "NOT_FOUND" });
           if (Number(own.company_id) !== Number(cid))
             throw new TRPCError({ code: "FORBIDDEN" });
+          const linkedToMaster = Number(own.master_gse_id || 0) > 0;
           await db.execute(drzSql`
-            UPDATE pgr_gse SET nome=${input.nome}, descricao=${input.descricao ?? null},
+            UPDATE pgr_gse SET nome=${linkedToMaster ? own.master_name : input.nome},
+              descricao=${linkedToMaster ? own.master_description : input.descricao ?? null},
               num_trabalhadores=${input.numTrabalhadores}, num_homens=${input.numHomens},
               num_mulheres=${input.numMulheres}
             WHERE id=${input.id}`);
@@ -26906,16 +26908,22 @@ Return only the JSON content object (no wrapper). Format per type:
       remove: adminOrRhProcedure
         .input(z.object({ id: z.number().int() }))
         .mutation(async ({ ctx, input }) => {
+          await ensureOccupationalTables();
           const cid = (ctx.user as any).companyId;
           const db = await getDb();
           if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
           const r: any = await db.execute(drzSql`
-            SELECT p.company_id FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
+            SELECT p.company_id,g.master_gse_id FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
             WHERE g.id=${input.id} LIMIT 1`);
           const own = (r as any)[0]?.[0];
           if (!own) throw new TRPCError({ code: "NOT_FOUND" });
           if (Number(own.company_id) !== Number(cid))
             throw new TRPCError({ code: "FORBIDDEN" });
+          if (Number(own.master_gse_id || 0) > 0)
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: "O contexto está vinculado ao GSE mestre e não pode ser removido por esta tela.",
+            });
           // FKs ON DELETE CASCADE limpam cargos/setores/riscos/epc/epi/acoes/evidencias/treinamentos.
           await db.execute(drzSql`DELETE FROM pgr_gse WHERE id=${input.id}`);
           return { ok: true };

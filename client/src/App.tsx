@@ -106,6 +106,7 @@ import AdminSesmtDefaults from "@/pages/admin/AdminSesmtDefaults";
 import AdminFiles from "@/pages/admin/AdminFiles";
 import AdminNRTraining from "@/pages/admin/AdminNRTraining";
 import MedicalCenter from "@/pages/MedicalCenter";
+import OccupationalOperations from "@/pages/OccupationalOperations";
 import MyVaccines from "@/pages/MyVaccines";
 import SuperAdminGuidance from "@/pages/superadmin/SuperAdminGuidance";
 import AdminFatores from "@/pages/admin/AdminFatores";
@@ -176,6 +177,14 @@ function MedicalRoute({ component: Component ,}: { component: React.ComponentTyp
   if (loading) return (<div className="min-h-screen brand-gradient flex items-center justify-center"><div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" /></div>);
   if (!user) return <Redirect to="/login" />;
   if (user.role !== "medico") return <Redirect to="/dashboard" />;
+  return <Component />;
+}
+
+function OccupationalRoute({ component: Component }: { component: React.ComponentType }) {
+  const { user, loading } = useAuth();
+  if (loading) return (<div className="min-h-screen brand-gradient flex items-center justify-center"><div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" /></div>);
+  if (!user) return <Redirect to="/login" />;
+  if (!["medico", "sesmt", "admin", "company_admin", "admin_global", "super_admin"].includes(user.role)) return <Redirect to="/inicio" />;
   return <Component />;
 }
 
@@ -328,6 +337,7 @@ function Router() {
       <Route path="/admin/treinamentos-nr" component={() => (<ProtectedRoute component={AdminNRTraining} adminOnly />)} />
       <Route path="/admin/pcmso" component={() => <MedicalRoute component={MedicalCenter} />}
         />
+      <Route path="/admin/saude-ocupacional" component={() => <OccupationalRoute component={OccupationalOperations} />} />
         <Route
           path="/medico"
           component={() => <MedicalRoute component={MedicalCenter} />} />

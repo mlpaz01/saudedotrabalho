@@ -10,7 +10,7 @@ import {
   Mail, ShieldAlert, CreditCard, FolderOpen, GraduationCap, Stethoscope,
   Link2, Layers, RotateCcw, Activity, Search, LineChart, Signature, FileText,
   LifeBuoy, Headphones, HeartHandshake, BarChart3, ListChecks, BookMarked,
-  Megaphone, Briefcase, Trophy, Printer, Pencil, Upload, HardHat,
+  Megaphone, Briefcase, Trophy, Printer, Pencil, Upload, HardHat, ClipboardCheck,
 Syringe,} from "lucide-react";
 import { useEffect, useState } from "react";
 import { trpc } from "@/lib/trpc";
@@ -145,6 +145,7 @@ const adminSections: NavSection[] = [
     // Saúde Ocupacional — PCMSO, exames, vencimentos médicos
     section: "Saude Ocupacional",
     items: [
+      { label: "Operacao Ocupacional", href: "/admin/saude-ocupacional", roles: ["sesmt", "admin", "company_admin", "admin_global", "super_admin"], icon: <ClipboardCheck size={16} /> },
       { label: "Atestados e Afastamentos", href: "/admin/atestados-afastamentos", roles: ["admin", "rh", "sesmt", "company_admin", "admin_global", "super_admin", "chefia",], icon: <Stethoscope size={16} /> ,
        },
       { label: "Gestao de Vacinacao", href: "/admin/vacinacao", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <Syringe size={16} /> },
@@ -210,6 +211,11 @@ const medicalNav: NavSection[] = [
         label: "Central Medica",
         href: "/medico",
         icon: <Stethoscope size={16} />,
+      },
+      {
+        label: "Exames e ASO",
+        href: "/admin/saude-ocupacional",
+        icon: <ClipboardCheck size={16} />,
       },
       {
         label: "Manual do Usuario",
