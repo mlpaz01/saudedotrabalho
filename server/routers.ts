@@ -24329,6 +24329,7 @@ Return only the JSON content object (no wrapper). Format per type:
         z.object({
           companyId: z.number().optional(),
           branchId: z.number().nullable().optional(),
+          title: z.string().min(5).max(255),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -24401,7 +24402,7 @@ Return only the JSON content object (no wrapper). Format per type:
             created_by_user_id
           ) VALUES (
             ${cid}, ${input.branchId ?? null},
-            ${"PGR - Programa de Gerenciamento de Riscos"},
+            ${input.title.trim()},
             ${company?.name ?? null}, ${company?.name ?? null}, ${company?.cnpj ?? null}, ${company?.logo_url ?? null},
             ${"rascunho"},
             ${empty}, ${initRevs}, ${empty}, ${empty}, ${empty}, ${empty},

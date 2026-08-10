@@ -161,6 +161,7 @@ export default function AdminPGR() {
   const [scopeOpen, setScopeOpen] = useState(false);
   const [scopeMode, setScopeMode] = useState<"branch" | "consolidated">("consolidated");
   const [scopeBranchId, setScopeBranchId] = useState<number | null>(null);
+  const [newPgrTitle, setNewPgrTitle] = useState(`PGR ${new Date().getFullYear()} - Programa de Gerenciamento de Riscos`);
   const branchesQ = trpc.pgr.listBranches.useQuery(
     companyId ? { companyId } : undefined,
     { enabled: companyId != null && scopeOpen }
@@ -405,7 +406,7 @@ export default function AdminPGR() {
             </button>
             <div className="flex-1"/>
             {dashTab === "lista" && (
-              <Button onClick={() => { setScopeMode("consolidated"); setScopeBranchId(null); setScopeOpen(true); }} disabled={companyId == null} className="gap-2 mb-1" size="sm">
+              <Button onClick={() => { setScopeMode("consolidated"); setScopeBranchId(null); setNewPgrTitle(`PGR ${new Date().getFullYear()} - Programa de Gerenciamento de Riscos`); setScopeOpen(true); }} disabled={companyId == null} className="gap-2 mb-1" size="sm">
                 <Plus size={14} /> Novo PGR
               </Button>
             )}
@@ -461,6 +462,11 @@ export default function AdminPGR() {
                 </DialogDescription>
               </DialogHeader>
               <div className="space-y-3 pt-2">
+                <div>
+                  <Label htmlFor="new-pgr-title">Nome de identificação do PGR</Label>
+                  <Input id="new-pgr-title" className="mt-1" value={newPgrTitle} onChange={(event) => setNewPgrTitle(event.target.value)} placeholder="Ex.: PGR 2026 - Matriz e filiais" />
+                  <p className="mt-1 text-xs text-slate-500">Este nome aparecerá no PCMSO, na programação ocupacional, nos relatórios e no histórico.</p>
+                </div>
                 <label className="flex items-start gap-3 p-3 border rounded-lg cursor-pointer hover:bg-slate-50">
                   <input type="radio" name="pgr-scope" checked={scopeMode === "consolidated"}
                     onChange={() => setScopeMode("consolidated")} className="mt-1" />
@@ -496,10 +502,12 @@ export default function AdminPGR() {
               <DialogFooter>
                 <Button variant="outline" onClick={() => setScopeOpen(false)}>Cancelar</Button>
                 <Button disabled={createBlankMut.isPending} onClick={() => {
+                  if (newPgrTitle.trim().length < 5) { toast.error("Informe um nome claro para identificar o PGR."); return; }
                   if (scopeMode === "branch" && !scopeBranchId) { toast.error("Selecione a filial."); return; }
                   createBlankMut.mutate({
                     companyId: companyId ?? undefined,
                     branchId: scopeMode === "branch" ? scopeBranchId : null,
+                    title: newPgrTitle.trim(),
                   });
                 }}>
                   {createBlankMut.isPending && <Loader2 size={14} className="animate-spin mr-1" />}

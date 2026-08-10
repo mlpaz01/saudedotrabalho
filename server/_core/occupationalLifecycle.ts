@@ -48,3 +48,24 @@ export function classifyNumericReference(
   if (minimum == null && maximum == null) return "pendente_revisao" as const;
   return "conforme_referencia" as const;
 }
+
+export function calculateOccupationalBmi(
+  weightKg: unknown,
+  heightCm: unknown
+) {
+  const weight = Number(weightKg || 0);
+  const height = Number(heightCm || 0) / 100;
+  if (!weight || !height || height < 0.5 || height > 2.5) return null;
+  return Number((weight / (height * height)).toFixed(2));
+}
+
+export function resolveOccupationalProcedureExamId(
+  monitoringKind: string,
+  examId: number | null | undefined,
+  clinicalConsultationExamId: number
+) {
+  if (monitoringKind === "avaliacao_clinica")
+    return clinicalConsultationExamId;
+  if (monitoringKind === "exame_complementar" && examId) return Number(examId);
+  return null;
+}

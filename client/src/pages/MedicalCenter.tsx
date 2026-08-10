@@ -1276,7 +1276,6 @@ function LegacyMonitoringRow({
 }) {
   const [kind, setKind] = useState(row.monitoring_kind || "nao_definido");
   const [examId, setExamId] = useState(row.exam_id || 0);
-  const [name, setName] = useState(row.monitoring_name || "");
   const [periodicity, setPeriodicity] = useState(row.periodicity || "");
   const [observations, setObservations] = useState(row.observations || "");
   return (
@@ -1317,12 +1316,9 @@ function LegacyMonitoringRow({
               ))}
           </select>
         ) : kind === "avaliacao_clinica" ? (
-          <Input
-            className="mt-1 h-8 text-xs"
-            value={name}
-            onChange={e => setName(e.target.value)}
-            placeholder="Ex.: avaliação clínica ocupacional"
-          />
+          <div className="mt-1 border border-sky-200 bg-sky-50 p-2 text-xs text-sky-900">
+            Consulta clínica ocupacional. O procedimento será vinculado automaticamente ao catálogo mestre.
+          </div>
         ) : null}
       </td>
       <td className="p-2">
@@ -1347,7 +1343,7 @@ function LegacyMonitoringRow({
               id: Number(row.id),
               monitoringKind: kind,
               examId: examId || null,
-              monitoringName: name || undefined,
+              monitoringName: kind === "avaliacao_clinica" ? "Consulta clínica ocupacional" : undefined,
               periodicity: periodicity || undefined,
               observations: observations || undefined,
             })

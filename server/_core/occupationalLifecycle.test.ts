@@ -5,6 +5,8 @@ import {
   nextReissueVersion,
   normalizeGseCode,
   orderLabel,
+  calculateOccupationalBmi,
+  resolveOccupationalProcedureExamId,
 } from "./occupationalLifecycle";
 
 describe("occupational lifecycle rules", () => {
@@ -41,5 +43,17 @@ describe("occupational lifecycle rules", () => {
     );
     expect(classifyNumericReference(18, 12, 16)).toBe("fora_referencia");
     expect(classifyNumericReference(18)).toBe("pendente_revisao");
+  });
+
+  it("calculates BMI only from plausible vital signs", () => {
+    expect(calculateOccupationalBmi(80, 180)).toBe(24.69);
+    expect(calculateOccupationalBmi(80, 0)).toBeNull();
+    expect(calculateOccupationalBmi(80, 400)).toBeNull();
+  });
+
+  it("keeps clinical consultation independent from complementary exams", () => {
+    expect(resolveOccupationalProcedureExamId("avaliacao_clinica", null, 99)).toBe(99);
+    expect(resolveOccupationalProcedureExamId("exame_complementar", 12, 99)).toBe(12);
+    expect(resolveOccupationalProcedureExamId("nao_aplicavel", null, 99)).toBeNull();
   });
 });

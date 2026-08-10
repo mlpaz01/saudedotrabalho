@@ -8,6 +8,7 @@ import { getDb } from "../db";
 import { activeEmployeeSql, ensureActiveEmployeeColumns } from "./activeEmployees";
 import { sendEmail } from "./email";
 import {
+  calculateOccupationalBmi,
   evaluateAsoReadiness,
   nextReissueVersion,
   normalizeGseCode,
@@ -132,6 +133,18 @@ async function requireOwnedEntity(
     });
 }
 
+async function requireProviderSupportsExam(
+  db: any,
+  companyId: number,
+  providerId: number | null | undefined,
+  examId: number
+) {
+  if (!providerId) return;
+  const result: any = await db.execute(drzSql`SELECT pe.id FROM occupational_provider_exams pe JOIN occupational_health_providers p ON p.id=pe.provider_id AND p.company_id=pe.company_id AND p.is_active=1 WHERE pe.company_id=${companyId} AND pe.provider_id=${providerId} AND pe.exam_id=${examId} AND pe.is_active=1 LIMIT 1`);
+  if (!rowsOf(result).length)
+    throw new TRPCError({ code: "BAD_REQUEST", message: "O prestador selecionado não está ativo ou não está vinculado ao procedimento do catálogo mestre." });
+}
+
 async function resolveCurrentPcmso(
   db: any,
   companyId: number,
@@ -143,6 +156,49 @@ async function resolveCurrentPcmso(
       : drzSql`SELECT id FROM pcmso_programs_v2 WHERE company_id=${companyId} AND status='vigente' AND (valid_from IS NULL OR valid_from<=CURDATE()) AND (valid_until IS NULL OR valid_until>=CURDATE()) ORDER BY updated_at DESC LIMIT 1`
   );
   return Number(rowsOf(result)[0]?.id || 0);
+}
+
+async function loadAsoProcedureState(
+  db: any,
+  companyId: number,
+  collaboratorId: number,
+  pcmsoId: number,
+  clinicalExamId: number
+) {
+  const [expectedResult, completedResult]: any[] = await Promise.all([
+    db.execute(drzSql`SELECT DISTINCT
+      CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END exam_id,
+      e.name
+      FROM occupational_gse_worker_history h
+      JOIN pcmso_risk_monitoring_v2 m ON m.company_id=h.company_id AND m.master_gse_id=h.gse_id
+        AND m.pcmso_id=${pcmsoId}
+        AND m.monitoring_kind IN ('avaliacao_clinica','exame_complementar')
+        AND (m.monitoring_kind='avaliacao_clinica' OR m.exam_id IS NOT NULL)
+        AND m.suggestion_status IN ('aprovada','editada')
+      JOIN pcmso_exam_catalog_v2 e ON e.company_id=h.company_id
+        AND e.id=(CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END)
+        AND e.is_active=1
+      WHERE h.company_id=${companyId} AND h.collaborator_id=${collaboratorId} AND h.is_current=1`),
+    db.execute(drzSql`SELECT r.exam_id,e.name,r.classification,r.performed_at,r.reviewed_at
+      FROM occupational_exam_results r
+      JOIN pcmso_exam_catalog_v2 e ON e.id=r.exam_id AND e.company_id=r.company_id
+      WHERE r.company_id=${companyId} AND r.collaborator_id=${collaboratorId}
+      ORDER BY r.performed_at DESC,r.id DESC`),
+  ]);
+  const expected = rowsOf(expectedResult);
+  const expectedIds = new Set(expected.map((row: any) => Number(row.exam_id)));
+  const completed = rowsOf(completedResult).filter((row: any) =>
+    expectedIds.has(Number(row.exam_id))
+  );
+  const pendingMedicalReview = completed.filter(
+    (row: any) => !row.reviewed_at
+  ).length;
+  const evaluation = evaluateAsoReadiness({
+    expectedExamIds: [...expectedIds],
+    completedExamIds: [...new Set(completed.map((row: any) => Number(row.exam_id)))],
+    pendingMedicalReview,
+  });
+  return { expected, completed, evaluation };
 }
 
 async function ensureColumn(
@@ -267,6 +323,24 @@ export async function ensureOccupationalTables() {
     INDEX idx_occ_provider_company (company_id, credential_status)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
 
+  await ensureColumn(db, "occupational_health_providers", "municipality", "VARCHAR(180) NULL");
+  await ensureColumn(db, "occupational_health_providers", "uf", "VARCHAR(2) NULL");
+  await ensureColumn(db, "occupational_health_providers", "services_json", "LONGTEXT NULL");
+  await ensureColumn(db, "occupational_health_providers", "is_active", "TINYINT(1) NOT NULL DEFAULT 1");
+
+  await db.execute(drzSql`CREATE TABLE IF NOT EXISTS occupational_provider_exams (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    company_id INT NOT NULL,
+    provider_id INT NOT NULL,
+    exam_id INT NOT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_by INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_occ_provider_exam (company_id, provider_id, exam_id),
+    INDEX idx_occ_provider_exam_catalog (company_id, exam_id, is_active)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+
   await db.execute(drzSql`CREATE TABLE IF NOT EXISTS occupational_exam_orders (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     company_id INT NOT NULL,
@@ -296,6 +370,7 @@ export async function ensureOccupationalTables() {
     INDEX idx_occ_order_exam (company_id, exam_id, valid_until),
     INDEX idx_occ_order_parent (parent_order_id, version_number)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await ensureColumn(db, "occupational_exam_orders", "procedure_kind", "VARCHAR(40) NOT NULL DEFAULT 'exame_complementar'");
 
   await db.execute(drzSql`CREATE TABLE IF NOT EXISTS occupational_exam_order_communications (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -352,6 +427,29 @@ export async function ensureOccupationalTables() {
     INDEX idx_occ_anamnesis_worker (company_id, collaborator_id, created_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
 
+  await ensureColumn(db, "occupational_anamneses", "vital_signs_json", "LONGTEXT NULL");
+  await ensureColumn(db, "occupational_anamneses", "bmi", "DECIMAL(7,2) NULL");
+  await ensureColumn(db, "occupational_anamneses", "questionnaire_version", "VARCHAR(40) NULL");
+
+  await db.execute(drzSql`CREATE TABLE IF NOT EXISTS occupational_anamnesis_questions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    company_id INT NOT NULL DEFAULT 0,
+    question_code VARCHAR(100) NOT NULL,
+    anamnesis_type VARCHAR(50) NOT NULL DEFAULT 'todos',
+    group_name VARCHAR(120) NOT NULL,
+    question_text VARCHAR(1000) NOT NULL,
+    response_type VARCHAR(40) NOT NULL DEFAULT 'texto',
+    options_json LONGTEXT,
+    is_required TINYINT(1) NOT NULL DEFAULT 0,
+    sort_order INT NOT NULL DEFAULT 0,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_by INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_occ_anamnesis_question (company_id, anamnesis_type, question_code),
+    INDEX idx_occ_anamnesis_questions (company_id, anamnesis_type, is_active, sort_order)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+
   await db.execute(drzSql`CREATE TABLE IF NOT EXISTS occupational_asos (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     company_id INT NOT NULL,
@@ -397,6 +495,68 @@ export async function ensureOccupationalTables() {
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_occ_cat_company (company_id, status, event_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+
+  const catColumns: Array<[string, string]> = [
+    ["emitter_type", "VARCHAR(40) NULL"],
+    ["cat_type", "VARCHAR(40) NULL"],
+    ["initiative", "VARCHAR(60) NULL"],
+    ["registration_source", "VARCHAR(60) NULL"],
+    ["cat_number", "VARCHAR(100) NULL"],
+    ["origin_receipt", "VARCHAR(120) NULL"],
+    ["employer_registration_type", "VARCHAR(40) NULL"],
+    ["employer_registration_number", "VARCHAR(40) NULL"],
+    ["employer_cnae", "VARCHAR(20) NULL"],
+    ["hours_worked_before_accident", "VARCHAR(30) NULL"],
+    ["last_worked_date", "DATE NULL"],
+    ["location_type", "VARCHAR(80) NULL"],
+    ["location_detail", "TEXT NULL"],
+    ["location_registration", "VARCHAR(80) NULL"],
+    ["event_city", "VARCHAR(180) NULL"],
+    ["event_uf", "VARCHAR(2) NULL"],
+    ["event_country", "VARCHAR(100) NULL"],
+    ["body_part_code", "VARCHAR(30) NULL"],
+    ["laterality", "VARCHAR(30) NULL"],
+    ["causative_agent_code", "VARCHAR(30) NULL"],
+    ["generating_situation_code", "VARCHAR(30) NULL"],
+    ["police_report", "TINYINT(1) NOT NULL DEFAULT 0"],
+    ["death_occurred", "TINYINT(1) NOT NULL DEFAULT 0"],
+    ["death_date", "DATE NULL"],
+    ["medical_attendance_at", "DATETIME NULL"],
+    ["hospitalization", "TINYINT(1) NOT NULL DEFAULT 0"],
+    ["treatment_days", "INT NULL"],
+    ["injury_nature_code", "VARCHAR(30) NULL"],
+    ["diagnosis", "TEXT NULL"],
+    ["cid", "VARCHAR(20) NULL"],
+    ["doctor_name", "VARCHAR(255) NULL"],
+    ["doctor_council", "VARCHAR(20) NULL"],
+    ["doctor_uf", "VARCHAR(2) NULL"],
+    ["doctor_registration", "VARCHAR(40) NULL"],
+    ["medical_notes", "MEDIUMTEXT NULL"],
+    ["esocial_version", "VARCHAR(60) NULL"],
+    ["esocial_event_json", "LONGTEXT NULL"],
+    ["pdf_private_path", "VARCHAR(700) NULL"],
+  ];
+  for (const [column, definition] of catColumns)
+    await ensureColumn(db, "occupational_cat_records", column, definition);
+
+  await db.execute(drzSql`CREATE TABLE IF NOT EXISTS occupational_esocial_transmissions (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    company_id INT NOT NULL,
+    entity_type VARCHAR(40) NOT NULL,
+    entity_id BIGINT NOT NULL,
+    event_code VARCHAR(20) NOT NULL,
+    layout_version VARCHAR(60) NOT NULL,
+    status VARCHAR(40) NOT NULL DEFAULT 'pendente_integracao',
+    protocol VARCHAR(120) NULL,
+    receipt VARCHAR(120) NULL,
+    error_message MEDIUMTEXT NULL,
+    payload_json LONGTEXT,
+    response_json LONGTEXT,
+    requested_by INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_occ_esocial_entity (company_id, entity_type, entity_id, created_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
 
   await db.execute(drzSql`CREATE TABLE IF NOT EXISTS occupational_work_orders (
@@ -475,7 +635,107 @@ export async function ensureOccupationalTables() {
   await ensureColumn(db, "pcmso_exam_catalog_v2", "default_unit", "VARCHAR(80) NULL");
   await ensureColumn(db, "pcmso_exam_catalog_v2", "reference_guidance", "MEDIUMTEXT NULL");
   await ensureColumn(db, "pgr_gse", "master_gse_id", "INT NULL");
+  const defaultQuestions = [
+    ["hist_doenca", "todos", "Histórico de saúde", "Possui doença diagnosticada ou condição crônica?", "sim_nao_detalhe", 10],
+    ["tratamento_atual", "todos", "Histórico de saúde", "Realiza tratamento ou utiliza medicamento atualmente?", "sim_nao_detalhe", 20],
+    ["alergias", "todos", "Histórico de saúde", "Possui alergias conhecidas?", "sim_nao_detalhe", 30],
+    ["cirurgias", "admissional", "Antecedentes", "Já realizou cirurgias ou internações relevantes?", "sim_nao_detalhe", 40],
+    ["afastamentos", "todos", "Histórico ocupacional", "Já esteve afastado do trabalho por motivo de saúde?", "sim_nao_detalhe", 50],
+    ["acidente_trabalho", "todos", "Histórico ocupacional", "Já sofreu acidente ou doença relacionada ao trabalho?", "sim_nao_detalhe", 60],
+    ["exposicao_anterior", "admissional", "Histórico ocupacional", "Descreva exposições ocupacionais relevantes em empregos anteriores.", "texto_longo", 70],
+    ["epi_anterior", "admissional", "Histórico ocupacional", "Utilizou EPI em atividades anteriores?", "sim_nao_detalhe", 80],
+    ["queixa_atual", "todos", "Avaliação atual", "Existe queixa de saúde atual ou relacionada ao trabalho?", "sim_nao_detalhe", 90],
+    ["sono", "todos", "Hábitos e bem-estar", "Como considera a qualidade do sono?", "escala_1_5", 100],
+    ["tabagismo", "todos", "Hábitos e bem-estar", "Faz uso de tabaco?", "sim_nao_detalhe", 110],
+    ["alcool", "todos", "Hábitos e bem-estar", "Consome bebidas alcoólicas?", "sim_nao_detalhe", 120],
+    ["atividade_fisica", "todos", "Hábitos e bem-estar", "Pratica atividade física regularmente?", "sim_nao_detalhe", 130],
+    ["mudanca_saude", "periodico", "Evolução clínica", "Houve alteração importante na saúde desde o último exame?", "sim_nao_detalhe", 140],
+    ["mudanca_exposicao", "periodico", "Evolução ocupacional", "Houve mudança de função, setor ou exposição ocupacional?", "sim_nao_detalhe", 150],
+    ["motivo_afastamento", "retorno", "Retorno ao trabalho", "Qual foi o motivo e o período do afastamento?", "texto_longo", 160],
+    ["restricoes_retorno", "retorno", "Retorno ao trabalho", "Há restrições, limitações ou necessidade de adaptação para o retorno?", "sim_nao_detalhe", 170],
+    ["funcao_anterior", "mudanca_risco", "Mudança de risco", "Informe função, setor e riscos anteriores.", "texto_longo", 180],
+    ["nova_funcao", "mudanca_risco", "Mudança de risco", "Informe nova função, setor e riscos previstos.", "texto_longo", 190],
+    ["estado_demissional", "demissional", "Avaliação demissional", "Como está seu estado de saúde atual e existem queixas relacionadas ao trabalho?", "texto_longo", 200],
+    ["observacoes", "todos", "Observações", "Deseja relatar outra condição ou informação relevante ao médico?", "texto_longo", 999],
+  ];
+  for (const question of defaultQuestions) {
+    await db.execute(drzSql`INSERT IGNORE INTO occupational_anamnesis_questions
+      (company_id,question_code,anamnesis_type,group_name,question_text,response_type,sort_order,created_by)
+      VALUES (0,${question[0]},${question[1]},${question[2]},${question[3]},${question[4]},${question[5]},0)`);
+  }
   occupationalTablesReady = true;
+}
+
+export async function ensureClinicalConsultationExam(
+  db: any,
+  companyId: number,
+  actorId: number
+) {
+  const existing: any = await db.execute(
+    drzSql`SELECT id FROM pcmso_exam_catalog_v2 WHERE company_id=${companyId} AND name='Consulta clínica ocupacional' LIMIT 1`
+  );
+  const found = Number(rowsOf(existing)[0]?.id || 0);
+  if (found) return found;
+  const result: any = await db.execute(drzSql`INSERT INTO pcmso_exam_catalog_v2
+    (company_id,name,exam_type,category,description,default_periodicity,result_type,reference_guidance,is_active,created_by)
+    VALUES (${companyId},'Consulta clínica ocupacional','clinico','Avaliação clínica','Procedimento clínico ocupacional independente, utilizado quando a matriz médica define avaliação clínica sem exame complementar.','Conforme decisão médica','qualitativo','Conclusão exclusiva do médico examinador, com registro em anamnese, consulta e ASO.',1,${actorId})`);
+  return Number((result as any)[0]?.insertId || 0);
+}
+
+function catEsocialPayload(input: any, company: any, worker: any) {
+  return {
+    layout: "eSocial S-1.3 - NT 06/2026",
+    event: "S-2210",
+    transmissionStatus: "pendente_integracao",
+    employer: {
+      registrationType: input.employerRegistrationType || "cnpj",
+      registrationNumber: input.employerRegistrationNumber || company?.cnpj || null,
+      cnae: input.employerCnae || null,
+    },
+    worker: {
+      id: Number(worker?.id || input.collaboratorId),
+      cpf: worker?.cpf || null,
+      name: worker?.name || null,
+      registration: worker?.employee_registration || null,
+    },
+    cat: {
+      type: input.catType,
+      initiative: input.initiative,
+      emitterType: input.emitterType,
+      eventAt: input.eventAt,
+      accidentType: input.accidentType || null,
+      hoursWorkedBeforeAccident: input.hoursWorkedBeforeAccident || null,
+      lastWorkedDate: input.lastWorkedDate || null,
+      location: {
+        type: input.locationType || null,
+        description: input.location || null,
+        detail: input.locationDetail || null,
+        city: input.eventCity || null,
+        uf: input.eventUf || null,
+        country: input.eventCountry || "Brasil",
+      },
+      causativeAgent: { code: input.causativeAgentCode || null, description: input.causativeAgent || null },
+      generatingSituationCode: input.generatingSituationCode || null,
+      bodyPart: { code: input.bodyPartCode || null, description: input.bodyPart || null, laterality: input.laterality || null },
+      injury: { code: input.injuryNatureCode || null, description: input.injuryNature || null },
+      leaveRequired: Boolean(input.leaveRequired),
+      death: { occurred: Boolean(input.deathOccurred), date: input.deathDate || null },
+      policeReport: Boolean(input.policeReport),
+      medical: {
+        attendanceAt: input.medicalAttendanceAt || null,
+        hospitalization: Boolean(input.hospitalization),
+        treatmentDays: input.treatmentDays ?? null,
+        diagnosis: input.diagnosis || null,
+        cid: input.cid || null,
+        professional: {
+          name: input.doctorName || null,
+          council: input.doctorCouncil || null,
+          uf: input.doctorUf || null,
+          registration: input.doctorRegistration || null,
+        },
+      },
+    },
+  };
 }
 
 async function audit(
@@ -600,7 +860,7 @@ export const occupationalLifecycleRouter = router({
     const result: any = await db.execute(drzSql.raw(`SELECT
       (SELECT COUNT(*) FROM occupational_gse_master WHERE company_id=${companyId} AND status='ativo') gses,
       (SELECT COUNT(*) FROM users u WHERE u.company_id=${companyId} AND ${activeEmployeeSql("u")}) active_workers,
-      (SELECT COUNT(DISTINCT collaborator_id) FROM occupational_gse_worker_history WHERE company_id=${companyId} AND is_current=1) workers_with_gse,
+      (SELECT COUNT(DISTINCT h.collaborator_id) FROM occupational_gse_worker_history h JOIN users ug ON ug.id=h.collaborator_id AND ug.company_id=h.company_id WHERE h.company_id=${companyId} AND h.is_current=1 AND ${activeEmployeeSql("ug")}) workers_with_gse,
       (SELECT COUNT(*) FROM occupational_gse_movement_alerts WHERE company_id=${companyId} AND status='pendente') movement_alerts,
       (SELECT COUNT(*) FROM occupational_exam_orders WHERE company_id=${companyId} AND status IN ('pendente','enviada','vencida')) pending_orders,
       (SELECT COUNT(*) FROM occupational_exam_results WHERE company_id=${companyId} AND reviewed_at IS NULL) pending_results,
@@ -948,8 +1208,18 @@ export const occupationalLifecycleRouter = router({
     const db = await getDb();
     const companyId = companyOf(ctx);
     if (!db) return [];
-    const result: any = await db.execute(drzSql`SELECT * FROM occupational_health_providers WHERE company_id=${companyId} ORDER BY credential_status='ativo' DESC,trade_name,legal_name`);
-    return rowsOf(result);
+    const result: any = await db.execute(drzSql`SELECT p.*,
+      (SELECT GROUP_CONCAT(pe.exam_id ORDER BY pe.exam_id) FROM occupational_provider_exams pe WHERE pe.company_id=p.company_id AND pe.provider_id=p.id AND pe.is_active=1) exam_ids,
+      (SELECT GROUP_CONCAT(e.name ORDER BY e.name SEPARATOR '||') FROM occupational_provider_exams pe JOIN pcmso_exam_catalog_v2 e ON e.id=pe.exam_id AND e.company_id=pe.company_id WHERE pe.company_id=p.company_id AND pe.provider_id=p.id AND pe.is_active=1) exam_names,
+      (SELECT COUNT(*) FROM occupational_exam_orders o WHERE o.company_id=p.company_id AND o.provider_id=p.id) history_count
+      FROM occupational_health_providers p WHERE p.company_id=${companyId}
+      ORDER BY p.is_active DESC,p.credential_status='ativo' DESC,p.trade_name,p.legal_name`);
+    return rowsOf(result).map((row: any) => ({
+      ...row,
+      examIds: String(row.exam_ids || "").split(",").filter(Boolean).map(Number),
+      examNames: String(row.exam_names || "").split("||").filter(Boolean),
+      canDelete: Number(row.history_count || 0) === 0,
+    }));
   }),
 
   upsertProvider: protectedProcedure
@@ -960,11 +1230,14 @@ export const occupationalLifecycleRouter = router({
         tradeName: z.string().max(255).optional(),
         cnpj: z.string().max(30).optional(),
         address: z.string().max(5000).optional(),
+        municipality: z.string().max(180).optional(),
+        uf: z.string().max(2).optional(),
         phone: z.string().max(80).optional(),
         email: z.string().email().max(320).optional().or(z.literal("")),
         contactName: z.string().max(255).optional(),
         inCompanyService: z.boolean().default(false),
-        exams: z.array(z.string().max(255)).max(200).default([]),
+        examIds: z.array(z.number().int().positive()).max(200).default([]),
+        services: z.array(z.string().max(255)).max(100).default([]),
         specialties: z.array(z.string().max(255)).max(100).default([]),
         credentialStatus: z.enum(["ativo", "em_revisao", "suspenso", "vencido"]).default("ativo"),
         credentialValidUntil: dateInput.nullable().optional(),
@@ -978,17 +1251,59 @@ export const occupationalLifecycleRouter = router({
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       let id = Number(input.id || 0);
+      for (const examId of [...new Set(input.examIds)])
+        await requireOwnedEntity(db, companyId, "exam", examId, "Exame");
       if (id) {
         await requireOwnedEntity(db, companyId, "provider", id, "Prestador");
-        await db.execute(drzSql`UPDATE occupational_health_providers SET legal_name=${input.legalName},trade_name=${input.tradeName || null},cnpj=${input.cnpj || null},address=${input.address || null},phone=${input.phone || null},email=${input.email || null},contact_name=${input.contactName || null},in_company_service=${input.inCompanyService ? 1 : 0},exams_json=${JSON.stringify(input.exams)},specialties_json=${JSON.stringify(input.specialties)},credential_status=${input.credentialStatus},credential_valid_until=${input.credentialValidUntil || null},notes=${input.notes || null} WHERE id=${id} AND company_id=${companyId}`);
+        await db.execute(drzSql`UPDATE occupational_health_providers SET legal_name=${input.legalName},trade_name=${input.tradeName || null},cnpj=${input.cnpj || null},address=${input.address || null},municipality=${input.municipality || null},uf=${input.uf?.toUpperCase() || null},phone=${input.phone || null},email=${input.email || null},contact_name=${input.contactName || null},in_company_service=${input.inCompanyService ? 1 : 0},exams_json=${JSON.stringify([])},services_json=${JSON.stringify(input.services)},specialties_json=${JSON.stringify(input.specialties)},credential_status=${input.credentialStatus},credential_valid_until=${input.credentialValidUntil || null},notes=${input.notes || null} WHERE id=${id} AND company_id=${companyId}`);
       } else {
         const result: any = await db.execute(drzSql`INSERT INTO occupational_health_providers
-          (company_id,legal_name,trade_name,cnpj,address,phone,email,contact_name,in_company_service,exams_json,specialties_json,credential_status,credential_valid_until,notes,created_by)
-          VALUES (${companyId},${input.legalName},${input.tradeName || null},${input.cnpj || null},${input.address || null},${input.phone || null},${input.email || null},${input.contactName || null},${input.inCompanyService ? 1 : 0},${JSON.stringify(input.exams)},${JSON.stringify(input.specialties)},${input.credentialStatus},${input.credentialValidUntil || null},${input.notes || null},${Number(ctx.user.id)})`);
+          (company_id,legal_name,trade_name,cnpj,address,municipality,uf,phone,email,contact_name,in_company_service,exams_json,services_json,specialties_json,credential_status,credential_valid_until,notes,created_by)
+          VALUES (${companyId},${input.legalName},${input.tradeName || null},${input.cnpj || null},${input.address || null},${input.municipality || null},${input.uf?.toUpperCase() || null},${input.phone || null},${input.email || null},${input.contactName || null},${input.inCompanyService ? 1 : 0},${JSON.stringify([])},${JSON.stringify(input.services)},${JSON.stringify(input.specialties)},${input.credentialStatus},${input.credentialValidUntil || null},${input.notes || null},${Number(ctx.user.id)})`);
         id = Number((result as any)[0]?.insertId || 0);
       }
+      await db.execute(drzSql`UPDATE occupational_provider_exams SET is_active=0 WHERE company_id=${companyId} AND provider_id=${id}`);
+      for (const examId of [...new Set(input.examIds)])
+        await db.execute(drzSql`INSERT INTO occupational_provider_exams (company_id,provider_id,exam_id,is_active,created_by)
+          VALUES (${companyId},${id},${examId},1,${Number(ctx.user.id)})
+          ON DUPLICATE KEY UPDATE is_active=1,updated_at=NOW()`);
       await audit(db, ctx, input.id ? "provider_updated" : "provider_created", "health_provider", id);
       return { ok: true, id };
+    }),
+
+  setProviderActive: protectedProcedure
+    .input(z.object({ id: z.number().int().positive(), active: z.boolean() }))
+    .mutation(async ({ ctx, input }) => {
+      requireSesmt(ctx);
+      await ensureOccupationalTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      await requireOwnedEntity(db, companyId, "provider", input.id, "Prestador");
+      await db.execute(drzSql`UPDATE occupational_health_providers SET is_active=${input.active ? 1 : 0},credential_status=${input.active ? "ativo" : "suspenso"} WHERE id=${input.id} AND company_id=${companyId}`);
+      await audit(db, ctx, input.active ? "provider_reactivated" : "provider_deactivated", "health_provider", input.id);
+      return { ok: true };
+    }),
+
+  removeProvider: protectedProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ ctx, input }) => {
+      requireSesmt(ctx);
+      await ensureOccupationalTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      await requireOwnedEntity(db, companyId, "provider", input.id, "Prestador");
+      const history: any = await db.execute(drzSql`SELECT COUNT(*) total FROM occupational_exam_orders WHERE company_id=${companyId} AND provider_id=${input.id}`);
+      if (Number(rowsOf(history)[0]?.total || 0)) {
+        await db.execute(drzSql`UPDATE occupational_health_providers SET is_active=0,credential_status='suspenso' WHERE id=${input.id} AND company_id=${companyId}`);
+        await audit(db, ctx, "provider_soft_deleted", "health_provider", input.id, null, { reason: "historico_preservado" });
+        return { ok: true, mode: "soft_delete" as const };
+      }
+      await db.execute(drzSql`DELETE FROM occupational_provider_exams WHERE company_id=${companyId} AND provider_id=${input.id}`);
+      await db.execute(drzSql`DELETE FROM occupational_health_providers WHERE company_id=${companyId} AND id=${input.id}`);
+      await audit(db, ctx, "provider_deleted", "health_provider", input.id);
+      return { ok: true, mode: "deleted" as const };
     }),
 
   listExamOrders: protectedProcedure.query(async ({ ctx }) => {
@@ -1009,18 +1324,23 @@ export const occupationalLifecycleRouter = router({
     const db = await getDb();
     const companyId = companyOf(ctx);
     if (!db) return [];
+    const clinicalExamId = await ensureClinicalConsultationExam(db, companyId, Number(ctx.user.id));
     const result: any = await db.execute(drzSql.raw(`SELECT u.id collaborator_id,u.name collaborator_name,u.cpf,u.employee_registration,u.position,
+      u.branch_id,u.sector_id,
       b.name branch_name,s.name sector_name,h.gse_id,g.code gse_code,g.name gse_name,
-      m.id monitoring_id,m.pcmso_id,m.exam_id,m.periodicity,m.applicability,e.name exam_name,p.title pcmso_title,
-      (SELECT o.status FROM occupational_exam_orders o WHERE o.company_id=u.company_id AND o.collaborator_id=u.id AND o.exam_id=m.exam_id AND o.pcmso_id=m.pcmso_id ORDER BY o.version_number DESC,o.created_at DESC LIMIT 1) latest_order_status,
-      (SELECT o.id FROM occupational_exam_orders o WHERE o.company_id=u.company_id AND o.collaborator_id=u.id AND o.exam_id=m.exam_id AND o.pcmso_id=m.pcmso_id ORDER BY o.version_number DESC,o.created_at DESC LIMIT 1) latest_order_id,
-      (SELECT MAX(r.performed_at) FROM occupational_exam_results r WHERE r.company_id=u.company_id AND r.collaborator_id=u.id AND r.exam_id=m.exam_id) latest_result_at
+      m.id monitoring_id,m.pcmso_id,CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END exam_id,
+      m.monitoring_kind,m.periodicity,m.applicability,e.name exam_name,p.title pcmso_title,p.pgr_id,pg.title pgr_title,
+      (SELECT GROUP_CONCAT(DISTINCT COALESCE(hp.trade_name,hp.legal_name) ORDER BY COALESCE(hp.trade_name,hp.legal_name) SEPARATOR '||') FROM occupational_provider_exams pe JOIN occupational_health_providers hp ON hp.id=pe.provider_id AND hp.company_id=pe.company_id AND hp.is_active=1 WHERE pe.company_id=u.company_id AND pe.exam_id=(CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END) AND pe.is_active=1) recommended_providers,
+      (SELECT o.status FROM occupational_exam_orders o WHERE o.company_id=u.company_id AND o.collaborator_id=u.id AND o.exam_id=(CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END) AND o.pcmso_id=m.pcmso_id ORDER BY o.version_number DESC,o.created_at DESC LIMIT 1) latest_order_status,
+      (SELECT o.id FROM occupational_exam_orders o WHERE o.company_id=u.company_id AND o.collaborator_id=u.id AND o.exam_id=(CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END) AND o.pcmso_id=m.pcmso_id ORDER BY o.version_number DESC,o.created_at DESC LIMIT 1) latest_order_id,
+      (SELECT MAX(r.performed_at) FROM occupational_exam_results r WHERE r.company_id=u.company_id AND r.collaborator_id=u.id AND r.exam_id=(CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END)) latest_result_at
       FROM users u
       JOIN occupational_gse_worker_history h ON h.collaborator_id=u.id AND h.company_id=u.company_id AND h.is_current=1
       JOIN occupational_gse_master g ON g.id=h.gse_id AND g.company_id=u.company_id
-      JOIN pcmso_risk_monitoring_v2 m ON m.company_id=u.company_id AND m.master_gse_id=h.gse_id AND m.exam_id IS NOT NULL AND m.monitoring_kind='exame_complementar' AND m.suggestion_status IN ('aprovada','editada')
+      JOIN pcmso_risk_monitoring_v2 m ON m.company_id=u.company_id AND m.master_gse_id=h.gse_id AND m.monitoring_kind IN ('avaliacao_clinica','exame_complementar') AND (m.monitoring_kind='avaliacao_clinica' OR m.exam_id IS NOT NULL) AND m.suggestion_status IN ('aprovada','editada')
       JOIN pcmso_programs_v2 p ON p.id=m.pcmso_id AND p.company_id=u.company_id AND p.status='vigente' AND (p.valid_from IS NULL OR p.valid_from<=CURDATE()) AND (p.valid_until IS NULL OR p.valid_until>=CURDATE())
-      JOIN pcmso_exam_catalog_v2 e ON e.id=m.exam_id AND e.company_id=u.company_id AND e.is_active=1
+      LEFT JOIN pgr_documents pg ON pg.id=p.pgr_id AND pg.company_id=u.company_id
+      JOIN pcmso_exam_catalog_v2 e ON e.id=(CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END) AND e.company_id=u.company_id AND e.is_active=1
       LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id
       WHERE u.company_id=${companyId} AND ${activeEmployeeSql("u")}
       ORDER BY e.name,u.name`));
@@ -1031,6 +1351,8 @@ export const occupationalLifecycleRouter = router({
     }
     return [...unique.values()].map((row: any) => ({
       ...row,
+      procedure_kind: row.monitoring_kind === "avaliacao_clinica" ? "consulta_clinica" : "exame_complementar",
+      recommendedProviders: String(row.recommended_providers || "").split("||").filter(Boolean),
       operational_status: row.latest_result_at
         ? "resultado_recebido"
         : row.latest_order_status || "requisicao_pendente",
@@ -1052,28 +1374,30 @@ export const occupationalLifecycleRouter = router({
       const db = await getDb();
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const clinicalExamId = await ensureClinicalConsultationExam(db, companyId, Number(ctx.user.id));
       await requireOwnedEntity(db, companyId, "provider", input.providerId, "Prestador");
       let created = 0;
       let skipped = 0;
       const ids: number[] = [];
       for (const item of input.items) {
-        const sourceResult: any = await db.execute(drzSql`SELECT u.id collaborator_id,h.gse_id,m.id monitoring_id,m.pcmso_id,m.exam_id
+        const sourceResult: any = await db.execute(drzSql`SELECT u.id collaborator_id,h.gse_id,m.id monitoring_id,m.pcmso_id,m.monitoring_kind,CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END exam_id
           FROM users u JOIN occupational_gse_worker_history h ON h.collaborator_id=u.id AND h.company_id=u.company_id AND h.is_current=1
-          JOIN pcmso_risk_monitoring_v2 m ON m.id=${item.monitoringId} AND m.company_id=u.company_id AND m.master_gse_id=h.gse_id AND m.exam_id IS NOT NULL AND m.monitoring_kind='exame_complementar' AND m.suggestion_status IN ('aprovada','editada')
+          JOIN pcmso_risk_monitoring_v2 m ON m.id=${item.monitoringId} AND m.company_id=u.company_id AND m.master_gse_id=h.gse_id AND m.monitoring_kind IN ('avaliacao_clinica','exame_complementar') AND (m.monitoring_kind='avaliacao_clinica' OR m.exam_id IS NOT NULL) AND m.suggestion_status IN ('aprovada','editada')
           JOIN pcmso_programs_v2 p ON p.id=m.pcmso_id AND p.company_id=u.company_id AND p.status='vigente' AND (p.valid_from IS NULL OR p.valid_from<=CURDATE()) AND (p.valid_until IS NULL OR p.valid_until>=CURDATE())
-          WHERE u.id=${item.collaboratorId} AND u.company_id=${companyId} LIMIT 1`);
+          WHERE u.id=${item.collaboratorId} AND u.company_id=${companyId} AND ${drzSql.raw(activeEmployeeSql("u"))} LIMIT 1`);
         const source = rowsOf(sourceResult)[0];
         if (!source) { skipped++; continue; }
+        await requireProviderSupportsExam(db, companyId, input.providerId, Number(source.exam_id));
         const activeOrder: any = await db.execute(drzSql`SELECT id FROM occupational_exam_orders WHERE company_id=${companyId} AND collaborator_id=${item.collaboratorId} AND pcmso_id=${Number(source.pcmso_id)} AND exam_id=${Number(source.exam_id)} AND status IN ('pendente','enviada') ORDER BY created_at DESC LIMIT 1`);
         if (rowsOf(activeOrder).length) { skipped++; continue; }
         const number = `REQ-${new Date().getFullYear()}-${String(Date.now()).slice(-8)}-${String(item.collaboratorId).padStart(5, "0")}-${crypto.randomBytes(2).toString("hex").toUpperCase()}`;
         const inserted: any = await db.execute(drzSql`INSERT INTO occupational_exam_orders
-          (company_id,order_number,version_number,collaborator_id,gse_id,pcmso_id,monitoring_id,exam_id,provider_id,service_mode,service_location,issue_date,valid_until,status,orientations,created_by)
-          VALUES (${companyId},${number},1,${item.collaboratorId},${Number(source.gse_id)},${Number(source.pcmso_id)},${Number(source.monitoring_id)},${Number(source.exam_id)},${input.providerId || null},${input.serviceMode},${input.serviceLocation || null},CURDATE(),${input.validUntil},'pendente',${input.orientations || null},${Number(ctx.user.id)})`);
+          (company_id,order_number,version_number,collaborator_id,gse_id,pcmso_id,monitoring_id,exam_id,procedure_kind,provider_id,service_mode,service_location,issue_date,valid_until,status,orientations,created_by)
+          VALUES (${companyId},${number},1,${item.collaboratorId},${Number(source.gse_id)},${Number(source.pcmso_id)},${Number(source.monitoring_id)},${Number(source.exam_id)},${source.monitoring_kind === "avaliacao_clinica" ? "consulta_clinica" : "exame_complementar"},${input.providerId || null},${input.serviceMode},${input.serviceLocation || null},CURDATE(),${input.validUntil},'pendente',${input.orientations || null},${Number(ctx.user.id)})`);
         const id = Number((inserted as any)[0]?.insertId || 0);
         ids.push(id);
         created++;
-        await audit(db, ctx, "pcmso_exam_order_created", "exam_order", id, item.collaboratorId, { monitoringId: item.monitoringId, examId: Number(source.exam_id), pcmsoId: Number(source.pcmso_id) });
+        await audit(db, ctx, "pcmso_exam_order_created", "exam_order", id, item.collaboratorId, { monitoringId: item.monitoringId, examId: Number(source.exam_id), pcmsoId: Number(source.pcmso_id), procedureKind: source.monitoring_kind === "avaliacao_clinica" ? "consulta_clinica" : "exame_complementar" });
       }
       return { ok: true, created, skipped, ids };
     }),
@@ -1099,6 +1423,7 @@ export const occupationalLifecycleRouter = router({
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       await requireOwnedEntity(db, companyId, "exam", input.examId, "Exame");
       await requireOwnedEntity(db, companyId, "provider", input.providerId, "Prestador");
+      await requireProviderSupportsExam(db, companyId, input.providerId, input.examId);
       await requireOwnedEntity(db, companyId, "pcmso", input.pcmsoId, "PCMSO");
       let created = 0;
       const ids: number[] = [];
@@ -1140,6 +1465,7 @@ export const occupationalLifecycleRouter = router({
       const originalResult: any = await db.execute(drzSql`SELECT * FROM occupational_exam_orders WHERE id=${input.id} AND company_id=${companyId} LIMIT 1`);
       const original = rowsOf(originalResult)[0];
       if (!original) throw new TRPCError({ code: "NOT_FOUND" });
+      await requireProviderSupportsExam(db, companyId, input.providerId, Number(original.exam_id));
       const rootId = Number(original.parent_order_id || original.id);
       const versionsResult: any = await db.execute(drzSql`SELECT version_number FROM occupational_exam_orders WHERE company_id=${companyId} AND (id=${rootId} OR parent_order_id=${rootId})`);
       const version = nextReissueVersion(rowsOf(versionsResult).map((row: any) => Number(row.version_number)));
@@ -1397,14 +1723,67 @@ export const occupationalLifecycleRouter = router({
       const db = await getDb();
       const companyId = companyOf(ctx);
       if (!db) return null;
-      const [worker, results, orders, anamneses, risks] = await Promise.all([
+      const [worker, results, orders, anamneses, risks, program] = await Promise.all([
         db.execute(drzSql`SELECT u.id,u.name,u.cpf,u.position,b.name branch_name,s.name sector_name,g.id gse_id,g.code gse_code,g.name gse_name FROM users u LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id LEFT JOIN occupational_gse_worker_history h ON h.collaborator_id=u.id AND h.company_id=u.company_id AND h.is_current=1 LEFT JOIN occupational_gse_master g ON g.id=h.gse_id WHERE u.id=${input.collaboratorId} AND u.company_id=${companyId} LIMIT 1`),
         db.execute(drzSql`SELECT r.id,r.performed_at,r.classification,e.name exam_name FROM occupational_exam_results r JOIN pcmso_exam_catalog_v2 e ON e.id=r.exam_id WHERE r.company_id=${companyId} AND r.collaborator_id=${input.collaboratorId} ORDER BY r.performed_at DESC LIMIT 50`),
         db.execute(drzSql`SELECT o.id,o.status,o.valid_until,e.id exam_id,e.name exam_name FROM occupational_exam_orders o JOIN pcmso_exam_catalog_v2 e ON e.id=o.exam_id WHERE o.company_id=${companyId} AND o.collaborator_id=${input.collaboratorId} ORDER BY o.created_at DESC LIMIT 100`),
         db.execute(drzSql`SELECT id,anamnesis_type,status,created_at,updated_at FROM occupational_anamneses WHERE company_id=${companyId} AND collaborator_id=${input.collaboratorId} ORDER BY created_at DESC LIMIT 30`),
         db.execute(drzSql`SELECT DISTINCT m.risk_name,m.risk_type,m.risk_classification,m.monitoring_kind,m.monitoring_name,m.periodicity,e.name exam_name FROM users u JOIN occupational_gse_worker_history h ON h.collaborator_id=u.id AND h.company_id=u.company_id AND h.is_current=1 JOIN pcmso_risk_monitoring_v2 m ON m.company_id=u.company_id AND m.master_gse_id=h.gse_id LEFT JOIN pcmso_exam_catalog_v2 e ON e.id=m.exam_id WHERE u.id=${input.collaboratorId} AND u.company_id=${companyId} ORDER BY m.risk_name`),
+        db.execute(drzSql`SELECT p.id pcmso_id,p.title pcmso_title,p.valid_from,p.valid_until,p.doctor_name,p.doctor_crm,pg.id pgr_id,pg.title pgr_title FROM pcmso_programs_v2 p LEFT JOIN pgr_documents pg ON pg.id=p.pgr_id AND pg.company_id=p.company_id WHERE p.company_id=${companyId} AND p.status='vigente' AND (p.valid_from IS NULL OR p.valid_from<=CURDATE()) AND (p.valid_until IS NULL OR p.valid_until>=CURDATE()) ORDER BY p.updated_at DESC LIMIT 1`),
       ]);
-      return { worker: rowsOf(worker)[0] || null, results: rowsOf(results), orders: rowsOf(orders), anamneses: rowsOf(anamneses), risks: rowsOf(risks) };
+      return { worker: rowsOf(worker)[0] || null, results: rowsOf(results), orders: rowsOf(orders), anamneses: rowsOf(anamneses), risks: rowsOf(risks), program: rowsOf(program)[0] || null };
+    }),
+
+  listAnamnesisQuestions: protectedProcedure
+    .input(z.object({ anamnesisType: z.enum(["admissional", "periodico", "retorno", "mudanca_risco", "demissional"]) }))
+    .query(async ({ ctx, input }) => {
+      requireDoctor(ctx);
+      await ensureOccupationalTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) return [];
+      const result: any = await db.execute(drzSql`SELECT * FROM occupational_anamnesis_questions
+        WHERE company_id IN (0,${companyId}) AND anamnesis_type IN ('todos',${input.anamnesisType}) AND is_active=1
+        ORDER BY (company_id=${companyId}) DESC,sort_order,id`);
+      const unique = new Map<string, any>();
+      for (const row of rowsOf(result)) if (!unique.has(String(row.question_code))) unique.set(String(row.question_code), row);
+      return [...unique.values()].sort((a, b) => Number(a.sort_order) - Number(b.sort_order));
+    }),
+
+  listAnamnesisQuestionConfig: protectedProcedure.query(async ({ ctx }) => {
+    if (!["admin_global", "super_admin"].includes(roleOf(ctx))) throw new TRPCError({ code: "FORBIDDEN" });
+    await ensureOccupationalTables();
+    const db = await getDb();
+    if (!db) return [];
+    return rowsOf(await db.execute(drzSql`SELECT * FROM occupational_anamnesis_questions WHERE company_id=0 ORDER BY anamnesis_type,sort_order,id`));
+  }),
+
+  upsertAnamnesisQuestion: protectedProcedure
+    .input(z.object({
+      id: z.number().int().positive().optional(),
+      questionCode: z.string().min(2).max(100),
+      anamnesisType: z.enum(["todos", "admissional", "periodico", "retorno", "mudanca_risco", "demissional"]),
+      groupName: z.string().min(2).max(120),
+      questionText: z.string().min(5).max(1000),
+      responseType: z.enum(["texto", "texto_longo", "sim_nao", "sim_nao_detalhe", "numero", "data", "escala_1_5", "selecao"]),
+      options: z.array(z.string().max(255)).max(50).default([]),
+      isRequired: z.boolean().default(false),
+      sortOrder: z.number().int().min(0).max(100000).default(0),
+      isActive: z.boolean().default(true),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      if (!["admin_global", "super_admin"].includes(roleOf(ctx))) throw new TRPCError({ code: "FORBIDDEN" });
+      await ensureOccupationalTables();
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      let id = Number(input.id || 0);
+      if (id) {
+        await db.execute(drzSql`UPDATE occupational_anamnesis_questions SET question_code=${input.questionCode},anamnesis_type=${input.anamnesisType},group_name=${input.groupName},question_text=${input.questionText},response_type=${input.responseType},options_json=${JSON.stringify(input.options)},is_required=${input.isRequired ? 1 : 0},sort_order=${input.sortOrder},is_active=${input.isActive ? 1 : 0} WHERE id=${id} AND company_id=0`);
+      } else {
+        const result: any = await db.execute(drzSql`INSERT INTO occupational_anamnesis_questions (company_id,question_code,anamnesis_type,group_name,question_text,response_type,options_json,is_required,sort_order,is_active,created_by) VALUES (0,${input.questionCode},${input.anamnesisType},${input.groupName},${input.questionText},${input.responseType},${JSON.stringify(input.options)},${input.isRequired ? 1 : 0},${input.sortOrder},${input.isActive ? 1 : 0},${Number(ctx.user.id)})`);
+        id = Number((result as any)[0]?.insertId || 0);
+      }
+      return { ok: true, id };
     }),
 
   saveAnamnesis: protectedProcedure
@@ -1414,6 +1793,16 @@ export const occupationalLifecycleRouter = router({
         encounterId: z.number().int().positive().nullable().optional(),
         anamnesisType: z.enum(["admissional", "periodico", "retorno", "mudanca_risco", "demissional"]),
         answers: z.record(z.string(), z.union([z.string(), z.boolean(), z.number(), z.null()])),
+        vitalSigns: z.object({
+          weightKg: z.number().min(1).max(500).nullable().optional(),
+          heightCm: z.number().min(50).max(250).nullable().optional(),
+          systolicPressure: z.number().int().min(40).max(300).nullable().optional(),
+          diastolicPressure: z.number().int().min(20).max(200).nullable().optional(),
+          heartRate: z.number().int().min(20).max(250).nullable().optional(),
+          respiratoryRate: z.number().int().min(5).max(100).nullable().optional(),
+          temperatureC: z.number().min(30).max(45).nullable().optional(),
+          oxygenSaturation: z.number().min(50).max(100).nullable().optional(),
+        }).optional(),
         status: z.enum(["rascunho", "concluida"]).default("rascunho"),
       })
     )
@@ -1423,15 +1812,32 @@ export const occupationalLifecycleRouter = router({
       const db = await getDb();
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      const context: any = await db.execute(drzSql`SELECT u.position,u.branch_id,u.sector_id,g.id gse_id,g.code,g.name FROM users u LEFT JOIN occupational_gse_worker_history h ON h.collaborator_id=u.id AND h.company_id=u.company_id AND h.is_current=1 LEFT JOIN occupational_gse_master g ON g.id=h.gse_id WHERE u.id=${input.collaboratorId} AND u.company_id=${companyId} LIMIT 1`);
-      if (!rowsOf(context).length) throw new TRPCError({ code: "NOT_FOUND" });
+      const [contextResult, questionResult]: any[] = await Promise.all([
+        db.execute(drzSql`SELECT u.position,u.branch_id,u.sector_id,g.id gse_id,g.code,g.name FROM users u LEFT JOIN occupational_gse_worker_history h ON h.collaborator_id=u.id AND h.company_id=u.company_id AND h.is_current=1 LEFT JOIN occupational_gse_master g ON g.id=h.gse_id WHERE u.id=${input.collaboratorId} AND u.company_id=${companyId} LIMIT 1`),
+        db.execute(drzSql`SELECT id,company_id,question_code,anamnesis_type,group_name,question_text,response_type,options_json,is_required,sort_order FROM occupational_anamnesis_questions WHERE company_id IN (0,${companyId}) AND anamnesis_type IN ('todos',${input.anamnesisType}) AND is_active=1 ORDER BY (company_id=${companyId}) DESC,sort_order,id`),
+      ]);
+      if (!rowsOf(contextResult).length) throw new TRPCError({ code: "NOT_FOUND" });
+      const questionMap = new Map<string, any>();
+      for (const row of rowsOf(questionResult))
+        if (!questionMap.has(String(row.question_code))) questionMap.set(String(row.question_code), row);
+      const questionSnapshot = [...questionMap.values()].sort((a, b) => Number(a.sort_order) - Number(b.sort_order));
+      const questionnaireVersion = crypto
+        .createHash("sha256")
+        .update(JSON.stringify(questionSnapshot))
+        .digest("hex")
+        .slice(0, 24);
+      const occupationalContext = {
+        worker: rowsOf(contextResult)[0],
+        questions: questionSnapshot,
+      };
       const signature = input.status === "concluida" ? crypto.createHash("sha256").update(`${companyId}:${input.collaboratorId}:${Date.now()}:${Number(ctx.user.id)}`).digest("hex") : null;
+      const bmi = calculateOccupationalBmi(input.vitalSigns?.weightKg, input.vitalSigns?.heightCm);
       const result: any = await db.execute(drzSql`INSERT INTO occupational_anamneses
-        (company_id,collaborator_id,encounter_id,anamnesis_type,answers_json,occupational_context_json,status,signature_hash,doctor_user_id)
-        VALUES (${companyId},${input.collaboratorId},${input.encounterId || null},${input.anamnesisType},${JSON.stringify(input.answers)},${JSON.stringify(rowsOf(context)[0])},${input.status},${signature},${Number(ctx.user.id)})`);
+        (company_id,collaborator_id,encounter_id,anamnesis_type,answers_json,vital_signs_json,bmi,questionnaire_version,occupational_context_json,status,signature_hash,doctor_user_id)
+        VALUES (${companyId},${input.collaboratorId},${input.encounterId || null},${input.anamnesisType},${JSON.stringify(input.answers)},${JSON.stringify(input.vitalSigns || {})},${bmi},${questionnaireVersion},${JSON.stringify(occupationalContext)},${input.status},${signature},${Number(ctx.user.id)})`);
       const id = Number((result as any)[0]?.insertId || 0);
       await audit(db, ctx, "anamnesis_saved", "anamnesis", id, input.collaboratorId, { type: input.anamnesisType, status: input.status });
-      return { ok: true, id, signatureHash: signature };
+      return { ok: true, id, signatureHash: signature, bmi };
     }),
 
   validateAso: protectedProcedure
@@ -1446,19 +1852,15 @@ export const occupationalLifecycleRouter = router({
       const pcmsoId = await resolveCurrentPcmso(db, companyId);
       if (!pcmsoId)
         return { ready: false, missingExamIds: [], pendingMedicalReview: 0, blockingReasons: ["pcmso_vigente_ausente"], missingExams: [], pcmsoId: null };
-      const [expectedResult, completedResult, pendingResult, anamnesisResult]: any[] = await Promise.all([
-        db.execute(drzSql`SELECT DISTINCT exam_id FROM occupational_exam_orders WHERE company_id=${companyId} AND collaborator_id=${input.collaboratorId} AND pcmso_id=${pcmsoId} AND status NOT IN ('cancelada','substituida')`),
-        db.execute(drzSql`SELECT DISTINCT r.exam_id FROM occupational_exam_results r WHERE r.company_id=${companyId} AND r.collaborator_id=${input.collaboratorId} AND EXISTS (SELECT 1 FROM occupational_exam_orders o WHERE o.company_id=${companyId} AND o.collaborator_id=${input.collaboratorId} AND o.pcmso_id=${pcmsoId} AND o.exam_id=r.exam_id AND o.status NOT IN ('cancelada','substituida'))`),
-        db.execute(drzSql`SELECT COUNT(*) total FROM occupational_exam_results r WHERE r.company_id=${companyId} AND r.collaborator_id=${input.collaboratorId} AND r.reviewed_at IS NULL AND EXISTS (SELECT 1 FROM occupational_exam_orders o WHERE o.company_id=${companyId} AND o.collaborator_id=${input.collaboratorId} AND o.pcmso_id=${pcmsoId} AND o.exam_id=r.exam_id AND o.status NOT IN ('cancelada','substituida'))`),
+      const clinicalExamId = await ensureClinicalConsultationExam(db, companyId, Number(ctx.user.id));
+      const [procedureState, anamnesisResult] = await Promise.all([
+        loadAsoProcedureState(db, companyId, input.collaboratorId, pcmsoId, clinicalExamId),
         db.execute(drzSql`SELECT COUNT(*) total FROM occupational_anamneses WHERE company_id=${companyId} AND collaborator_id=${input.collaboratorId} AND status='concluida'`),
       ]);
-      const expected = rowsOf(expectedResult).map((row: any) => Number(row.exam_id));
-      const completed = rowsOf(completedResult).map((row: any) => Number(row.exam_id));
-      const evaluation = evaluateAsoReadiness({ expectedExamIds: expected, completedExamIds: completed, pendingMedicalReview: Number(rowsOf(pendingResult)[0]?.total || 0) });
-      const missingNames = evaluation.missingExamIds.length
-        ? rowsOf(await db.execute(drzSql.raw(`SELECT id,name FROM pcmso_exam_catalog_v2 WHERE company_id=${companyId} AND id IN (${evaluation.missingExamIds.join(",")})`)))
-        : [];
-      return { ...evaluation, missingExams: missingNames, pcmsoId, completedAnamneses: Number(rowsOf(anamnesisResult)[0]?.total || 0) };
+      const missingNames = procedureState.expected.filter((row: any) =>
+        procedureState.evaluation.missingExamIds.includes(Number(row.exam_id))
+      );
+      return { ...procedureState.evaluation, missingExams: missingNames, pcmsoId, completedAnamneses: Number(rowsOf(anamnesisResult)[0]?.total || 0) };
     }),
 
   issueAso: protectedProcedure
@@ -1480,39 +1882,52 @@ export const occupationalLifecycleRouter = router({
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       await requireOwnedEntity(db, companyId, "pcmso", input.pcmsoId, "PCMSO");
-      const [workerResult, profileResult] = await Promise.all([
+      const [workerResult, profileResult, companyResult] = await Promise.all([
         db.execute(drzSql`SELECT u.*,b.name branch_name,s.name sector_name,g.id gse_id,g.code gse_code,g.name gse_name FROM users u LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id LEFT JOIN occupational_gse_worker_history h ON h.collaborator_id=u.id AND h.company_id=u.company_id AND h.is_current=1 LEFT JOIN occupational_gse_master g ON g.id=h.gse_id WHERE u.id=${input.collaboratorId} AND u.company_id=${companyId} LIMIT 1`),
         db.execute(drzSql`SELECT p.crm,p.crm_state,u.name FROM users u LEFT JOIN medical_professional_profiles p ON p.user_id=u.id WHERE u.id=${Number(ctx.user.id)} LIMIT 1`),
+        db.execute(drzSql`SELECT name,cnpj,address FROM companies WHERE id=${companyId} LIMIT 1`),
       ]);
       const worker = rowsOf(workerResult)[0];
       const profile = rowsOf(profileResult)[0] || {};
+      const company = rowsOf(companyResult)[0] || {};
       if (!worker) throw new TRPCError({ code: "NOT_FOUND" });
       if (!String(profile.crm || "").trim())
         throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Cadastre o CRM do médico antes de emitir o ASO." });
       const resolvedPcmsoId = await resolveCurrentPcmso(db, companyId, input.pcmsoId);
       if (!resolvedPcmsoId)
         throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Não há PCMSO vigente para vincular a emissão do ASO." });
-      const [expectedResult, completedResult, pendingResult, anamnesisResult]: any[] = await Promise.all([
-        db.execute(drzSql`SELECT DISTINCT o.exam_id,e.name FROM occupational_exam_orders o JOIN pcmso_exam_catalog_v2 e ON e.id=o.exam_id WHERE o.company_id=${companyId} AND o.collaborator_id=${input.collaboratorId} AND o.pcmso_id=${resolvedPcmsoId} AND o.status NOT IN ('cancelada','substituida')`),
-        db.execute(drzSql`SELECT DISTINCT r.exam_id,e.name,r.classification,r.performed_at FROM occupational_exam_results r JOIN pcmso_exam_catalog_v2 e ON e.id=r.exam_id WHERE r.company_id=${companyId} AND r.collaborator_id=${input.collaboratorId} AND EXISTS (SELECT 1 FROM occupational_exam_orders o WHERE o.company_id=${companyId} AND o.collaborator_id=${input.collaboratorId} AND o.pcmso_id=${resolvedPcmsoId} AND o.exam_id=r.exam_id AND o.status NOT IN ('cancelada','substituida'))`),
-        db.execute(drzSql`SELECT COUNT(*) total FROM occupational_exam_results r WHERE r.company_id=${companyId} AND r.collaborator_id=${input.collaboratorId} AND r.reviewed_at IS NULL AND EXISTS (SELECT 1 FROM occupational_exam_orders o WHERE o.company_id=${companyId} AND o.collaborator_id=${input.collaboratorId} AND o.pcmso_id=${resolvedPcmsoId} AND o.exam_id=r.exam_id AND o.status NOT IN ('cancelada','substituida'))`),
+      const clinicalExamId = await ensureClinicalConsultationExam(db, companyId, Number(ctx.user.id));
+      const [procedureState, anamnesisResult, riskResult, pcmsoResult]: any[] = await Promise.all([
+        loadAsoProcedureState(db, companyId, input.collaboratorId, resolvedPcmsoId, clinicalExamId),
         db.execute(drzSql`SELECT id FROM occupational_anamneses WHERE company_id=${companyId} AND collaborator_id=${input.collaboratorId} AND anamnesis_type=${input.asoType} AND status='concluida' ORDER BY created_at DESC LIMIT 1`),
+        db.execute(drzSql`SELECT DISTINCT m.risk_name,m.risk_type,m.risk_classification,m.monitoring_kind,m.monitoring_name,e.name exam_name FROM pcmso_risk_monitoring_v2 m LEFT JOIN pcmso_exam_catalog_v2 e ON e.id=m.exam_id AND e.company_id=m.company_id WHERE m.company_id=${companyId} AND m.pcmso_id=${resolvedPcmsoId} AND m.master_gse_id=${worker.gse_id || 0} ORDER BY m.risk_name`),
+        db.execute(drzSql`SELECT p.title,p.valid_from,p.valid_until,p.doctor_name,p.doctor_crm,pg.title pgr_title FROM pcmso_programs_v2 p LEFT JOIN pgr_documents pg ON pg.id=p.pgr_id AND pg.company_id=p.company_id WHERE p.id=${resolvedPcmsoId} AND p.company_id=${companyId} LIMIT 1`),
       ]);
       if (!rowsOf(anamnesisResult).length)
         throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Conclua a anamnese correspondente antes de emitir o ASO." });
-      const expected = rowsOf(expectedResult).map((row: any) => Number(row.exam_id));
-      const completedRows = rowsOf(completedResult);
-      const evaluation = evaluateAsoReadiness({ expectedExamIds: expected, completedExamIds: completedRows.map((row: any) => Number(row.exam_id)), pendingMedicalReview: Number(rowsOf(pendingResult)[0]?.total || 0) });
+      const completedRows = procedureState.completed;
+      const evaluation = procedureState.evaluation;
       if (!evaluation.ready && !String(input.pendingJustification || "").trim())
         throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Há exames pendentes ou resultados sem revisão. Registre a justificativa médica para prosseguir ou mantenha o atendimento em aberto." });
       const signature = crypto.createHash("sha256").update(`${companyId}:${input.collaboratorId}:${input.asoType}:${Date.now()}:${Number(ctx.user.id)}`).digest("hex");
-      const riskSnapshot = JSON.stringify({ gseId: worker.gse_id || null, gseCode: worker.gse_code || null, gseName: worker.gse_name || null });
-      const examSnapshot = JSON.stringify({ expected: rowsOf(expectedResult), completed: completedRows, validation: evaluation });
+      const risks = rowsOf(riskResult);
+      const program = rowsOf(pcmsoResult)[0] || {};
+      const riskSnapshot = JSON.stringify({ gseId: worker.gse_id || null, gseCode: worker.gse_code || null, gseName: worker.gse_name || null, pgrTitle: program.pgr_title || null, pcmsoTitle: program.title || null, risks });
+      const examSnapshot = JSON.stringify({ expected: procedureState.expected, completed: completedRows, validation: evaluation, issuedAt: new Date().toISOString() });
       const inserted: any = await db.execute(drzSql`INSERT INTO occupational_asos
         (company_id,collaborator_id,encounter_id,pcmso_id,gse_id,aso_type,fitness_status,specific_aptitudes_json,risk_snapshot_json,exam_snapshot_json,pending_justification,doctor_user_id,doctor_crm,status,signature_hash,issued_at)
         VALUES (${companyId},${input.collaboratorId},${input.encounterId || null},${resolvedPcmsoId},${worker.gse_id || null},${input.asoType},${input.fitnessStatus},${JSON.stringify(input.specificAptitudes)},${riskSnapshot},${examSnapshot},${input.pendingJustification || null},${Number(ctx.user.id)},${[profile.crm, profile.crm_state].filter(Boolean).join("/") || null},'emitido_pendente_assinatura',${signature},NOW())`);
       const id = Number((inserted as any)[0]?.insertId || 0);
-      const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>@page{size:A4;margin:18mm}body{font-family:Arial;color:#173047;font-size:10pt;line-height:1.5}h1{color:#0e2c46;border-bottom:4px solid #0895a5;padding-bottom:5mm}.grid{display:grid;grid-template-columns:1fr 1fr;gap:3mm 8mm}.box{border:1px solid #d8e2e8;padding:4mm;margin:6mm 0}.sign{margin-top:18mm;text-align:center}.line{border-top:1px solid #173047;width:85mm;margin:auto}.notice{background:#fff8dd;border-left:3px solid #d8a900;padding:3mm}</style></head><body><h1>ATESTADO DE SAÚDE OCUPACIONAL - ASO</h1><div class="grid"><div><b>Trabalhador:</b> ${esc(worker.name)}</div><div><b>CPF:</b> ${esc(worker.cpf || "-")}</div><div><b>Cargo:</b> ${esc(worker.position || "-")}</div><div><b>Setor:</b> ${esc(worker.sector_name || "-")}</div><div><b>Filial:</b> ${esc(worker.branch_name || "-")}</div><div><b>GSE:</b> ${esc([worker.gse_code, worker.gse_name].filter(Boolean).join(" - ") || "-")}</div></div><div class="box"><b>Tipo de exame ocupacional:</b> ${esc(input.asoType.replaceAll("_", " "))}<br><b>Conclusão de aptidão:</b> ${esc(input.fitnessStatus.toUpperCase())}<br><b>Aptidões específicas:</b> ${esc(input.specificAptitudes.join(", ") || "Não informadas")}</div><h2>Exames considerados</h2><ul>${completedRows.map((row: any) => `<li>${esc(row.name)} - ${esc(row.classification)} - ${esc(row.performed_at)}</li>`).join("") || "<li>Nenhum resultado registrado.</li>"}</ul>${input.pendingJustification ? `<div class="notice"><b>Justificativa médica diante de pendências:</b><br>${esc(input.pendingJustification)}</div>` : ""}<div class="sign"><div class="line"></div><b>${esc(profile.name || "Médico examinador")}</b><br>${esc([profile.crm, profile.crm_state].filter(Boolean).join("/") || "CRM não informado")}<br>Assinatura por solução certificada: pendente<br><small>Hash de integridade do documento: ${esc(signature)}</small></div></body></html>`;
+      const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>@page{size:A4;margin:15mm}body{font-family:Arial;color:#173047;font-size:9.5pt;line-height:1.42}h1{color:#0e2c46;border-bottom:4px solid #0895a5;padding-bottom:4mm;margin:0 0 5mm}h2{font-size:12pt;color:#0e2c46;margin:5mm 0 2mm}.grid{display:grid;grid-template-columns:1fr 1fr;gap:2.5mm 8mm}.box{border:1px solid #d8e2e8;padding:3.5mm;margin:4mm 0}.result{font-size:15pt;font-weight:700;color:${input.fitnessStatus === "apto" ? "#087f5b" : "#b42318"}}.sign{margin-top:13mm;text-align:center}.line{border-top:1px solid #173047;width:85mm;margin:auto}.notice{background:#fff8dd;border-left:3px solid #d8a900;padding:3mm}.footer{margin-top:6mm;border-top:1px solid #d8e2e8;padding-top:2mm;font-size:7.5pt;color:#607487}</style></head><body>
+        <h1>ATESTADO DE SAÚDE OCUPACIONAL - ASO</h1>
+        <div class="box"><div class="grid"><div><b>Empresa:</b> ${esc(company.name || "-")}</div><div><b>CNPJ:</b> ${esc(company.cnpj || "-")}</div><div><b>PCMSO:</b> ${esc(program.title || "-")}</div><div><b>PGR de referência:</b> ${esc(program.pgr_title || "-")}</div></div></div>
+        <h2>Identificação do trabalhador</h2><div class="grid"><div><b>Nome:</b> ${esc(worker.name)}</div><div><b>CPF:</b> ${esc(worker.cpf || "-")}</div><div><b>Matrícula:</b> ${esc(worker.employee_registration || "-")}</div><div><b>Cargo/Função:</b> ${esc(worker.position || "-")}</div><div><b>Setor:</b> ${esc(worker.sector_name || "-")}</div><div><b>Filial:</b> ${esc(worker.branch_name || "-")}</div><div><b>GSE:</b> ${esc([worker.gse_code, worker.gse_name].filter(Boolean).join(" - ") || "-")}</div><div><b>Data de emissão:</b> ${esc(new Date().toLocaleDateString("pt-BR"))}</div></div>
+        <h2>Riscos ocupacionais que exigem controle médico</h2><ul>${risks.map((row: any) => `<li><b>${esc(row.risk_name)}</b> - ${esc(row.risk_type || "natureza não informada")} - ${esc(row.risk_classification || "classificação não informada")}</li>`).join("") || "<li>Ausência de riscos específicos registrados no contexto ocupacional vigente.</li>"}</ul>
+        <h2>Procedimentos realizados</h2><ul>${completedRows.map((row: any) => `<li>${esc(row.name)} - realizado em ${esc(new Date(row.performed_at).toLocaleDateString("pt-BR"))}</li>`).join("") || "<li>Avaliação clínica ocupacional conforme registro médico.</li>"}</ul>
+        <div class="box"><b>Tipo de exame ocupacional:</b> ${esc(input.asoType.replaceAll("_", " "))}<br><b>Conclusão:</b> <span class="result">${esc(input.fitnessStatus.toUpperCase())}</span><br><b>Aptidões específicas:</b> ${esc(input.specificAptitudes.join(", ") || "Não informadas")}</div>
+        ${input.pendingJustification ? `<div class="notice"><b>Registro médico diante de pendências documentais:</b><br>${esc(input.pendingJustification)}</div>` : ""}
+        <div class="sign"><div class="line"></div><b>${esc(profile.name || "Médico examinador")}</b><br>${esc([profile.crm, profile.crm_state].filter(Boolean).join("/") || "CRM não informado")}<br>Assinatura eletrônica/certificada: pendente de integração</div>
+        <div class="footer">Documento ocupacional histórico e imutável após a emissão. Hash de integridade: ${esc(signature)}. A plataforma registra dados e evidências; a decisão de aptidão é exclusiva do médico examinador.</div></body></html>`;
       const target = await renderPdf(companyId, "aso", `aso_${id}.pdf`, html);
       await db.execute(drzSql`UPDATE occupational_asos SET pdf_private_path=${target} WHERE id=${id} AND company_id=${companyId}`);
       await audit(db, ctx, "aso_issued", "aso", id, input.collaboratorId, { type: input.asoType, fitness: input.fitnessStatus, pendingOverride: !evaluation.ready });
@@ -1529,6 +1944,24 @@ export const occupationalLifecycleRouter = router({
     return rowsOf(result);
   }),
 
+  getAsoPdf: protectedProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ ctx, input }) => {
+      requireOperational(ctx);
+      await ensureOccupationalTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const result: any = await db.execute(drzSql`SELECT pdf_private_path,collaborator_id FROM occupational_asos WHERE id=${input.id} AND company_id=${companyId} LIMIT 1`);
+      const row = rowsOf(result)[0];
+      const documentPath = String(row?.pdf_private_path || "");
+      const root = path.resolve(privateRoot(companyId));
+      const resolved = path.resolve(documentPath);
+      if (!documentPath || !resolved.startsWith(`${root}${path.sep}`) || !fs.existsSync(resolved)) throw new TRPCError({ code: "NOT_FOUND", message: "PDF histórico do ASO não encontrado." });
+      await audit(db, ctx, "aso_pdf_viewed", "aso", input.id, Number(row.collaborator_id));
+      return { fileName: path.basename(resolved), dataBase64: `data:application/pdf;base64,${fs.readFileSync(resolved).toString("base64")}` };
+    }),
+
   listCats: protectedProcedure.query(async ({ ctx }) => {
     requireOperational(ctx);
     await ensureOccupationalTables();
@@ -1544,13 +1977,48 @@ export const occupationalLifecycleRouter = router({
       z.object({
         collaboratorId: z.number().int().positive(),
         eventAt: z.string().min(10).max(40),
+        emitterType: z.enum(["empregador", "sindicato", "medico", "dependente", "autoridade_publica"]).default("empregador"),
+        catType: z.enum(["inicial", "reabertura", "comunicacao_obito"]).default("inicial"),
+        initiative: z.enum(["empregador", "ordem_judicial", "determinacao_fiscal", "outros"]).default("empregador"),
+        registrationSource: z.enum(["plataforma", "importacao", "integracao"]).default("plataforma"),
+        catNumber: z.string().max(100).optional(),
+        originReceipt: z.string().max(120).optional(),
+        employerRegistrationType: z.enum(["cnpj", "cpf", "caepf", "cno"]).default("cnpj"),
+        employerRegistrationNumber: z.string().max(40).optional(),
+        employerCnae: z.string().max(20).optional(),
         location: z.string().max(5000).optional(),
         accidentType: z.string().max(100).optional(),
+        hoursWorkedBeforeAccident: z.string().max(30).optional(),
+        lastWorkedDate: dateInput.optional().nullable(),
+        locationType: z.string().max(80).optional(),
+        locationDetail: z.string().max(5000).optional(),
+        locationRegistration: z.string().max(80).optional(),
+        eventCity: z.string().max(180).optional(),
+        eventUf: z.string().max(2).optional(),
+        eventCountry: z.string().max(100).default("Brasil"),
         description: z.string().min(5).max(50000),
         causativeAgent: z.string().max(10000).optional(),
+        causativeAgentCode: z.string().max(30).optional(),
+        generatingSituationCode: z.string().max(30).optional(),
         bodyPart: z.string().max(180).optional(),
+        bodyPartCode: z.string().max(30).optional(),
+        laterality: z.enum(["nao_aplicavel", "esquerda", "direita", "ambos"]).default("nao_aplicavel"),
         injuryNature: z.string().max(180).optional(),
+        injuryNatureCode: z.string().max(30).optional(),
         leaveRequired: z.boolean().default(false),
+        policeReport: z.boolean().default(false),
+        deathOccurred: z.boolean().default(false),
+        deathDate: dateInput.optional().nullable(),
+        medicalAttendanceAt: z.string().max(40).optional(),
+        hospitalization: z.boolean().default(false),
+        treatmentDays: z.number().int().min(0).max(9999).optional().nullable(),
+        diagnosis: z.string().max(20000).optional(),
+        cid: z.string().max(20).optional(),
+        doctorName: z.string().max(255).optional(),
+        doctorCouncil: z.string().max(20).optional(),
+        doctorUf: z.string().max(2).optional(),
+        doctorRegistration: z.string().max(40).optional(),
+        medicalNotes: z.string().max(50000).optional(),
         witnesses: z.array(z.string().max(255)).max(50).default([]),
       })
     )
@@ -1561,12 +2029,39 @@ export const occupationalLifecycleRouter = router({
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       await requireOwnedEntity(db, companyId, "user", input.collaboratorId, "Colaborador");
+      const [workerResult, companyResult]: any[] = await Promise.all([
+        db.execute(drzSql`SELECT u.id,u.name,u.cpf,u.employee_registration,u.position,b.name branch_name,s.name sector_name FROM users u LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id WHERE u.id=${input.collaboratorId} AND u.company_id=${companyId} LIMIT 1`),
+        db.execute(drzSql`SELECT name,cnpj,address FROM companies WHERE id=${companyId} LIMIT 1`),
+      ]);
+      const worker = rowsOf(workerResult)[0] || {};
+      const company = rowsOf(companyResult)[0] || {};
+      const esocialPayload = catEsocialPayload(input, company, worker);
       const result: any = await db.execute(drzSql`INSERT INTO occupational_cat_records
-        (company_id,collaborator_id,event_at,location_text,accident_type,description,causative_agent,body_part,injury_nature,leave_required,witnesses_json,status,esocial_status,created_by)
-        VALUES (${companyId},${input.collaboratorId},${input.eventAt},${input.location || null},${input.accidentType || null},${input.description},${input.causativeAgent || null},${input.bodyPart || null},${input.injuryNature || null},${input.leaveRequired ? 1 : 0},${JSON.stringify(input.witnesses)},'rascunho','nao_enviado',${Number(ctx.user.id)})`);
+        (company_id,collaborator_id,event_at,emitter_type,cat_type,initiative,registration_source,cat_number,origin_receipt,employer_registration_type,employer_registration_number,employer_cnae,location_text,accident_type,hours_worked_before_accident,last_worked_date,location_type,location_detail,location_registration,event_city,event_uf,event_country,description,causative_agent,causative_agent_code,generating_situation_code,body_part,body_part_code,laterality,injury_nature,injury_nature_code,leave_required,police_report,death_occurred,death_date,medical_attendance_at,hospitalization,treatment_days,diagnosis,cid,doctor_name,doctor_council,doctor_uf,doctor_registration,medical_notes,witnesses_json,status,esocial_status,esocial_version,esocial_event_json,created_by)
+        VALUES (${companyId},${input.collaboratorId},${input.eventAt},${input.emitterType},${input.catType},${input.initiative},${input.registrationSource},${input.catNumber || null},${input.originReceipt || null},${input.employerRegistrationType},${input.employerRegistrationNumber || company.cnpj || null},${input.employerCnae || null},${input.location || null},${input.accidentType || null},${input.hoursWorkedBeforeAccident || null},${input.lastWorkedDate || null},${input.locationType || null},${input.locationDetail || null},${input.locationRegistration || null},${input.eventCity || null},${input.eventUf?.toUpperCase() || null},${input.eventCountry},${input.description},${input.causativeAgent || null},${input.causativeAgentCode || null},${input.generatingSituationCode || null},${input.bodyPart || null},${input.bodyPartCode || null},${input.laterality},${input.injuryNature || null},${input.injuryNatureCode || null},${input.leaveRequired ? 1 : 0},${input.policeReport ? 1 : 0},${input.deathOccurred ? 1 : 0},${input.deathDate || null},${input.medicalAttendanceAt || null},${input.hospitalization ? 1 : 0},${input.treatmentDays ?? null},${input.diagnosis || null},${input.cid || null},${input.doctorName || null},${input.doctorCouncil || null},${input.doctorUf?.toUpperCase() || null},${input.doctorRegistration || null},${input.medicalNotes || null},${JSON.stringify(input.witnesses)},'rascunho','pendente_integracao','eSocial S-1.3 - NT 06/2026',${JSON.stringify(esocialPayload)},${Number(ctx.user.id)})`);
       const id = Number((result as any)[0]?.insertId || 0);
-      await audit(db, ctx, "cat_created", "cat", id, input.collaboratorId);
-      return { ok: true, id, esocialEvent: "S-2210", transmission: "pendente_integracao" };
+      await db.execute(drzSql`INSERT INTO occupational_esocial_transmissions (company_id,entity_type,entity_id,event_code,layout_version,status,payload_json,requested_by) VALUES (${companyId},'cat',${id},'S-2210','S-1.3 NT 06/2026','pendente_integracao',${JSON.stringify(esocialPayload)},${Number(ctx.user.id)})`);
+      await audit(db, ctx, "cat_created", "cat", id, input.collaboratorId, { event: "S-2210", layout: "S-1.3 NT 06/2026", transmission: "pendente_integracao" });
+      return { ok: true, id, esocialEvent: "S-2210", transmission: "pendente_integracao", layout: "S-1.3 NT 06/2026" };
+    }),
+
+  generateCatPdf: protectedProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ ctx, input }) => {
+      requireOperational(ctx);
+      await ensureOccupationalTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const result: any = await db.execute(drzSql`SELECT c.*,u.name collaborator_name,u.cpf,u.employee_registration,u.position,b.name branch_name,s.name sector_name,co.name company_name,co.cnpj company_cnpj,co.address company_address FROM occupational_cat_records c JOIN users u ON u.id=c.collaborator_id LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id JOIN companies co ON co.id=c.company_id WHERE c.id=${input.id} AND c.company_id=${companyId} LIMIT 1`);
+      const row = rowsOf(result)[0];
+      if (!row) throw new TRPCError({ code: "NOT_FOUND" });
+      const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>@page{size:A4;margin:13mm}body{font-family:Arial;color:#173047;font-size:8.8pt;line-height:1.35}h1{font-size:17pt;border-bottom:4px solid #0895a5;padding-bottom:3mm}h2{font-size:11pt;color:#0e2c46;margin:4mm 0 2mm}.grid{display:grid;grid-template-columns:1fr 1fr;gap:2mm 7mm}.box{border:1px solid #cedbe3;padding:3mm;margin:3mm 0}.warn{background:#fff8dd;border-left:3px solid #d8a900;padding:3mm}.footer{font-size:7pt;color:#647789;border-top:1px solid #d7e1e7;margin-top:5mm;padding-top:2mm}</style></head><body><h1>COMUNICAÇÃO DE ACIDENTE DE TRABALHO - CAT</h1><div class="warn"><b>Registro interno gerado pela plataforma.</b> Evento S-2210 preparado no leiaute ${esc(row.esocial_version || "S-1.3 NT 06/2026")}. Situação de transmissão: ${esc(row.esocial_status || "pendente de integração")}. Este PDF não substitui protocolo/recibo oficial do eSocial.</div><h2>1. Empregador</h2><div class="grid"><div><b>Empresa:</b> ${esc(row.company_name)}</div><div><b>CNPJ:</b> ${esc(row.company_cnpj || "-")}</div><div><b>Inscrição:</b> ${esc(row.employer_registration_type || "cnpj")} ${esc(row.employer_registration_number || "-")}</div><div><b>CNAE:</b> ${esc(row.employer_cnae || "-")}</div></div><h2>2. Trabalhador</h2><div class="grid"><div><b>Nome:</b> ${esc(row.collaborator_name)}</div><div><b>CPF:</b> ${esc(row.cpf || "-")}</div><div><b>Matrícula:</b> ${esc(row.employee_registration || "-")}</div><div><b>Cargo:</b> ${esc(row.position || "-")}</div><div><b>Filial:</b> ${esc(row.branch_name || "-")}</div><div><b>Setor:</b> ${esc(row.sector_name || "-")}</div></div><h2>3. Comunicação</h2><div class="grid"><div><b>Tipo CAT:</b> ${esc(row.cat_type || "inicial")}</div><div><b>Emitente:</b> ${esc(row.emitter_type || "empregador")}</div><div><b>Iniciativa:</b> ${esc(row.initiative || "empregador")}</div><div><b>Origem:</b> ${esc(row.registration_source || "plataforma")}</div><div><b>Número/recibo anterior:</b> ${esc(row.cat_number || row.origin_receipt || "-")}</div><div><b>Data/hora:</b> ${esc(new Date(row.event_at).toLocaleString("pt-BR"))}</div></div><h2>4. Acidente</h2><div class="box"><b>Tipo:</b> ${esc(row.accident_type || "-")}<br><b>Descrição:</b> ${esc(row.description)}<br><b>Local:</b> ${esc(row.location_text || "-")} ${esc(row.location_detail || "")}<br><b>Município/UF:</b> ${esc(row.event_city || "-")} / ${esc(row.event_uf || "-")}<br><b>Horas trabalhadas:</b> ${esc(row.hours_worked_before_accident || "-")}<br><b>Agente causador:</b> ${esc(row.causative_agent_code || "-")} - ${esc(row.causative_agent || "-")}<br><b>Situação geradora:</b> ${esc(row.generating_situation_code || "-")}<br><b>Parte do corpo:</b> ${esc(row.body_part_code || "-")} - ${esc(row.body_part || "-")} (${esc(row.laterality || "-")})<br><b>Natureza da lesão:</b> ${esc(row.injury_nature_code || "-")} - ${esc(row.injury_nature || "-")}<br><b>Afastamento:</b> ${Number(row.leave_required) ? "Sim" : "Não"} &nbsp; <b>Boletim policial:</b> ${Number(row.police_report) ? "Sim" : "Não"}</div><h2>5. Atendimento médico</h2><div class="grid"><div><b>Data/hora:</b> ${row.medical_attendance_at ? esc(new Date(row.medical_attendance_at).toLocaleString("pt-BR")) : "-"}</div><div><b>Internação:</b> ${Number(row.hospitalization) ? "Sim" : "Não"}</div><div><b>Dias tratamento:</b> ${esc(row.treatment_days ?? "-")}</div><div><b>CID:</b> ${esc(row.cid || "-")}</div><div><b>Profissional:</b> ${esc(row.doctor_name || "-")}</div><div><b>Registro:</b> ${esc([row.doctor_council,row.doctor_registration,row.doctor_uf].filter(Boolean).join(" ") || "-")}</div></div><div class="footer">Documento emitido em ${esc(new Date().toLocaleString("pt-BR"))}. A transmissão ao eSocial permanece bloqueada até integração oficial, certificado e validação técnica do payload.</div></body></html>`;
+      const fileName = `cat_${input.id}.pdf`;
+      const target = await renderPdf(companyId, "cat", fileName, html);
+      await db.execute(drzSql`UPDATE occupational_cat_records SET pdf_private_path=${target} WHERE id=${input.id} AND company_id=${companyId}`);
+      await audit(db, ctx, "cat_pdf_generated", "cat", input.id, Number(row.collaborator_id));
+      return { fileName, dataBase64: `data:application/pdf;base64,${fs.readFileSync(target).toString("base64")}` };
     }),
 
   listWorkOrders: protectedProcedure.query(async ({ ctx }) => {
@@ -1702,6 +2197,107 @@ export const occupationalLifecycleRouter = router({
       await audit(db, ctx, "vaccine_campaign_proofs_generated", "vaccine_campaign", input.campaignId, null, { participants: rows.length, fileName });
       return { fileName, total: rows.length, dataBase64: `data:application/pdf;base64,${fs.readFileSync(target).toString("base64")}` };
     }),
+
+  generateOccupationalProgrammingPdf: protectedProcedure
+    .input(z.object({
+      branchId: z.number().int().positive().optional(),
+      sectorId: z.number().int().positive().optional(),
+      gseId: z.number().int().positive().optional(),
+      examId: z.number().int().positive().optional(),
+      status: z.enum(["todos", "requisicao_pendente", "pendente", "enviada", "realizada", "vencida", "resultado_recebido"]).default("todos"),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      requireOperational(ctx);
+      await ensureOccupationalTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const clinicalExamId = await ensureClinicalConsultationExam(db, companyId, Number(ctx.user.id));
+      const result: any = await db.execute(drzSql.raw(`SELECT u.id collaborator_id,u.name collaborator_name,u.cpf,u.employee_registration,u.position,u.branch_id,u.sector_id,b.name branch_name,s.name sector_name,h.gse_id,g.code gse_code,g.name gse_name,m.id monitoring_id,m.pcmso_id,m.monitoring_kind,m.periodicity,CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END exam_id,e.name exam_name,p.title pcmso_title,pg.title pgr_title,(SELECT o.status FROM occupational_exam_orders o WHERE o.company_id=u.company_id AND o.collaborator_id=u.id AND o.exam_id=(CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END) AND o.pcmso_id=m.pcmso_id ORDER BY o.version_number DESC,o.created_at DESC LIMIT 1) latest_order_status,(SELECT MAX(r.performed_at) FROM occupational_exam_results r WHERE r.company_id=u.company_id AND r.collaborator_id=u.id AND r.exam_id=(CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END)) latest_result_at FROM users u JOIN occupational_gse_worker_history h ON h.collaborator_id=u.id AND h.company_id=u.company_id AND h.is_current=1 JOIN occupational_gse_master g ON g.id=h.gse_id AND g.company_id=u.company_id JOIN pcmso_risk_monitoring_v2 m ON m.company_id=u.company_id AND m.master_gse_id=h.gse_id AND m.monitoring_kind IN ('avaliacao_clinica','exame_complementar') AND (m.monitoring_kind='avaliacao_clinica' OR m.exam_id IS NOT NULL) AND m.suggestion_status IN ('aprovada','editada') JOIN pcmso_programs_v2 p ON p.id=m.pcmso_id AND p.company_id=u.company_id AND p.status='vigente' AND (p.valid_from IS NULL OR p.valid_from<=CURDATE()) AND (p.valid_until IS NULL OR p.valid_until>=CURDATE()) LEFT JOIN pgr_documents pg ON pg.id=p.pgr_id AND pg.company_id=u.company_id JOIN pcmso_exam_catalog_v2 e ON e.id=(CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END) AND e.company_id=u.company_id AND e.is_active=1 LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id WHERE u.company_id=${companyId} AND ${activeEmployeeSql("u")} ORDER BY b.name,s.name,g.code,e.name,u.name`));
+      const dedup = new Map<string, any>();
+      for (const row of rowsOf(result)) {
+        const key = `${row.collaborator_id}:${row.pcmso_id}:${row.exam_id}`;
+        if (!dedup.has(key)) dedup.set(key, row);
+      }
+      let rows = [...dedup.values()].map((row: any) => ({ ...row, operational_status: row.latest_result_at ? "resultado_recebido" : row.latest_order_status || "requisicao_pendente" }));
+      rows = rows.filter((row: any) => (!input.branchId || Number(row.branch_id) === input.branchId) && (!input.sectorId || Number(row.sector_id) === input.sectorId) && (!input.gseId || Number(row.gse_id) === input.gseId) && (!input.examId || Number(row.exam_id) === input.examId) && (input.status === "todos" || row.operational_status === input.status));
+      const company = rowsOf(await db.execute(drzSql`SELECT name,cnpj FROM companies WHERE id=${companyId} LIMIT 1`))[0] || {};
+      const body = rows.map((row: any) => `<tr><td>${esc(row.collaborator_name)}</td><td>${esc(row.cpf || row.employee_registration || "-")}</td><td>${esc(row.branch_name || "-")}</td><td>${esc(row.sector_name || "-")}</td><td>${esc(row.gse_code || "-")}</td><td>${esc(row.pcmso_title || "-")}</td><td>${esc(row.monitoring_kind === "avaliacao_clinica" ? "Consulta clínica" : row.exam_name)}</td><td>${esc(row.periodicity || "Definição médica")}</td><td>${esc(row.operational_status.replaceAll("_", " "))}</td></tr>`).join("");
+      const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>@page{size:A4 landscape;margin:10mm}body{font-family:Arial;color:#173047;font-size:7.5pt}h1{font-size:17pt;border-bottom:4px solid #0895a5;padding-bottom:3mm}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ccd8e0;padding:2mm;text-align:left;vertical-align:top}th{background:#0e2c46;color:#fff}.meta{display:flex;justify-content:space-between;margin-bottom:4mm}.empty{text-align:center;padding:12mm}</style></head><body><h1>PROGRAMAÇÃO OCUPACIONAL</h1><div class="meta"><span><b>${esc(company.name)}</b> · CNPJ ${esc(company.cnpj || "-")}</span><span>Gerado em ${esc(new Date().toLocaleString("pt-BR"))}</span></div><p>População esperada derivada de trabalhador ativo + GSE atual + PGR + PCMSO vigente + matriz médica. Consultas clínicas aparecem como procedimento independente.</p><table><thead><tr><th>Trabalhador</th><th>Identificador</th><th>Filial</th><th>Setor</th><th>GSE</th><th>PCMSO</th><th>Procedimento</th><th>Periodicidade</th><th>Situação</th></tr></thead><tbody>${body || `<tr><td colspan="9" class="empty">Nenhum registro encontrado para os filtros informados.</td></tr>`}</tbody></table></body></html>`;
+      const fileName = `programacao_ocupacional_${Date.now()}.pdf`;
+      const target = await renderPdf(companyId, "programming", fileName, html);
+      await audit(db, ctx, "occupational_programming_pdf_generated", "occupational_programming", null, null, { filters: input, total: rows.length });
+      return { fileName, total: rows.length, dataBase64: `data:application/pdf;base64,${fs.readFileSync(target).toString("base64")}` };
+    }),
+
+  getOccupationalDossier: protectedProcedure
+    .input(z.object({ collaboratorId: z.number().int().positive() }))
+    .query(async ({ ctx, input }) => {
+      requireOperational(ctx);
+      await ensureOccupationalTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) return null;
+      await requireOwnedEntity(db, companyId, "user", input.collaboratorId, "Colaborador");
+      const isDoctor = roleOf(ctx) === "medico";
+      const [worker, gseHistory, programs, risks, orders, communications, results, asos, cats] = await Promise.all([
+        db.execute(drzSql`SELECT u.id,u.name,u.cpf,u.employee_registration,u.position,u.email,u.whatsapp,b.name branch_name,s.name sector_name FROM users u LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id WHERE u.id=${input.collaboratorId} AND u.company_id=${companyId} LIMIT 1`),
+        db.execute(drzSql`SELECT h.valid_from,h.valid_until,h.is_current,h.reason,h.origin,g.id gse_id,g.code gse_code,g.name gse_name FROM occupational_gse_worker_history h JOIN occupational_gse_master g ON g.id=h.gse_id WHERE h.company_id=${companyId} AND h.collaborator_id=${input.collaboratorId} ORDER BY h.valid_from DESC`),
+        db.execute(drzSql`SELECT DISTINCT p.id,p.title,p.status,p.valid_from,p.valid_until,pg.title pgr_title FROM pcmso_programs_v2 p LEFT JOIN pgr_documents pg ON pg.id=p.pgr_id AND pg.company_id=p.company_id JOIN pcmso_risk_monitoring_v2 m ON m.pcmso_id=p.id AND m.company_id=p.company_id JOIN occupational_gse_worker_history h ON h.gse_id=m.master_gse_id AND h.company_id=m.company_id AND h.collaborator_id=${input.collaboratorId} WHERE p.company_id=${companyId} ORDER BY p.updated_at DESC`),
+        db.execute(drzSql`SELECT DISTINCT m.risk_name,m.risk_type,m.risk_classification,m.monitoring_kind,m.monitoring_name,m.periodicity,e.name exam_name FROM pcmso_risk_monitoring_v2 m JOIN occupational_gse_worker_history h ON h.gse_id=m.master_gse_id AND h.company_id=m.company_id AND h.collaborator_id=${input.collaboratorId} LEFT JOIN pcmso_exam_catalog_v2 e ON e.id=m.exam_id WHERE m.company_id=${companyId} ORDER BY m.gse_name,m.risk_name`),
+        db.execute(drzSql`SELECT o.id,o.order_number,o.version_number,o.procedure_kind,o.issue_date,o.valid_until,o.status,e.name exam_name,p.trade_name provider_name FROM occupational_exam_orders o JOIN pcmso_exam_catalog_v2 e ON e.id=o.exam_id LEFT JOIN occupational_health_providers p ON p.id=o.provider_id WHERE o.company_id=${companyId} AND o.collaborator_id=${input.collaboratorId} ORDER BY o.created_at DESC`),
+        db.execute(drzSql`SELECT c.order_id,c.channel,c.recipient,c.status,c.sent_at FROM occupational_exam_order_communications c JOIN occupational_exam_orders o ON o.id=c.order_id AND o.company_id=c.company_id WHERE c.company_id=${companyId} AND o.collaborator_id=${input.collaboratorId} ORDER BY c.sent_at DESC`),
+        db.execute(drzSql`SELECT r.id,r.performed_at,r.reviewed_at,r.classification,e.name exam_name FROM occupational_exam_results r JOIN pcmso_exam_catalog_v2 e ON e.id=r.exam_id WHERE r.company_id=${companyId} AND r.collaborator_id=${input.collaboratorId} ORDER BY r.performed_at DESC`),
+        db.execute(drzSql`SELECT id,aso_type,fitness_status,status,signature_status,issued_at FROM occupational_asos WHERE company_id=${companyId} AND collaborator_id=${input.collaboratorId} ORDER BY issued_at DESC`),
+        db.execute(drzSql`SELECT id,event_at,accident_type,status,esocial_status FROM occupational_cat_records WHERE company_id=${companyId} AND collaborator_id=${input.collaboratorId} ORDER BY event_at DESC`),
+      ]);
+      await audit(db, ctx, "occupational_dossier_viewed", "occupational_dossier", input.collaboratorId, input.collaboratorId);
+      return {
+        worker: rowsOf(worker)[0] || null,
+        gseHistory: rowsOf(gseHistory), programs: rowsOf(programs), risks: rowsOf(risks), orders: rowsOf(orders), communications: rowsOf(communications),
+        results: rowsOf(results).map((row: any) => isDoctor ? row : { ...row, classification: row.reviewed_at ? "revisado" : "pendente_revisao" }),
+        asos: rowsOf(asos), cats: rowsOf(cats),
+      };
+    }),
+
+  occupationalIndicators: protectedProcedure.query(async ({ ctx }) => {
+    requireOperational(ctx);
+    await ensureOccupationalTables();
+    const db = await getDb();
+    const companyId = companyOf(ctx);
+    if (!db) return null;
+    const summary: any = await db.execute(drzSql.raw(`SELECT
+      (SELECT COUNT(*) FROM users u WHERE u.company_id=${companyId} AND ${activeEmployeeSql("u")}) active_workers,
+      (SELECT COUNT(DISTINCT collaborator_id) FROM occupational_gse_worker_history WHERE company_id=${companyId} AND is_current=1) workers_with_gse,
+      (SELECT COUNT(*) FROM occupational_exam_orders WHERE company_id=${companyId}) orders_total,
+      (SELECT COUNT(*) FROM occupational_exam_orders WHERE company_id=${companyId} AND status IN ('pendente','enviada','vencida')) orders_open,
+      (SELECT COUNT(*) FROM occupational_exam_results WHERE company_id=${companyId}) results_total,
+      (SELECT COUNT(*) FROM occupational_exam_results WHERE company_id=${companyId} AND reviewed_at IS NOT NULL) results_reviewed,
+      (SELECT COUNT(*) FROM occupational_asos WHERE company_id=${companyId}) asos_total,
+      (SELECT COUNT(*) FROM occupational_cat_records WHERE company_id=${companyId}) cats_total,
+      (SELECT COUNT(*) FROM occupational_health_providers WHERE company_id=${companyId} AND is_active=1) active_providers`));
+    const branches: any = await db.execute(drzSql.raw(`SELECT COALESCE(b.name,'Sem filial') branch_name,COUNT(DISTINCT u.id) workers,COUNT(DISTINCT o.id) orders,COUNT(DISTINCT a.id) asos FROM users u LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN occupational_exam_orders o ON o.collaborator_id=u.id AND o.company_id=u.company_id LEFT JOIN occupational_asos a ON a.collaborator_id=u.id AND a.company_id=u.company_id WHERE u.company_id=${companyId} AND ${activeEmployeeSql("u")} GROUP BY b.id,b.name HAVING COUNT(DISTINCT u.id)>=5 ORDER BY workers DESC`));
+    const bmi: any = await db.execute(drzSql`SELECT CASE WHEN bmi<18.5 THEN 'abaixo' WHEN bmi<25 THEN 'adequado' WHEN bmi<30 THEN 'sobrepeso' ELSE 'obesidade' END faixa,COUNT(*) total FROM occupational_anamneses WHERE company_id=${companyId} AND bmi IS NOT NULL GROUP BY faixa HAVING COUNT(*)>=5`);
+    const row = rowsOf(summary)[0] || {};
+    const active = Number(row.active_workers || 0);
+    const assigned = Number(row.workers_with_gse || 0);
+    const reviewed = Number(row.results_reviewed || 0);
+    const resultsTotal = Number(row.results_total || 0);
+    return {
+      ...row,
+      gseCoverage: active ? Math.min(100, Math.round(assigned / active * 100)) : 100,
+      resultReviewRate: resultsTotal ? Math.round(reviewed / resultsTotal * 100) : 100,
+      branches: rowsOf(branches),
+      sensitiveAggregates: rowsOf(bmi),
+      privacyRule: "Indicadores clínicos sensíveis são agregados somente em grupos com pelo menos 5 registros.",
+      conformity: {
+        gse: active === assigned ? "conforme" : "atencao",
+        providers: Number(row.active_providers || 0) ? "conforme" : "nao_conforme",
+        orders: Number(row.orders_open || 0) ? "atencao" : "conforme",
+        results: resultsTotal === reviewed ? "conforme" : "atencao",
+      },
+    };
+  }),
 
   auditTrail: protectedProcedure.query(async ({ ctx }) => {
     requireOperational(ctx);

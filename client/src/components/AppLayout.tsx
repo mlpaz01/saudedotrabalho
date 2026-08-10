@@ -197,6 +197,7 @@ const superAdminNav: NavItem[] = [
     label: "Manuais e Orientacoes",
     href: "/super-admin/manuais",
     icon: <BookMarked size={16} />,},
+  { label: "Questionários de Anamnese", href: "/super-admin/anamnese", icon: <ClipboardCheck size={16} /> },
 ];
 
 const whiteLabelNetworkNav: NavItem[] = [

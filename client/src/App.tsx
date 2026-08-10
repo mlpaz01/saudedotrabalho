@@ -109,6 +109,7 @@ import MedicalCenter from "@/pages/MedicalCenter";
 import OccupationalOperations from "@/pages/OccupationalOperations";
 import MyVaccines from "@/pages/MyVaccines";
 import SuperAdminGuidance from "@/pages/superadmin/SuperAdminGuidance";
+import SuperAdminAnamnesis from "@/pages/superadmin/SuperAdminAnamnesis";
 import AdminFatores from "@/pages/admin/AdminFatores";
 import AdminPrograms from "@/pages/admin/AdminPrograms";
 import AdminProgramas from "@/pages/admin/AdminProgramas";
@@ -375,6 +376,7 @@ function Router() {
           path="/super-admin/manuais"
           component={() => <SuperAdminRoute component={SuperAdminGuidance} />}
         />
+        <Route path="/super-admin/anamnese" component={() => <SuperAdminRoute component={SuperAdminAnamnesis} />} />
         <Route
           path="/admin/suporte"
           component={() => (

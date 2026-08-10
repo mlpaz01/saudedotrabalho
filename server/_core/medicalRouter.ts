@@ -13,7 +13,7 @@ import {
   suggestMedicalResponse,
 } from "./pcmsoIntelligence";
 import { protectedProcedure, router } from "./trpc";
-import { ensureOccupationalTables } from "./occupationalLifecycleRouter";
+import { ensureClinicalConsultationExam, ensureOccupationalTables } from "./occupationalLifecycleRouter";
 
 let tablesReady = false;
 
@@ -1081,8 +1081,20 @@ export const medicalRouter = router({
       const db = await getDb();
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      let examId = input.examId || null;
+      let monitoringName = input.monitoringName || null;
+      if (input.monitoringKind === "avaliacao_clinica") {
+        examId = await ensureClinicalConsultationExam(db, companyId, Number(ctx.user.id));
+        monitoringName = "Consulta clínica ocupacional";
+      }
+      if (input.monitoringKind === "exame_complementar" && !examId)
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Selecione um exame do catálogo mestre." });
+      if (["nao_definido", "nao_aplicavel"].includes(input.monitoringKind)) {
+        examId = null;
+        monitoringName = input.monitoringKind === "nao_aplicavel" ? "Não aplicável" : null;
+      }
       await db.execute(
-        drzSql`UPDATE pcmso_risk_monitoring_v2 SET monitoring_kind=${input.monitoringKind},exam_id=${input.examId || null},monitoring_name=${input.monitoringName || null},periodicity=${input.periodicity || null},applicability=${input.applicability || null},observations=${input.observations || null},possible_aggravations=COALESCE(${input.possibleAggravations || null},possible_aggravations),ai_rationale=COALESCE(${input.aiRationale || null},ai_rationale),suggestion_status=${input.suggestionStatus},decision_by=${Number(ctx.user.id)},decision_at=NOW() WHERE id=${input.id} AND company_id=${companyId}`
+        drzSql`UPDATE pcmso_risk_monitoring_v2 SET monitoring_kind=${input.monitoringKind},exam_id=${examId},monitoring_name=${monitoringName},periodicity=${input.periodicity || null},applicability=${input.applicability || null},observations=${input.observations || null},possible_aggravations=COALESCE(${input.possibleAggravations || null},possible_aggravations),ai_rationale=COALESCE(${input.aiRationale || null},ai_rationale),suggestion_status=${input.suggestionStatus},decision_by=${Number(ctx.user.id)},decision_at=NOW() WHERE id=${input.id} AND company_id=${companyId}`
       );
       await audit(
         db,
@@ -1091,7 +1103,7 @@ export const medicalRouter = router({
         "pcmso_risk_monitoring",
         input.id,
         null,
-        { monitoringKind: input.monitoringKind, examId: input.examId || null }
+        { monitoringKind: input.monitoringKind, examId }
       );
       return { ok: true };
     }),
