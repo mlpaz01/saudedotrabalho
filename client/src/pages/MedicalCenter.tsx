@@ -148,6 +148,7 @@ export default function MedicalCenter() {
   const collaboratorsQ = trpc.medical.listCollaborators.useQuery();
   const programsQ = trpc.medical.listPrograms.useQuery();
   const pgrsQ = trpc.medical.listPgrs.useQuery();
+  const examsQ = trpc.medical.listExams.useQuery();
   const vaccinesQ = trpc.medical.listVaccines.useQuery();
   const partnersQ = trpc.medical.listVaccinePartners.useQuery();
   const campaignsQ = trpc.medical.listVaccineCampaigns.useQuery();
@@ -257,9 +258,13 @@ export default function MedicalCenter() {
     onError: error => toast.error(error.message),
   });
   const decideMonitoring = trpc.medical.decideMonitoring.useMutation({
-    onSuccess: () => {
-      programQ.refetch();
-      toast.success("Decisão médica registrada.");
+    onSuccess: async result => {
+      await programQ.refetch();
+      toast.success(
+        (result as any)?.ignored
+          ? "Sugestão da IA descartada."
+          : "Decisão médica salva e atualizada na matriz."
+      );
     },
     onError: error => toast.error(error.message),
   });
@@ -526,6 +531,7 @@ export default function MedicalCenter() {
           <PcmsoWorkspace
             programs={(programsQ.data || []) as any[]}
             pgrs={(pgrsQ.data || []) as any[]}
+            exams={(examsQ.data || []) as any[]}
             selectedId={selectedProgramId}
             select={setSelectedProgramId}
             data={programQ.data as any}
@@ -591,8 +597,17 @@ export default function MedicalCenter() {
             subtitle="O PCMSO define o planejamento; a execução clínica e os ASOs permanecem vinculados ao prontuário, sem cadastro paralelo de exames."
           >
             <div className="grid gap-3 md:grid-cols-5">
-              {["Admissional", "Periódico", "Retorno ao trabalho", "Mudança de risco", "Demissional"].map(name => (
-                <div className="border bg-slate-50 p-3 text-sm font-semibold" key={name}>
+              {[
+                "Admissional",
+                "Periódico",
+                "Retorno ao trabalho",
+                "Mudança de risco",
+                "Demissional",
+              ].map(name => (
+                <div
+                  className="border bg-slate-50 p-3 text-sm font-semibold"
+                  key={name}
+                >
                   <CheckCircle2 className="mb-2 text-teal-700" size={18} />
                   {name}
                 </div>
@@ -682,7 +697,8 @@ export default function MedicalCenter() {
                   >
                     <b className="line-clamp-2">{row.title}</b>
                     <span className="mt-1 block text-xs text-slate-500">
-                      {row.document_type?.toUpperCase()} · {row.status} · {Number(row.compliance_score || 0)}%
+                      {row.document_type?.toUpperCase()} · {row.status} ·{" "}
+                      {Number(row.compliance_score || 0)}%
                     </span>
                   </button>
                 ))}
@@ -701,7 +717,10 @@ export default function MedicalCenter() {
                           {(technicalDetailQ.data as any).document.title}
                         </h3>
                         <p className="mt-1 text-xs text-slate-500">
-                          PGR: {(technicalDetailQ.data as any).document.pgr_title || "-"} · consulta somente
+                          PGR:{" "}
+                          {(technicalDetailQ.data as any).document.pgr_title ||
+                            "-"}{" "}
+                          · consulta somente
                         </p>
                       </div>
                       <Badge variant="outline" className="rounded-sm">
@@ -718,10 +737,15 @@ export default function MedicalCenter() {
                           <button
                             className="flex w-full items-center justify-between p-3 text-left text-sm hover:bg-slate-50"
                             key={version.id}
-                            onClick={() => downloadTechnicalVersion(Number(version.id))}
+                            onClick={() =>
+                              downloadTechnicalVersion(Number(version.id))
+                            }
                             type="button"
                           >
-                            Versão {version.version_number} · {new Date(version.generated_at).toLocaleString("pt-BR")}
+                            Versão {version.version_number} ·{" "}
+                            {new Date(version.generated_at).toLocaleString(
+                              "pt-BR"
+                            )}
                             <Download size={14} />
                           </button>
                         )
@@ -1317,7 +1341,8 @@ function LegacyMonitoringRow({
           </select>
         ) : kind === "avaliacao_clinica" ? (
           <div className="mt-1 border border-sky-200 bg-sky-50 p-2 text-xs text-sky-900">
-            Consulta clínica ocupacional. O procedimento será vinculado automaticamente ao catálogo mestre.
+            Consulta clínica ocupacional. O procedimento será vinculado
+            automaticamente ao catálogo mestre.
           </div>
         ) : null}
       </td>
@@ -1343,7 +1368,10 @@ function LegacyMonitoringRow({
               id: Number(row.id),
               monitoringKind: kind,
               examId: examId || null,
-              monitoringName: kind === "avaliacao_clinica" ? "Consulta clínica ocupacional" : undefined,
+              monitoringName:
+                kind === "avaliacao_clinica"
+                  ? "Consulta clínica ocupacional"
+                  : undefined,
               periodicity: periodicity || undefined,
               observations: observations || undefined,
             })
@@ -1875,8 +1903,8 @@ function ProgramDialog({
               placeholder="Gerado automaticamente com empresa, filial e ano"
             />
             <span className="mt-1 block text-[11px] font-normal text-slate-500">
-              Se ficar em branco, a plataforma criará o título no padrão PCMSO
-              - Empresa - Filial - Ano.
+              Se ficar em branco, a plataforma criará o título no padrão PCMSO -
+              Empresa - Filial - Ano.
             </span>
           </Field>
           <div className="grid gap-3 md:grid-cols-2">

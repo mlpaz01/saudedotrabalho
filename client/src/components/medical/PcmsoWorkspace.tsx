@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   Archive,
@@ -21,6 +21,7 @@ import { Textarea } from "@/components/ui/textarea";
 type PcmsoWorkspaceProps = {
   programs: any[];
   pgrs: any[];
+  exams: any[];
   selectedId: number | null;
   select: (id: number) => void;
   data: any;
@@ -108,7 +109,9 @@ function statusLabel(value: string) {
       vigente: "Vigente",
       arquivado: "Arquivado",
       aprovado: "Aprovado",
-    }[value] || value || "Não informado"
+    }[value] ||
+    value ||
+    "Não informado"
   );
 }
 
@@ -121,6 +124,7 @@ function today(offsetDays = 0) {
 export default function PcmsoWorkspace({
   programs,
   pgrs,
+  exams,
   selectedId,
   select,
   data,
@@ -145,6 +149,9 @@ export default function PcmsoWorkspace({
   const [periodStart, setPeriodStart] = useState(today(-365));
   const [periodEnd, setPeriodEnd] = useState(today());
   const [reviewReason, setReviewReason] = useState("");
+  const [programStatus, setProgramStatus] = useState<
+    "andamento" | "rascunho" | "arquivado" | "todos"
+  >("andamento");
   const program = data?.program;
   const monitoring = (data?.monitoring || []) as any[];
   const groups = useMemo(() => {
@@ -159,6 +166,12 @@ export default function PcmsoWorkspace({
     row => row.monitoring_kind === "nao_definido"
   ).length;
   const latestAudit = data?.audits?.[0];
+  const visiblePrograms = programs.filter(row => {
+    if (programStatus === "todos") return true;
+    if (programStatus === "andamento")
+      return ["vigente", "em_revisao"].includes(row.status);
+    return row.status === programStatus;
+  });
 
   return (
     <div className="space-y-4">
@@ -171,8 +184,37 @@ export default function PcmsoWorkspace({
           </Button>
         }
       >
+        <div className="mb-3 flex flex-wrap gap-2">
+          {(
+            [
+              ["andamento", "Em andamento"],
+              ["rascunho", "Rascunhos"],
+              ["arquivado", "Arquivados"],
+              ["todos", "Todos"],
+            ] as const
+          ).map(([value, label]) => (
+            <Button
+              key={value}
+              size="sm"
+              variant={programStatus === value ? "default" : "outline"}
+              onClick={() => setProgramStatus(value)}
+            >
+              {label} (
+              {
+                programs.filter(
+                  row =>
+                    value === "todos" ||
+                    (value === "andamento"
+                      ? ["vigente", "em_revisao"].includes(row.status)
+                      : row.status === value)
+                ).length
+              }
+              )
+            </Button>
+          ))}
+        </div>
         <div className="flex gap-2 overflow-x-auto pb-1">
-          {programs.map(row => (
+          {visiblePrograms.map(row => (
             <button
               className={`min-w-64 border px-3 py-2 text-left text-sm ${
                 selectedId === Number(row.id)
@@ -189,8 +231,10 @@ export default function PcmsoWorkspace({
               </span>
             </button>
           ))}
-          {!programs.length ? (
-            <p className="text-sm text-slate-500">Nenhum PCMSO criado.</p>
+          {!visiblePrograms.length ? (
+            <p className="text-sm text-slate-500">
+              Nenhum PCMSO nesta situação.
+            </p>
           ) : null}
         </div>
       </Section>
@@ -232,26 +276,26 @@ export default function PcmsoWorkspace({
               <Metric
                 label="Integração com PGR"
                 value={`${Number(program.integration_score || 0)}%`}
-                tone={Number(program.integration_score) >= 100 ? "success" : "warning"}
+                tone={
+                  Number(program.integration_score) >= 100
+                    ? "success"
+                    : "warning"
+                }
               />
               <Metric
                 label="Auditoria assistida"
                 value={`${Number(program.ai_audit_score || 0)}%`}
-                tone={Number(program.ai_audit_score) >= 80 ? "success" : "warning"}
+                tone={
+                  Number(program.ai_audit_score) >= 80 ? "success" : "warning"
+                }
               />
-              <Metric
-                label="Riscos importados"
-                value={monitoring.length}
-              />
+              <Metric label="Riscos importados" value={monitoring.length} />
               <Metric
                 label="Decisões pendentes"
                 value={pending}
                 tone={pending ? "warning" : "success"}
               />
-              <Metric
-                label="Versão"
-                value={program.current_version || 0}
-              />
+              <Metric label="Versão" value={program.current_version || 0} />
             </div>
 
             <div className="mt-4 border-t pt-4">
@@ -310,7 +354,9 @@ export default function PcmsoWorkspace({
                         </span>
                         <b className="block">
                           {program.pgr_synced_at
-                            ? new Date(program.pgr_synced_at).toLocaleString("pt-BR")
+                            ? new Date(program.pgr_synced_at).toLocaleString(
+                                "pt-BR"
+                              )
                             : "Ainda não realizada"}
                         </b>
                       </div>
@@ -326,7 +372,11 @@ export default function PcmsoWorkspace({
             description="A IA organiza o texto e sugere monitoramentos com base no PGR. Toda recomendação permanece pendente até validação expressa do médico responsável."
             action={
               <div className="flex flex-wrap gap-2">
-                <Button variant="outline" disabled={busy} onClick={onGenerateAi}>
+                <Button
+                  variant="outline"
+                  disabled={busy}
+                  onClick={onGenerateAi}
+                >
                   <Sparkles className="mr-1" size={14} /> Elaborar com IA
                 </Button>
                 <Button variant="outline" disabled={busy} onClick={onAudit}>
@@ -347,8 +397,8 @@ export default function PcmsoWorkspace({
                   {latestAudit.ai_commentary ||
                     "Auditoria estrutural registrada. Consulte as pendências antes da assinatura."}
                   <p className="mt-2 text-xs font-medium text-amber-800">
-                    A auditoria assistida não substitui revisão médica, julgamento
-                    profissional ou validação jurídica.
+                    A auditoria assistida não substitui revisão médica,
+                    julgamento profissional ou validação jurídica.
                   </p>
                 </div>
               </div>
@@ -382,6 +432,7 @@ export default function PcmsoWorkspace({
                       <MonitoringRow
                         key={row.id}
                         row={row}
+                        exams={exams}
                         save={onDecision}
                       />
                     ))}
@@ -429,7 +480,10 @@ export default function PcmsoWorkspace({
             </div>
             <div className="mt-4 divide-y border">
               {(data?.analyticalReports || []).map((report: any) => (
-                <div className="grid gap-3 p-3 md:grid-cols-[1fr_auto]" key={report.id}>
+                <div
+                  className="grid gap-3 p-3 md:grid-cols-[1fr_auto]"
+                  key={report.id}
+                >
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
                       <b className="text-sm">
@@ -497,7 +551,10 @@ export default function PcmsoWorkspace({
             {(data?.reviewRequests || []).length ? (
               <div className="mt-4 divide-y border text-sm">
                 {data.reviewRequests.map((request: any) => (
-                  <div className="grid gap-1 p-3 md:grid-cols-[1fr_auto]" key={request.id}>
+                  <div
+                    className="grid gap-1 p-3 md:grid-cols-[1fr_auto]"
+                    key={request.id}
+                  >
                     <span>{request.description}</span>
                     <Badge variant="outline" className="w-fit rounded-sm">
                       {request.status || "aberta"}
@@ -515,7 +572,8 @@ export default function PcmsoWorkspace({
               <div className="flex flex-wrap gap-2">
                 {program.status !== "vigente" ? (
                   <Button disabled={busy} onClick={onSign}>
-                    <ShieldCheck className="mr-1" size={14} /> Assinar e publicar
+                    <ShieldCheck className="mr-1" size={14} /> Assinar e
+                    publicar
                   </Button>
                 ) : null}
                 {program.status !== "arquivado" ? (
@@ -530,7 +588,9 @@ export default function PcmsoWorkspace({
               <DocumentList
                 empty="Nenhum anexo arquivado."
                 rows={data?.annexes || []}
-                render={row => `Anexo ${row.annex_number} · ${row.title || row.file_name}`}
+                render={row =>
+                  `Anexo ${row.annex_number} · ${row.title || row.file_name}`
+                }
                 onOpen={row => onDownload("pcmso_annex", Number(row.id))}
               />
               <DocumentList
@@ -575,7 +635,9 @@ function DocumentList({
             <Download className="shrink-0" size={14} />
           </button>
         ))}
-        {!rows.length ? <p className="p-3 text-sm text-slate-500">{empty}</p> : null}
+        {!rows.length ? (
+          <p className="p-3 text-sm text-slate-500">{empty}</p>
+        ) : null}
       </div>
     </div>
   );
@@ -583,25 +645,41 @@ function DocumentList({
 
 function MonitoringRow({
   row,
+  exams,
   save,
 }: {
   row: any;
+  exams: any[];
   save: (payload: any) => void;
 }) {
   const [kind, setKind] = useState(row.monitoring_kind || "nao_definido");
   const [name, setName] = useState(row.monitoring_name || "");
+  const [examId, setExamId] = useState(Number(row.exam_id || 0));
   const [periodicity, setPeriodicity] = useState(row.periodicity || "");
   const [aggravations, setAggravations] = useState(
     row.possible_aggravations || ""
   );
   const [observations, setObservations] = useState(row.observations || "");
-  const suggestionAvailable = Boolean(row.suggested_monitoring_kind);
+  const suggestionAvailable =
+    row.suggestion_status === "revisar" &&
+    Boolean(row.suggested_monitoring_kind);
+  const decisionSaved =
+    Boolean(row.decision_at) && row.monitoring_kind !== "nao_definido";
+
+  useEffect(() => {
+    setKind(row.monitoring_kind || "nao_definido");
+    setName(row.monitoring_name || row.exam_name || "");
+    setExamId(Number(row.exam_id || 0));
+    setPeriodicity(row.periodicity || "");
+    setAggravations(row.possible_aggravations || "");
+    setObservations(row.observations || "");
+  }, [row]);
 
   const submit = (suggestionStatus = "editada") =>
     save({
       id: Number(row.id),
       monitoringKind: kind,
-      examId: null,
+      examId: kind === "exame_complementar" ? examId || null : null,
       monitoringName: name || undefined,
       possibleAggravations: aggravations || undefined,
       periodicity: periodicity || undefined,
@@ -626,7 +704,7 @@ function MonitoringRow({
       periodicity: nextPeriodicity || undefined,
       observations: observations || undefined,
       aiRationale: row.ai_rationale || undefined,
-      suggestionStatus: "aceita",
+      suggestionStatus: "aprovada",
     });
   };
 
@@ -643,7 +721,8 @@ function MonitoringRow({
           {row.risk_type || "Tipo não informado"}
         </p>
         <p className="mt-3 whitespace-pre-wrap text-sm text-slate-600">
-          {row.technical_detail || "O PGR não possui detalhamento técnico para este risco."}
+          {row.technical_detail ||
+            "O PGR não possui detalhamento técnico para este risco."}
         </p>
       </div>
 
@@ -663,7 +742,8 @@ function MonitoringRow({
               <Sparkles size={14} /> Sugestão assistida
             </div>
             <p className="mt-1">
-              {row.suggested_monitoring_name || "Sem monitoramento sugerido"} · {row.suggested_periodicity || "periodicidade a definir"}
+              {row.suggested_monitoring_name || "Sem monitoramento sugerido"} ·{" "}
+              {row.suggested_periodicity || "periodicidade a definir"}
             </p>
             <p className="mt-1 text-sky-800">{row.ai_rationale}</p>
             <div className="mt-3 flex flex-wrap gap-2">
@@ -683,6 +763,12 @@ function MonitoringRow({
       </div>
 
       <div className="grid gap-2">
+        {decisionSaved ? (
+          <div className="flex items-center gap-2 border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900">
+            <CheckCircle2 size={14} /> Decisão salva:{" "}
+            {row.exam_name || row.monitoring_name || "controle definido"}
+          </div>
+        ) : null}
         <label className="text-xs font-semibold text-slate-700">
           Decisão médica
           <select
@@ -693,19 +779,50 @@ function MonitoringRow({
             <option value="nao_definido">Pendente de decisão</option>
             <option value="avaliacao_clinica">Avaliação clínica</option>
             <option value="exame_complementar">Exame complementar</option>
-            <option value="nao_aplicavel">Sem controle adicional aplicável</option>
+            <option value="nao_aplicavel">
+              Sem controle adicional aplicável
+            </option>
           </select>
         </label>
         {kind !== "nao_definido" && kind !== "nao_aplicavel" ? (
-          <label className="text-xs font-semibold text-slate-700">
-            Controle médico definido
-            <Input
-              className="mt-1"
-              value={name}
-              onChange={event => setName(event.target.value)}
-              placeholder="Ex.: audiometria ou avaliação clínica ocupacional"
-            />
-          </label>
+          kind === "exame_complementar" ? (
+            <label className="text-xs font-semibold text-slate-700">
+              Exame do Catálogo Mestre
+              <select
+                className="mt-1 h-10 w-full border bg-white px-2 text-sm"
+                value={examId}
+                onChange={event => {
+                  const selectedId = Number(event.target.value);
+                  const selected = exams.find(
+                    exam => Number(exam.id) === selectedId
+                  );
+                  setExamId(selectedId);
+                  setName(selected?.name || "");
+                  if (selected?.default_periodicity)
+                    setPeriodicity(selected.default_periodicity);
+                }}
+              >
+                <option value={0}>Pesquisar e selecionar exame...</option>
+                {exams
+                  .filter(
+                    exam =>
+                      Number(exam.is_active) &&
+                      exam.exam_type === "complementar"
+                  )
+                  .map(exam => (
+                    <option key={exam.id} value={exam.id}>
+                      {exam.name} ·{" "}
+                      {exam.default_periodicity || "periodicidade médica"}
+                    </option>
+                  ))}
+              </select>
+            </label>
+          ) : (
+            <div className="border border-sky-200 bg-sky-50 p-2 text-xs text-sky-900">
+              Avaliação clínica ocupacional vinculada automaticamente ao
+              Catálogo Mestre.
+            </div>
+          )
         ) : null}
         <label className="text-xs font-semibold text-slate-700">
           Periodicidade
@@ -724,7 +841,10 @@ function MonitoringRow({
             onChange={event => setObservations(event.target.value)}
           />
         </label>
-        <Button onClick={() => submit("editada")}>
+        <Button
+          disabled={kind === "exame_complementar" && !examId}
+          onClick={() => submit("editada")}
+        >
           <CheckCircle2 className="mr-1" size={14} /> Salvar decisão médica
         </Button>
       </div>

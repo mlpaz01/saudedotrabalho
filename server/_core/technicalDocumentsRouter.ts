@@ -14,6 +14,7 @@ import {
   technicalDocumentLabel,
   type TechnicalDocumentType,
 } from "./technicalDocumentIntelligence";
+import { loadDocumentDefaults } from "./documentDefaults";
 
 let tablesReady = false;
 
@@ -308,8 +309,7 @@ export const technicalDocumentsRouter = router({
       pcmsoResult,
       pcmsoAuditResult,
       technicalAuditsResult,
-    ] =
-      await Promise.all([
+    ] = await Promise.all([
       db.execute(drzSql`SELECT
         COUNT(*) total,
         SUM(status='vigente') vigente,
@@ -488,7 +488,12 @@ export const technicalDocumentsRouter = router({
         legalBasis: z.string().max(100000).optional(),
         methodology: z.string().max(100000).optional(),
         chapters: z
-          .array(z.object({ title: z.string().max(255), content: z.string().max(100000) }))
+          .array(
+            z.object({
+              title: z.string().max(255),
+              content: z.string().max(100000),
+            })
+          )
           .max(80)
           .default([]),
         conclusion: z.string().max(100000).optional(),
@@ -516,17 +521,23 @@ export const technicalDocumentsRouter = router({
             ? Number(input.validFrom.slice(0, 4))
             : new Date().getFullYear(),
         });
+      const defaults = input.id
+        ? null
+        : await loadDocumentDefaults(db, companyId, input.type);
+      const objective = input.objective || defaults?.texto_introducao || null;
+      const conclusion = input.conclusion || defaults?.texto_conclusao || null;
       let id = Number(input.id || 0);
       if (id) {
         await ownedDocument(db, companyId, id);
         await db.execute(drzSql`UPDATE technical_documents_v2 SET
-          pgr_id=${input.pgrId || null},title=${title},valid_from=${input.validFrom || null},valid_until=${input.validUntil || null},objective=${input.objective || null},legal_basis=${input.legalBasis || null},methodology=${input.methodology || null},chapters_json=${JSON.stringify(input.chapters)},conclusion=${input.conclusion || null},responsible_name=${input.responsibleName || null},responsible_profession=${input.responsibleProfession || null},responsible_registration=${input.responsibleRegistration || null},responsible_art=${input.responsibleArt || null}
+          pgr_id=${input.pgrId || null},title=${title},valid_from=${input.validFrom || null},valid_until=${input.validUntil || null},objective=${objective},legal_basis=${input.legalBasis || null},methodology=${input.methodology || null},chapters_json=${JSON.stringify(input.chapters)},conclusion=${conclusion},responsible_name=${input.responsibleName || null},responsible_profession=${input.responsibleProfession || null},responsible_registration=${input.responsibleRegistration || null},responsible_art=${input.responsibleArt || null}
           WHERE id=${id} AND company_id=${companyId}`);
         await event(db, ctx, id, "document_updated");
       } else {
-        const inserted: any = await db.execute(drzSql`INSERT INTO technical_documents_v2
+        const inserted: any =
+          await db.execute(drzSql`INSERT INTO technical_documents_v2
           (company_id,document_type,pgr_id,title,valid_from,valid_until,objective,legal_basis,methodology,chapters_json,conclusion,responsible_name,responsible_profession,responsible_registration,responsible_art,created_by)
-          VALUES (${companyId},${input.type},${input.pgrId || null},${title},${input.validFrom || null},${input.validUntil || null},${input.objective || null},${input.legalBasis || null},${input.methodology || null},${JSON.stringify(input.chapters)},${input.conclusion || null},${input.responsibleName || null},${input.responsibleProfession || null},${input.responsibleRegistration || null},${input.responsibleArt || null},${Number(ctx.user.id)})`);
+          VALUES (${companyId},${input.type},${input.pgrId || null},${title},${input.validFrom || null},${input.validUntil || null},${objective},${input.legalBasis || null},${input.methodology || null},${JSON.stringify(input.chapters)},${conclusion},${input.responsibleName || null},${input.responsibleProfession || null},${input.responsibleRegistration || null},${input.responsibleArt || null},${Number(ctx.user.id)})`);
         id = Number((inserted as any)[0]?.insertId || 0);
         await event(db, ctx, id, "document_created", { type: input.type });
       }
@@ -551,7 +562,11 @@ export const technicalDocumentsRouter = router({
         drzSql`SELECT id,title,updated_at FROM pgr_documents WHERE id=${input.pgrId} AND company_id=${companyId} LIMIT 1`
       );
       const pgr = rowsOf(pgrResult)[0];
-      if (!pgr) throw new TRPCError({ code: "NOT_FOUND", message: "PGR não encontrado." });
+      if (!pgr)
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "PGR não encontrado.",
+        });
       const risksResult: any = await db.execute(drzSql`SELECT
         g.id gse_id,g.nome gse_name,r.id risk_id,r.tipo risk_type,r.agente risk_name,
         r.fonte_geradora source,r.possivel_dano possible_damage,r.risco_final risk_classification,
@@ -648,7 +663,10 @@ export const technicalDocumentsRouter = router({
             true
           );
           const parsed = JSON.parse(
-            raw.trim().replace(/^```json\s*/i, "").replace(/```$/i, "")
+            raw
+              .trim()
+              .replace(/^```json\s*/i, "")
+              .replace(/```$/i, "")
           );
           if (
             typeof parsed.objective === "string" &&
@@ -673,7 +691,9 @@ export const technicalDocumentsRouter = router({
           );
         }
       }
-      await db.execute(drzSql`UPDATE technical_documents_v2 SET objective=${draft.objective},legal_basis=${draft.legalBasis},methodology=${draft.methodology},chapters_json=${JSON.stringify(draft.chapters)},conclusion=${draft.conclusion},status='em_revisao' WHERE id=${input.id} AND company_id=${companyId}`);
+      await db.execute(
+        drzSql`UPDATE technical_documents_v2 SET objective=${draft.objective},legal_basis=${draft.legalBasis},methodology=${draft.methodology},chapters_json=${JSON.stringify(draft.chapters)},conclusion=${draft.conclusion},status='em_revisao' WHERE id=${input.id} AND company_id=${companyId}`
+      );
       await event(db, ctx, input.id, "ai_draft_generated", { usedAi });
       return { ok: true, usedAi };
     }),
@@ -682,7 +702,11 @@ export const technicalDocumentsRouter = router({
     .input(
       z.object({
         id: z.number().int().positive(),
-        evaluationKind: z.enum(["qualitativa", "quantitativa", "nao_aplicavel"]),
+        evaluationKind: z.enum([
+          "qualitativa",
+          "quantitativa",
+          "nao_aplicavel",
+        ]),
         methodology: z.string().max(100000).optional(),
         measurementResult: z.string().max(100000).optional(),
         toleranceReference: z.string().max(100000).optional(),
@@ -702,7 +726,9 @@ export const technicalDocumentsRouter = router({
       );
       const row = rowsOf(own)[0];
       if (!row) throw new TRPCError({ code: "NOT_FOUND" });
-      await db.execute(drzSql`UPDATE technical_document_risks_v2 SET evaluation_kind=${input.evaluationKind},methodology=${input.methodology || null},measurement_result=${input.measurementResult || null},tolerance_reference=${input.toleranceReference || null},exposure_characterization=${input.exposureCharacterization || null},control_assessment=${input.controlAssessment || null},technical_conclusion=${input.technicalConclusion},decision_status='validado',reviewed_by=${Number(ctx.user.id)},reviewed_at=NOW() WHERE id=${input.id} AND company_id=${companyId}`);
+      await db.execute(
+        drzSql`UPDATE technical_document_risks_v2 SET evaluation_kind=${input.evaluationKind},methodology=${input.methodology || null},measurement_result=${input.measurementResult || null},tolerance_reference=${input.toleranceReference || null},exposure_characterization=${input.exposureCharacterization || null},control_assessment=${input.controlAssessment || null},technical_conclusion=${input.technicalConclusion},decision_status='validado',reviewed_by=${Number(ctx.user.id)},reviewed_at=NOW() WHERE id=${input.id} AND company_id=${companyId}`
+      );
       await event(db, ctx, Number(row.document_id), "risk_decision_validated", {
         riskId: input.id,
       });
@@ -732,8 +758,12 @@ export const technicalDocumentsRouter = router({
         attachmentCount: Number(rowsOf(attachmentsResult)[0]?.total || 0),
       });
       const commentary = `${result.pending.length} pendência(s), sendo ${result.criticalPending.length} crítica(s). A validação final pertence ao responsável técnico.`;
-      await db.execute(drzSql`INSERT INTO technical_document_audits_v2 (company_id,document_id,score,result_json,commentary,created_by) VALUES (${companyId},${input.id},${result.score},${JSON.stringify(result)},${commentary},${Number(ctx.user.id)})`);
-      await db.execute(drzSql`UPDATE technical_documents_v2 SET compliance_score=${result.score},pending_count=${result.pending.length} WHERE id=${input.id} AND company_id=${companyId}`);
+      await db.execute(
+        drzSql`INSERT INTO technical_document_audits_v2 (company_id,document_id,score,result_json,commentary,created_by) VALUES (${companyId},${input.id},${result.score},${JSON.stringify(result)},${commentary},${Number(ctx.user.id)})`
+      );
+      await db.execute(
+        drzSql`UPDATE technical_documents_v2 SET compliance_score=${result.score},pending_count=${result.pending.length} WHERE id=${input.id} AND company_id=${companyId}`
+      );
       await event(db, ctx, input.id, "document_audited", {
         score: result.score,
       });
@@ -762,7 +792,9 @@ export const technicalDocumentsRouter = router({
         input.fileName,
         input.fileBase64
       );
-      const inserted: any = await db.execute(drzSql`INSERT INTO technical_document_attachments_v2 (company_id,document_id,title,file_name,mime_type,private_path,uploaded_by) VALUES (${companyId},${input.documentId},${input.title || null},${input.fileName},${file.mimeType},${file.target},${Number(ctx.user.id)})`);
+      const inserted: any = await db.execute(
+        drzSql`INSERT INTO technical_document_attachments_v2 (company_id,document_id,title,file_name,mime_type,private_path,uploaded_by) VALUES (${companyId},${input.documentId},${input.title || null},${input.fileName},${file.mimeType},${file.target},${Number(ctx.user.id)})`
+      );
       const id = Number((inserted as any)[0]?.insertId || 0);
       await event(db, ctx, input.documentId, "attachment_uploaded", { id });
       return { ok: true, id };
@@ -783,7 +815,9 @@ export const technicalDocumentsRouter = router({
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       const companyId = companyOf(ctx);
       await ownedDocument(db, companyId, input.documentId);
-      await db.execute(drzSql`INSERT INTO technical_document_shares_v2 (company_id,document_id,target_role,expires_at,created_by) VALUES (${companyId},${input.documentId},${input.targetRole},${input.expiresAt || null},${Number(ctx.user.id)})`);
+      await db.execute(
+        drzSql`INSERT INTO technical_document_shares_v2 (company_id,document_id,target_role,expires_at,created_by) VALUES (${companyId},${input.documentId},${input.targetRole},${input.expiresAt || null},${Number(ctx.user.id)})`
+      );
       await event(db, ctx, input.documentId, "controlled_share_created", {
         targetRole: input.targetRole,
       });
@@ -792,7 +826,10 @@ export const technicalDocumentsRouter = router({
 
   sign: protectedProcedure
     .input(
-      z.object({ id: z.number().int().positive(), confirmation: z.literal(true) })
+      z.object({
+        id: z.number().int().positive(),
+        confirmation: z.literal(true),
+      })
     )
     .mutation(async ({ ctx, input }) => {
       requireEdit(ctx);
@@ -829,7 +866,9 @@ export const technicalDocumentsRouter = router({
           })
         )
         .digest("hex");
-      await db.execute(drzSql`UPDATE technical_documents_v2 SET status='vigente',signature_hash=${hash},signed_at=NOW(),compliance_score=${auditResult.score},pending_count=${auditResult.pending.length} WHERE id=${input.id} AND company_id=${companyId}`);
+      await db.execute(
+        drzSql`UPDATE technical_documents_v2 SET status='vigente',signature_hash=${hash},signed_at=NOW(),compliance_score=${auditResult.score},pending_count=${auditResult.pending.length} WHERE id=${input.id} AND company_id=${companyId}`
+      );
       await event(db, ctx, input.id, "document_signed", { hash });
       return { ok: true, signatureHash: hash };
     }),
@@ -843,7 +882,9 @@ export const technicalDocumentsRouter = router({
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       const companyId = companyOf(ctx);
       await ownedDocument(db, companyId, input.id);
-      await db.execute(drzSql`UPDATE technical_documents_v2 SET status='arquivado',archived_at=NOW() WHERE id=${input.id} AND company_id=${companyId}`);
+      await db.execute(
+        drzSql`UPDATE technical_documents_v2 SET status='arquivado',archived_at=NOW() WHERE id=${input.id} AND company_id=${companyId}`
+      );
       await event(db, ctx, input.id, "document_archived");
       return { ok: true };
     }),
@@ -864,7 +905,8 @@ export const technicalDocumentsRouter = router({
       if (risks.some(row => row.decision_status !== "validado"))
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: "Todos os riscos precisam de decisão técnica antes da geração do PDF.",
+          message:
+            "Todos os riscos precisam de decisão técnica antes da geração do PDF.",
         });
       let chapters: any[] = [];
       try {
@@ -877,11 +919,13 @@ export const technicalDocumentsRouter = router({
       });
       const riskHtml = [...groups.entries()]
         .map(
-          ([gse, items]) => `<h3>${esc(gse)}</h3><table><thead><tr><th>Agente/condição</th><th>Caracterização</th><th>Avaliação</th><th>Conclusão técnica</th></tr></thead><tbody>${items
-            .map(
-              row => `<tr><td><b>${esc(row.risk_name)}</b><br>${esc(row.risk_type || "-")}<br>Fonte: ${esc(row.source || "-")}</td><td>${esc(row.exposure_characterization || row.technical_detail || "-")}</td><td>${esc(row.evaluation_kind)}<br>${esc(row.methodology || "-")}<br>${esc(row.measurement_result || "-")}<br>${esc(row.tolerance_reference || "-")}</td><td>${esc(row.technical_conclusion || "-")}<br><small>Controles: ${esc(row.control_assessment || "-")}</small></td></tr>`
-            )
-            .join("")}</tbody></table>`
+          ([gse, items]) =>
+            `<h3>${esc(gse)}</h3><table><thead><tr><th>Agente/condição</th><th>Caracterização</th><th>Avaliação</th><th>Conclusão técnica</th></tr></thead><tbody>${items
+              .map(
+                row =>
+                  `<tr><td><b>${esc(row.risk_name)}</b><br>${esc(row.risk_type || "-")}<br>Fonte: ${esc(row.source || "-")}</td><td>${esc(row.exposure_characterization || row.technical_detail || "-")}</td><td>${esc(row.evaluation_kind)}<br>${esc(row.methodology || "-")}<br>${esc(row.measurement_result || "-")}<br>${esc(row.tolerance_reference || "-")}</td><td>${esc(row.technical_conclusion || "-")}<br><small>Controles: ${esc(row.control_assessment || "-")}</small></td></tr>`
+              )
+              .join("")}</tbody></table>`
         )
         .join("");
       const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>@page{size:A4;margin:18mm 15mm}body{font-family:Arial,sans-serif;color:#172b3a;font-size:10pt;line-height:1.45}h1{font-size:24pt;color:#0e2c46}h2{margin-top:9mm;color:#0e2c46;border-bottom:2px solid #0096a6;padding-bottom:2mm}h3{margin-top:7mm;color:#0e2c46}table{width:100%;border-collapse:collapse;font-size:7.6pt;margin:3mm 0 7mm}th,td{border:1px solid #d7e1e8;padding:2mm;vertical-align:top}th{background:#0e2c46;color:#fff}.cover{height:240mm;display:flex;flex-direction:column;justify-content:center;text-align:center;page-break-after:always}.meta{color:#607486}.signature{margin-top:18mm;text-align:center}.signature-line{border-top:1px solid #172b3a;width:80mm;margin:0 auto 2mm}.notice{border-left:3px solid #eab308;padding:3mm;background:#fffbeb;font-size:8.5pt}</style></head><body><section class="cover"><h1>${esc(document.title)}</h1><h2>${esc(document.company_name)}</h2><p>CNPJ: ${esc(document.cnpj || "-")}<br>Vigência: ${esc(document.valid_from || "-")} a ${esc(document.valid_until || "-")}</p><p class="meta">Documento técnico vinculado ao ${esc(document.pgr_title || "PGR não informado")}</p></section><h2>1. Identificação e objetivo</h2><p><b>Empresa:</b> ${esc(document.company_name)}<br><b>CNPJ:</b> ${esc(document.cnpj || "-")}<br><b>Endereço:</b> ${esc(document.address || "-")}<br><b>Responsável técnico:</b> ${esc(document.responsible_name || "-")} · ${esc(document.responsible_profession || "-")} · ${esc(document.responsible_registration || "-")}</p><p>${esc(document.objective || "")}</p><h2>2. Fundamentação legal e técnica</h2><p>${esc(document.legal_basis || "")}</p><h2>3. Metodologia</h2><p>${esc(document.methodology || "")}</p>${chapters.map((chapter, index) => `<h2>${index + 4}. ${esc(chapter.title)}</h2><p>${esc(chapter.content)}</p>`).join("")}<h2>Caracterização e avaliação por GSE</h2>${riskHtml}<h2>Conclusão técnica</h2><p>${esc(document.conclusion || "")}</p><div class="notice">Este documento reflete o escopo e os dados validados na versão indicada. Alterações no PGR, processos, ambientes ou controles podem exigir revisão técnica.</div><div class="signature"><div class="signature-line"></div><b>${esc(document.responsible_name || "Responsável técnico")}</b><br>${esc(document.responsible_registration || "Registro não informado")}<br>Hash: ${esc(document.signature_hash || "Documento ainda não assinado")}</div></body></html>`;
@@ -899,8 +943,12 @@ export const technicalDocumentsRouter = router({
       fs.mkdirSync(dir, { recursive: true });
       const target = path.join(dir, `v${version}_${Date.now()}.pdf`);
       fs.writeFileSync(target, pdf);
-      await db.execute(drzSql`INSERT INTO technical_document_versions_v2 (company_id,document_id,version_number,pdf_private_path,signature_hash,generated_by) VALUES (${companyId},${input.id},${version},${target},${document.signature_hash || null},${Number(ctx.user.id)})`);
-      await db.execute(drzSql`UPDATE technical_documents_v2 SET pdf_private_path=${target},current_version=current_version+1 WHERE id=${input.id} AND company_id=${companyId}`);
+      await db.execute(
+        drzSql`INSERT INTO technical_document_versions_v2 (company_id,document_id,version_number,pdf_private_path,signature_hash,generated_by) VALUES (${companyId},${input.id},${version},${target},${document.signature_hash || null},${Number(ctx.user.id)})`
+      );
+      await db.execute(
+        drzSql`UPDATE technical_documents_v2 SET pdf_private_path=${target},current_version=current_version+1 WHERE id=${input.id} AND company_id=${companyId}`
+      );
       await event(db, ctx, input.id, "pdf_generated", { version });
       return {
         fileName: `${String(document.document_type).toUpperCase()}_v${version}.pdf`,
@@ -932,7 +980,10 @@ export const technicalDocumentsRouter = router({
             );
       const file = rowsOf(result)[0];
       if (!file || !fs.existsSync(file.private_path))
-        throw new TRPCError({ code: "NOT_FOUND", message: "Arquivo não encontrado." });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Arquivo não encontrado.",
+        });
       return {
         fileName: file.file_name,
         dataBase64: `data:${file.mime_type};base64,${fs.readFileSync(file.private_path).toString("base64")}`,

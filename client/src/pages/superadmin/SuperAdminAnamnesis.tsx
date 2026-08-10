@@ -182,6 +182,9 @@ export default function SuperAdminAnamnesis() {
                     <option value="retorno">Retorno</option>
                     <option value="mudanca_risco">Mudança de risco</option>
                     <option value="demissional">Demissional</option>
+                    <option value="monitoracao_pontual">
+                      Monitoração pontual
+                    </option>
                   </select>
                 </label>
                 <label className="text-xs font-semibold">

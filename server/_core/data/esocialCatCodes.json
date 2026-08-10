@@ -1,0 +1,3058 @@
+[
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "753030000",
+    "description": "Crânio (inclusive encéfalo)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "753050000",
+    "description": "Ouvido (externo, médio, interno, audição e equilíbrio)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "753070100",
+    "description": "Olho (inclusive nervo ótico e visão)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "753070300",
+    "description": "Nariz (inclusive fossas nasais, seios da face e olfato)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "753070500",
+    "description": "Boca (inclusive lábios, dentes, língua, garganta e paladar)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "753070700",
+    "description": "Mandíbula (inclusive queixo)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "753070800",
+    "description": "Face, partes múltiplas (qualquer combinação das partes acima)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "753080000",
+    "description": "Cabeça, partes múltiplas (qualquer combinação das partes acima)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "753090000",
+    "description": "Cabeça, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "753510000",
+    "description": "Braço (entre o punho e o ombro)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "753510200",
+    "description": "Braço (acima do cotovelo)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "754000000",
+    "description": "Pescoço",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "755010400",
+    "description": "Cotovelo",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "755010600",
+    "description": "Antebraço (entre o punho e o cotovelo)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "755030000",
+    "description": "Punho",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "755050000",
+    "description": "Mão (exceto punho ou dedos)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "755070000",
+    "description": "Dedo",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "755080000",
+    "description": "Membros superiores, partes múltiplas (qualquer combinação das partes acima)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "755090000",
+    "description": "Membros superiores, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "756020000",
+    "description": "Ombro",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "756030000",
+    "description": "Tórax (inclusive órgãos internos)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "756040000",
+    "description": "Dorso (inclusive músculos dorsais, coluna e medula espinhal)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "756050000",
+    "description": "Abdome (inclusive órgãos internos)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "756060000",
+    "description": "Quadris (inclusive pélvis, órgãos pélvicos e nádegas)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "756070000",
+    "description": "Tronco, partes múltiplas (qualquer combinação das partes acima)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "756090000",
+    "description": "Tronco, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "757010000",
+    "description": "Perna (entre o tornozelo e a pélvis)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "757010200",
+    "description": "Coxa",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "757010400",
+    "description": "Joelho",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "757010600",
+    "description": "Perna (do tornozelo, exclusive, ao joelho, exclusive)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "757030000",
+    "description": "Articulação do tornozelo",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "757050000",
+    "description": "Pé (exceto artelhos)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "757070000",
+    "description": "Artelho",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "757080000",
+    "description": "Membros inferiores, partes múltiplas (qualquer combinação das partes acima)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "757090000",
+    "description": "Membros inferiores, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "758000000",
+    "description": "Partes múltiplas. (aplica-se quando mais de uma parte importante do corpo for afetada, como, por exemplo, um braço e uma perna)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "758500000",
+    "description": "Sistemas e aparelhos (aplica-se quando o funcionamento de todo um sistema ou aparelho do corpo humano for afetado, sem lesão específica de qualquer outra parte, como no caso do envenenamento, ação corrosiva que afete órgãos internos, lesão dos centros nervosos, etc.; não se aplica quando a lesão sistêmica for provocada por lesão externa, como lesão dorsal que afete nervos da medula espinhal)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "758520000",
+    "description": "Aparelho circulatório",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "758530000",
+    "description": "Aparelho respiratório",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "758540000",
+    "description": "Sistema nervoso",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "758550000",
+    "description": "Aparelho digestivo",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "758560000",
+    "description": "Aparelho gênito-urinário",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "758570000",
+    "description": "Sistema musculoesquelético",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "758590000",
+    "description": "Sistemas e aparelhos, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "body_part",
+    "table": "13",
+    "code": "759000000",
+    "description": "Localização da lesão, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302010200",
+    "description": "Rua e estrada - superfície utilizada para sustentar pessoas",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302010250",
+    "description": "Calçada ou caminho para pedestre - superfície utilizada para sustentar pessoas",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302010300",
+    "description": "Piso de edifício - superfície utilizada para sustentar pessoas",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302010350",
+    "description": "Escada permanente cujos degraus permitem apoio integral do pé, degrau - superfície utilizada para sustentar pessoas",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302010400",
+    "description": "Rampa - superfície utilizada para sustentar pessoas",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302010450",
+    "description": "Passarela ou plataforma permanentes - superfície utilizada para sustentar pessoas",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302010500",
+    "description": "Piso de mina - superfície utilizada para sustentar pessoas",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302010550",
+    "description": "Chão - superfície utilizada para sustentar pessoas",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302010600",
+    "description": "Piso de andaime e plataforma desmontável - superfície utilizada para sustentar pessoas",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302010650",
+    "description": "Piso de veiculo - superfície utilizada para sustentar pessoas",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302010700",
+    "description": "Telhado",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302010900",
+    "description": "Superfície de sustentação, NIC - superfície utilizada para sustentar pessoas",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302030900",
+    "description": "Escada móvel ou fixada, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302050100",
+    "description": "Edifício - edifício ou estrutura",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302050200",
+    "description": "Depósito fixo (tanque, silo, paiol, etc.) - edifício ou estrutura",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302050300",
+    "description": "Cais, doca - edifício ou estrutura",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302050400",
+    "description": "Dique, barragem - edifício ou estrutura",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302050500",
+    "description": "Ponte, viaduto - edifício ou estrutura",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302050600",
+    "description": "Arquibancada, estádio - edifício ou estrutura",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302050700",
+    "description": "Andaime, plataforma - edifício ou estrutura",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302050800",
+    "description": "Torre, poste - edifício ou estrutura",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302050900",
+    "description": "Edifício ou estrutura (exceto piso, superfície de sustentação ou área de circulação), NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302070100",
+    "description": "Escavação (para edifício, estrada, etc.)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302070300",
+    "description": "Canal, fosso",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302070500",
+    "description": "Poço, entrada, galeria, etc. de mina",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302070700",
+    "description": "Túnel",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302070900",
+    "description": "Escavação, fosso, túnel, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "302090000",
+    "description": "Superfície e estrutura, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303010040",
+    "description": "Martelo, malho, marreta - ferramenta manual sem força motriz",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303010080",
+    "description": "Machadinha, enxó - ferramenta manual sem força motriz",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303010120",
+    "description": "Faca, facão - ferramenta manual sem força motriz",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303010160",
+    "description": "Tesoura, tesourão - ferramenta manual sem força motriz",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303010200",
+    "description": "Formão, cinzel - ferramenta manual sem força motriz",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303010240",
+    "description": "Serra, serrote - ferramenta manual sem força motriz",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303010280",
+    "description": "Alicate, torques, tenaz - ferramenta manual sem força motriz",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303010320",
+    "description": "Plaina - ferramenta manual sem força motriz",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303010360",
+    "description": "Lima, grosa - ferramenta manual sem força motriz",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303010400",
+    "description": "Punção, ponteiro, vazador, talhadeira - ferramenta manual sem força motriz",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303010440",
+    "description": "Pua, trado, verruma, máquina de furar manual - ferramenta manual sem força motriz",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303010480",
+    "description": "Chave de parafuso - ferramenta manual sem força motriz",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303010520",
+    "description": "Chave de porca ou de abertura regulável, chave de boca - ferramenta manual sem força motriz",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303010560",
+    "description": "Alavanca, pé-de-cabra - ferramenta manual sem força motriz",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303010600",
+    "description": "Corda, cabo, corrente - ferramenta manual sem força motriz",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303010640",
+    "description": "Machado - ferramenta manual sem força motriz",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303010680",
+    "description": "Enxada, enxadão, sacho - ferramenta manual sem força motriz",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303010720",
+    "description": "Pá, cavadeira - ferramenta manual sem força motriz",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303010760",
+    "description": "Picareta - ferramenta manual sem força motriz",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303010800",
+    "description": "Garfo, ancinho, forcado - ferramenta manual sem força motriz",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303010900",
+    "description": "Ferramenta manual sem força motriz, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303015050",
+    "description": "Martelete, socador - ferramenta portátil com força motriz ou aquecimento",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303015100",
+    "description": "Talhadeira - ferramenta portátil com força motriz ou aquecimento",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303015150",
+    "description": "Cortadeira, guilhotina - ferramenta portátil com força motriz ou aquecimento",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303015200",
+    "description": "Serra - ferramenta portátil com força motriz ou aquecimento",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303015250",
+    "description": "Punção, ponteiro, vazador - ferramenta portátil com força motriz ou aquecimento",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303015300",
+    "description": "Perfuratriz - ferramenta portátil com força motriz ou aquecimento",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303015350",
+    "description": "Rebitadeira - ferramenta portátil com força motriz ou aquecimento",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303015400",
+    "description": "Máquina de aparafusar - ferramenta portátil com força motriz ou aquecimento",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303015450",
+    "description": "Esmeril - ferramenta portátil com força motriz ou aquecimento",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303015500",
+    "description": "Politriz, enceradeira - ferramenta portátil com força motriz ou aquecimento",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303015550",
+    "description": "Ferro de passar - ferramenta portátil com força motriz ou aquecimento",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303015600",
+    "description": "Ferramenta de soldagem - ferramenta portátil com força motriz ou aquecimento",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303015650",
+    "description": "Maçarico - ferramenta portátil com força motriz ou aquecimento",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303015700",
+    "description": "Ferramenta acionada por explosivo - ferramenta portátil com força motriz ou aquecimento",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303015750",
+    "description": "Jato de areia - ferramenta portátil com força motriz ou aquecimento",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303015900",
+    "description": "Ferramenta portátil com força motriz ou aquecimento, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303020040",
+    "description": "Serra - máquina",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303020080",
+    "description": "Tesoura, guilhotina, máquina de cortar - máquina",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303020120",
+    "description": "Laminadora, calandra - máquina",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303020160",
+    "description": "Furadeira, broqueadeira, torno, fresa - máquina",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303020200",
+    "description": "Prensa - máquina",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303020240",
+    "description": "Plaina, tupia - máquina",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303020280",
+    "description": "Máquina de fundir, de forjar, de soldar",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303020320",
+    "description": "Britador, moinho - máquina",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303020360",
+    "description": "Misturador, batedeira, agitador - máquina",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303020400",
+    "description": "Peneira mecânica, máquina separadora - máquina",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303020440",
+    "description": "Politriz, lixadora, esmeril - máquina",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303020480",
+    "description": "Máquina de terraplenagem e construção de estrada",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303020520",
+    "description": "Máquina de mineração e perfuração (de túnel, poço, etc.)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303020560",
+    "description": "Máquina agrícola",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303020600",
+    "description": "Máquina têxtil",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303020640",
+    "description": "Máquina de costurar e de pespontar",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303020680",
+    "description": "Máquina de imprimir",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303020720",
+    "description": "Máquina de escritório",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303020760",
+    "description": "Máquina de embalar ou empacotar",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303020900",
+    "description": "Máquina, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303025300",
+    "description": "Transportador por gravidade",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303025600",
+    "description": "Transportador com força motriz",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303025900",
+    "description": "Transportador, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303030050",
+    "description": "Guindaste - equipamento de guindar",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303030100",
+    "description": "Ponte rolante - equipamento de guindar",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303030150",
+    "description": "Elevador - equipamento de guindar",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303030200",
+    "description": "Elevador de caçamba para mineração - equipamento de guindar",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303030250",
+    "description": "Pá mecânica, draga - equipamento de guindar",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303030300",
+    "description": "Talha - equipamento de guindar",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303030350",
+    "description": "Pau de carga - equipamento de guindar",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303030400",
+    "description": "Macaco (mecânico, hidráulico, pneumático) - equipamento de guindar",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303030450",
+    "description": "Guincho pneumático - equipamento de guindar",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303030500",
+    "description": "Guincho elétrico - equipamento de guindar",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303030900",
+    "description": "Equipamento de guindar, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303035300",
+    "description": "Correia - dispositivo de transmissão de energia mecânica",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303035400",
+    "description": "Corrente, corda, cabo - dispositivo de transmissão de energia mecânica",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303035500",
+    "description": "Tambor, polia, roldana - dispositivo de transmissão de energia mecânica",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303035600",
+    "description": "Embreagem de fricção - dispositivo de transmissão de energia mecânica",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303035700",
+    "description": "Engrenagem - dispositivo de transmissão de energia mecânica",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303035900",
+    "description": "Dispositivo de transmissão de energia mecânica, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303040100",
+    "description": "Gerador - equipamento elétrico",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303040200",
+    "description": "Condutor - equipamento elétrico",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303040300",
+    "description": "Transformador, conversor - equipamento elétrico",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303040400",
+    "description": "Painel de controle, barramento, chave, interruptor, disjuntor, fusível - equipamento elétrico",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303040500",
+    "description": "Reostato, dispositivo de partida e aparelho de controle, capacitor, retificador, bateria de acumuladores - equipamento elétrico",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303040600",
+    "description": "Motor elétrico - equipamento elétrico",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303040700",
+    "description": "Equipamento magnético - equipamento elétrico",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303040750",
+    "description": "Equipamento eletrolítico - equipamento elétrico",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303040800",
+    "description": "Equipamento de aquecimento elétrico - equipamento elétrico",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303040900",
+    "description": "Equipamento elétrico, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303045200",
+    "description": "Motor (combustão interna, vapor)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303045400",
+    "description": "Bomba",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303045600",
+    "description": "Turbina",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303045900",
+    "description": "Motor, bomba, turbina, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303050200",
+    "description": "Caldeira",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303050400",
+    "description": "Vaso sob pressão (para líquido, gás ou vapor)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303050600",
+    "description": "Tubo sob pressão (mangueira ou tubo para liquido, gás ou vapor)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303050900",
+    "description": "Caldeira, vaso sob pressão, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303055200",
+    "description": "Caixão pneumático - equipamento para trabalho em ambiente de pressão anormal",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303055400",
+    "description": "Escafandro - equipamento para trabalho em ambiente de pressão anormal",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303055600",
+    "description": "Equipamento de mergulho - equipamento para trabalho em ambiente de pressão anormal",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303055900",
+    "description": "Equipamento para trabalho em ambiente de pressão anormal, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303060000",
+    "description": "Forno, estufa, retorta, aquecedor de ambiente, fogão, etc. (exceto quando a lesão principal for choque elétrico ou eletroplessão) - equipamento de aquecimento",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303065000",
+    "description": "Equipamento emissor de radiação não ionizante",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303065300",
+    "description": "Equipamento de iluminação - equipamento emissor de radiação não ionizante",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303065600",
+    "description": "Arco elétrico - equipamento emissor de radiação não ionizante",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303065900",
+    "description": "Equipamento emissor de radiação não ionizante, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303066300",
+    "description": "Equipamento de iluminação",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303066600",
+    "description": "Arco elétrico",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303070200",
+    "description": "Equipamento de raios X - equipamento ou substância emissor de radiação ionizante",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303070400",
+    "description": "Reator (inclui combustível e resíduo) - equipamento ou substância emissor de radiação ionizante",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303070600",
+    "description": "Fonte de radioisótopo - equipamento ou substância emissor de radiação ionizante",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303070900",
+    "description": "Equipamento ou substância emissor de radiação ionizante, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303075100",
+    "description": "Bicicleta",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303075150",
+    "description": "Triciclo",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303075200",
+    "description": "Motocicleta, motoneta",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303075250",
+    "description": "Veículo rodoviário motorizado",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303075300",
+    "description": "Veículo sobre trilho",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303075350",
+    "description": "Veículo aquático",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303075400",
+    "description": "Aeronave",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303075450",
+    "description": "Empilhadeira",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303075500",
+    "description": "Rebocador mecânico, mula mecânica",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303075550",
+    "description": "Carro de mão",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303075600",
+    "description": "Trator",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303075650",
+    "description": "Veículo de terraplenagem",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303075700",
+    "description": "Veículo de tração animal",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303075750",
+    "description": "Veículo deslizante",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303075800",
+    "description": "Veículo funicular (tração por cabo)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303075900",
+    "description": "Veículo, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "303090000",
+    "description": "Ferramenta, máquina, equipamento, veículo, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305004100",
+    "description": "Composto metálico (de chumbo, mercúrio, zinco, cadmio, cromo, etc.)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305004150",
+    "description": "Composto de arsênio",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305004200",
+    "description": "Gás carbônico (dióxido de carbono, CO2)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305004250",
+    "description": "Monóxido de carbono (CO)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305004300",
+    "description": "Óxidos de nitrogênio (vapores nitrosos)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305004350",
+    "description": "Ácido",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305004400",
+    "description": "Álcali",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305004450",
+    "description": "Composto de fósforo",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305004500",
+    "description": "Dissulfeto de carbono",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305004550",
+    "description": "Cianeto ou composto de cianogênio",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305004600",
+    "description": "Álcool",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305004650",
+    "description": "Tetracloreto de carbono",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305004700",
+    "description": "Composto orgânico halogenado (tricloretileno, percloretileno, cloreto de metilo, substâncias refrigerantes)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305004750",
+    "description": "Composto aromático (benzol, toluol, xilol, anilina, etc.)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305004900",
+    "description": "Substância química, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305008500",
+    "description": "Água (usar quando o estado líquido contribuir preponderantemente para a ocorrência)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305008900",
+    "description": "Líquido, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305020000",
+    "description": "Partículas não identificadas",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305024100",
+    "description": "Pele, crina, pelo, lã (em bruto) - produto animal",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305024300",
+    "description": "Pena - produto animal",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305024500",
+    "description": "Couro cru ou curtido - produto animal",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305024700",
+    "description": "Osso - produto animal",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305024900",
+    "description": "Produto animal, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305028000",
+    "description": "Madeira (toro, madeira serrada, pranchão, poste, barrote, ripa e produto de madeira)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305032000",
+    "description": "Produto mineral metálico - produto de mineração em bruto ou beneficiado, como minério e concentrado de minério",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305032500",
+    "description": "Metal (inclui liga ferrosa e não ferrosa, tubo, placa, perfil, trilho, vergalhão, arame, porca, rebite, prego, etc., metal fundido, lingote e sucata de fundição, exceto minério)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305036000",
+    "description": "Produto mineral não metálico - produto de mineração, escavação, desbarrancamento, etc., como detrito, argila, areia, cascalho, pedra, etc.",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305040100",
+    "description": "Petróleo bruto, bruto reduzido",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305040150",
+    "description": "Asfalto, alcatrão, piche",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305040200",
+    "description": "Óleo combustível",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305040250",
+    "description": "Parafina, óleo lubrificante e de corte, graxas",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305040300",
+    "description": "Gasóleo, óleo diesel",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305040350",
+    "description": "Querosene",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305040400",
+    "description": "Nafta e solvente de nafta (éter de petróleo, álcool mineral, solvente aromático, etc.)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305040450",
+    "description": "Gasolina (exceto quando a ocorrência for causada preponderantemente por composto de chumbo)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305040500",
+    "description": "Hidrocarboneto gasoso (inclui gás liquefeito, gás encanado de nafta, gás natural)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305040600",
+    "description": "Carvão",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305040650",
+    "description": "Coque",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305040700",
+    "description": "Gás encanado de carvão",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305040900",
+    "description": "Produto de petróleo e de carvão, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305044000",
+    "description": "Vidraria, fibra de vidro, lâmina, etc., exceto frasco, garrafa",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305048000",
+    "description": "Cerâmica",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305048300",
+    "description": "Tijolo e telha - cerâmica",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305048400",
+    "description": "Louça de mesa e outros utensílios (de porcelana, barro, etc.) - cerâmica",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305048500",
+    "description": "Tubo, manilha - cerâmica",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305048600",
+    "description": "Revestimento cerâmico (azulejo, mosaico, etc.) - cerâmica",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305048700",
+    "description": "Louca sanitária (pia, vaso sanitário, etc.) - cerâmica",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305048900",
+    "description": "Cerâmica, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305052000",
+    "description": "Têxteis (inclui fibras animais após o primeiro desengorduramento e limpeza, fibras vegetais e sintéticas (exceto vidro), fio, linha, tecido, passamanaria, feltro e produtos têxteis em geral)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305056000",
+    "description": "Plástico (inclui pó, folha, trefilado, barra, perfil, etc.; não inclui produto a ser usado na fabricação de plástico)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305060000",
+    "description": "Papel e pasta para papel",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305064000",
+    "description": "Produto alimentício (inclui carne, leite e derivados, legumes, frutas, cereais e derivados)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305064300",
+    "description": "Carne e derivados",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305064400",
+    "description": "Leite e derivados",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305064500",
+    "description": "Legume, verdura e derivados",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305064600",
+    "description": "Fruta e derivados",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305064700",
+    "description": "Cereal e derivados",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305064900",
+    "description": "Produto alimentício (inclusive de origem animal), NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305068300",
+    "description": "Medicamento em geral (exceto produto biológico)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305068600",
+    "description": "Produto biológico (soro, toxina, antitoxina, vacina, plasma) - medicamento",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305072000",
+    "description": "Produto de limpeza, sabão, detergente",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305076000",
+    "description": "Sucata, entulho, resíduo",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "305090000",
+    "description": "Substância química, material, produto, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "306020000",
+    "description": "Animal vivo",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "306040000",
+    "description": "Vegetal - planta, árvore, em estado natural, não beneficiada (não inclui grão debulhado, fruto colhido, toro mesmo com galho)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "306060000",
+    "description": "Agente infeccioso ou parasitário (inclui bactéria, fungo, organismo parasitário, vírus, etc.; não inclui produto químico, preparado farmacêutico ou alimento)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "306090000",
+    "description": "Ser vivo, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "307030100",
+    "description": "Cadeira banco - mobiliário e acessórios",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "307030200",
+    "description": "Mesa, carteira, exceto mesa elástica desmontável - mobiliário e acessórios",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "307030250",
+    "description": "Mesa elástica desmontável - mobiliário e acessórios",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "307030300",
+    "description": "Balcão, bancada - mobiliário e acessórios",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "307030400",
+    "description": "Arquivo, fichário, estante - mobiliário e acessórios",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "307030500",
+    "description": "Tapete, forração de piso, capacho - mobiliário e acessórios",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "307030600",
+    "description": "Luminária, globo, lâmpada - mobiliário e acessórios",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "307030900",
+    "description": "Mobiliário e acessórios, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "307040100",
+    "description": "Caixa, engradado, caixote - embalagem, recipiente (vazio ou cheio)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "307040300",
+    "description": "Frasco, garrafa - embalagem, recipiente (vazio ou cheio)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "307040500",
+    "description": "Barril, barrica, barrilete, tambor - embalagem, recipiente (vazio ou cheio)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "307040700",
+    "description": "Tanque, cilindro (transportáveis e não sob pressão) - embalagem, recipiente (vazio ou cheio)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "307040900",
+    "description": "Embalagem, recipiente (vazio ou cheio), NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "307050900",
+    "description": "Vestuário, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "307070000",
+    "description": "Área ou ambiente de trabalho (o agente do acidente ocorrido em consequência de fenômeno atmosférico, meteoro, etc., assim como da ação da radiação solar, deverá ser incluído neste item)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "309000000",
+    "description": "Agente do acidente, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "309500000",
+    "description": "Agente do acidente inexistente",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "354000000",
+    "description": "Energia",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "354010300",
+    "description": "Pressão ambiente alta (trabalho em caixão pneumático, mergulho)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "354010600",
+    "description": "Pressão ambiente baixa (ar rarefeito)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "354020000",
+    "description": "Ruído",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "354040000",
+    "description": "Fogo, chama, material incandescente ou quente, fumaça",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "354050300",
+    "description": "Temperatura ambiente (não inclui a de objeto ou substância quente)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "355016000",
+    "description": "Aerodispersoides",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "355016600",
+    "description": "Neblina",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "causative_agent",
+    "table": "14",
+    "code": "355016800",
+    "description": "Gás e vapor",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200004300",
+    "description": "Impacto de pessoa contra objeto parado",
+    "application": "Aplica-se a casos em que a lesão foi produzida por impacto da pessoa acidentada contra a fonte da lesão, tendo sido o movimento que produziu o contato originalmente o da pessoa, e não o da fonte da lesão, exceto quando o movimento do acidentado tiver sido provocado por queda. Inclui casos de alguém chocar-se contra alguma coisa, tropeçar em alguma coisa, ser empurrado ou projetado contra alguma coisa, etc. Não inclui casos de salto para nível inferior.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200004600",
+    "description": "Impacto de pessoa contra objeto em movimento",
+    "application": "Aplica-se a casos em que a lesão foi produzida por impacto da pessoa acidentada contra a fonte da lesão, tendo sido o movimento que produziu o contato originalmente o da pessoa, e não o da fonte da lesão, exceto quando o movimento do acidentado tiver sido provocado por queda. Inclui casos de alguém chocar-se contra alguma coisa, tropeçar em alguma coisa, ser empurrado ou projetado contra alguma coisa, etc. Não inclui casos de salto para nível inferior.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200008300",
+    "description": "Impacto sofrido por pessoa, de objeto que cai",
+    "application": "Aplica-se a casos em que a lesão foi produzida por impacto entre o acidentado e a fonte da lesão, tendo sido da fonte da lesão, e não do acidentado, o movimento que originou o contato.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200008600",
+    "description": "Impacto sofrido por pessoa, de objeto projetado",
+    "application": "Aplica-se a casos em que a lesão foi produzida por impacto entre o acidentado e a fonte da lesão, tendo sido da fonte da lesão, e não do acidentado, o movimento que originou o contato.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200008900",
+    "description": "Impacto sofrido por pessoa, NIC",
+    "application": "Aplica-se a casos em que a lesão foi produzida por impacto entre o acidentado e a fonte da lesão, tendo sido da fonte da lesão, e não do acidentado, o movimento que originou o contato.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200012200",
+    "description": "Queda de pessoa com diferença de nível de andaime, passagem, plataforma, etc",
+    "application": "Aplica-se a casos em que a lesão foi produzida por impacto entre o acidentado e a fonte da lesão, tendo sido do acidentado o movimento que produziu o contato, nas seguintes circunstâncias: 1) O movimento do acidentado foi devido à ação da gravidade. 2) O ponto de contato com a fonte da lesão estava abaixo da superfície que suportava o acidentado no início da queda. Inclui salto para nível inferior.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200012300",
+    "description": "Queda de pessoa com diferença de nível de escada móvel ou fixada cujos degraus não permitem o apoio integral do pé",
+    "application": "Aplica-se a casos em que a lesão foi produzida por impacto entre o acidentado e a fonte da lesão, tendo sido do acidentado o movimento que produziu o contato, nas seguintes circunstâncias: 1) O movimento do acidentado foi devido à ação da gravidade. 2) O ponto de contato com a fonte da lesão estava abaixo da superfície que suportava o acidentado no início da queda. Inclui salto para nível inferior.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200012400",
+    "description": "Queda de pessoa com diferença de nível de material empilhado",
+    "application": "Aplica-se a casos em que a lesão foi produzida por impacto entre o acidentado e a fonte da lesão, tendo sido do acidentado o movimento que produziu o contato, nas seguintes circunstâncias: 1) O movimento do acidentado foi devido à ação da gravidade. 2) O ponto de contato com a fonte da lesão estava abaixo da superfície que suportava o acidentado no início da queda. Inclui salto para nível inferior.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200012500",
+    "description": "Queda de pessoa com diferença de nível de veículo",
+    "application": "Aplica-se a casos em que a lesão foi produzida por impacto entre o acidentado e a fonte da lesão, tendo sido do acidentado o movimento que produziu o contato, nas seguintes circunstâncias: 1) O movimento do acidentado foi devido à ação da gravidade. 2) O ponto de contato com a fonte da lesão estava abaixo da superfície que suportava o acidentado no início da queda. Inclui salto para nível inferior.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200012600",
+    "description": "Queda de pessoa com diferença de nível em escada permanente cujos degraus permitem apoio integral do pé",
+    "application": "Aplica-se a casos em que a lesão foi produzida por impacto entre o acidentado e a fonte da lesão, tendo sido do acidentado o movimento que produziu o contato, nas seguintes circunstâncias: 1) O movimento do acidentado foi devido à ação da gravidade. 2) O ponto de contato com a fonte da lesão estava abaixo da superfície que suportava o acidentado no início da queda. Inclui salto para nível inferior.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200012700",
+    "description": "Queda de pessoa com diferença de nível em poço, escavação, abertura no piso, etc. (da borda da abertura)",
+    "application": "Aplica-se a casos em que a lesão foi produzida por impacto entre o acidentado e a fonte da lesão, tendo sido do acidentado o movimento que produziu o contato, nas seguintes circunstâncias: 1) O movimento do acidentado foi devido à ação da gravidade. 2) O ponto de contato com a fonte da lesão estava abaixo da superfície que suportava o acidentado no início da queda. Inclui salto para nível inferior.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200012900",
+    "description": "Queda de pessoa com diferença de nível, NIC",
+    "application": "Aplica-se a casos em que a lesão foi produzida por impacto entre o acidentado e a fonte da lesão, tendo sido do acidentado o movimento que produziu o contato, nas seguintes circunstâncias: 1) O movimento do acidentado foi devido à ação da gravidade. 2) O ponto de contato com a fonte da lesão estava abaixo da superfície que suportava o acidentado no início da queda. Inclui salto para nível inferior.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200016300",
+    "description": "Queda de pessoa em mesmo nível em passagem ou superfície de sustentação",
+    "application": "Aplica-se a casos em que a lesão foi produzida por impacto entre o acidentado e um objeto externo, tendo sido do acidentado o movimento que produziu o contato, nas seguintes circunstâncias: 1) O movimento do acidentado foi devido à ação da gravidade, com perda do equilíbrio e impossibilidade de manter-se de pé. 2) O ponto de contato com a fonte da lesão estava, no momento do início da queda, ao nível ou acima da superfície que suportava o acidentado.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200016600",
+    "description": "Queda de pessoa em mesmo nível sobre ou contra alguma coisa",
+    "application": "Aplica-se a casos em que a lesão foi produzida por impacto entre o acidentado e um objeto externo, tendo sido do acidentado o movimento que produziu o contato, nas seguintes circunstâncias: 1) O movimento do acidentado foi devido à ação da gravidade, com perda do equilíbrio e impossibilidade de manter-se de pé. 2) O ponto de contato com a fonte da lesão estava, no momento do início da queda, ao nível ou acima da superfície que suportava o acidentado.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200016900",
+    "description": "Queda de pessoa em mesmo nível, NIC",
+    "application": "Aplica-se a casos em que a lesão foi produzida por impacto entre o acidentado e um objeto externo, tendo sido do acidentado o movimento que produziu o contato, nas seguintes circunstâncias: 1) O movimento do acidentado foi devido à ação da gravidade, com perda do equilíbrio e impossibilidade de manter-se de pé. 2) O ponto de contato com a fonte da lesão estava, no momento do início da queda, ao nível ou acima da superfície que suportava o acidentado.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200020100",
+    "description": "Aprisionamento em, sob ou entre objetos em movimento convergente (calandra) ou de encaixe",
+    "application": "Aplica-se a casos, sem impacto, em que a lesão foi produzida por compressão, pinçamento ou esmagamento entre um objeto em movimento e outro parado, entre dois objetos em movimento ou entre partes de um mesmo objeto. Não se aplica quando a fonte da lesão for um objeto livremente projetado ou em queda livre.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200020300",
+    "description": "Aprisionamento em, sob ou entre um objeto parado e outro em movimento",
+    "application": "Aplica-se a casos, sem impacto, em que a lesão foi produzida por compressão, pinçamento ou esmagamento entre um objeto em movimento e outro parado, entre dois objetos em movimento ou entre partes de um mesmo objeto. Não se aplica quando a fonte da lesão for um objeto livremente projetado ou em queda livre.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200020500",
+    "description": "Aprisionamento em, sob ou entre dois ou mais objetos em movimento (sem encaixe)",
+    "application": "Aplica-se a casos, sem impacto, em que a lesão foi produzida por compressão, pinçamento ou esmagamento entre um objeto em movimento e outro parado, entre dois objetos em movimento ou entre partes de um mesmo objeto. Não se aplica quando a fonte da lesão for um objeto livremente projetado ou em queda livre.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200020700",
+    "description": "Aprisionamento em, sob ou entre desabamento ou desmoronamento de edificação, barreira, etc",
+    "application": "Aplica-se a casos, sem impacto, em que a lesão foi produzida por compressão, pinçamento ou esmagamento entre um objeto em movimento e outro parado, entre dois objetos em movimento ou entre partes de um mesmo objeto. Não se aplica quando a fonte da lesão for um objeto livremente projetado ou em queda livre.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200020900",
+    "description": "Aprisionamento em, sob ou entre, NIC",
+    "application": "Aplica-se a casos, sem impacto, em que a lesão foi produzida por compressão, pinçamento ou esmagamento entre um objeto em movimento e outro parado, entre dois objetos em movimento ou entre partes de um mesmo objeto. Não se aplica quando a fonte da lesão for um objeto livremente projetado ou em queda livre.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200024300",
+    "description": "Atrito ou abrasão por encostar, pisar, ajoelhar ou sentar em objeto (não em vibração)",
+    "application": "Aplica-se a casos, sem impacto, em que a lesão foi produzida por pressão, vibração ou atrito entre o acidentado e a fonte da lesão.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200024400",
+    "description": "Atrito ou abrasão por manusear objeto (não em vibração)",
+    "application": "Aplica-se a casos, sem impacto, em que a lesão foi produzida por pressão, vibração ou atrito entre o acidentado e a fonte da lesão.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200024500",
+    "description": "Atrito ou abrasão por objeto em vibração",
+    "application": "Aplica-se a casos, sem impacto, em que a lesão foi produzida por pressão, vibração ou atrito entre o acidentado e a fonte da lesão.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200024600",
+    "description": "Atrito ou abrasão por corpo estranho no olho",
+    "application": "Aplica-se a casos, sem impacto, em que a lesão foi produzida por pressão, vibração ou atrito entre o acidentado e a fonte da lesão.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200024700",
+    "description": "Atrito ou abrasão por compressão repetitiva",
+    "application": "Aplica-se a casos, sem impacto, em que a lesão foi produzida por pressão, vibração ou atrito entre o acidentado e a fonte da lesão.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200024900",
+    "description": "Atrito ou abrasão, NIC",
+    "application": "Aplica-se a casos, sem impacto, em que a lesão foi produzida por pressão, vibração ou atrito entre o acidentado e a fonte da lesão.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200028300",
+    "description": "Reação do corpo a seus movimentos - movimento involuntário (escorregão sem queda, etc.)",
+    "application": "Aplica-se a casos, sem impacto, em que a lesão foi causada exclusivamente por movimento livre do corpo humano que causou tensão ou torção em alguma parte do corpo. Geralmente aplica-se à ocorrência de torções, distensões, rupturas ou outras lesões internas, resultantes da adoção de uma posição forçada ou de movimentos involuntários provocados por sustos ou esforços de recuperação da posição normal em casos de escorregão ou perda de equilíbrio. Inclui casos de lesão muscular ou interna resultantes de movimentos individuais como andar, subir, correr, tentar alcançar algo, voltar-se, curvar-se, etc., quando tais movimentos forem a própria fonte da lesão. Não se aplica a esforço excessivo ao erguer, puxar ou empurrar objetos ou a casos em que o movimento do corpo, voluntário ou involuntário, tenha tido por resultado contato violento com algum objeto.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200028600",
+    "description": "Reação do corpo a seus movimentos - movimento voluntário",
+    "application": "Aplica-se a casos, sem impacto, em que a lesão foi causada exclusivamente por movimento livre do corpo humano que causou tensão ou torção em alguma parte do corpo. Geralmente aplica-se à ocorrência de torções, distensões, rupturas ou outras lesões internas, resultantes da adoção de uma posição forçada ou de movimentos involuntários provocados por sustos ou esforços de recuperação da posição normal em casos de escorregão ou perda de equilíbrio. Inclui casos de lesão muscular ou interna resultantes de movimentos individuais como andar, subir, correr, tentar alcançar algo, voltar-se, curvar-se, etc., quando tais movimentos forem a própria fonte da lesão. Não se aplica a esforço excessivo ao erguer, puxar ou empurrar objetos ou a casos em que o movimento do corpo, voluntário ou involuntário, tenha tido por resultado contato violento com algum objeto.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200032200",
+    "description": "Esforço excessivo ao erguer objeto",
+    "application": "Ver explicações do código 200028600.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200032400",
+    "description": "Esforço excessivo ao empurrar ou puxar objeto",
+    "application": "Ver explicações do código 200028600.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200032600",
+    "description": "Esforço excessivo ao manejar, sacudir ou arremessar objeto",
+    "application": "Ver explicações do código 200028600.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200032900",
+    "description": "Esforço excessivo, NIC",
+    "application": "Ver explicações do código 200028600.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200036000",
+    "description": "Exposição à energia elétrica",
+    "application": "Aplica-se somente a casos sem impacto, em que a lesão consiste em choque elétrico, queimadura ou eletroplessão (eletrocussão).",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200040300",
+    "description": "Contato com objeto ou substância a temperatura muito alta",
+    "application": "Aplica-se somente a casos, sem impacto, em que a lesão consiste em queimadura, geladura, etc., resultante queimadura, geladura, etc., resultante de contato com objetos, ar, gases, vapores ou líquidos quentes ou frios. Não se aplica a casos em que a lesão foi provocada pelas características tóxicas ou cáusticas de produtos químicos ou a queimadura por descarga elétrica.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200040600",
+    "description": "Contato com objeto ou substância a temperatura muito baixa",
+    "application": "Aplica-se somente a casos, sem impacto, em que a lesão consiste em queimadura, geladura, etc., resultante queimadura, geladura, etc., resultante de contato com objetos, ar, gases, vapores ou líquidos quentes ou frios. Não se aplica a casos em que a lesão foi provocada pelas características tóxicas ou cáusticas de produtos químicos ou a queimadura por descarga elétrica.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200044300",
+    "description": "Exposição à temperatura ambiente elevada",
+    "application": "Não se aplica aos casos de lesão proveniente de exposição à radiação solar ou outras radiações. Também não se aplica a casos de queimadura ou geladura provocada por contato com objeto ou substância a temperaturas extremas ou queimadura devida à energia elétrica.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200044600",
+    "description": "Exposição à temperatura ambiente baixa",
+    "application": "Não se aplica aos casos de lesão proveniente de exposição à radiação solar ou outras radiações. Também não se aplica a casos de queimadura ou geladura provocada por contato com objeto ou substância a temperaturas extremas ou queimadura devida à energia elétrica.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200048200",
+    "description": "Inalação de substância cáustica, tóxica ou nociva",
+    "application": "Aplica-se somente a casos, sem impacto, em que a lesão foi provocada por inalação, absorção ou ingestão de substâncias nocivas. Geralmente refere-se a intoxicações, envenenamentos, queimaduras, irritações ou reações alérgicas por produtos químicos.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200048400",
+    "description": "Ingestão de substancia cáustica, tóxica ou nociva",
+    "application": "Aplica-se somente a casos, sem impacto, em que a lesão foi provocada por inalação, absorção ou ingestão de substâncias nocivas. Geralmente refere-se a intoxicações, envenenamentos, queimaduras, irritações ou reações alérgicas por produtos químicos.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200048600",
+    "description": "Absorção (por contato) de substância cáustica, tóxica ou nociva",
+    "application": "Aplica-se somente a casos, sem impacto, em que a lesão foi provocada por inalação, absorção ou ingestão de substâncias nocivas. Geralmente refere-se a intoxicações, envenenamentos, queimaduras, irritações ou reações alérgicas por produtos químicos.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200048900",
+    "description": "Inalação, ingestão e absorção, NIC",
+    "application": "Aplica-se somente a casos, sem impacto, em que a lesão foi provocada por inalação, absorção ou ingestão de substâncias nocivas. Geralmente refere-se a intoxicações, envenenamentos, queimaduras, irritações ou reações alérgicas por produtos químicos.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200052000",
+    "description": "Imersão",
+    "application": "Aplica-se aos acidentes que têm por consequência o afogamento.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200056000",
+    "description": "Exposição à radiação não ionizante",
+    "application": "Aplica-se a casos em que as lesões são provocadas por exposição à radiação solar ou outras radiações não ionizantes (por exemplo, ultravioleta e infravermelho).",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200060000",
+    "description": "Exposição à radiação ionizante",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200064000",
+    "description": "Exposição ao ruído",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200068000",
+    "description": "Exposição à vibração",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200072000",
+    "description": "Exposição à pressão ambiente",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200072300",
+    "description": "Exposição à pressão ambiente elevada",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200072600",
+    "description": "Exposição à pressão ambiente baixa",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200076200",
+    "description": "Exposição à poluição da água",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200076400",
+    "description": "Exposição à poluição do ar",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200076600",
+    "description": "Exposição à poluição do solo",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200076900",
+    "description": "Exposição à poluição, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200080200",
+    "description": "Ataque de ser vivo por mordedura, picada, chifrada, coice, etc",
+    "application": "Não se aplica no caso de haver peçonha ou transmissão de doença.",
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200080400",
+    "description": "Ataque de ser vivo com peçonha",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200080600",
+    "description": "Ataque de ser vivo com transmissão de doença",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200080900",
+    "description": "Ataque de ser vivo (inclusive do homem), NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "200080901",
+    "description": "Contato com pessoas doentes ou material infectocontagiante - agentes biológicos",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "209000000",
+    "description": "Tipo, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "generating_situation",
+    "table": "15",
+    "code": "209500000",
+    "description": "Tipo inexistente",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "702000000",
+    "description": "Lesão imediata",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "702005000",
+    "description": "Escoriação, abrasão (ferimento superficial)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "702010000",
+    "description": "Corte, laceração, ferida contusa, punctura (ferida aberta)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "702015000",
+    "description": "Contusão, esmagamento (superfície cutânea intacta)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "702020000",
+    "description": "Distensão, torção",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "702025000",
+    "description": "Inflamação de articulação, tendão ou músculo (inclui sinovite, tenossionovite, etc.; não inclui distensão, torção ou suas consequências)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "702030000",
+    "description": "Luxação",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "702035000",
+    "description": "Fratura",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "702040000",
+    "description": "Queimadura ou escaldadura - efeito de temperatura elevada ou efeito do contato com substância quente (inclui queimadura por eletricidade, mas não inclui choque elétrico; não inclui queimadura por substância química, efeito de radiação, queimadura de sol, incapacidade sistêmica como intermação, queimadura por atrito, etc.)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "702042000",
+    "description": "Queimadura química (lesão de tecido provocada pela ação corrosiva de produto químico, suas emanações, etc.)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "702045000",
+    "description": "Efeito de radiação (imediato) - queimadura de sol e toda forma de lesão de tecido, osso ou fluido orgânico, por exposição à radiação",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "702048000",
+    "description": "Congelamento, geladura e outros efeitos da exposição à baixa temperatura",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "702050000",
+    "description": "Asfixia, estrangulamento, afogamento",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "702055000",
+    "description": "Intermação, insolação, cãibra, exaustão e outros efeitos da temperatura ambiente elevada (não inclui queimadura de sol ou outros efeitos de radiação)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "702060000",
+    "description": "Choque elétrico e eletroplessão (eletrocussão)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "702065000",
+    "description": "Hérnia de qualquer natureza, ruptura",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "702070000",
+    "description": "Amputação ou enucleação",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "702075000",
+    "description": "Perda ou diminuição de sentido (audição, visão, olfato, paladar e tato, desde que não seja sequela de outra lesão)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "702080000",
+    "description": "Concussão cerebral",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "702090000",
+    "description": "Lesão imediata, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "704020000",
+    "description": "Doença contagiosa ou infecciosa (tuberculose, brucelose, etc.)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "704030000",
+    "description": "Pneumoconiose (silicose, asbestose, etc.)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "704040000",
+    "description": "Dermatose (erupção, inflamação da pele, inclusive furúnculo, etc.) - geralmente provocada pelo contato direto com substâncias ou agentes sensibilizantes ou irritantes, tais como medicamentos, óleos, agentes biológicos, plantas, madeiras ou metais (não inclui lesão provocada pela ação corrosiva de produtos químicos, queimadura por contato com substâncias quentes, efeito de exposição à radiação, efeito de exposição a baixas temperaturas ou inflamação ou irritação causada por fricção ou impacto)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "704050000",
+    "description": "Envenenamento sistêmico - condição mórbida sistêmica provocada por inalação, ingestão ou absorção cutânea de substância tóxica, que afete o metabolismo, o funcionamento do sistema nervoso, do aparelho circulatório, do aparelho digestivo, do aparelho respiratório, dos órgãos de excreção, do sistema musculoesquelético, etc. (inclui ação de produto químico, medicamento, metal ou peçonha; não inclui efeito de radiação, pneumoconiose, efeito corrosivo de produto químico, irritação cutânea, septicemia ou caso de ferida infectada)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "704060000",
+    "description": "Perda ou diminuição mediatas de sentido (audição, visão, olfato, paladar e tato, desde que não seja sequela de outra lesão)",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "704070000",
+    "description": "Efeito de radiação (mediato) - queimadura do sol e toda forma de lesão de tecido, osso, ou fluido orgânico por exposição à radiação.",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "704090000",
+    "description": "Doença, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "706050000",
+    "description": "Lesões múltiplas",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  },
+  {
+    "kind": "injury_nature",
+    "table": "17",
+    "code": "706090000",
+    "description": "Outras lesões, NIC",
+    "application": null,
+    "sourceVersion": "eSocial S-1.3 NT 06/2026"
+  }
+]
