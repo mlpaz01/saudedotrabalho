@@ -672,7 +672,13 @@ export async function ensureClinicalConsultationExam(
   actorId: number
 ) {
   const existing: any = await db.execute(
-    drzSql`SELECT id FROM pcmso_exam_catalog_v2 WHERE company_id=${companyId} AND name='Consulta clínica ocupacional' LIMIT 1`
+    drzSql`SELECT id FROM pcmso_exam_catalog_v2
+      WHERE company_id=${companyId} AND is_active=1 AND (
+        name='Consulta clínica ocupacional'
+        OR (exam_type='clinico' AND (LOWER(name) LIKE '%consulta%' OR LOWER(name) LIKE '%avalia%cl%nic%'))
+      )
+      ORDER BY (name='Consulta clínica ocupacional') DESC,id
+      LIMIT 1`
   );
   const found = Number(rowsOf(existing)[0]?.id || 0);
   if (found) return found;
