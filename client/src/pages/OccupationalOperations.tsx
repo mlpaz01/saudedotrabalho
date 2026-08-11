@@ -214,7 +214,9 @@ export default function OccupationalOperations() {
     onSuccess: async result => {
       await refresh();
       setOrderOpen(false);
-      toast.success(`${result.created} requisição(ões) gerada(s).`);
+      toast.success(
+        `${result.created} requisição(ões) gerada(s)${result.skipped ? `; ${result.skipped} item(ns) não foram emitidos pela regra anual` : ""}.`
+      );
     },
     onError: error => toast.error(error.message),
   });
@@ -225,7 +227,7 @@ export default function OccupationalOperations() {
         setPcmsoOrderOpen(false);
         setSelectedPopulation([]);
         toast.success(
-          `${result.created} requisição(ões) gerada(s) pelo PCMSO${result.skipped ? `; ${result.skipped} já possuíam requisição válida` : ""}.`
+          `${result.created} requisição(ões) gerada(s) pelo PCMSO${result.skipped ? `; ${result.skipped} item(ns) não foram gerados após a validação anual` : ""}.`
         );
       },
       onError: error => toast.error(error.message),
@@ -567,8 +569,7 @@ export default function OccupationalOperations() {
 
         {tab === "requisicoes" && (
           <div className="space-y-4">
-            {!isDoctor && (
-              <Panel
+            <Panel
                 title="Programação ocupacional"
                 subtitle="População derivada de colaborador ativo, GSE atual, PGR, PCMSO vigente e matriz médica. Consultas clínicas são procedimentos independentes."
               >
@@ -732,23 +733,12 @@ export default function OccupationalOperations() {
                             type="checkbox"
                             checked={
                               Boolean(filteredPopulation.length) &&
-                              selectedPopulation.length ===
-                                filteredPopulation.filter(
-                                  row =>
-                                    row.operational_status ===
-                                    "requisicao_pendente"
-                                ).length
+                              selectedPopulation.length === filteredPopulation.length
                             }
                             onChange={event =>
                               setSelectedPopulation(
                                 event.target.checked
-                                  ? filteredPopulation
-                                      .filter(
-                                        row =>
-                                          row.operational_status ===
-                                          "requisicao_pendente"
-                                      )
-                                      .map(row => ({
+                                  ? filteredPopulation.map(row => ({
                                         collaboratorId: Number(
                                           row.collaborator_id
                                         ),
@@ -777,14 +767,11 @@ export default function OccupationalOperations() {
                             `${item.collaboratorId}:${item.monitoringId}` ===
                             key
                         );
-                        const available =
-                          row.operational_status === "requisicao_pendente";
                         return (
                           <tr key={key} className="border-t">
                             <td className="p-2 text-center">
                               <input
                                 type="checkbox"
-                                disabled={!available}
                                 checked={checked}
                                 onChange={() =>
                                   setSelectedPopulation(current =>
@@ -874,13 +861,11 @@ export default function OccupationalOperations() {
                   )}
                 </div>
               </Panel>
-            )}
             <Panel
               title="Requisições de exames ocupacionais"
               subtitle="Cada emissão possui número, validade, prestador, local e histórico próprios."
               action={
-                !isDoctor && (
-                  <div className="flex gap-2">
+                <div className="flex gap-2">
                     <Button
                       variant="outline"
                       disabled={!selectedOrders.length}
@@ -898,7 +883,6 @@ export default function OccupationalOperations() {
                       <Plus size={14} className="mr-2" /> Exceção manual
                     </Button>
                   </div>
-                )
               }
             >
               <div className="overflow-auto border">
@@ -953,7 +937,7 @@ export default function OccupationalOperations() {
                           </span>
                           <br />
                           <span className="text-xs text-slate-500">
-                            {row.version_label}
+                            {row.version_label} · Exercício {row.exercise_year || "-"}
                           </span>
                         </td>
                         <td className="p-2">
@@ -970,7 +954,17 @@ export default function OccupationalOperations() {
                             {row.gse_name || "Sem GSE"}
                           </span>
                         </td>
-                        <td className="p-2 font-medium">{row.exam_name}</td>
+                        <td className="p-2 font-medium">
+                          {row.exam_name}
+                          {row.request_type === "repeticao" && (
+                            <>
+                              <br />
+                              <Badge className="mt-1 rounded-sm bg-amber-100 text-amber-900">
+                                Repetição
+                              </Badge>
+                            </>
+                          )}
+                        </td>
                         <td className="p-2">
                           {row.provider_trade_name ||
                             row.provider_legal_name ||
@@ -1868,11 +1862,32 @@ function PcmsoOrderDialog({
   busy,
   save,
 }: any) {
+  const currentYear = new Date().getFullYear();
   const [providerId, setProviderId] = useState(0);
   const [mode, setMode] = useState("prestador");
   const [location, setLocation] = useState("");
   const [valid, setValid] = useState("");
   const [orientations, setOrientations] = useState("");
+  const [exerciseYear, setExerciseYear] = useState(currentYear);
+  const [repeatByKey, setRepeatByKey] = useState<
+    Record<string, { enabled: boolean; justification: string }>
+  >({});
+  const [analysisDirty, setAnalysisDirty] = useState(true);
+  const preview =
+    trpc.occupationalLifecycle.previewExamOrdersFromPcmso.useMutation({
+      onSuccess: () => setAnalysisDirty(false),
+      onError: error => toast.error(error.message),
+    });
+  const selectionKey = items
+    .map((item: any) => `${item.collaboratorId}:${item.monitoringId}`)
+    .sort()
+    .join("|");
+  useEffect(() => {
+    if (!open) return;
+    setRepeatByKey({});
+    setAnalysisDirty(true);
+    preview.reset();
+  }, [open, selectionKey]);
   const selectedRows = population.filter((row: any) =>
     items.some(
       (item: any) =>
@@ -1888,17 +1903,179 @@ function PcmsoOrderDialog({
       Number(row.is_active) &&
       selectedExamIds.every(examId => row.examIds?.includes(examId))
   );
+  const requestItems = items.map((item: any) => {
+    const key = `${item.collaboratorId}:${item.monitoringId}`;
+    const repeat = repeatByKey[key];
+    return {
+      ...item,
+      requestType: repeat?.enabled ? "repeticao" : "normal",
+      justification: repeat?.enabled ? repeat.justification : undefined,
+    };
+  });
+  const previewRows = (preview.data?.rows || []) as any[];
+  const itemsToGenerate = previewRows
+    .filter(row => row.shouldGenerate)
+    .map(row => {
+      const key = `${row.collaboratorId}:${row.monitoringId}`;
+      const repeat = repeatByKey[key];
+      return {
+        collaboratorId: Number(row.collaboratorId),
+        monitoringId: Number(row.monitoringId),
+        requestType: repeat?.enabled ? "repeticao" : "normal",
+        justification: repeat?.enabled ? repeat.justification : undefined,
+      };
+    });
+
+  const analyze = () => {
+    if (exerciseYear < 2000 || exerciseYear > 2100) {
+      toast.error("Informe um exercício válido.");
+      return;
+    }
+    preview.mutate({ exerciseYear, items: requestItems });
+  };
+
+  const updateRepeat = (
+    key: string,
+    patch: Partial<{ enabled: boolean; justification: string }>
+  ) => {
+    setRepeatByKey(current => ({
+      ...current,
+      [key]: {
+        enabled: current[key]?.enabled || false,
+        justification: current[key]?.justification || "",
+        ...patch,
+      },
+    }));
+    setAnalysisDirty(true);
+  };
+
   return (
     <Dialog open={open} onOpenChange={value => !value && close()}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent className="max-h-[92vh] max-w-6xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Gerar requisições previstas no PCMSO</DialogTitle>
         </DialogHeader>
         <div className="border-l-4 border-teal-500 bg-teal-50 p-3 text-sm">
-          Os procedimentos não podem ser alterados nesta etapa: foram definidos
-          pelo Médico no PCMSO vigente. A lista de prestadores mostra somente
-          quem está ativo e vinculado a todos os procedimentos selecionados.
+          O PCMSO define os procedimentos. Antes da emissão, a plataforma cruza
+          trabalhador, exame, exercício e resultado. Uma requisição anterior sem
+          resultado não encerra a obrigação.
         </div>
+        <div className="grid gap-3 border bg-slate-50 p-3 md:grid-cols-[180px_1fr_auto] md:items-end">
+          <label className="text-xs font-semibold">
+            Exercício obrigatório
+            <Input
+              className="mt-1 bg-white"
+              type="number"
+              min={2000}
+              max={2100}
+              value={exerciseYear}
+              onChange={event => {
+                setExerciseYear(Number(event.target.value));
+                setAnalysisDirty(true);
+              }}
+            />
+          </label>
+          <p className="text-xs text-slate-600">
+            A conferência é individual por trabalhador e exame. Resultados já
+            registrados no exercício bloqueiam uma emissão normal.
+          </p>
+          <Button variant="outline" disabled={preview.isPending} onClick={analyze}>
+            {preview.isPending ? "Analisando..." : "Analisar exercício"}
+          </Button>
+        </div>
+        {preview.data && (
+          <div className="grid gap-2 sm:grid-cols-3">
+            <Metric label="Analisados" value={preview.data.summary.analyzed} />
+            <Metric label="Serão gerados" value={preview.data.summary.toGenerate} />
+            <Metric
+              label="Não serão gerados"
+              value={preview.data.summary.notGenerated}
+              warning={preview.data.summary.notGenerated > 0}
+            />
+          </div>
+        )}
+        {previewRows.length > 0 && (
+          <div className="max-h-80 overflow-auto border">
+            <table className="w-full min-w-[980px] text-sm">
+              <thead className="sticky top-0 bg-slate-50 text-xs text-slate-600">
+                <tr>
+                  <th className="p-2 text-left">Trabalhador</th>
+                  <th className="p-2 text-left">Exame</th>
+                  <th className="p-2 text-left">Situação no exercício</th>
+                  <th className="p-2 text-left">Ação</th>
+                  <th className="p-2 text-left">Repetição justificada</th>
+                </tr>
+              </thead>
+              <tbody>
+                {previewRows.map(row => {
+                  const key = `${row.collaboratorId}:${row.monitoringId}`;
+                  const repeat = repeatByKey[key] || {
+                    enabled: false,
+                    justification: "",
+                  };
+                  const hasResult = Number(row.resultCount || 0) > 0;
+                  return (
+                    <tr key={key} className="border-t align-top">
+                      <td className="p-2 font-medium">
+                        {row.collaborator_name || `Colaborador ${row.collaboratorId}`}
+                      </td>
+                      <td className="p-2">{row.exam_name || "Procedimento"}</td>
+                      <td className="p-2">
+                        <Badge
+                          className={`rounded-sm ${row.shouldGenerate ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-900"}`}
+                        >
+                          {String(row.status || "").replaceAll("_", " ")}
+                        </Badge>
+                        <p className="mt-1 max-w-md text-xs text-slate-600">
+                          {row.reason}
+                        </p>
+                      </td>
+                      <td className="p-2 font-semibold">
+                        {row.shouldGenerate ? "Gerar" : "Não gerar"}
+                      </td>
+                      <td className="p-2">
+                        {hasResult ? (
+                          <div className="space-y-2">
+                            <label className="flex items-center gap-2 text-xs font-semibold">
+                              <input
+                                type="checkbox"
+                                checked={repeat.enabled}
+                                onChange={event =>
+                                  updateRepeat(key, { enabled: event.target.checked })
+                                }
+                              />
+                              Solicitar repetição
+                            </label>
+                            {repeat.enabled && (
+                              <Textarea
+                                className="min-h-16"
+                                placeholder="Justificativa obrigatória (mínimo de 10 caracteres)"
+                                value={repeat.justification}
+                                onChange={event =>
+                                  updateRepeat(key, {
+                                    justification: event.target.value,
+                                  })
+                                }
+                              />
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-xs text-slate-400">Não se aplica</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {analysisDirty && preview.data && (
+          <p className="border-l-4 border-amber-400 bg-amber-50 p-3 text-xs text-amber-900">
+            A seleção foi alterada. Clique em “Analisar exercício” novamente antes
+            de gerar as requisições.
+          </p>
+        )}
         <div className="grid gap-4 md:grid-cols-2">
           <div className="max-h-72 overflow-auto border">
             {selectedRows.map((row: any) => (
@@ -1984,10 +2161,17 @@ function PcmsoOrderDialog({
             Cancelar
           </Button>
           <Button
-            disabled={busy || !items.length || !valid}
+            disabled={
+              busy ||
+              analysisDirty ||
+              !preview.data ||
+              !itemsToGenerate.length ||
+              !valid
+            }
             onClick={() =>
               save({
-                items,
+                items: itemsToGenerate,
+                exerciseYear,
                 providerId: providerId || null,
                 serviceMode: mode,
                 serviceLocation: location || undefined,
@@ -1996,7 +2180,9 @@ function PcmsoOrderDialog({
               })
             }
           >
-            {busy ? "Gerando..." : `Gerar ${items.length} requisição(ões)`}
+            {busy
+              ? "Gerando..."
+              : `Gerar ${itemsToGenerate.length} requisição(ões)`}
           </Button>
         </div>
       </DialogContent>
@@ -2020,6 +2206,9 @@ function OrderDialog({
   const [location, setLocation] = useState("");
   const [valid, setValid] = useState("");
   const [orientations, setOrientations] = useState("");
+  const [exerciseYear, setExerciseYear] = useState(new Date().getFullYear());
+  const [requestType, setRequestType] = useState("normal");
+  const [justification, setJustification] = useState("");
   const eligibleProviders = providers.filter(
     (row: any) =>
       Number(row.is_active) && (!examId || row.examIds?.includes(examId))
@@ -2037,6 +2226,39 @@ function OrderDialog({
             setSelected={setSelected}
           />
           <div className="grid content-start gap-3">
+            <label className="text-xs font-semibold">
+              Exercício
+              <Input
+                className="mt-1"
+                type="number"
+                min={2000}
+                max={2100}
+                value={exerciseYear}
+                onChange={event => setExerciseYear(Number(event.target.value))}
+              />
+            </label>
+            <label className="text-xs font-semibold">
+              Tipo da solicitação
+              <select
+                className="mt-1 h-10 w-full border bg-white px-3 text-sm"
+                value={requestType}
+                onChange={event => setRequestType(event.target.value)}
+              >
+                <option value="normal">Requisição normal</option>
+                <option value="repeticao">Repetição de exame</option>
+              </select>
+            </label>
+            {requestType === "repeticao" && (
+              <label className="text-xs font-semibold">
+                Justificativa da repetição
+                <Textarea
+                  className="mt-1"
+                  value={justification}
+                  onChange={event => setJustification(event.target.value)}
+                  placeholder="Obrigatória, com pelo menos 10 caracteres"
+                />
+              </label>
+            )}
             <label className="text-xs font-semibold">
               Procedimento do catálogo mestre
               <select
@@ -2116,11 +2338,23 @@ function OrderDialog({
             Cancelar
           </Button>
           <Button
-            disabled={busy || !selected.length || !examId || !valid}
+            disabled={
+              busy ||
+              !selected.length ||
+              !examId ||
+              !valid ||
+              exerciseYear < 2000 ||
+              exerciseYear > 2100 ||
+              (requestType === "repeticao" && justification.trim().length < 10)
+            }
             onClick={() =>
               save({
                 collaboratorIds: selected,
                 examId,
+                exerciseYear,
+                requestType,
+                justification:
+                  requestType === "repeticao" ? justification : undefined,
                 providerId: providerId || null,
                 serviceMode: mode,
                 serviceLocation: location || undefined,

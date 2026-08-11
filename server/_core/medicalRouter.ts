@@ -581,6 +581,26 @@ async function ensureTables() {
     "VARCHAR(128) NULL"
   );
   await ensureColumn(db, "pcmso_programs_v2", "archived_at", "DATETIME NULL");
+  await ensureColumn(db, "pcmso_programs_v2", "saved_at", "DATETIME NULL");
+  await ensureColumn(db, "pcmso_programs_v2", "saved_by", "INT NULL");
+  await ensureColumn(
+    db,
+    "pcmso_analytical_reports_v2",
+    "discarded_at",
+    "DATETIME NULL"
+  );
+  await ensureColumn(
+    db,
+    "pcmso_analytical_reports_v2",
+    "discarded_by",
+    "INT NULL"
+  );
+  await ensureColumn(
+    db,
+    "pcmso_analytical_reports_v2",
+    "discard_reason",
+    "TEXT NULL"
+  );
   await ensureColumn(
     db,
     "pcmso_risk_monitoring_v2",
@@ -695,6 +715,19 @@ function esc(value: any) {
   );
 }
 
+function privateImageDataUri(filePath: unknown) {
+  const target = String(filePath || "").trim();
+  if (!target || !fs.existsSync(target)) return "";
+  const extension = path.extname(target).toLowerCase();
+  const mime =
+    extension === ".jpg" || extension === ".jpeg"
+      ? "image/jpeg"
+      : extension === ".webp"
+        ? "image/webp"
+        : "image/png";
+  return `data:${mime};base64,${fs.readFileSync(target).toString("base64")}`;
+}
+
 function buildPcmsoPdfHtml(input: {
   program: any;
   monitoring: any[];
@@ -702,6 +735,9 @@ function buildPcmsoPdfHtml(input: {
   analyticalReport?: any;
 }) {
   const { program, monitoring, annexes, analyticalReport } = input;
+  const signatureImage = privateImageDataUri(
+    program.doctor_signature_private_path
+  );
   let chapters: any[] = [];
   try {
     chapters = JSON.parse(program.chapters_json || "[]");
@@ -749,7 +785,7 @@ function buildPcmsoPdfHtml(input: {
     "Demissional",
   ];
   return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
-  @page{size:A4;margin:18mm 15mm}body{font-family:Arial,sans-serif;color:#172b3a;font-size:10pt;line-height:1.45}h1{font-size:25pt;color:#0e2c46}h2{margin-top:9mm;color:#0e2c46;border-bottom:2px solid #0096a6;padding-bottom:2mm}h3{margin-top:6mm;color:#0e2c46}table{width:100%;border-collapse:collapse;font-size:7.7pt;margin:3mm 0 6mm}th,td{border:1px solid #d7e1e8;padding:2mm;vertical-align:top}th{background:#0e2c46;color:#fff}.cover{height:240mm;display:flex;flex-direction:column;justify-content:center;text-align:center;page-break-after:always}.meta{color:#607486}.signature{margin-top:18mm;text-align:center}.signature-line{border-top:1px solid #172b3a;width:80mm;margin:0 auto 2mm}.notice{border-left:3px solid #eab308;padding:3mm;background:#fffbeb;font-size:8.5pt}.toc{columns:2}.page-break{page-break-before:always}p{white-space:pre-wrap}</style></head><body>
+  @page{size:A4;margin:18mm 15mm}body{font-family:Arial,sans-serif;color:#172b3a;font-size:10pt;line-height:1.45}h1{font-size:25pt;color:#0e2c46}h2{margin-top:9mm;color:#0e2c46;border-bottom:2px solid #0096a6;padding-bottom:2mm}h3{margin-top:6mm;color:#0e2c46}table{width:100%;border-collapse:collapse;font-size:7.7pt;margin:3mm 0 6mm}th,td{border:1px solid #d7e1e8;padding:2mm;vertical-align:top}th{background:#0e2c46;color:#fff}.cover{height:240mm;display:flex;flex-direction:column;justify-content:center;text-align:center;page-break-after:always}.meta{color:#607486}.signature{margin-top:18mm;text-align:center}.signature img{display:block;max-width:70mm;max-height:24mm;object-fit:contain;margin:0 auto 2mm}.signature-line{border-top:1px solid #172b3a;width:80mm;margin:0 auto 2mm}.notice{border-left:3px solid #eab308;padding:3mm;background:#fffbeb;font-size:8.5pt}.toc{columns:2}.page-break{page-break-before:always}p{white-space:pre-wrap}</style></head><body>
   <section class="cover"><h1>${esc(program.title)}</h1><h2>${esc(program.company_name)}</h2><p>CNPJ: ${esc(program.cnpj || "-")}<br>Vigência: ${esc(program.valid_from || "-")} a ${esc(program.valid_until || "-")}</p><p class="meta">Programa de Controle Médico de Saúde Ocupacional</p></section>
   <h2>Controle do documento</h2><table><tbody><tr><td><b>Versão</b></td><td>${esc(program.current_version || 1)}</td><td><b>Situação</b></td><td>${esc(program.status)}</td></tr><tr><td><b>PGR de referência</b></td><td>${esc(program.pgr_title || "-")}</td><td><b>Sincronização</b></td><td>${esc(program.pgr_synced_at || "-")}</td></tr></tbody></table>
   <h2>Identificação da organização</h2><p><b>Empresa:</b> ${esc(program.company_name)}<br><b>CNPJ:</b> ${esc(program.cnpj || "-")}<br><b>Endereço:</b> ${esc(program.address || "-")}<br><b>Médico responsável:</b> ${esc(program.doctor_name || "-")} · ${esc(program.doctor_crm || "-")}</p>
@@ -773,7 +809,7 @@ function buildPcmsoPdfHtml(input: {
   ${chapters.map((chapter, index) => `<h2>${16 + index}. ${esc(chapter.title)}</h2><p>${esc(chapter.content)}</p>`).join("")}
   <h2>Conclusão</h2><p>${esc(program.conclusion || "O programa deverá ser acompanhado continuamente e revisto quando houver alterações relevantes no PGR, nos processos, nos riscos ou no perfil de saúde consolidado dos trabalhadores.")}</p>
   <h2>Anexos associados</h2><ol>${annexes.map(item => `<li>Anexo ${item.annex_number}: ${esc(item.title || item.file_name)}</li>`).join("") || "<li>Nenhum anexo associado.</li>"}</ol>
-  <div class="signature"><div class="signature-line"></div><b>${esc(program.doctor_name || "Médico responsável")}</b><br>${esc(program.doctor_crm || "CRM não informado")}<br>Registro de autoria e integridade: ${esc(program.signature_hash || "documento ainda não confirmado")}</div>
+  <div class="signature">${signatureImage ? `<img src="${signatureImage}" alt="Assinatura do médico responsável">` : ""}<div class="signature-line"></div><b>${esc(program.doctor_name || "Médico responsável")}</b><br>${esc(program.doctor_crm || "CRM não informado")}<br>Registro de autoria e integridade: ${esc(program.signature_hash || "documento ainda não confirmado")}</div>
   </body></html>`;
 }
 
@@ -830,7 +866,7 @@ export const medicalRouter = router({
     const db = await getDb();
     if (!db) return null;
     const result: any = await db.execute(
-      drzSql`SELECT p.crm,p.crm_state,p.specialty,u.name FROM users u LEFT JOIN medical_professional_profiles p ON p.user_id=u.id WHERE u.id=${Number(ctx.user.id)} LIMIT 1`
+      drzSql`SELECT p.crm,p.crm_state,p.specialty,(p.signature_private_path IS NOT NULL) has_signature,u.name FROM users u LEFT JOIN medical_professional_profiles p ON p.user_id=u.id WHERE u.id=${Number(ctx.user.id)} LIMIT 1`
     );
     return rowsOf(result)[0] || null;
   }),
@@ -884,6 +920,19 @@ export const medicalRouter = router({
     return rowsOf(result);
   }),
 
+  getPcmsoDefaultText: protectedProcedure.query(async ({ ctx }) => {
+    requireDoctor(ctx);
+    await ensureTables();
+    const db = await getDb();
+    const companyId = companyOf(ctx);
+    if (!db) return { introduction: "", conclusion: "" };
+    const defaults = await loadDocumentDefaults(db, companyId, "pcmso");
+    return {
+      introduction: String(defaults?.texto_introducao || ""),
+      conclusion: String(defaults?.texto_conclusao || ""),
+    };
+  }),
+
   listPrograms: protectedProcedure.query(async ({ ctx }) => {
     requireDoctor(ctx);
     await ensureTables();
@@ -933,7 +982,7 @@ export const medicalRouter = router({
         drzSql`SELECT id,score,result_json,ai_commentary,created_at FROM pcmso_ai_audits_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId} ORDER BY id DESC LIMIT 10`
       );
       const reports: any = await db.execute(
-        drzSql`SELECT id,period_start,period_end,metrics_json,narrative,recommendations,status,reviewed_at,created_at FROM pcmso_analytical_reports_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId} ORDER BY period_end DESC,id DESC`
+        drzSql`SELECT id,period_start,period_end,metrics_json,narrative,recommendations,status,reviewed_at,created_at,discarded_at,discarded_by,discard_reason FROM pcmso_analytical_reports_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId} ORDER BY period_end DESC,id DESC`
       );
       const reviewRequests: any = await db.execute(
         drzSql`SELECT id,gse_name,risk_name,description,status,created_at,resolved_at FROM pcmso_pgr_review_requests_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId} ORDER BY id DESC`
@@ -1032,7 +1081,13 @@ export const medicalRouter = router({
         ? null
         : await loadDocumentDefaults(db, companyId, "pcmso");
       const introduction =
-        input.introduction || defaults?.texto_introducao || null;
+        String(input.introduction || "").trim() ||
+        defaults?.texto_introducao ||
+        null;
+      const objective = String(input.objective || "").trim() || null;
+      const methodology = String(input.methodology || "").trim() || null;
+      const safeStatus =
+        input.status === "vigente" ? "em_revisao" : input.status;
       const chapters =
         input.chapters.length || !defaults?.texto_conclusao
           ? input.chapters
@@ -1047,19 +1102,53 @@ export const medicalRouter = router({
         );
         if (!rowsOf(own).length) throw new TRPCError({ code: "NOT_FOUND" });
         await db.execute(
-          drzSql`UPDATE pcmso_programs_v2 SET pgr_id=${input.pgrId || null},title=${title},status=${input.status},valid_from=${input.validFrom || null},valid_until=${input.validUntil || null},introduction=${introduction},objective=${input.objective || null},methodology=${input.methodology || null},chapters_json=${JSON.stringify(chapters)},header_text=${input.headerText || null},footer_text=${input.footerText || null},doctor_user_id=${Number(ctx.user.id)},doctor_name=${doctor.name},doctor_crm=${`${doctor.crm}/${doctor.crm_state}`},doctor_signature_private_path=${doctor.signature_private_path || null} WHERE id=${id} AND company_id=${companyId}`
+          drzSql`UPDATE pcmso_programs_v2 SET pgr_id=${input.pgrId || null},title=${title},status=${safeStatus},valid_from=${input.validFrom || null},valid_until=${input.validUntil || null},introduction=${introduction},objective=${objective},methodology=${methodology},chapters_json=${JSON.stringify(chapters)},header_text=${input.headerText || null},footer_text=${input.footerText || null},doctor_user_id=${Number(ctx.user.id)},doctor_name=${doctor.name},doctor_crm=${`${doctor.crm}/${doctor.crm_state}`},doctor_signature_private_path=${doctor.signature_private_path || null},saved_at=NOW(),saved_by=${Number(ctx.user.id)} WHERE id=${id} AND company_id=${companyId}`
         );
         await audit(db, ctx, "pcmso_updated", "pcmso", id, null, {
-          status: input.status,
+          status: safeStatus,
         });
       } else {
         const result: any =
           await db.execute(drzSql`INSERT INTO pcmso_programs_v2 (company_id,pgr_id,title,status,valid_from,valid_until,introduction,objective,methodology,chapters_json,header_text,footer_text,doctor_user_id,doctor_name,doctor_crm,doctor_signature_private_path,created_by)
-        VALUES (${companyId},${input.pgrId || null},${title},${input.status},${input.validFrom || null},${input.validUntil || null},${introduction},${input.objective || null},${input.methodology || null},${JSON.stringify(chapters)},${input.headerText || null},${input.footerText || null},${Number(ctx.user.id)},${doctor.name},${`${doctor.crm}/${doctor.crm_state}`},${doctor.signature_private_path || null},${Number(ctx.user.id)})`);
+        VALUES (${companyId},${input.pgrId || null},${title},${safeStatus},${input.validFrom || null},${input.validUntil || null},${introduction},${objective},${methodology},${JSON.stringify(chapters)},${input.headerText || null},${input.footerText || null},${Number(ctx.user.id)},${doctor.name},${`${doctor.crm}/${doctor.crm_state}`},${doctor.signature_private_path || null},${Number(ctx.user.id)})`);
         id = Number((result as any)[0]?.insertId || 0);
+        await db.execute(
+          drzSql`UPDATE pcmso_programs_v2 SET saved_at=NOW(),saved_by=${Number(ctx.user.id)} WHERE id=${id} AND company_id=${companyId}`
+        );
         await audit(db, ctx, "pcmso_created", "pcmso", id);
       }
       return { ok: true, id, title };
+    }),
+
+  savePcmso: protectedProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ ctx, input }) => {
+      requireDoctor(ctx);
+      await ensureTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const own: any = await db.execute(
+        drzSql`SELECT id,status FROM pcmso_programs_v2 WHERE id=${input.id} AND company_id=${companyId} LIMIT 1`
+      );
+      const program = rowsOf(own)[0];
+      if (!program) throw new TRPCError({ code: "NOT_FOUND" });
+      if (program.status === "arquivado")
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "O PCMSO arquivado deve ser reaberto antes de novas alterações.",
+        });
+      const nextStatus =
+        program.status === "rascunho" ? "em_revisao" : program.status;
+      await db.execute(
+        drzSql`UPDATE pcmso_programs_v2 SET status=${nextStatus},saved_at=NOW(),saved_by=${Number(ctx.user.id)} WHERE id=${input.id} AND company_id=${companyId}`
+      );
+      await audit(db, ctx, "pcmso_saved", "pcmso", input.id, null, {
+        status: nextStatus,
+        independentFromPublication: true,
+      });
+      return { ok: true, status: nextStatus };
     }),
 
   importPgr: protectedProcedure
@@ -1438,7 +1527,7 @@ export const medicalRouter = router({
         drzSql`SELECT * FROM pcmso_risk_monitoring_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId}`
       );
       const countsResult: any = await db.execute(
-        drzSql`SELECT (SELECT COUNT(*) FROM pcmso_attachments_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId}) annexes,(SELECT COUNT(*) FROM pcmso_analytical_reports_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId}) reports`
+        drzSql`SELECT (SELECT COUNT(*) FROM pcmso_attachments_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId}) annexes,(SELECT COUNT(*) FROM pcmso_analytical_reports_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId} AND status<>'descartado') reports`
       );
       const counts = rowsOf(countsResult)[0] || {};
       const result = auditPcmso({
@@ -1475,15 +1564,55 @@ export const medicalRouter = router({
       const db = await getDb();
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      if (input.periodEnd < input.periodStart)
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "A data final deve ser igual ou posterior à data inicial.",
+        });
       const own: any = await db.execute(
         drzSql`SELECT id,title FROM pcmso_programs_v2 WHERE id=${input.pcmsoId} AND company_id=${companyId} LIMIT 1`
       );
       if (!rowsOf(own).length) throw new TRPCError({ code: "NOT_FOUND" });
-      const examsResult: any = await db.execute(
+      const populationResult: any = await db.execute(
+        drzSql`SELECT
+          COUNT(DISTINCT h.collaborator_id) workers,
+          COUNT(DISTINCT COALESCE(m.master_gse_id,l.gse_id)) gses,
+          COUNT(DISTINCT CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN 'clinico' ELSE CONCAT('exame-',m.exam_id) END) exam_types,
+          COUNT(DISTINCT CONCAT(h.collaborator_id,':',CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN 'clinico' ELSE CONCAT('exame-',m.exam_id) END)) planned_assignments
+        FROM pcmso_risk_monitoring_v2 m
+        LEFT JOIN occupational_gse_pgr_links l ON l.company_id=m.company_id AND l.pgr_gse_id=m.pgr_gse_id
+        JOIN occupational_gse_worker_history h ON h.company_id=m.company_id AND h.gse_id=COALESCE(m.master_gse_id,l.gse_id) AND h.is_current=1
+        JOIN users u ON u.id=h.collaborator_id AND u.company_id=h.company_id AND u.is_active=1
+        WHERE m.company_id=${companyId} AND m.pcmso_id=${input.pcmsoId}
+          AND m.monitoring_kind IN ('avaliacao_clinica','exame_complementar')
+          AND (m.monitoring_kind='avaliacao_clinica' OR m.exam_id IS NOT NULL)
+          AND m.suggestion_status IN ('aprovada','editada')`
+      );
+      const currentResults: any = await db.execute(
+        drzSql`SELECT COUNT(*) total,COUNT(DISTINCT x.collaborator_id) workers,SUM(x.altered) altered FROM (
+          SELECT DISTINCT r.id,r.collaborator_id,
+            CASE WHEN r.classification NOT IN ('normal','apto','realizada','pendente_revisao') THEN 1 ELSE 0 END altered
+          FROM occupational_exam_results r
+          JOIN occupational_gse_worker_history h ON h.company_id=r.company_id AND h.collaborator_id=r.collaborator_id AND h.is_current=1
+          JOIN pcmso_risk_monitoring_v2 m ON m.company_id=r.company_id AND m.pcmso_id=${input.pcmsoId} AND m.exam_id=r.exam_id
+          LEFT JOIN occupational_gse_pgr_links l ON l.company_id=m.company_id AND l.pgr_gse_id=m.pgr_gse_id
+          WHERE r.company_id=${companyId} AND DATE(r.performed_at) BETWEEN ${input.periodStart} AND ${input.periodEnd}
+            AND COALESCE(m.master_gse_id,l.gse_id)=h.gse_id
+        ) x`
+      );
+      const legacyResults: any = await db.execute(
         drzSql`SELECT COUNT(*) total,SUM(COALESCE(fitness_status,'') NOT IN ('apto','normal')) altered,COUNT(DISTINCT collaborator_id) workers FROM medical_occupational_exams_v2 WHERE company_id=${companyId} AND pcmso_id=${input.pcmsoId} AND DATE(performed_at) BETWEEN ${input.periodStart} AND ${input.periodEnd}`
       );
       const kindsResult: any = await db.execute(
-        drzSql`SELECT exam_kind,COUNT(*) total FROM medical_occupational_exams_v2 WHERE company_id=${companyId} AND pcmso_id=${input.pcmsoId} AND DATE(performed_at) BETWEEN ${input.periodStart} AND ${input.periodEnd} GROUP BY exam_kind`
+        drzSql`SELECT e.name exam_kind,COUNT(DISTINCT r.id) total
+          FROM occupational_exam_results r
+          JOIN pcmso_exam_catalog_v2 e ON e.id=r.exam_id AND e.company_id=r.company_id
+          JOIN occupational_gse_worker_history h ON h.company_id=r.company_id AND h.collaborator_id=r.collaborator_id AND h.is_current=1
+          JOIN pcmso_risk_monitoring_v2 m ON m.company_id=r.company_id AND m.pcmso_id=${input.pcmsoId} AND m.exam_id=r.exam_id
+          LEFT JOIN occupational_gse_pgr_links l ON l.company_id=m.company_id AND l.pgr_gse_id=m.pgr_gse_id
+          WHERE r.company_id=${companyId} AND DATE(r.performed_at) BETWEEN ${input.periodStart} AND ${input.periodEnd}
+            AND COALESCE(m.master_gse_id,l.gse_id)=h.gse_id
+          GROUP BY e.id,e.name`
       );
       const encountersResult: any = await db.execute(
         drzSql`SELECT COUNT(*) total FROM medical_encounters_v2 WHERE company_id=${companyId} AND DATE(encounter_at) BETWEEN ${input.periodStart} AND ${input.periodEnd}`
@@ -1494,14 +1623,32 @@ export const medicalRouter = router({
       const monitoringResult: any = await db.execute(
         drzSql`SELECT COUNT(*) total,SUM(monitoring_kind='nao_definido') pending FROM pcmso_risk_monitoring_v2 WHERE company_id=${companyId} AND pcmso_id=${input.pcmsoId}`
       );
+      const population = rowsOf(populationResult)[0] || {};
+      const current = rowsOf(currentResults)[0] || {};
+      const legacy = rowsOf(legacyResults)[0] || {};
       const metrics = {
-        exams: rowsOf(examsResult)[0] || {},
+        exams: {
+          total: Number(population.planned_assignments || 0),
+          plannedAssignments: Number(population.planned_assignments || 0),
+          examTypes: Number(population.exam_types || 0),
+          workers: Number(population.workers || 0),
+          gses: Number(population.gses || 0),
+          performed: Number(current.total || 0)
+            ? Number(current.total || 0)
+            : Number(legacy.total || 0),
+          altered: Number(current.total || 0)
+            ? Number(current.altered || 0)
+            : Number(legacy.altered || 0),
+          resultWorkers: Number(current.total || 0)
+            ? Number(current.workers || 0)
+            : Number(legacy.workers || 0),
+        },
         examKinds: rowsOf(kindsResult),
         encounters: rowsOf(encountersResult)[0] || {},
         certificates: rowsOf(certificatesResult)[0] || {},
         monitoring: rowsOf(monitoringResult)[0] || {},
       };
-      const narrative = `No período de ${input.periodStart} a ${input.periodEnd}, foram registrados ${Number(metrics.exams.total || 0)} exames ocupacionais para ${Number(metrics.exams.workers || 0)} trabalhador(es), ${Number(metrics.encounters.total || 0)} atendimento(s) e ${Number(metrics.certificates.total || 0)} atestado(s). Foram contabilizados ${Number(metrics.certificates.days_lost || 0)} dia(s) e ${Number(metrics.certificates.hours_lost || 0)} hora(s) de afastamento. Os dados devem ser interpretados pelo médico responsável em conjunto com o PGR, perfil epidemiológico e qualidade dos registros disponíveis.`;
+      const narrative = `No período de ${input.periodStart} a ${input.periodEnd}, o PCMSO previa ${Number(metrics.exams.plannedAssignments || 0)} procedimento(s) ocupacional(is), de ${Number(metrics.exams.examTypes || 0)} tipo(s), para ${Number(metrics.exams.workers || 0)} trabalhador(es) vinculados a ${Number(metrics.exams.gses || 0)} GSE(s). Foram registrados ${Number(metrics.exams.performed || 0)} resultado(s), ${Number(metrics.encounters.total || 0)} atendimento(s) e ${Number(metrics.certificates.total || 0)} atestado(s). Foram contabilizados ${Number(metrics.certificates.days_lost || 0)} dia(s) e ${Number(metrics.certificates.hours_lost || 0)} hora(s) de afastamento. Os dados devem ser interpretados pelo médico responsável em conjunto com o PGR, o perfil epidemiológico e a qualidade dos registros disponíveis.`;
       const recommendations = Number(metrics.monitoring.pending || 0)
         ? `Revisar ${Number(metrics.monitoring.pending)} risco(s) ainda sem decisão médica e avaliar tendências antes da apresentação ao SESMT/CIPA.`
         : "Manter o acompanhamento periódico, comparar a evolução com o período anterior e comunicar ao PGR alterações relevantes identificadas na análise médica consolidada.";
@@ -1539,7 +1686,7 @@ export const medicalRouter = router({
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       await db.execute(
-        drzSql`UPDATE pcmso_analytical_reports_v2 SET narrative=${input.narrative},recommendations=${input.recommendations},status=${input.status},reviewed_by=${Number(ctx.user.id)},reviewed_at=NOW() WHERE id=${input.id} AND company_id=${companyId}`
+        drzSql`UPDATE pcmso_analytical_reports_v2 SET narrative=${input.narrative},recommendations=${input.recommendations},status=${input.status},reviewed_by=${Number(ctx.user.id)},reviewed_at=NOW() WHERE id=${input.id} AND company_id=${companyId} AND status<>'descartado'`
       );
       await audit(
         db,
@@ -1551,6 +1698,40 @@ export const medicalRouter = router({
         {
           status: input.status,
         }
+      );
+      return { ok: true };
+    }),
+
+  discardAnalyticalReport: protectedProcedure
+    .input(
+      z.object({
+        id: z.number().int().positive(),
+        reason: z.string().min(10).max(2000),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      requireDoctor(ctx);
+      await ensureTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const own: any = await db.execute(
+        drzSql`SELECT id,pcmso_id,status FROM pcmso_analytical_reports_v2 WHERE id=${input.id} AND company_id=${companyId} LIMIT 1`
+      );
+      const report = rowsOf(own)[0];
+      if (!report) throw new TRPCError({ code: "NOT_FOUND" });
+      if (report.status === "descartado") return { ok: true };
+      await db.execute(
+        drzSql`UPDATE pcmso_analytical_reports_v2 SET status='descartado',discarded_at=NOW(),discarded_by=${Number(ctx.user.id)},discard_reason=${input.reason} WHERE id=${input.id} AND company_id=${companyId}`
+      );
+      await audit(
+        db,
+        ctx,
+        "pcmso_analytical_report_discarded",
+        "pcmso_report",
+        input.id,
+        null,
+        { pcmsoId: Number(report.pcmso_id), reason: input.reason }
       );
       return { ok: true };
     }),

@@ -9,9 +9,11 @@ import {
   FileText,
   Plus,
   RefreshCw,
+  Save,
   Send,
   ShieldCheck,
   Sparkles,
+  Trash2,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -38,12 +40,14 @@ type PcmsoWorkspaceProps = {
     periodEnd: string;
   }) => void;
   onReviewAnalytical: (payload: any) => void;
+  onDiscardAnalytical: (payload: { id: number; reason: string }) => void;
   onPgrReview: (payload: {
     gseName?: string;
     riskName?: string;
     description: string;
   }) => void;
   onSign: () => void;
+  onSave: () => void;
   onArchive: () => void;
   onPdf: () => void;
   busy: boolean;
@@ -109,6 +113,7 @@ function statusLabel(value: string) {
       vigente: "Vigente",
       arquivado: "Arquivado",
       aprovado: "Aprovado",
+      descartado: "Descartado",
     }[value] ||
     value ||
     "Não informado"
@@ -138,8 +143,10 @@ export default function PcmsoWorkspace({
   onAudit,
   onAnalyticalReport,
   onReviewAnalytical,
+  onDiscardAnalytical,
   onPgrReview,
   onSign,
+  onSave,
   onArchive,
   onPdf,
   busy,
@@ -261,6 +268,9 @@ export default function PcmsoWorkspace({
               <div className="flex flex-wrap gap-2">
                 <Button size="sm" variant="outline" onClick={onEdit}>
                   Editar conteúdo
+                </Button>
+                <Button size="sm" disabled={busy} onClick={onSave}>
+                  <Save className="mr-1" size={14} /> Salvar PCMSO
                 </Button>
                 <Button size="sm" variant="outline" onClick={onAnnex}>
                   Anexar documento
@@ -472,16 +482,23 @@ export default function PcmsoWorkspace({
               </label>
               <Button
                 className="self-end"
-                disabled={busy || !periodStart || !periodEnd}
+                disabled={
+                  busy || !periodStart || !periodEnd || periodEnd < periodStart
+                }
                 onClick={() => onAnalyticalReport({ periodStart, periodEnd })}
               >
                 <FileText className="mr-1" size={14} /> Gerar relatório
               </Button>
             </div>
+            {periodStart && periodEnd && periodEnd < periodStart ? (
+              <p className="mt-2 text-xs font-medium text-rose-700">
+                A data final deve ser igual ou posterior à data inicial.
+              </p>
+            ) : null}
             <div className="mt-4 divide-y border">
               {(data?.analyticalReports || []).map((report: any) => (
                 <div
-                  className="grid gap-3 p-3 md:grid-cols-[1fr_auto]"
+                  className={`grid gap-3 p-3 md:grid-cols-[1fr_auto] ${report.status === "descartado" ? "bg-slate-50 opacity-70" : ""}`}
                   key={report.id}
                 >
                   <div>
@@ -499,23 +516,62 @@ export default function PcmsoWorkspace({
                     <p className="mt-2 whitespace-pre-wrap text-xs text-slate-500">
                       Recomendações: {report.recommendations}
                     </p>
+                    {report.metrics?.exams ? (
+                      <p className="mt-2 text-xs font-medium text-teal-800">
+                        {Number(report.metrics.exams.plannedAssignments || 0)}{" "}
+                        procedimento(s) previsto(s) ·{" "}
+                        {Number(report.metrics.exams.workers || 0)}{" "}
+                        trabalhador(es) ·{" "}
+                        {Number(report.metrics.exams.performed || 0)}{" "}
+                        resultado(s)
+                      </p>
+                    ) : null}
+                    {report.status === "descartado" ? (
+                      <p className="mt-2 text-xs text-slate-500">
+                        Versão descartada:{" "}
+                        {report.discard_reason ||
+                          "motivo registrado na auditoria"}
+                        .
+                      </p>
+                    ) : null}
                   </div>
-                  {report.status !== "aprovado" ? (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() =>
-                        onReviewAnalytical({
-                          id: Number(report.id),
-                          narrative: report.narrative || "",
-                          recommendations: report.recommendations || "",
-                          status: "aprovado",
-                        })
-                      }
-                    >
-                      <CheckCircle2 className="mr-1" size={14} /> Aprovar
-                    </Button>
-                  ) : null}
+                  <div className="flex flex-col gap-2">
+                    {!["aprovado", "descartado"].includes(report.status) ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() =>
+                          onReviewAnalytical({
+                            id: Number(report.id),
+                            narrative: report.narrative || "",
+                            recommendations: report.recommendations || "",
+                            status: "aprovado",
+                          })
+                        }
+                      >
+                        <CheckCircle2 className="mr-1" size={14} /> Aprovar
+                      </Button>
+                    ) : null}
+                    {report.status !== "descartado" ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="text-rose-700"
+                        onClick={() => {
+                          const reason = window.prompt(
+                            "Confirme o descarte informando o motivo. O histórico de auditoria será preservado."
+                          );
+                          if (reason && reason.trim().length >= 10)
+                            onDiscardAnalytical({
+                              id: Number(report.id),
+                              reason: reason.trim(),
+                            });
+                        }}
+                      >
+                        <Trash2 className="mr-1" size={14} /> Descartar
+                      </Button>
+                    ) : null}
+                  </div>
                 </div>
               ))}
               {!data?.analyticalReports?.length ? (

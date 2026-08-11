@@ -19,6 +19,7 @@ import {
   normalizeGseCode,
   orderLabel,
 } from "./occupationalLifecycle";
+import { classifyExamPlanning } from "./occupationalExamPlanning";
 import { protectedProcedure, router } from "./trpc";
 
 let occupationalTablesReady = false;
@@ -459,6 +460,24 @@ export async function ensureOccupationalTables() {
     "occupational_exam_orders",
     "procedure_kind",
     "VARCHAR(40) NOT NULL DEFAULT 'exame_complementar'"
+  );
+  await ensureColumn(
+    db,
+    "occupational_exam_orders",
+    "exercise_year",
+    "INT NULL"
+  );
+  await ensureColumn(
+    db,
+    "occupational_exam_orders",
+    "request_type",
+    "VARCHAR(30) NOT NULL DEFAULT 'normal'"
+  );
+  await ensureColumn(
+    db,
+    "occupational_exam_orders",
+    "repeat_justification",
+    "TEXT NULL"
   );
 
   await db.execute(drzSql`CREATE TABLE IF NOT EXISTS occupational_exam_order_communications (
@@ -1113,6 +1132,27 @@ function esc(value: any) {
   );
 }
 
+function privateImageDataUri(storedPath: unknown) {
+  const value = String(storedPath || "").trim();
+  if (!value) return "";
+  const candidates = [
+    value,
+    value.startsWith("/uploads/")
+      ? path.join(process.cwd(), value.replace(/^\/+/, ""))
+      : "",
+  ].filter(Boolean);
+  const filePath = candidates.find(candidate => fs.existsSync(candidate));
+  if (!filePath) return "";
+  const extension = path.extname(filePath).toLowerCase();
+  const mime =
+    extension === ".png"
+      ? "image/png"
+      : extension === ".webp"
+        ? "image/webp"
+        : "image/jpeg";
+  return `data:${mime};base64,${fs.readFileSync(filePath).toString("base64")}`;
+}
+
 async function renderPdf(
   companyId: number,
   folder: string,
@@ -1178,6 +1218,79 @@ async function detectMovements(db: any, companyId: number) {
 }
 
 const dateInput = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+
+async function loadPcmsoOrderSource(
+  db: any,
+  companyId: number,
+  collaboratorId: number,
+  monitoringId: number,
+  clinicalExamId: number
+) {
+  const result: any = await db.execute(
+    drzSql`SELECT u.id collaborator_id,u.name collaborator_name,u.cpf,u.employee_registration,
+      h.gse_id,g.code gse_code,g.name gse_name,m.id monitoring_id,m.pcmso_id,
+      m.monitoring_kind,CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END exam_id,
+      e.name exam_name,p.title pcmso_title,p.status pcmso_status
+    FROM users u
+    JOIN occupational_gse_worker_history h ON h.collaborator_id=u.id AND h.company_id=u.company_id AND h.is_current=1
+    JOIN occupational_gse_master g ON g.id=h.gse_id AND g.company_id=u.company_id
+    JOIN pcmso_risk_monitoring_v2 m ON m.id=${monitoringId} AND m.company_id=u.company_id
+      AND m.monitoring_kind IN ('avaliacao_clinica','exame_complementar')
+      AND (m.monitoring_kind='avaliacao_clinica' OR m.exam_id IS NOT NULL)
+      AND m.suggestion_status IN ('aprovada','editada')
+    LEFT JOIN occupational_gse_pgr_links l ON l.company_id=m.company_id AND l.pgr_gse_id=m.pgr_gse_id
+    JOIN pcmso_programs_v2 p ON p.id=m.pcmso_id AND p.company_id=u.company_id
+      AND p.status IN ('em_revisao','vigente') AND (p.saved_at IS NOT NULL OR p.status='vigente')
+    JOIN pcmso_exam_catalog_v2 e ON e.id=(CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END)
+      AND e.company_id=u.company_id AND e.is_active=1
+    WHERE u.id=${collaboratorId} AND u.company_id=${companyId} AND ${drzSql.raw(activeEmployeeSql("u"))}
+      AND COALESCE(m.master_gse_id,l.gse_id)=h.gse_id
+    LIMIT 1`
+  );
+  return rowsOf(result)[0] || null;
+}
+
+async function loadExamEvidence(
+  db: any,
+  companyId: number,
+  source: any,
+  exerciseYear: number
+) {
+  const currentResult: any = await db.execute(
+    drzSql`SELECT COUNT(*) total,MAX(performed_at) latest_result_at
+      FROM occupational_exam_results
+      WHERE company_id=${companyId} AND collaborator_id=${Number(source.collaborator_id)}
+        AND exam_id=${Number(source.exam_id)} AND YEAR(performed_at)=${exerciseYear}`
+  );
+  let resultCount = Number(rowsOf(currentResult)[0]?.total || 0);
+  let latestResultAt = rowsOf(currentResult)[0]?.latest_result_at || null;
+  if (source.monitoring_kind === "avaliacao_clinica") {
+    const legacyResult: any = await db.execute(
+      drzSql`SELECT COUNT(*) total,MAX(performed_at) latest_result_at
+        FROM medical_occupational_exams_v2
+        WHERE company_id=${companyId} AND collaborator_id=${Number(source.collaborator_id)}
+          AND pcmso_id=${Number(source.pcmso_id)} AND YEAR(performed_at)=${exerciseYear}`
+    );
+    const legacy = rowsOf(legacyResult)[0] || {};
+    resultCount += Number(legacy.total || 0);
+    latestResultAt = latestResultAt || legacy.latest_result_at || null;
+  }
+  const requestResult: any = await db.execute(
+    drzSql`SELECT COUNT(*) total,MAX(issue_date) latest_request_at
+      FROM occupational_exam_orders
+      WHERE company_id=${companyId} AND collaborator_id=${Number(source.collaborator_id)}
+        AND exam_id=${Number(source.exam_id)}
+        AND (exercise_year=${exerciseYear} OR (exercise_year IS NULL AND YEAR(issue_date)=${exerciseYear}))
+        AND status<>'cancelada'`
+  );
+  const requests = rowsOf(requestResult)[0] || {};
+  return {
+    resultCount,
+    latestResultAt,
+    requestCount: Number(requests.total || 0),
+    latestRequestAt: requests.latest_request_at || null,
+  };
+}
 
 export const occupationalLifecycleRouter = router({
   dashboard: protectedProcedure.query(async ({ ctx }) => {
@@ -1914,12 +2027,13 @@ export const occupationalLifecycleRouter = router({
       FROM users u
       JOIN occupational_gse_worker_history h ON h.collaborator_id=u.id AND h.company_id=u.company_id AND h.is_current=1
       JOIN occupational_gse_master g ON g.id=h.gse_id AND g.company_id=u.company_id
-      JOIN pcmso_risk_monitoring_v2 m ON m.company_id=u.company_id AND m.master_gse_id=h.gse_id AND m.monitoring_kind IN ('avaliacao_clinica','exame_complementar') AND (m.monitoring_kind='avaliacao_clinica' OR m.exam_id IS NOT NULL) AND m.suggestion_status IN ('aprovada','editada')
-      JOIN pcmso_programs_v2 p ON p.id=m.pcmso_id AND p.company_id=u.company_id AND p.status='vigente' AND (p.valid_from IS NULL OR p.valid_from<=CURDATE()) AND (p.valid_until IS NULL OR p.valid_until>=CURDATE())
+      JOIN pcmso_risk_monitoring_v2 m ON m.company_id=u.company_id AND m.monitoring_kind IN ('avaliacao_clinica','exame_complementar') AND (m.monitoring_kind='avaliacao_clinica' OR m.exam_id IS NOT NULL) AND m.suggestion_status IN ('aprovada','editada')
+      LEFT JOIN occupational_gse_pgr_links l ON l.company_id=m.company_id AND l.pgr_gse_id=m.pgr_gse_id
+      JOIN pcmso_programs_v2 p ON p.id=m.pcmso_id AND p.company_id=u.company_id AND p.status IN ('em_revisao','vigente') AND (p.saved_at IS NOT NULL OR p.status='vigente') AND (p.valid_from IS NULL OR p.valid_from<=CURDATE()) AND (p.valid_until IS NULL OR p.valid_until>=CURDATE())
       LEFT JOIN pgr_documents pg ON pg.id=p.pgr_id AND pg.company_id=u.company_id
       JOIN pcmso_exam_catalog_v2 e ON e.id=(CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END) AND e.company_id=u.company_id AND e.is_active=1
       LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id
-      WHERE u.company_id=${companyId} AND ${activeEmployeeSql("u")}
+      WHERE u.company_id=${companyId} AND ${activeEmployeeSql("u")} AND COALESCE(m.master_gse_id,l.gse_id)=h.gse_id
       ORDER BY e.name,u.name`)
     );
     const unique = new Map<string, any>();
@@ -1942,6 +2056,102 @@ export const occupationalLifecycleRouter = router({
     }));
   }),
 
+  previewExamOrdersFromPcmso: protectedProcedure
+    .input(
+      z.object({
+        exerciseYear: z.number().int().min(2000).max(2100),
+        items: z
+          .array(
+            z.object({
+              collaboratorId: z.number().int().positive(),
+              monitoringId: z.number().int().positive(),
+              requestType: z.enum(["normal", "repeticao"]).default("normal"),
+              justification: z.string().max(5000).optional(),
+            })
+          )
+          .min(1)
+          .max(3000),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      requireOperational(ctx);
+      await ensureOccupationalTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const clinicalExamId = await ensureClinicalConsultationExam(
+        db,
+        companyId,
+        Number(ctx.user.id)
+      );
+      const rows: any[] = [];
+      const seen = new Set<string>();
+      for (const item of input.items) {
+        const key = `${item.collaboratorId}:${item.monitoringId}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const source = await loadPcmsoOrderSource(
+          db,
+          companyId,
+          item.collaboratorId,
+          item.monitoringId,
+          clinicalExamId
+        );
+        if (!source) {
+          const decision = classifyExamPlanning({
+            sourceAvailable: false,
+            resultCount: 0,
+            requestCount: 0,
+          });
+          rows.push({
+            collaboratorId: item.collaboratorId,
+            monitoringId: item.monitoringId,
+            ...decision,
+          });
+          continue;
+        }
+        const evidence = await loadExamEvidence(
+          db,
+          companyId,
+          source,
+          input.exerciseYear
+        );
+        const decision = classifyExamPlanning({
+          sourceAvailable: true,
+          resultCount: evidence.resultCount,
+          requestCount: evidence.requestCount,
+          requestKind: item.requestType,
+          justification: item.justification,
+        });
+        rows.push({
+          ...source,
+          collaboratorId: Number(source.collaborator_id),
+          monitoringId: Number(source.monitoring_id),
+          examId: Number(source.exam_id),
+          exerciseYear: input.exerciseYear,
+          ...evidence,
+          ...decision,
+          justification: item.justification || "",
+        });
+      }
+      const summary = rows.reduce(
+        (acc, row) => {
+          acc.analyzed++;
+          if (row.shouldGenerate) acc.toGenerate++;
+          else acc.notGenerated++;
+          acc.byStatus[row.status] = (acc.byStatus[row.status] || 0) + 1;
+          return acc;
+        },
+        {
+          analyzed: 0,
+          toGenerate: 0,
+          notGenerated: 0,
+          byStatus: {} as Record<string, number>,
+        }
+      );
+      return { exerciseYear: input.exerciseYear, rows, summary };
+    }),
+
   createExamOrdersFromPcmso: protectedProcedure
     .input(
       z.object({
@@ -1950,10 +2160,13 @@ export const occupationalLifecycleRouter = router({
             z.object({
               collaboratorId: z.number().int().positive(),
               monitoringId: z.number().int().positive(),
+              requestType: z.enum(["normal", "repeticao"]).default("normal"),
+              justification: z.string().max(5000).optional(),
             })
           )
           .min(1)
           .max(3000),
+        exerciseYear: z.number().int().min(2000).max(2100),
         providerId: z.number().int().positive().nullable().optional(),
         serviceMode: z
           .enum(["prestador", "in_loco", "outro"])
@@ -1964,7 +2177,7 @@ export const occupationalLifecycleRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      requireSesmt(ctx);
+      requireOperational(ctx);
       await ensureOccupationalTables();
       const db = await getDb();
       const companyId = companyOf(ctx);
@@ -1983,17 +2196,20 @@ export const occupationalLifecycleRouter = router({
       );
       let created = 0;
       let skipped = 0;
+      const skippedByReason: Record<string, number> = {};
       const ids: number[] = [];
       for (const item of input.items) {
-        const sourceResult: any =
-          await db.execute(drzSql`SELECT u.id collaborator_id,h.gse_id,m.id monitoring_id,m.pcmso_id,m.monitoring_kind,CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END exam_id
-          FROM users u JOIN occupational_gse_worker_history h ON h.collaborator_id=u.id AND h.company_id=u.company_id AND h.is_current=1
-          JOIN pcmso_risk_monitoring_v2 m ON m.id=${item.monitoringId} AND m.company_id=u.company_id AND m.master_gse_id=h.gse_id AND m.monitoring_kind IN ('avaliacao_clinica','exame_complementar') AND (m.monitoring_kind='avaliacao_clinica' OR m.exam_id IS NOT NULL) AND m.suggestion_status IN ('aprovada','editada')
-          JOIN pcmso_programs_v2 p ON p.id=m.pcmso_id AND p.company_id=u.company_id AND p.status='vigente' AND (p.valid_from IS NULL OR p.valid_from<=CURDATE()) AND (p.valid_until IS NULL OR p.valid_until>=CURDATE())
-          WHERE u.id=${item.collaboratorId} AND u.company_id=${companyId} AND ${drzSql.raw(activeEmployeeSql("u"))} LIMIT 1`);
-        const source = rowsOf(sourceResult)[0];
+        const source = await loadPcmsoOrderSource(
+          db,
+          companyId,
+          item.collaboratorId,
+          item.monitoringId,
+          clinicalExamId
+        );
         if (!source) {
           skipped++;
+          skippedByReason.fora_do_pcmso =
+            (skippedByReason.fora_do_pcmso || 0) + 1;
           continue;
         }
         await requireProviderSupportsExam(
@@ -2002,18 +2218,30 @@ export const occupationalLifecycleRouter = router({
           input.providerId,
           Number(source.exam_id)
         );
-        const activeOrder: any = await db.execute(
-          drzSql`SELECT id FROM occupational_exam_orders WHERE company_id=${companyId} AND collaborator_id=${item.collaboratorId} AND pcmso_id=${Number(source.pcmso_id)} AND exam_id=${Number(source.exam_id)} AND status IN ('pendente','enviada') ORDER BY created_at DESC LIMIT 1`
+        const evidence = await loadExamEvidence(
+          db,
+          companyId,
+          source,
+          input.exerciseYear
         );
-        if (rowsOf(activeOrder).length) {
+        const decision = classifyExamPlanning({
+          sourceAvailable: true,
+          resultCount: evidence.resultCount,
+          requestCount: evidence.requestCount,
+          requestKind: item.requestType,
+          justification: item.justification,
+        });
+        if (!decision.shouldGenerate) {
           skipped++;
+          skippedByReason[decision.status] =
+            (skippedByReason[decision.status] || 0) + 1;
           continue;
         }
-        const number = `REQ-${new Date().getFullYear()}-${String(Date.now()).slice(-8)}-${String(item.collaboratorId).padStart(5, "0")}-${crypto.randomBytes(2).toString("hex").toUpperCase()}`;
+        const number = `REQ-${input.exerciseYear}-${String(Date.now()).slice(-8)}-${String(item.collaboratorId).padStart(5, "0")}-${crypto.randomBytes(2).toString("hex").toUpperCase()}`;
         const inserted: any =
           await db.execute(drzSql`INSERT INTO occupational_exam_orders
-          (company_id,order_number,version_number,collaborator_id,gse_id,pcmso_id,monitoring_id,exam_id,procedure_kind,provider_id,service_mode,service_location,issue_date,valid_until,status,orientations,created_by)
-          VALUES (${companyId},${number},1,${item.collaboratorId},${Number(source.gse_id)},${Number(source.pcmso_id)},${Number(source.monitoring_id)},${Number(source.exam_id)},${source.monitoring_kind === "avaliacao_clinica" ? "consulta_clinica" : "exame_complementar"},${input.providerId || null},${input.serviceMode},${input.serviceLocation || null},CURDATE(),${input.validUntil},'pendente',${input.orientations || null},${Number(ctx.user.id)})`);
+          (company_id,order_number,version_number,collaborator_id,gse_id,pcmso_id,monitoring_id,exam_id,procedure_kind,exercise_year,request_type,repeat_justification,provider_id,service_mode,service_location,issue_date,valid_until,status,orientations,created_by)
+          VALUES (${companyId},${number},1,${item.collaboratorId},${Number(source.gse_id)},${Number(source.pcmso_id)},${Number(source.monitoring_id)},${Number(source.exam_id)},${source.monitoring_kind === "avaliacao_clinica" ? "consulta_clinica" : "exame_complementar"},${input.exerciseYear},${decision.requestKind},${decision.requestKind === "repeticao" ? item.justification || null : null},${input.providerId || null},${input.serviceMode},${input.serviceLocation || null},CURDATE(),${input.validUntil},'pendente',${input.orientations || null},${Number(ctx.user.id)})`);
         const id = Number((inserted as any)[0]?.insertId || 0);
         ids.push(id);
         created++;
@@ -2028,6 +2256,12 @@ export const occupationalLifecycleRouter = router({
             monitoringId: item.monitoringId,
             examId: Number(source.exam_id),
             pcmsoId: Number(source.pcmso_id),
+            exerciseYear: input.exerciseYear,
+            requestType: decision.requestKind,
+            justification:
+              decision.requestKind === "repeticao"
+                ? item.justification || null
+                : null,
             procedureKind:
               source.monitoring_kind === "avaliacao_clinica"
                 ? "consulta_clinica"
@@ -2035,7 +2269,7 @@ export const occupationalLifecycleRouter = router({
           }
         );
       }
-      return { ok: true, created, skipped, ids };
+      return { ok: true, created, skipped, skippedByReason, ids };
     }),
 
   createExamOrders: protectedProcedure
@@ -2043,6 +2277,9 @@ export const occupationalLifecycleRouter = router({
       z.object({
         collaboratorIds: z.array(z.number().int().positive()).min(1).max(3000),
         examId: z.number().int().positive(),
+        exerciseYear: z.number().int().min(2000).max(2100),
+        requestType: z.enum(["normal", "repeticao"]).default("normal"),
+        justification: z.string().max(5000).optional(),
         pcmsoId: z.number().int().positive().nullable().optional(),
         providerId: z.number().int().positive().nullable().optional(),
         serviceMode: z
@@ -2054,7 +2291,7 @@ export const occupationalLifecycleRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      requireSesmt(ctx);
+      requireOperational(ctx);
       await ensureOccupationalTables();
       const db = await getDb();
       const companyId = companyOf(ctx);
@@ -2075,6 +2312,8 @@ export const occupationalLifecycleRouter = router({
       );
       await requireOwnedEntity(db, companyId, "pcmso", input.pcmsoId, "PCMSO");
       let created = 0;
+      let skipped = 0;
+      const skippedByReason: Record<string, number> = {};
       const ids: number[] = [];
       for (const collaboratorId of [...new Set(input.collaboratorIds)]) {
         const worker: any = await db.execute(
@@ -2082,11 +2321,30 @@ export const occupationalLifecycleRouter = router({
         );
         const row = rowsOf(worker)[0];
         if (!row) continue;
-        const number = `REQ-${new Date().getFullYear()}-${String(Date.now()).slice(-8)}-${String(collaboratorId).padStart(5, "0")}-${crypto.randomBytes(2).toString("hex").toUpperCase()}`;
+        const resultEvidence: any = await db.execute(
+          drzSql`SELECT COUNT(*) total FROM occupational_exam_results WHERE company_id=${companyId} AND collaborator_id=${collaboratorId} AND exam_id=${input.examId} AND YEAR(performed_at)=${input.exerciseYear}`
+        );
+        const requestEvidence: any = await db.execute(
+          drzSql`SELECT COUNT(*) total FROM occupational_exam_orders WHERE company_id=${companyId} AND collaborator_id=${collaboratorId} AND exam_id=${input.examId} AND (exercise_year=${input.exerciseYear} OR (exercise_year IS NULL AND YEAR(issue_date)=${input.exerciseYear})) AND status<>'cancelada'`
+        );
+        const decision = classifyExamPlanning({
+          sourceAvailable: true,
+          resultCount: Number(rowsOf(resultEvidence)[0]?.total || 0),
+          requestCount: Number(rowsOf(requestEvidence)[0]?.total || 0),
+          requestKind: input.requestType,
+          justification: input.justification,
+        });
+        if (!decision.shouldGenerate) {
+          skipped++;
+          skippedByReason[decision.status] =
+            (skippedByReason[decision.status] || 0) + 1;
+          continue;
+        }
+        const number = `REQ-${input.exerciseYear}-${String(Date.now()).slice(-8)}-${String(collaboratorId).padStart(5, "0")}-${crypto.randomBytes(2).toString("hex").toUpperCase()}`;
         const result: any =
           await db.execute(drzSql`INSERT INTO occupational_exam_orders
-          (company_id,order_number,version_number,collaborator_id,gse_id,pcmso_id,exam_id,provider_id,service_mode,service_location,issue_date,valid_until,status,orientations,created_by)
-          VALUES (${companyId},${number},1,${collaboratorId},${row.gse_id || null},${input.pcmsoId || null},${input.examId},${input.providerId || null},${input.serviceMode},${input.serviceLocation || null},CURDATE(),${input.validUntil},'pendente',${input.orientations || null},${Number(ctx.user.id)})`);
+          (company_id,order_number,version_number,collaborator_id,gse_id,pcmso_id,exam_id,exercise_year,request_type,repeat_justification,provider_id,service_mode,service_location,issue_date,valid_until,status,orientations,created_by)
+          VALUES (${companyId},${number},1,${collaboratorId},${row.gse_id || null},${input.pcmsoId || null},${input.examId},${input.exerciseYear},${decision.requestKind},${decision.requestKind === "repeticao" ? input.justification || null : null},${input.providerId || null},${input.serviceMode},${input.serviceLocation || null},CURDATE(),${input.validUntil},'pendente',${input.orientations || null},${Number(ctx.user.id)})`);
         const id = Number((result as any)[0]?.insertId || 0);
         ids.push(id);
         await audit(
@@ -2096,11 +2354,20 @@ export const occupationalLifecycleRouter = router({
           "exam_order",
           id,
           collaboratorId,
-          { examId: input.examId, providerId: input.providerId || null }
+          {
+            examId: input.examId,
+            providerId: input.providerId || null,
+            exerciseYear: input.exerciseYear,
+            requestType: decision.requestKind,
+            justification:
+              decision.requestKind === "repeticao"
+                ? input.justification || null
+                : null,
+          }
         );
         created++;
       }
-      return { ok: true, created, ids };
+      return { ok: true, created, skipped, skippedByReason, ids };
     }),
 
   reissueExamOrder: protectedProcedure
@@ -2158,8 +2425,8 @@ export const occupationalLifecycleRouter = router({
       const number = `REQ-${new Date().getFullYear()}-${String(Date.now()).slice(-10)}-${version}`;
       const inserted: any =
         await db.execute(drzSql`INSERT INTO occupational_exam_orders
-        (company_id,order_number,parent_order_id,version_number,collaborator_id,gse_id,pcmso_id,monitoring_id,exam_id,provider_id,service_mode,service_location,issue_date,valid_until,status,reissue_reason,reissue_justification,orientations,created_by)
-        VALUES (${companyId},${number},${rootId},${version},${Number(original.collaborator_id)},${original.gse_id || null},${original.pcmso_id || null},${original.monitoring_id || null},${Number(original.exam_id)},${input.providerId || null},${input.serviceMode},${input.serviceLocation || null},CURDATE(),${input.validUntil},'pendente',${input.reason},${input.justification || null},${original.orientations || null},${Number(ctx.user.id)})`);
+        (company_id,order_number,parent_order_id,version_number,collaborator_id,gse_id,pcmso_id,monitoring_id,exam_id,procedure_kind,exercise_year,request_type,repeat_justification,provider_id,service_mode,service_location,issue_date,valid_until,status,reissue_reason,reissue_justification,orientations,created_by)
+        VALUES (${companyId},${number},${rootId},${version},${Number(original.collaborator_id)},${original.gse_id || null},${original.pcmso_id || null},${original.monitoring_id || null},${Number(original.exam_id)},${original.procedure_kind || "exame_complementar"},${original.exercise_year || new Date(original.issue_date).getFullYear()},${original.request_type || "normal"},${original.repeat_justification || null},${input.providerId || null},${input.serviceMode},${input.serviceLocation || null},CURDATE(),${input.validUntil},'pendente',${input.reason},${input.justification || null},${original.orientations || null},${Number(ctx.user.id)})`);
       const id = Number((inserted as any)[0]?.insertId || 0);
       await db.execute(
         drzSql`UPDATE occupational_exam_orders SET status='substituida' WHERE id=${input.id} AND company_id=${companyId}`
@@ -2185,12 +2452,19 @@ export const occupationalLifecycleRouter = router({
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       const result: any =
-        await db.execute(drzSql`SELECT o.*,u.name collaborator_name,u.cpf,u.employee_registration,u.position,b.name branch_name,s.name sector_name,c.name company_name,c.cnpj,g.code gse_code,g.name gse_name,e.name exam_name,p.trade_name provider_trade_name,p.legal_name provider_legal_name,p.address provider_address,pc.doctor_name,pc.doctor_crm
+        await db.execute(drzSql`SELECT o.*,u.name collaborator_name,u.cpf,u.employee_registration,u.position,b.name branch_name,s.name sector_name,c.name company_name,c.cnpj,g.code gse_code,g.name gse_name,e.name exam_name,p.trade_name provider_trade_name,p.legal_name provider_legal_name,p.address provider_address,pc.doctor_name,pc.doctor_crm,pc.doctor_signature_private_path
         FROM occupational_exam_orders o JOIN users u ON u.id=o.collaborator_id JOIN companies c ON c.id=o.company_id LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id LEFT JOIN occupational_gse_master g ON g.id=o.gse_id JOIN pcmso_exam_catalog_v2 e ON e.id=o.exam_id LEFT JOIN occupational_health_providers p ON p.id=o.provider_id LEFT JOIN pcmso_programs_v2 pc ON pc.id=o.pcmso_id WHERE o.id=${input.id} AND o.company_id=${companyId} LIMIT 1`);
       const row = rowsOf(result)[0];
       if (!row) throw new TRPCError({ code: "NOT_FOUND" });
       const version = Number(row.version_number || 1);
-      const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>@page{size:A4;margin:18mm}body{font-family:Arial;color:#173047;font-size:10pt;line-height:1.45}header{border-bottom:4px solid #0895a5;padding-bottom:8mm;margin-bottom:10mm}h1{font-size:20pt;margin:0;color:#0e2c46}h2{font-size:12pt;color:#0e2c46;margin-top:8mm}.grid{display:grid;grid-template-columns:1fr 1fr;gap:3mm 8mm}.box{border:1px solid #d8e2e8;padding:4mm;margin-top:5mm}.tag{display:inline-block;background:#e6f7f8;color:#087583;padding:2mm 3mm;font-weight:bold}.sign{margin-top:22mm;text-align:center}.line{border-top:1px solid #173047;width:85mm;margin:auto}</style></head><body><header><h1>REQUISIÇÃO DE EXAME OCUPACIONAL${version > 1 ? ` - ${esc(orderLabel(version).toUpperCase())}` : ""}</h1><p><b>${esc(row.company_name)}</b><br>CNPJ: ${esc(row.cnpj || "-")}</p></header><span class="tag">${esc(row.order_number)} · válida até ${esc(row.valid_until)}</span><h2>Trabalhador</h2><div class="grid"><div><b>Nome:</b> ${esc(row.collaborator_name)}</div><div><b>CPF:</b> ${esc(row.cpf || "-")}</div><div><b>Matrícula:</b> ${esc(row.employee_registration || "-")}</div><div><b>Cargo:</b> ${esc(row.position || "-")}</div><div><b>Filial:</b> ${esc(row.branch_name || "-")}</div><div><b>Setor:</b> ${esc(row.sector_name || "-")}</div><div><b>GSE:</b> ${esc([row.gse_code, row.gse_name].filter(Boolean).join(" - ") || "-")}</div></div><div class="box"><h2>Exame solicitado</h2><p style="font-size:16pt"><b>${esc(row.exam_name)}</b></p><p><b>Prestador:</b> ${esc(row.provider_trade_name || row.provider_legal_name || "A definir")}<br><b>Local:</b> ${esc(row.service_location || row.provider_address || "A definir")}<br><b>Orientações:</b> ${esc(row.orientations || "Seguir as orientações do prestador.")}</p></div>${version > 1 ? `<p><b>Documento versionado:</b> esta é a ${esc(orderLabel(version))} da requisição ${esc(row.parent_order_id)}. A versão anterior permanece no histórico.</p>` : ""}<div class="sign"><div class="line"></div><b>${esc(row.doctor_name || "Responsável pelo PCMSO")}</b><br>${esc(row.doctor_crm || "CRM não informado")}</div></body></html>`;
+      const signatureImage = privateImageDataUri(
+        row.doctor_signature_private_path
+      );
+      const requestDetails =
+        row.request_type === "repeticao"
+          ? `<p><b>Tipo da solicitação:</b> REPETIÇÃO DE EXAME<br><b>Justificativa:</b> ${esc(row.repeat_justification || "Não informada")}</p>`
+          : `<p><b>Tipo da solicitação:</b> Requisição normal</p>`;
+      const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>@page{size:A4;margin:18mm}body{font-family:Arial;color:#173047;font-size:10pt;line-height:1.45}header{border-bottom:4px solid #0895a5;padding-bottom:8mm;margin-bottom:10mm}h1{font-size:20pt;margin:0;color:#0e2c46}h2{font-size:12pt;color:#0e2c46;margin-top:8mm}.grid{display:grid;grid-template-columns:1fr 1fr;gap:3mm 8mm}.box{border:1px solid #d8e2e8;padding:4mm;margin-top:5mm}.tag{display:inline-block;background:#e6f7f8;color:#087583;padding:2mm 3mm;font-weight:bold}.sign{margin-top:18mm;text-align:center}.sign img{display:block;max-width:65mm;max-height:24mm;object-fit:contain;margin:0 auto 1mm}.line{border-top:1px solid #173047;width:85mm;margin:auto}</style></head><body><header><h1>REQUISIÇÃO DE EXAME OCUPACIONAL${version > 1 ? ` - ${esc(orderLabel(version).toUpperCase())}` : ""}</h1><p><b>${esc(row.company_name)}</b><br>CNPJ: ${esc(row.cnpj || "-")}</p></header><span class="tag">${esc(row.order_number)} · Exercício ${esc(row.exercise_year || new Date(row.issue_date).getFullYear())} · válida até ${esc(row.valid_until)}</span><h2>Trabalhador</h2><div class="grid"><div><b>Nome:</b> ${esc(row.collaborator_name)}</div><div><b>CPF:</b> ${esc(row.cpf || "-")}</div><div><b>Matrícula:</b> ${esc(row.employee_registration || "-")}</div><div><b>Cargo:</b> ${esc(row.position || "-")}</div><div><b>Filial:</b> ${esc(row.branch_name || "-")}</div><div><b>Setor:</b> ${esc(row.sector_name || "-")}</div><div><b>GSE:</b> ${esc([row.gse_code, row.gse_name].filter(Boolean).join(" - ") || "-")}</div></div><div class="box"><h2>Exame solicitado</h2><p style="font-size:16pt"><b>${esc(row.exam_name)}</b></p>${requestDetails}<p><b>Prestador:</b> ${esc(row.provider_trade_name || row.provider_legal_name || "A definir")}<br><b>Local:</b> ${esc(row.service_location || row.provider_address || "A definir")}<br><b>Orientações:</b> ${esc(row.orientations || "Seguir as orientações do prestador.")}</p></div>${version > 1 ? `<p><b>Documento versionado:</b> esta é a ${esc(orderLabel(version))} da requisição ${esc(row.parent_order_id)}. A versão anterior permanece no histórico.</p>` : ""}<div class="sign">${signatureImage ? `<img src="${signatureImage}" alt="Assinatura do médico responsável">` : ""}<div class="line"></div><b>${esc(row.doctor_name || "Responsável pelo PCMSO")}</b><br>${esc(row.doctor_crm || "CRM não informado")}</div></body></html>`;
       const fileName = `requisicao_${String(row.order_number).replace(/[^a-zA-Z0-9_-]/g, "_")}.pdf`;
       const target = await renderPdf(companyId, "exam-orders", fileName, html);
       await db.execute(
@@ -2222,19 +2496,25 @@ export const occupationalLifecycleRouter = router({
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       const ids = [...new Set(input.ids)].join(",");
       const result: any = await db.execute(
-        drzSql.raw(`SELECT o.*,u.name collaborator_name,u.cpf,u.employee_registration,u.position,b.name branch_name,s.name sector_name,c.name company_name,c.cnpj,g.code gse_code,g.name gse_name,e.name exam_name,p.trade_name provider_trade_name,p.legal_name provider_legal_name,p.address provider_address,pc.doctor_name,pc.doctor_crm
+        drzSql.raw(`SELECT o.*,u.name collaborator_name,u.cpf,u.employee_registration,u.position,b.name branch_name,s.name sector_name,c.name company_name,c.cnpj,g.code gse_code,g.name gse_name,e.name exam_name,p.trade_name provider_trade_name,p.legal_name provider_legal_name,p.address provider_address,pc.doctor_name,pc.doctor_crm,pc.doctor_signature_private_path
         FROM occupational_exam_orders o JOIN users u ON u.id=o.collaborator_id JOIN companies c ON c.id=o.company_id LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id LEFT JOIN occupational_gse_master g ON g.id=o.gse_id JOIN pcmso_exam_catalog_v2 e ON e.id=o.exam_id LEFT JOIN occupational_health_providers p ON p.id=o.provider_id LEFT JOIN pcmso_programs_v2 pc ON pc.id=o.pcmso_id
         WHERE o.company_id=${companyId} AND o.id IN (${ids}) ORDER BY e.name,u.name`)
       );
       const rows = rowsOf(result);
       if (!rows.length) throw new TRPCError({ code: "NOT_FOUND" });
       const pages = rows
-        .map(
-          (row: any) =>
-            `<section class="page"><header><h1>REQUISIÇÃO DE EXAME OCUPACIONAL</h1><p><b>${esc(row.company_name)}</b> · CNPJ ${esc(row.cnpj || "-")}</p></header><p class="tag">${esc(row.order_number)} · ${esc(orderLabel(Number(row.version_number || 1)))} · válida até ${esc(row.valid_until)}</p><h2>${esc(row.exam_name)}</h2><div class="grid"><div><b>Trabalhador:</b> ${esc(row.collaborator_name)}</div><div><b>CPF:</b> ${esc(row.cpf || "-")}</div><div><b>Matrícula:</b> ${esc(row.employee_registration || "-")}</div><div><b>Cargo:</b> ${esc(row.position || "-")}</div><div><b>Filial:</b> ${esc(row.branch_name || "-")}</div><div><b>Setor:</b> ${esc(row.sector_name || "-")}</div><div><b>GSE:</b> ${esc([row.gse_code, row.gse_name].filter(Boolean).join(" - ") || "-")}</div></div><div class="box"><b>Prestador:</b> ${esc(row.provider_trade_name || row.provider_legal_name || "A definir")}<br><b>Local:</b> ${esc(row.service_location || row.provider_address || "A definir")}<br><b>Orientações:</b> ${esc(row.orientations || "Seguir as orientações do prestador.")}</div><div class="sign"><div></div><b>${esc(row.doctor_name || "Responsável pelo PCMSO")}</b><br>${esc(row.doctor_crm || "CRM não informado")}</div></section>`
-        )
+        .map((row: any) => {
+          const signatureImage = privateImageDataUri(
+            row.doctor_signature_private_path
+          );
+          const requestDetails =
+            row.request_type === "repeticao"
+              ? `<br><b>Tipo:</b> REPETIÇÃO DE EXAME<br><b>Justificativa:</b> ${esc(row.repeat_justification || "Não informada")}`
+              : `<br><b>Tipo:</b> Requisição normal`;
+          return `<section class="page"><header><h1>REQUISIÇÃO DE EXAME OCUPACIONAL</h1><p><b>${esc(row.company_name)}</b> · CNPJ ${esc(row.cnpj || "-")}</p></header><p class="tag">${esc(row.order_number)} · ${esc(orderLabel(Number(row.version_number || 1)))} · Exercício ${esc(row.exercise_year || new Date(row.issue_date).getFullYear())} · válida até ${esc(row.valid_until)}</p><h2>${esc(row.exam_name)}</h2><div class="grid"><div><b>Trabalhador:</b> ${esc(row.collaborator_name)}</div><div><b>CPF:</b> ${esc(row.cpf || "-")}</div><div><b>Matrícula:</b> ${esc(row.employee_registration || "-")}</div><div><b>Cargo:</b> ${esc(row.position || "-")}</div><div><b>Filial:</b> ${esc(row.branch_name || "-")}</div><div><b>Setor:</b> ${esc(row.sector_name || "-")}</div><div><b>GSE:</b> ${esc([row.gse_code, row.gse_name].filter(Boolean).join(" - ") || "-")}</div></div><div class="box"><b>Prestador:</b> ${esc(row.provider_trade_name || row.provider_legal_name || "A definir")}<br><b>Local:</b> ${esc(row.service_location || row.provider_address || "A definir")}<br><b>Orientações:</b> ${esc(row.orientations || "Seguir as orientações do prestador.")}${requestDetails}</div><div class="sign">${signatureImage ? `<img src="${signatureImage}" alt="Assinatura do médico responsável">` : ""}<div></div><b>${esc(row.doctor_name || "Responsável pelo PCMSO")}</b><br>${esc(row.doctor_crm || "CRM não informado")}</div></section>`;
+        })
         .join("");
-      const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>@page{size:A4;margin:15mm}body{font-family:Arial;color:#173047;font-size:10pt}.page{break-after:page;min-height:255mm}.page:last-child{break-after:auto}header{border-bottom:4px solid #0895a5;padding-bottom:5mm}h1{font-size:18pt;margin:0}h2{font-size:16pt;margin-top:10mm}.tag{background:#e6f7f8;padding:3mm;font-weight:bold}.grid{display:grid;grid-template-columns:1fr 1fr;gap:4mm 8mm}.box{border:1px solid #d8e2e8;padding:5mm;margin-top:8mm}.sign{margin-top:24mm;text-align:center}.sign div{border-top:1px solid #173047;width:85mm;margin:auto}</style></head><body>${pages}</body></html>`;
+      const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>@page{size:A4;margin:15mm}body{font-family:Arial;color:#173047;font-size:10pt}.page{break-after:page;min-height:255mm}.page:last-child{break-after:auto}header{border-bottom:4px solid #0895a5;padding-bottom:5mm}h1{font-size:18pt;margin:0}h2{font-size:16pt;margin-top:10mm}.tag{background:#e6f7f8;padding:3mm;font-weight:bold}.grid{display:grid;grid-template-columns:1fr 1fr;gap:4mm 8mm}.box{border:1px solid #d8e2e8;padding:5mm;margin-top:8mm}.sign{margin-top:20mm;text-align:center}.sign img{display:block;max-width:65mm;max-height:24mm;object-fit:contain;margin:0 auto 1mm}.sign div{border-top:1px solid #173047;width:85mm;margin:auto}</style></head><body>${pages}</body></html>`;
       const examSlug = String(rows[0].exam_name || "exames")
         .normalize("NFD")
         .replace(/[\u0300-\u036f]/g, "")

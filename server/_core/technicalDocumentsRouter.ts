@@ -101,6 +101,7 @@ async function ensureTables() {
     responsible_profession VARCHAR(180) NULL,
     responsible_registration VARCHAR(120) NULL,
     responsible_art VARCHAR(180) NULL,
+    responsible_signature_url VARCHAR(700) NULL,
     pgr_synced_at DATETIME NULL,
     pgr_source_updated_at DATETIME NULL,
     review_required TINYINT(1) NOT NULL DEFAULT 0,
@@ -117,6 +118,11 @@ async function ensureTables() {
     INDEX idx_td_company_type (company_id, document_type),
     INDEX idx_td_pgr (pgr_id)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  try {
+    await db.execute(
+      drzSql`ALTER TABLE technical_documents_v2 ADD COLUMN responsible_signature_url VARCHAR(700) NULL AFTER responsible_art`
+    );
+  } catch {}
   await db.execute(drzSql`CREATE TABLE IF NOT EXISTS technical_document_risks_v2 (
     id INT AUTO_INCREMENT PRIMARY KEY,
     company_id INT NOT NULL,
@@ -256,6 +262,27 @@ function esc(value: any) {
         char
       ] || char
   );
+}
+
+function signatureDataUri(storedPath: unknown) {
+  const value = String(storedPath || "").trim();
+  if (!value) return "";
+  const candidates = [
+    value,
+    value.startsWith("/uploads/")
+      ? path.join(process.cwd(), value.replace(/^\/+/, ""))
+      : "",
+  ].filter(Boolean);
+  const filePath = candidates.find(candidate => fs.existsSync(candidate));
+  if (!filePath) return "";
+  const extension = path.extname(filePath).toLowerCase();
+  const mime =
+    extension === ".png"
+      ? "image/png"
+      : extension === ".webp"
+        ? "image/webp"
+        : "image/jpeg";
+  return `data:${mime};base64,${fs.readFileSync(filePath).toString("base64")}`;
 }
 
 const typeSchema = z.enum(["ltcat", "insalubridade", "periculosidade"]);
@@ -512,6 +539,17 @@ export const technicalDocumentsRouter = router({
       const companyResult: any = await db.execute(
         drzSql`SELECT name FROM companies WHERE id=${companyId} LIMIT 1`
       );
+      const responsibleResult: any = await db.execute(
+        drzSql`SELECT name,profession,registration,art,signature_url FROM responsible_technicians WHERE company_id=${companyId} ORDER BY (registration=${input.responsibleRegistration || ""}) DESC,is_default DESC,id ASC LIMIT 1`
+      );
+      const responsible = rowsOf(responsibleResult)[0] || {};
+      const responsibleName = input.responsibleName || responsible.name || null;
+      const responsibleProfession =
+        input.responsibleProfession || responsible.profession || null;
+      const responsibleRegistration =
+        input.responsibleRegistration || responsible.registration || null;
+      const responsibleArt = input.responsibleArt || responsible.art || null;
+      const responsibleSignatureUrl = responsible.signature_url || null;
       const title =
         String(input.title || "").trim() ||
         buildTechnicalDocumentTitle({
@@ -530,14 +568,14 @@ export const technicalDocumentsRouter = router({
       if (id) {
         await ownedDocument(db, companyId, id);
         await db.execute(drzSql`UPDATE technical_documents_v2 SET
-          pgr_id=${input.pgrId || null},title=${title},valid_from=${input.validFrom || null},valid_until=${input.validUntil || null},objective=${objective},legal_basis=${input.legalBasis || null},methodology=${input.methodology || null},chapters_json=${JSON.stringify(input.chapters)},conclusion=${conclusion},responsible_name=${input.responsibleName || null},responsible_profession=${input.responsibleProfession || null},responsible_registration=${input.responsibleRegistration || null},responsible_art=${input.responsibleArt || null}
+          pgr_id=${input.pgrId || null},title=${title},valid_from=${input.validFrom || null},valid_until=${input.validUntil || null},objective=${objective},legal_basis=${input.legalBasis || null},methodology=${input.methodology || null},chapters_json=${JSON.stringify(input.chapters)},conclusion=${conclusion},responsible_name=${responsibleName},responsible_profession=${responsibleProfession},responsible_registration=${responsibleRegistration},responsible_art=${responsibleArt},responsible_signature_url=${responsibleSignatureUrl}
           WHERE id=${id} AND company_id=${companyId}`);
         await event(db, ctx, id, "document_updated");
       } else {
         const inserted: any =
           await db.execute(drzSql`INSERT INTO technical_documents_v2
-          (company_id,document_type,pgr_id,title,valid_from,valid_until,objective,legal_basis,methodology,chapters_json,conclusion,responsible_name,responsible_profession,responsible_registration,responsible_art,created_by)
-          VALUES (${companyId},${input.type},${input.pgrId || null},${title},${input.validFrom || null},${input.validUntil || null},${objective},${input.legalBasis || null},${input.methodology || null},${JSON.stringify(input.chapters)},${conclusion},${input.responsibleName || null},${input.responsibleProfession || null},${input.responsibleRegistration || null},${input.responsibleArt || null},${Number(ctx.user.id)})`);
+          (company_id,document_type,pgr_id,title,valid_from,valid_until,objective,legal_basis,methodology,chapters_json,conclusion,responsible_name,responsible_profession,responsible_registration,responsible_art,responsible_signature_url,created_by)
+          VALUES (${companyId},${input.type},${input.pgrId || null},${title},${input.validFrom || null},${input.validUntil || null},${objective},${input.legalBasis || null},${input.methodology || null},${JSON.stringify(input.chapters)},${conclusion},${responsibleName},${responsibleProfession},${responsibleRegistration},${responsibleArt},${responsibleSignatureUrl},${Number(ctx.user.id)})`);
         id = Number((inserted as any)[0]?.insertId || 0);
         await event(db, ctx, id, "document_created", { type: input.type });
       }
@@ -928,7 +966,10 @@ export const technicalDocumentsRouter = router({
               .join("")}</tbody></table>`
         )
         .join("");
-      const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>@page{size:A4;margin:18mm 15mm}body{font-family:Arial,sans-serif;color:#172b3a;font-size:10pt;line-height:1.45}h1{font-size:24pt;color:#0e2c46}h2{margin-top:9mm;color:#0e2c46;border-bottom:2px solid #0096a6;padding-bottom:2mm}h3{margin-top:7mm;color:#0e2c46}table{width:100%;border-collapse:collapse;font-size:7.6pt;margin:3mm 0 7mm}th,td{border:1px solid #d7e1e8;padding:2mm;vertical-align:top}th{background:#0e2c46;color:#fff}.cover{height:240mm;display:flex;flex-direction:column;justify-content:center;text-align:center;page-break-after:always}.meta{color:#607486}.signature{margin-top:18mm;text-align:center}.signature-line{border-top:1px solid #172b3a;width:80mm;margin:0 auto 2mm}.notice{border-left:3px solid #eab308;padding:3mm;background:#fffbeb;font-size:8.5pt}</style></head><body><section class="cover"><h1>${esc(document.title)}</h1><h2>${esc(document.company_name)}</h2><p>CNPJ: ${esc(document.cnpj || "-")}<br>Vigência: ${esc(document.valid_from || "-")} a ${esc(document.valid_until || "-")}</p><p class="meta">Documento técnico vinculado ao ${esc(document.pgr_title || "PGR não informado")}</p></section><h2>1. Identificação e objetivo</h2><p><b>Empresa:</b> ${esc(document.company_name)}<br><b>CNPJ:</b> ${esc(document.cnpj || "-")}<br><b>Endereço:</b> ${esc(document.address || "-")}<br><b>Responsável técnico:</b> ${esc(document.responsible_name || "-")} · ${esc(document.responsible_profession || "-")} · ${esc(document.responsible_registration || "-")}</p><p>${esc(document.objective || "")}</p><h2>2. Fundamentação legal e técnica</h2><p>${esc(document.legal_basis || "")}</p><h2>3. Metodologia</h2><p>${esc(document.methodology || "")}</p>${chapters.map((chapter, index) => `<h2>${index + 4}. ${esc(chapter.title)}</h2><p>${esc(chapter.content)}</p>`).join("")}<h2>Caracterização e avaliação por GSE</h2>${riskHtml}<h2>Conclusão técnica</h2><p>${esc(document.conclusion || "")}</p><div class="notice">Este documento reflete o escopo e os dados validados na versão indicada. Alterações no PGR, processos, ambientes ou controles podem exigir revisão técnica.</div><div class="signature"><div class="signature-line"></div><b>${esc(document.responsible_name || "Responsável técnico")}</b><br>${esc(document.responsible_registration || "Registro não informado")}<br>Hash: ${esc(document.signature_hash || "Documento ainda não assinado")}</div></body></html>`;
+      const signatureImage = signatureDataUri(
+        document.responsible_signature_url
+      );
+      const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>@page{size:A4;margin:18mm 15mm}body{font-family:Arial,sans-serif;color:#172b3a;font-size:10pt;line-height:1.45}h1{font-size:24pt;color:#0e2c46}h2{margin-top:9mm;color:#0e2c46;border-bottom:2px solid #0096a6;padding-bottom:2mm}h3{margin-top:7mm;color:#0e2c46}table{width:100%;border-collapse:collapse;font-size:7.6pt;margin:3mm 0 7mm}th,td{border:1px solid #d7e1e8;padding:2mm;vertical-align:top}th{background:#0e2c46;color:#fff}.cover{height:240mm;display:flex;flex-direction:column;justify-content:center;text-align:center;page-break-after:always}.meta{color:#607486}.signature{margin-top:18mm;text-align:center}.signature img{display:block;max-width:65mm;max-height:24mm;object-fit:contain;margin:0 auto 1mm}.signature-line{border-top:1px solid #172b3a;width:80mm;margin:0 auto 2mm}.notice{border-left:3px solid #eab308;padding:3mm;background:#fffbeb;font-size:8.5pt}</style></head><body><section class="cover"><h1>${esc(document.title)}</h1><h2>${esc(document.company_name)}</h2><p>CNPJ: ${esc(document.cnpj || "-")}<br>Vigência: ${esc(document.valid_from || "-")} a ${esc(document.valid_until || "-")}</p><p class="meta">Documento técnico vinculado ao ${esc(document.pgr_title || "PGR não informado")}</p></section><h2>1. Identificação e objetivo</h2><p><b>Empresa:</b> ${esc(document.company_name)}<br><b>CNPJ:</b> ${esc(document.cnpj || "-")}<br><b>Endereço:</b> ${esc(document.address || "-")}<br><b>Responsável técnico:</b> ${esc(document.responsible_name || "-")} · ${esc(document.responsible_profession || "-")} · ${esc(document.responsible_registration || "-")}</p><p>${esc(document.objective || "")}</p><h2>2. Fundamentação legal e técnica</h2><p>${esc(document.legal_basis || "")}</p><h2>3. Metodologia</h2><p>${esc(document.methodology || "")}</p>${chapters.map((chapter, index) => `<h2>${index + 4}. ${esc(chapter.title)}</h2><p>${esc(chapter.content)}</p>`).join("")}<h2>Caracterização e avaliação por GSE</h2>${riskHtml}<h2>Conclusão técnica</h2><p>${esc(document.conclusion || "")}</p><div class="notice">Este documento reflete o escopo e os dados validados na versão indicada. Alterações no PGR, processos, ambientes ou controles podem exigir revisão técnica.</div><div class="signature">${signatureImage ? `<img src="${signatureImage}" alt="Assinatura do responsável técnico">` : ""}<div class="signature-line"></div><b>${esc(document.responsible_name || "Responsável técnico")}</b><br>${esc(document.responsible_registration || "Registro não informado")}<br>Hash: ${esc(document.signature_hash || "Documento ainda não assinado")}</div></body></html>`;
       const puppeteer = (await import("puppeteer")).default;
       const browser = await puppeteer.launch({
         headless: true,

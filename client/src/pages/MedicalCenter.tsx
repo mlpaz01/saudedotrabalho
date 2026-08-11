@@ -148,6 +148,7 @@ export default function MedicalCenter() {
   const collaboratorsQ = trpc.medical.listCollaborators.useQuery();
   const programsQ = trpc.medical.listPrograms.useQuery();
   const pgrsQ = trpc.medical.listPgrs.useQuery();
+  const pcmsoDefaultsQ = trpc.medical.getPcmsoDefaultText.useQuery();
   const examsQ = trpc.medical.listExams.useQuery();
   const vaccinesQ = trpc.medical.listVaccines.useQuery();
   const partnersQ = trpc.medical.listVaccinePartners.useQuery();
@@ -345,6 +346,25 @@ export default function MedicalCenter() {
     onSuccess: () => {
       programQ.refetch();
       toast.success("Relatório analítico atualizado.");
+    },
+    onError: error => toast.error(error.message),
+  });
+  const discardAnalytical = trpc.medical.discardAnalyticalReport.useMutation({
+    onSuccess: () => {
+      programQ.refetch();
+      toast.success(
+        "Versão descartada. O histórico foi preservado para auditoria."
+      );
+    },
+    onError: error => toast.error(error.message),
+  });
+  const savePcmso = trpc.medical.savePcmso.useMutation({
+    onSuccess: result => {
+      programQ.refetch();
+      programsQ.refetch();
+      toast.success(
+        `PCMSO salvo como ${String(result.status).replaceAll("_", " ")}. A publicação permanece independente.`
+      );
     },
     onError: error => toast.error(error.message),
   });
@@ -564,6 +584,7 @@ export default function MedicalCenter() {
               })
             }
             onReviewAnalytical={payload => reviewAnalytical.mutate(payload)}
+            onDiscardAnalytical={payload => discardAnalytical.mutate(payload)}
             onPgrReview={payload =>
               selectedProgramId &&
               pgrReview.mutate({ pcmsoId: selectedProgramId, ...payload })
@@ -571,6 +592,9 @@ export default function MedicalCenter() {
             onSign={() =>
               selectedProgramId &&
               signPcmso.mutate({ id: selectedProgramId, confirmation: true })
+            }
+            onSave={() =>
+              selectedProgramId && savePcmso.mutate({ id: selectedProgramId })
             }
             onArchive={() =>
               selectedProgramId &&
@@ -585,6 +609,8 @@ export default function MedicalCenter() {
               pcmsoAi.isPending ||
               pcmsoAudit.isPending ||
               analyticalReport.isPending ||
+              discardAnalytical.isPending ||
+              savePcmso.isPending ||
               signPcmso.isPending ||
               archivePcmso.isPending
             }
@@ -835,6 +861,7 @@ export default function MedicalCenter() {
           open={programOpen}
           close={() => setProgramOpen(false)}
           initial={programDraft}
+          defaults={pcmsoDefaultsQ.data as any}
           pgrs={(pgrsQ.data || []) as any[]}
           save={payload => programSave.mutate(payload)}
           busy={programSave.isPending}
@@ -895,11 +922,20 @@ function Dashboard({
   const [specialty, setSpecialty] = useState(
     profile?.specialty || "Medicina do Trabalho"
   );
+  const [signatureBase64, setSignatureBase64] = useState("");
+  const [signatureFileName, setSignatureFileName] = useState("");
   useEffect(() => {
     setCrm(profile?.crm || "");
     setCrmState(profile?.crm_state || "");
     setSpecialty(profile?.specialty || "Medicina do Trabalho");
-  }, [profile?.crm, profile?.crm_state, profile?.specialty]);
+    setSignatureBase64("");
+    setSignatureFileName("");
+  }, [
+    profile?.crm,
+    profile?.crm_state,
+    profile?.specialty,
+    profile?.has_signature,
+  ]);
   const cards = [
     ["PCMSO cadastrados", data?.pcmsoTotal || 0],
     ["PCMSO vigentes", data?.pcmsoActive || 0],
@@ -922,7 +958,7 @@ function Dashboard({
         title="Identificação do médico responsável"
         subtitle="CRM, UF e especialidade são exigidos para criar e assinar versões do PCMSO."
       >
-        <div className="grid gap-3 md:grid-cols-4">
+        <div className="grid gap-3 md:grid-cols-5">
           <Field label="CRM">
             <Input
               value={crm}
@@ -944,10 +980,45 @@ function Dashboard({
               onChange={e => setSpecialty(e.target.value)}
             />
           </Field>
+          <Field label="Assinatura do médico">
+            <Input
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              onChange={event => {
+                const file = event.target.files?.[0];
+                if (!file) return;
+                if (file.size > 8_000_000) {
+                  toast.error("A assinatura deve ter no máximo 8 MB.");
+                  return;
+                }
+                const reader = new FileReader();
+                reader.onload = () => {
+                  setSignatureBase64(String(reader.result || ""));
+                  setSignatureFileName(file.name);
+                };
+                reader.readAsDataURL(file);
+              }}
+            />
+            <span className="mt-1 block text-[11px] text-slate-500">
+              {signatureBase64
+                ? "Nova assinatura pronta para salvar"
+                : profile?.has_signature
+                  ? "Assinatura cadastrada"
+                  : "Nenhuma assinatura cadastrada"}
+            </span>
+          </Field>
           <div className="flex items-end">
             <Button
               disabled={!crm || crmState.length !== 2 || saving}
-              onClick={() => onSave({ crm, crmState, specialty })}
+              onClick={() =>
+                onSave({
+                  crm,
+                  crmState,
+                  specialty,
+                  signatureBase64: signatureBase64 || undefined,
+                  signatureFileName: signatureFileName || undefined,
+                })
+              }
             >
               Salvar perfil
             </Button>
@@ -1831,6 +1902,7 @@ function ProgramDialog({
   open,
   close,
   initial,
+  defaults,
   pgrs,
   save,
   busy,
@@ -1838,6 +1910,7 @@ function ProgramDialog({
   open: boolean;
   close: () => void;
   initial: any;
+  defaults?: { introduction?: string; conclusion?: string } | null;
   pgrs: any[];
   save: (p: any) => void;
   busy: boolean;
@@ -1865,22 +1938,19 @@ function ProgramDialog({
     setStatus(initial?.status || "rascunho");
     setFrom(String(initial?.valid_from || "").slice(0, 10));
     setUntil(String(initial?.valid_until || "").slice(0, 10));
-    setIntro(
-      initial?.introduction ||
-        "O presente programa estabelece as diretrizes de monitoramento médico ocupacional da organização."
-    );
-    setObjective(
-      initial?.objective ||
-        "Proteger e preservar a saúde dos empregados em relação aos riscos ocupacionais identificados no PGR."
-    );
-    setMethodology(
-      initial?.methodology ||
-        "Os riscos serão avaliados por GSE e vinculados a monitoramento clínico ou complementar mediante decisão do médico responsável."
-    );
+    setIntro(initial?.introduction || defaults?.introduction || "");
+    setObjective(initial?.objective || "");
+    setMethodology(initial?.methodology || "");
     setHeaderText(initial?.header_text || "");
     setFooterText(initial?.footer_text || "");
-    setChapters(parsed);
-  }, [initial, open]);
+    setChapters(
+      initial
+        ? parsed
+        : defaults?.conclusion
+          ? [{ title: "Conclusão", content: defaults.conclusion }]
+          : []
+    );
+  }, [initial, open, defaults]);
   const updateChapter = (
     index: number,
     key: "title" | "content",
@@ -1930,7 +2000,9 @@ function ProgramDialog({
               >
                 <option value="rascunho">Rascunho</option>
                 <option value="em_revisao">Em revisão</option>
-                <option value="vigente">Vigente</option>
+                {initial?.status === "vigente" ? (
+                  <option value="vigente">Vigente</option>
+                ) : null}
                 <option value="arquivado">Arquivado</option>
               </select>
             </Field>
