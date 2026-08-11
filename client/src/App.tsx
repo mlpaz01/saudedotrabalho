@@ -107,6 +107,7 @@ import AdminFiles from "@/pages/admin/AdminFiles";
 import AdminNRTraining from "@/pages/admin/AdminNRTraining";
 import MedicalCenter from "@/pages/MedicalCenter";
 import OccupationalOperations from "@/pages/OccupationalOperations";
+import AdminPpp from "@/pages/admin/AdminPpp";
 import MyVaccines from "@/pages/MyVaccines";
 import SuperAdminGuidance from "@/pages/superadmin/SuperAdminGuidance";
 import SuperAdminAnamnesis from "@/pages/superadmin/SuperAdminAnamnesis";
@@ -339,6 +340,7 @@ function Router() {
       <Route path="/admin/pcmso" component={() => <MedicalRoute component={MedicalCenter} />}
         />
       <Route path="/admin/saude-ocupacional" component={() => <OccupationalRoute component={OccupationalOperations} />} />
+      <Route path="/admin/ppp" component={() => <ProtectedRoute component={AdminPpp} adminOnly />} />
         <Route
           path="/medico"
           component={() => <MedicalRoute component={MedicalCenter} />} />

@@ -1345,7 +1345,7 @@ export default function OccupationalOperations() {
                   title={(dossierQ.data as any).worker?.name || "Trabalhador"}
                   subtitle={`${(dossierQ.data as any).worker?.branch_name || "Sem filial"} · ${(dossierQ.data as any).worker?.sector_name || "Sem setor"} · ${(dossierQ.data as any).worker?.position || "Sem cargo"}`}
                 >
-                  <div className="grid gap-3 md:grid-cols-4">
+                  <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
                     <Metric
                       label="Histórico de GSE"
                       value={(dossierQ.data as any).gseHistory?.length || 0}
@@ -1361,6 +1361,14 @@ export default function OccupationalOperations() {
                     <Metric
                       label="CATs"
                       value={(dossierQ.data as any).cats?.length || 0}
+                    />
+                    <Metric
+                      label="Histórico laboral"
+                      value={(dossierQ.data as any).laborHistory?.length || 0}
+                    />
+                    <Metric
+                      label="PPPs gerados"
+                      value={(dossierQ.data as any).pppDocuments?.length || 0}
                     />
                   </div>
                 </Panel>
@@ -1474,6 +1482,47 @@ export default function OccupationalOperations() {
                           </span>
                         </div>
                       ))}
+                    </div>
+                  </Panel>
+                  <Panel title="Histórico laboral e PPP">
+                    <div className="max-h-80 space-y-2 overflow-auto">
+                      {(dossierQ.data as any).laborHistory?.map((row: any) => (
+                        <div key={`h${row.id}`} className="border p-3 text-sm">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <b>{String(row.event_type || "evento").replaceAll("_", " ")}</b>
+                            <Badge
+                              className={`rounded-sm ${row.status === "valido" ? "bg-emerald-100 text-emerald-800" : "bg-slate-200 text-slate-700"}`}
+                            >
+                              {row.status}
+                            </Badge>
+                          </div>
+                          <p className="mt-1 text-xs text-slate-500">
+                            {dateOnly(row.valid_from)} até {row.valid_until ? dateOnly(row.valid_until) : "atual"}
+                            {row.position_name ? ` · ${row.position_name}` : ""}
+                            {row.gse_name ? ` · ${row.gse_name}` : ""}
+                          </p>
+                          <p className="mt-1 text-xs">
+                            {row.risk_agent || row.exam_name || row.source_document || `Origem: ${row.origin}`}
+                          </p>
+                        </div>
+                      ))}
+                      {(dossierQ.data as any).pppDocuments?.map((row: any) => (
+                        <div
+                          key={`p${row.id}`}
+                          className="border border-teal-200 bg-teal-50 p-3 text-sm"
+                        >
+                          <b>PPP consolidado · versão {row.version_number}</b>
+                          <p className="mt-1 text-xs text-slate-600">
+                            Referência {dateOnly(row.reference_date)} · responsável {row.legal_responsible_name}
+                          </p>
+                        </div>
+                      ))}
+                      {!(dossierQ.data as any).laborHistory?.length &&
+                      !(dossierQ.data as any).pppDocuments?.length ? (
+                        <p className="text-sm text-slate-500">
+                          Nenhum histórico anterior ou PPP consolidado localizado.
+                        </p>
+                      ) : null}
                     </div>
                   </Panel>
                 </div>

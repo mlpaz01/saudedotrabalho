@@ -131,6 +131,7 @@ const adminSections: NavSection[] = [
       { label: "GHE / GSE", href: "/admin/ghe-gse", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <Layers size={16} />, feature: "risk_assessment" ,},
       { label: "EPC / EPI", href: "/admin/epc-epi", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <Shield size={16} />, feature: "risk_assessment" ,},
       { label: "Gestao de EPI / EPC", href: "/admin/gestao-epi-epc", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <HardHat size={16} />, feature: "risk_assessment" ,},
+      { label: "PPP e Historico Laboral", href: "/admin/ppp", roles: ["sesmt", "admin", "company_admin", "admin_global", "super_admin"], icon: <IdCard size={16} /> ,},
       { label: "Gerador de PGR", href: "/admin/pgr", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <FileCheck size={16} />, feature: "pgr" ,},
       { label: "Dashboard PGR", href: "/admin/pgr/executivo", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <BarChart3 size={16} />, feature: "pgr" ,},
       { label: "Auditoria PGR", href: "/admin/pgr/auditoria", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <ShieldCheck size={16} />, feature: "pgr" ,},

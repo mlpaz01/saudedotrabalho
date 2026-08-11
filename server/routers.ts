@@ -25,6 +25,7 @@ import {
   ensureOccupationalTables,
   occupationalLifecycleRouter,
 } from "./_core/occupationalLifecycleRouter";
+import { occupationalPppRouter } from "./_core/occupationalPppRouter";
 
 import { medicalRouter } from "./_core/medicalRouter";
 import { technicalDocumentsRouter } from "./_core/technicalDocumentsRouter";
@@ -4430,6 +4431,7 @@ export const appRouter = router({
   commercial: commercialRouter,
   occupationalHealth: occupationalHealthRouter,
   occupationalLifecycle: occupationalLifecycleRouter,
+  occupationalPpp: occupationalPppRouter,
   medical: medicalRouter,
   technicalDocuments: technicalDocumentsRouter,
   ehs: ehsRouter,

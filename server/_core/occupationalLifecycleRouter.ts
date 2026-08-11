@@ -20,6 +20,7 @@ import {
   orderLabel,
 } from "./occupationalLifecycle";
 import { classifyExamPlanning } from "./occupationalExamPlanning";
+import { ensurePppTables } from "./occupationalPppRouter";
 import {
   mysqlDateTime,
   normalizeCatLocationType,
@@ -4391,6 +4392,7 @@ export const occupationalLifecycleRouter = router({
     .query(async ({ ctx, input }) => {
       requireOperational(ctx);
       await ensureOccupationalTables();
+      await ensurePppTables();
       const db = await getDb();
       const companyId = companyOf(ctx);
       if (!db) return null;
@@ -4412,6 +4414,8 @@ export const occupationalLifecycleRouter = router({
         results,
         asos,
         cats,
+        laborHistory,
+        pppDocuments,
       ] = await Promise.all([
         db.execute(
           drzSql`SELECT u.id,u.name,u.cpf,u.employee_registration,u.position,u.email,u.whatsapp_e164 whatsapp,b.name branch_name,s.name sector_name FROM users u LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id WHERE u.id=${input.collaboratorId} AND u.company_id=${companyId} LIMIT 1`
@@ -4439,6 +4443,12 @@ export const occupationalLifecycleRouter = router({
         ),
         db.execute(
           drzSql`SELECT id,event_at,accident_type,status,esocial_status FROM occupational_cat_records WHERE company_id=${companyId} AND collaborator_id=${input.collaboratorId} ORDER BY event_at DESC`
+        ),
+        db.execute(
+          drzSql`SELECT id,event_type,valid_from,valid_until,branch_name,sector_name,position_name,gse_code,gse_name,risk_type,risk_agent,exam_name,exam_date,fitness_status,source_document,origin,status,created_at FROM occupational_labor_history WHERE company_id=${companyId} AND collaborator_id=${input.collaboratorId} ORDER BY valid_from DESC,id DESC`
+        ),
+        db.execute(
+          drzSql`SELECT id,version_number,reference_date,status,legal_responsible_name,generated_at FROM occupational_ppp_documents WHERE company_id=${companyId} AND collaborator_id=${input.collaboratorId} ORDER BY version_number DESC`
         ),
       ]);
       await audit(
@@ -4468,6 +4478,8 @@ export const occupationalLifecycleRouter = router({
         ),
         asos: rowsOf(asos),
         cats: rowsOf(cats),
+        laborHistory: rowsOf(laborHistory),
+        pppDocuments: rowsOf(pppDocuments),
       };
     }),
 
