@@ -1019,7 +1019,12 @@ export async function ensureClinicalConsultationExam(
   return Number((result as any)[0]?.insertId || 0);
 }
 
-function catEsocialPayload(input: any, company: any, worker: any) {
+function catEsocialPayload(
+  input: any,
+  company: any,
+  worker: any,
+  transmissionStatus = "pendente_integracao"
+) {
   const dateTimeParts = (value: unknown) => {
     const raw = String(value || "").trim();
     const local = raw.match(
@@ -1041,7 +1046,7 @@ function catEsocialPayload(input: any, company: any, worker: any) {
   return {
     layout: "eSocial S-1.3 - NT 06/2026",
     event: "S-2210",
-    transmissionStatus: "pendente_integracao",
+    transmissionStatus,
     employer: {
       registrationType: input.employerRegistrationType || "cnpj",
       registrationNumber:
@@ -3912,7 +3917,15 @@ export const occupationalLifecycleRouter = router({
       const { worker, company, validatedInput, validation } = prepared;
       const eventAt = mysqlDateTime(input.eventAt);
       const medicalAttendanceAt = mysqlDateTime(input.medicalAttendanceAt);
-      const esocialPayload = catEsocialPayload(validatedInput, company, worker);
+      const transmissionStatus = validation.esocialReady
+        ? "pendente_integracao"
+        : "bloqueado_dados_vinculo";
+      const esocialPayload = catEsocialPayload(
+        validatedInput,
+        company,
+        worker,
+        transmissionStatus
+      );
       let id = 0;
       try {
         const result: any =
@@ -3922,11 +3935,11 @@ export const occupationalLifecycleRouter = router({
             String(input.cid || "")
               .replace(/[^a-zA-Z0-9]/g, "")
               .toUpperCase() || null
-          },${input.doctorName || null},${input.doctorCouncil?.toUpperCase() || null},${input.doctorUf?.toUpperCase() || null},${input.doctorRegistration || null},${input.medicalNotes || null},${JSON.stringify(input.witnesses)},'registrada','pendente_integracao','eSocial S-1.3 - NT 06/2026',${JSON.stringify(esocialPayload)},${validation.status},${JSON.stringify(validation)},NOW(),${Number(ctx.user.id)},${Number(ctx.user.id)})`);
+          },${input.doctorName || null},${input.doctorCouncil?.toUpperCase() || null},${input.doctorUf?.toUpperCase() || null},${input.doctorRegistration || null},${input.medicalNotes || null},${JSON.stringify(input.witnesses)},'registrada',${transmissionStatus},'eSocial S-1.3 - NT 06/2026',${JSON.stringify(esocialPayload)},${validation.status},${JSON.stringify(validation)},NOW(),${Number(ctx.user.id)},${Number(ctx.user.id)})`);
         id = Number((result as any)[0]?.insertId || 0);
         if (!id) throw new Error("CAT insert did not return an identifier");
         await db.execute(
-          drzSql`INSERT INTO occupational_esocial_transmissions (company_id,entity_type,entity_id,event_code,layout_version,status,payload_json,requested_by) VALUES (${companyId},'cat',${id},'S-2210','S-1.3 NT 06/2026','pendente_integracao',${JSON.stringify(esocialPayload)},${Number(ctx.user.id)})`
+          drzSql`INSERT INTO occupational_esocial_transmissions (company_id,entity_type,entity_id,event_code,layout_version,status,payload_json,requested_by) VALUES (${companyId},'cat',${id},'S-2210','S-1.3 NT 06/2026',${transmissionStatus},${JSON.stringify(esocialPayload)},${Number(ctx.user.id)})`
         );
       } catch (error: any) {
         if (id) {
@@ -3959,14 +3972,14 @@ export const occupationalLifecycleRouter = router({
         layout: "S-1.3 NT 06/2026",
         validationStatus: validation.status,
         validationWarnings: validation.warnings,
-        transmission: "pendente_integracao",
+        transmission: transmissionStatus,
       });
       return {
         ok: true,
         id,
         esocialEvent: "S-2210",
         validationStatus: validation.status,
-        transmission: "pendente_integracao",
+        transmission: transmissionStatus,
         layout: "S-1.3 NT 06/2026",
       };
     }),
@@ -3984,7 +3997,11 @@ export const occupationalLifecycleRouter = router({
       );
       const row = rowsOf(result)[0];
       if (!row) throw new TRPCError({ code: "NOT_FOUND" });
-      const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>@page{size:A4;margin:13mm}body{font-family:Arial;color:#173047;font-size:8.8pt;line-height:1.35}h1{font-size:17pt;border-bottom:4px solid #0895a5;padding-bottom:3mm}h2{font-size:11pt;color:#0e2c46;margin:4mm 0 2mm}.grid{display:grid;grid-template-columns:1fr 1fr;gap:2mm 7mm}.box{border:1px solid #cedbe3;padding:3mm;margin:3mm 0}.warn{background:#fff8dd;border-left:3px solid #d8a900;padding:3mm}.footer{font-size:7pt;color:#647789;border-top:1px solid #d7e1e7;margin-top:5mm;padding-top:2mm}</style></head><body><h1>COMUNICAÇÃO DE ACIDENTE DE TRABALHO - CAT</h1><div class="warn"><b>Registro interno gerado pela plataforma.</b> Evento S-2210 preparado no leiaute ${esc(row.esocial_version || "S-1.3 NT 06/2026")}. Situação de transmissão: ${esc(row.esocial_status || "pendente de integração")}. Este PDF não substitui protocolo/recibo oficial do eSocial.</div><h2>1. Empregador</h2><div class="grid"><div><b>Empresa:</b> ${esc(row.company_name)}</div><div><b>CNPJ:</b> ${esc(row.company_cnpj || "-")}</div><div><b>Inscrição:</b> ${esc(row.employer_registration_type || "cnpj")} ${esc(row.employer_registration_number || "-")}</div><div><b>CNAE:</b> ${esc(row.employer_cnae || "-")}</div></div><h2>2. Trabalhador</h2><div class="grid"><div><b>Nome:</b> ${esc(row.collaborator_name)}</div><div><b>CPF:</b> ${esc(row.cpf || "-")}</div><div><b>Matrícula:</b> ${esc(row.employee_registration || "-")}</div><div><b>Cargo:</b> ${esc(row.position || "-")}</div><div><b>Filial:</b> ${esc(row.branch_name || "-")}</div><div><b>Setor:</b> ${esc(row.sector_name || "-")}</div></div><h2>3. Comunicação</h2><div class="grid"><div><b>Tipo CAT:</b> ${esc(row.cat_type || "inicial")}</div><div><b>Emitente:</b> ${esc(row.emitter_type || "empregador")}</div><div><b>Iniciativa:</b> ${esc(row.initiative || "empregador")}</div><div><b>Origem:</b> ${esc(row.registration_source || "plataforma")}</div><div><b>Número/recibo anterior:</b> ${esc(row.cat_number || row.origin_receipt || "-")}</div><div><b>Data/hora:</b> ${esc(new Date(row.event_at).toLocaleString("pt-BR"))}</div></div><h2>4. Acidente</h2><div class="box"><b>Tipo:</b> ${esc(row.accident_type || "-")}<br><b>Descrição:</b> ${esc(row.description)}<br><b>Local:</b> ${esc(row.location_text || "-")} ${esc(row.location_detail || "")}<br><b>Município/UF:</b> ${esc(row.event_city || "-")} / ${esc(row.event_uf || "-")}<br><b>Horas trabalhadas:</b> ${esc(row.hours_worked_before_accident || "-")}<br><b>Agente causador:</b> ${esc(row.causative_agent_code || "-")} - ${esc(row.causative_agent || "-")}<br><b>Situação geradora:</b> ${esc(row.generating_situation_code || "-")}<br><b>Parte do corpo:</b> ${esc(row.body_part_code || "-")} - ${esc(row.body_part || "-")} (${esc(row.laterality || "-")})<br><b>Natureza da lesão:</b> ${esc(row.injury_nature_code || "-")} - ${esc(row.injury_nature || "-")}<br><b>Afastamento:</b> ${Number(row.leave_required) ? "Sim" : "Não"} &nbsp; <b>Boletim policial:</b> ${Number(row.police_report) ? "Sim" : "Não"}</div><h2>5. Atendimento médico</h2><div class="grid"><div><b>Data/hora:</b> ${row.medical_attendance_at ? esc(new Date(row.medical_attendance_at).toLocaleString("pt-BR")) : "-"}</div><div><b>Internação:</b> ${Number(row.hospitalization) ? "Sim" : "Não"}</div><div><b>Dias tratamento:</b> ${esc(row.treatment_days ?? "-")}</div><div><b>CID:</b> ${esc(row.cid || "-")}</div><div><b>Profissional:</b> ${esc(row.doctor_name || "-")}</div><div><b>Registro:</b> ${esc([row.doctor_council, row.doctor_registration, row.doctor_uf].filter(Boolean).join(" ") || "-")}</div></div><div class="footer">Documento emitido em ${esc(new Date().toLocaleString("pt-BR"))}. A transmissão ao eSocial permanece bloqueada até integração oficial, certificado e validação técnica do payload.</div></body></html>`;
+      const transmissionNotice =
+        row.esocial_status === "bloqueado_dados_vinculo"
+          ? "Documento interno. Não apto para transmissão ao eSocial: falta matrícula real do vínculo ou categoria aplicável para TSVE."
+          : `Evento S-2210 preparado no leiaute ${esc(row.esocial_version || "S-1.3 NT 06/2026")}. Situação de transmissão: ${esc(row.esocial_status || "pendente de integração")}.`;
+      const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>@page{size:A4;margin:13mm}body{font-family:Arial;color:#173047;font-size:8.8pt;line-height:1.35}h1{font-size:17pt;border-bottom:4px solid #0895a5;padding-bottom:3mm}h2{font-size:11pt;color:#0e2c46;margin:4mm 0 2mm}.grid{display:grid;grid-template-columns:1fr 1fr;gap:2mm 7mm}.box{border:1px solid #cedbe3;padding:3mm;margin:3mm 0}.warn{background:#fff8dd;border-left:3px solid #d8a900;padding:3mm}.footer{font-size:7pt;color:#647789;border-top:1px solid #d7e1e7;margin-top:5mm;padding-top:2mm}</style></head><body><h1>COMUNICAÇÃO DE ACIDENTE DE TRABALHO - CAT</h1><div class="warn"><b>Registro interno gerado pela plataforma.</b> ${transmissionNotice} Este PDF não substitui protocolo/recibo oficial do eSocial.</div><h2>1. Empregador</h2><div class="grid"><div><b>Empresa:</b> ${esc(row.company_name)}</div><div><b>CNPJ:</b> ${esc(row.company_cnpj || "-")}</div><div><b>Inscrição:</b> ${esc(row.employer_registration_type || "cnpj")} ${esc(row.employer_registration_number || "-")}</div><div><b>CNAE:</b> ${esc(row.employer_cnae || "-")}</div></div><h2>2. Trabalhador</h2><div class="grid"><div><b>Nome:</b> ${esc(row.collaborator_name)}</div><div><b>CPF:</b> ${esc(row.cpf || "-")}</div><div><b>Matrícula:</b> ${esc(row.employee_registration || "-")}</div><div><b>Cargo:</b> ${esc(row.position || "-")}</div><div><b>Filial:</b> ${esc(row.branch_name || "-")}</div><div><b>Setor:</b> ${esc(row.sector_name || "-")}</div></div><h2>3. Comunicação</h2><div class="grid"><div><b>Tipo CAT:</b> ${esc(row.cat_type || "inicial")}</div><div><b>Emitente:</b> ${esc(row.emitter_type || "empregador")}</div><div><b>Iniciativa:</b> ${esc(row.initiative || "empregador")}</div><div><b>Origem:</b> ${esc(row.registration_source || "plataforma")}</div><div><b>Número/recibo anterior:</b> ${esc(row.cat_number || row.origin_receipt || "-")}</div><div><b>Data/hora:</b> ${esc(new Date(row.event_at).toLocaleString("pt-BR"))}</div></div><h2>4. Acidente</h2><div class="box"><b>Tipo:</b> ${esc(row.accident_type || "-")}<br><b>Descrição:</b> ${esc(row.description)}<br><b>Local:</b> ${esc(row.location_text || "-")} ${esc(row.location_detail || "")}<br><b>Município/UF:</b> ${esc(row.event_city || "-")} / ${esc(row.event_uf || "-")}<br><b>Horas trabalhadas:</b> ${esc(row.hours_worked_before_accident || "-")}<br><b>Agente causador:</b> ${esc(row.causative_agent_code || "-")} - ${esc(row.causative_agent || "-")}<br><b>Situação geradora:</b> ${esc(row.generating_situation_code || "-")}<br><b>Parte do corpo:</b> ${esc(row.body_part_code || "-")} - ${esc(row.body_part || "-")} (${esc(row.laterality || "-")})<br><b>Natureza da lesão:</b> ${esc(row.injury_nature_code || "-")} - ${esc(row.injury_nature || "-")}<br><b>Afastamento:</b> ${Number(row.leave_required) ? "Sim" : "Não"} &nbsp; <b>Boletim policial:</b> ${Number(row.police_report) ? "Sim" : "Não"}</div><h2>5. Atendimento médico</h2><div class="grid"><div><b>Data/hora:</b> ${row.medical_attendance_at ? esc(new Date(row.medical_attendance_at).toLocaleString("pt-BR")) : "-"}</div><div><b>Internação:</b> ${Number(row.hospitalization) ? "Sim" : "Não"}</div><div><b>Dias tratamento:</b> ${esc(row.treatment_days ?? "-")}</div><div><b>CID:</b> ${esc(row.cid || "-")}</div><div><b>Profissional:</b> ${esc(row.doctor_name || "-")}</div><div><b>Registro:</b> ${esc([row.doctor_council, row.doctor_registration, row.doctor_uf].filter(Boolean).join(" ") || "-")}</div></div><div class="footer">Documento emitido em ${esc(new Date().toLocaleString("pt-BR"))}. A transmissão ao eSocial depende de integração oficial, certificado e validação técnica do payload.</div></body></html>`;
       const fileName = `cat_${input.id}.pdf`;
       const target = await renderPdf(companyId, "cat", fileName, html);
       await db.execute(

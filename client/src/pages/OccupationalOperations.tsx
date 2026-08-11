@@ -360,7 +360,9 @@ export default function OccupationalOperations() {
       await refresh();
       setCatOpen(false);
       toast.success(
-        `CAT registrada. Evento ${result.esocialEvent} preparado para futura integração.`
+        result.transmission === "bloqueado_dados_vinculo"
+          ? "Documento interno da CAT registrado. A transmissão ao eSocial está bloqueada até completar os dados do vínculo."
+          : `CAT registrada. Evento ${result.esocialEvent} preparado para futura integração.`
       );
     },
     onError: error => {
@@ -4213,6 +4215,7 @@ function CatDialog({ open, close, workers, busy, save }: any) {
 
   if (review) {
     const status = review.status as "ready" | "review" | "blocked";
+    const internalOnly = !review.esocialReady;
     const statusConfig = {
       ready: {
         title: "CAT validada - pronta para salvar",
@@ -4260,6 +4263,27 @@ function CatDialog({ open, close, workers, busy, save }: any) {
               </div>
             </div>
           </div>
+
+          {status !== "blocked" ? (
+            <div
+              className={`border-l-4 p-3 text-sm ${
+                internalOnly
+                  ? "border-amber-500 bg-amber-50 text-amber-950"
+                  : "border-emerald-500 bg-emerald-50 text-emerald-950"
+              }`}
+            >
+              <b>
+                {internalOnly
+                  ? "Modo: documento interno, sem transmissão ao eSocial"
+                  : "Modo: dados do vínculo aptos para preparação do S-2210"}
+              </b>
+              <p className="mt-1 text-xs">
+                {internalOnly
+                  ? "A ausência da matrícula não impede o registro interno. O envio ao eSocial continuará bloqueado até o cadastro da matrícula real ou, futuramente, da categoria aplicável ao TSVE sem matrícula."
+                  : "A matrícula informada ainda deverá corresponder ao vínculo existente no eSocial quando a integração oficial for ativada."}
+              </p>
+            </div>
+          ) : null}
 
           <div className="grid gap-3 md:grid-cols-2">
             {summaryItems.map(([label, item]: any) => (
@@ -4315,16 +4339,19 @@ function CatDialog({ open, close, workers, busy, save }: any) {
 
           <div className="border-l-4 border-sky-400 bg-sky-50 p-3 text-xs text-sky-950">
             As sugestões da IA são auxiliares. A confirmação final permanece sob
-            responsabilidade do profissional que registra a CAT. O evento ficará
-            pendente de integração e não será transmitido automaticamente ao
-            eSocial.
+            responsabilidade do profissional que registra a CAT. Este registro não
+            será transmitido automaticamente ao eSocial.
           </div>
           <div className="flex flex-wrap justify-end gap-2">
             <Button variant="outline" onClick={() => setReview(null)}>
               Voltar e corrigir
             </Button>
             <Button disabled={!review.canSave || busy} onClick={submit}>
-              {busy ? "Salvando..." : "Confirmar e registrar CAT"}
+              {busy
+                ? "Salvando..."
+                : internalOnly
+                  ? "Confirmar e registrar documento interno"
+                  : "Confirmar e registrar CAT"}
             </Button>
           </div>
         </DialogContent>

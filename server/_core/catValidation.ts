@@ -11,6 +11,8 @@ export type CatValidationIssue = {
 export type CatValidationResult = {
   status: "ready" | "review" | "blocked";
   canSave: boolean;
+  esocialReady: boolean;
+  recordMode: "internal" | "esocial_ready";
   errors: number;
   warnings: number;
   issues: CatValidationIssue[];
@@ -140,12 +142,15 @@ export function validateCatDraft({
       "O colaborador precisa possuir CPF válido antes da emissão da CAT.",
       "Atualize o CPF no cadastro do colaborador."
     );
-  if (!String(worker?.employee_registration || "").trim())
-    error(
+  const hasEmployeeRegistration = Boolean(
+    String(worker?.employee_registration || "").trim()
+  );
+  if (!hasEmployeeRegistration)
+    warning(
       "CAT_WORKER_REGISTRATION",
       "collaboratorId",
-      "A matrícula do colaborador não está cadastrada.",
-      "Informe a matrícula do vínculo. Para TSVE sem matrícula, será necessário cadastrar a categoria eSocial."
+      "A matrícula do vínculo não está cadastrada. A CAT poderá ser salva somente como documento interno.",
+      "Para transmissão ao eSocial, informe a matrícula real já registrada no S-2190, S-2200 ou S-2300. TSVE sem matrícula exige categoria eSocial específica."
     );
 
   const employerNumber = digits(
@@ -479,9 +484,12 @@ export function validateCatDraft({
 
   const errors = issues.filter(issue => issue.severity === "error").length;
   const warnings = issues.filter(issue => issue.severity === "warning").length;
+  const esocialReady = errors === 0 && hasEmployeeRegistration;
   return {
     status: errors ? "blocked" : warnings ? "review" : "ready",
     canSave: errors === 0,
+    esocialReady,
+    recordMode: esocialReady ? "esocial_ready" : "internal",
     errors,
     warnings,
     issues,

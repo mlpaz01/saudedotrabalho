@@ -61,7 +61,26 @@ describe("conferência inteligente da CAT", () => {
     });
     expect(result.status).toBe("ready");
     expect(result.canSave).toBe(true);
+    expect(result.esocialReady).toBe(true);
+    expect(result.recordMode).toBe("esocial_ready");
     expect(result.errors).toBe(0);
+  });
+
+  it("permite documento interno sem matrícula, mas bloqueia a transmissão ao eSocial", () => {
+    const result = validateCatDraft({
+      input: validInput,
+      worker: { id: 10, cpf: "52998224725", employee_registration: "" },
+      company,
+      now: new Date("2026-08-11T12:00:00.000Z"),
+    });
+    expect(result.status).toBe("review");
+    expect(result.canSave).toBe(true);
+    expect(result.esocialReady).toBe(false);
+    expect(result.recordMode).toBe("internal");
+    expect(
+      result.issues.find(issue => issue.code === "CAT_WORKER_REGISTRATION")
+        ?.severity
+    ).toBe("warning");
   });
 
   it("bloqueia escada permanente e inflamação quando o relato descreve escada portátil e entorse", () => {

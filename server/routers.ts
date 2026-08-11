@@ -1198,6 +1198,16 @@ async function ensureCompanyPlatformConfigColumns(db: any) {
 
 async function ensureAuthIdentityColumns(db: any) {
   try {
+    await db.execute(
+      drzSql`ALTER TABLE users ADD COLUMN employee_registration VARCHAR(120) NULL`
+    );
+  } catch (_) {}
+  try {
+    await db.execute(
+      drzSql`ALTER TABLE users ADD INDEX idx_users_company_registration (company_id, employee_registration)`
+    );
+  } catch (_) {}
+  try {
     await db.execute(drzSql`ALTER TABLE users ADD COLUMN cpf VARCHAR(20) NULL`);
   } catch (_) {}
   try {
@@ -6414,6 +6424,7 @@ export const appRouter = router({
             .enum(["user", "chefia", "rh", "sesmt", "medico", "cipa", "admin"])
             .optional(),
           cpf: z.string().nullable().optional(),
+          employeeRegistration: z.string().max(120).nullable().optional(),
           employmentStatus: z
             .enum(["active", "away", "terminated", "death", "retired", "other"])
             .optional(),
@@ -6539,6 +6550,22 @@ export const appRouter = router({
         if (input.position !== undefined) {
           await db.execute(
             drzSql`UPDATE users SET position = ${input.position} WHERE id = ${input.userId}`
+          );
+        }
+        if (input.employeeRegistration !== undefined) {
+          const registration = String(input.employeeRegistration || "").trim() || null;
+          if (registration) {
+            const duplicate: any = await db.execute(
+              drzSql`SELECT id FROM users WHERE company_id=${urow.company_id} AND employee_registration=${registration} AND id<>${input.userId} LIMIT 1`
+            );
+            if (firstDbRow(duplicate))
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: "Matrícula já cadastrada para outro colaborador desta empresa.",
+              });
+          }
+          await db.execute(
+            drzSql`UPDATE users SET employee_registration=${registration} WHERE id=${input.userId}`
           );
         }
         if (input.cpf !== undefined) {

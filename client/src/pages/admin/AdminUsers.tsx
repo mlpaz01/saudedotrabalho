@@ -923,6 +923,9 @@ function AssignmentDialog({ user, onClose, onSaved }: { user: any; onClose: () =
   const [name, setName] = useState<string>(user?.name ?? "");
   const [email, setEmail] = useState<string>(user?.email ?? "");
   const [cpf, setCpf] = useState<string>(user?.cpf ?? "");
+  const [employeeRegistration, setEmployeeRegistration] = useState<string>(
+    user?.employeeRegistration ?? user?.employee_registration ?? ""
+  );
   const [role, setRole] = useState<string>(user?.role ?? "user");
   const [employmentStatus, setEmploymentStatus] = useState<string>(user?.employmentStatus ?? "active");
   const [countsAsEmployee, setCountsAsEmployee] = useState<boolean>(
@@ -963,6 +966,7 @@ function AssignmentDialog({ user, onClose, onSaved }: { user: any; onClose: () =
       name: name.trim(),
       email: email.trim().toLowerCase(),
       cpf: cpf.trim() || null,
+      employeeRegistration: employeeRegistration.trim() || null,
       role: role as any,
       employmentStatus: employmentStatus as any,
       countsAsEmployee,
@@ -993,6 +997,19 @@ function AssignmentDialog({ user, onClose, onSaved }: { user: any; onClose: () =
             <Input className="mt-2" value={cpf} onChange={(e) => setCpf(e.target.value)} placeholder="000.000.000-00" />
             <p className="text-xs text-muted-foreground mt-1">
               Identificador operacional para importacoes, excecoes, CIPA e liberacoes.
+            </p>
+          </div>
+          <div>
+            <Label>Matrícula do vínculo</Label>
+            <Input
+              className="mt-2"
+              value={employeeRegistration}
+              onChange={(e) => setEmployeeRegistration(e.target.value)}
+              placeholder="Ex.: 000123 ou MAT-2026-001"
+            />
+            <p className="text-xs text-muted-foreground mt-1">
+              Para o eSocial, informe exatamente a matrícula registrada no S-2190,
+              S-2200 ou S-2300. Não use valor fictício em produção.
             </p>
           </div>
           <div>
