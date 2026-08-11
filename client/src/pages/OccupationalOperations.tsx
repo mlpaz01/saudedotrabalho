@@ -14,6 +14,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
 import {
   Activity,
+  AlertTriangle,
+  CheckCircle2,
   ClipboardCheck,
   ClipboardList,
   Download,
@@ -361,7 +363,14 @@ export default function OccupationalOperations() {
         `CAT registrada. Evento ${result.esocialEvent} preparado para futura integração.`
       );
     },
-    onError: error => toast.error(error.message),
+    onError: error => {
+      const raw = String(error.message || "");
+      const safeMessage =
+        /failed query|insert into|select\s|parameters?:/i.test(raw)
+          ? "Não foi possível registrar a CAT. Revise os dados destacados ou informe o suporte usando a referência CAT-GRAVACAO."
+          : raw || "Não foi possível registrar a CAT.";
+      toast.error(safeMessage);
+    },
   });
   const catPdf = trpc.occupationalLifecycle.generateCatPdf.useMutation({
     onSuccess: result => downloadData(result.dataBase64, result.fileName),
@@ -4077,16 +4086,26 @@ function CatDialog({ open, close, workers, busy, save }: any) {
     initiative: "empregador",
     registrationSource: "plataforma",
     employerRegistrationType: "cnpj",
+    employerRegistrationNumber: "",
     employerCnae: "",
     accidentType: "tipico",
     hoursWorkedBeforeAccident: "",
     lastWorkedDate: "",
-    locationType: "estabelecimento_empregador",
+    locationType: "1",
     location: "",
+    locationNumber: "",
+    locationComplement: "",
+    neighborhood: "",
+    postalCode: "",
+    foreignPostalCode: "",
     locationDetail: "",
+    locationRegistration: "",
     eventCity: "",
+    eventCityCode: "",
     eventUf: "",
     eventCountry: "Brasil",
+    eventCountryCode: "105",
+    originReceipt: "",
     description: "",
     causativeAgentCode: "",
     causativeAgent: "",
@@ -4114,14 +4133,18 @@ function CatDialog({ open, close, workers, busy, save }: any) {
   };
   const [form, setForm] = useState<any>(initial);
   const [aiMessage, setAiMessage] = useState("");
+  const [review, setReview] = useState<any>(null);
   useEffect(() => {
     if (open) {
       setForm(initial);
       setAiMessage("");
+      setReview(null);
     }
   }, [open]);
-  const set = (key: string, value: any) =>
+  const set = (key: string, value: any) => {
+    setReview(null);
     setForm((current: any) => ({ ...current, [key]: value }));
+  };
   const ai = trpc.occupationalLifecycle.suggestCatCodes.useMutation({
     onSuccess: result => {
       const next: any = { ...form };
@@ -4142,29 +4165,172 @@ function CatDialog({ open, close, workers, busy, save }: any) {
         }
       });
       setForm(next);
+      setReview(null);
       setAiMessage(result.advisory);
-      toast.success(
-        "Sugestões localizadas nas tabelas oficiais. Revise antes de confirmar."
+      const selectedCount = (result.suggestions || []).filter(
+        (suggestion: any) => suggestion.selected
+      ).length;
+      if (selectedCount)
+        toast.success(
+          `${selectedCount} sugestão(ões) segura(s) localizada(s). Revise antes de confirmar.`
+        );
+      else
+        toast.warning(
+          "A IA não encontrou correspondência segura. Pesquise os códigos manualmente."
+        );
+    },
+    onError: () =>
+      toast.error(
+        "Não foi possível analisar o relato agora. Utilize a pesquisa manual das tabelas."
+      ),
+  });
+  const buildPayload = () => ({
+    ...form,
+    collaboratorId: Number(form.collaboratorId),
+    eventAt: form.eventAt,
+    lastWorkedDate: form.lastWorkedDate || null,
+    deathDate: form.deathDate || null,
+    medicalAttendanceAt: form.medicalAttendanceAt || undefined,
+    treatmentDays:
+      form.treatmentDays === "" ? null : Number(form.treatmentDays),
+    eventUf: form.eventUf || undefined,
+    doctorUf: form.doctorUf || undefined,
+    witnesses: [],
+    confirmationAccepted: false,
+  });
+  const validation = trpc.occupationalLifecycle.validateCat.useMutation({
+    onSuccess: result => setReview(result),
+    onError: error => {
+      const raw = String(error.message || "");
+      toast.error(
+        /failed query|insert into|select\s|parameters?:/i.test(raw)
+          ? "Não foi possível conferir a CAT. Revise os dados e tente novamente."
+          : raw || "Não foi possível conferir a CAT."
       );
     },
-    onError: error => toast.error(error.message),
   });
-  const submit = () =>
-    save({
-      ...form,
-      collaboratorId: Number(form.collaboratorId),
-      eventAt: new Date(form.eventAt).toISOString(),
-      lastWorkedDate: form.lastWorkedDate || null,
-      deathDate: form.deathDate || null,
-      medicalAttendanceAt: form.medicalAttendanceAt
-        ? new Date(form.medicalAttendanceAt).toISOString()
-        : undefined,
-      treatmentDays:
-        form.treatmentDays === "" ? null : Number(form.treatmentDays),
-      eventUf: form.eventUf || undefined,
-      doctorUf: form.doctorUf || undefined,
-      witnesses: [],
-    });
+  const submit = () => save({ ...buildPayload(), confirmationAccepted: true });
+
+  if (review) {
+    const status = review.status as "ready" | "review" | "blocked";
+    const statusConfig = {
+      ready: {
+        title: "CAT validada - pronta para salvar",
+        text: "Os campos obrigatórios e os códigos selecionados passaram pela conferência.",
+        className: "border-emerald-300 bg-emerald-50 text-emerald-950",
+      },
+      review: {
+        title: "CAT com alertas - confirme as informações",
+        text: "Não há bloqueios obrigatórios, mas existem pontos que exigem decisão do responsável.",
+        className: "border-amber-300 bg-amber-50 text-amber-950",
+      },
+      blocked: {
+        title: "CAT não pode ser salva",
+        text: "Corrija as inconsistências obrigatórias antes de registrar a comunicação.",
+        className: "border-red-300 bg-red-50 text-red-950",
+      },
+    }[status];
+    const summary = review.summary || {};
+    const summaryItems = [
+      ["Agente causador", summary.causativeAgent],
+      ["Situação geradora", summary.generatingSituation],
+      ["Parte do corpo", summary.bodyPart],
+      ["Natureza da lesão", summary.injuryNature],
+    ];
+    return (
+      <Dialog open={open} onOpenChange={value => !value && close()}>
+        <DialogContent className="max-h-[94vh] max-w-4xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Conferência inteligente da CAT</DialogTitle>
+          </DialogHeader>
+          <div className={`border p-4 ${statusConfig.className}`}>
+            <div className="flex items-start gap-3">
+              {status === "ready" ? (
+                <CheckCircle2 className="mt-0.5 shrink-0" size={20} />
+              ) : (
+                <AlertTriangle className="mt-0.5 shrink-0" size={20} />
+              )}
+              <div>
+                <h3 className="font-semibold">{statusConfig.title}</h3>
+                <p className="mt-1 text-sm">{statusConfig.text}</p>
+                <p className="mt-2 text-xs">
+                  {review.errors} bloqueio(s) · {review.warnings} alerta(s) ·
+                  Base: {review.source}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            {summaryItems.map(([label, item]: any) => (
+              <div key={label} className="border p-3">
+                <div className="text-xs font-semibold text-slate-500">
+                  {label}
+                </div>
+                <div className="mt-1 text-sm font-semibold text-slate-950">
+                  {item?.code || "Código não selecionado"}
+                </div>
+                <div className="mt-1 text-xs text-slate-600">
+                  {item?.description || "Sem descrição"}
+                  {item?.laterality ? ` · ${item.laterality}` : ""}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="border">
+            <div className="border-b bg-slate-50 px-4 py-3">
+              <h3 className="text-sm font-semibold">Resultado da validação</h3>
+            </div>
+            {review.issues?.length ? (
+              <div className="divide-y">
+                {review.issues.map((issue: any, index: number) => (
+                  <div key={`${issue.code}-${index}`} className="p-3">
+                    <div className="flex items-start gap-2">
+                      <span
+                        className={`mt-0.5 h-2.5 w-2.5 shrink-0 rounded-full ${
+                          issue.severity === "error"
+                            ? "bg-red-500"
+                            : "bg-amber-500"
+                        }`}
+                      />
+                      <div>
+                        <p className="text-sm font-medium">{issue.message}</p>
+                        {issue.suggestion ? (
+                          <p className="mt-1 text-xs text-slate-600">
+                            {issue.suggestion}
+                          </p>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="p-4 text-sm text-emerald-800">
+                Nenhuma inconsistência identificada na conferência atual.
+              </p>
+            )}
+          </div>
+
+          <div className="border-l-4 border-sky-400 bg-sky-50 p-3 text-xs text-sky-950">
+            As sugestões da IA são auxiliares. A confirmação final permanece sob
+            responsabilidade do profissional que registra a CAT. O evento ficará
+            pendente de integração e não será transmitido automaticamente ao
+            eSocial.
+          </div>
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button variant="outline" onClick={() => setReview(null)}>
+              Voltar e corrigir
+            </Button>
+            <Button disabled={!review.canSave || busy} onClick={submit}>
+              {busy ? "Salvando..." : "Confirmar e registrar CAT"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  }
   return (
     <Dialog open={open} onOpenChange={value => !value && close()}>
       <DialogContent className="max-h-[94vh] max-w-5xl overflow-y-auto">
@@ -4219,6 +4385,17 @@ function CatDialog({ open, close, workers, busy, save }: any) {
               <option value="comunicacao_obito">Comunicação de óbito</option>
             </select>
           </label>
+          {form.catType !== "inicial" ? (
+            <label className="text-xs font-semibold lg:col-span-2">
+              Recibo da CAT de origem
+              <Input
+                className="mt-1"
+                value={form.originReceipt}
+                onChange={event => set("originReceipt", event.target.value)}
+                placeholder="Obrigatório para reabertura ou comunicação de óbito"
+              />
+            </label>
+          ) : null}
           <label className="text-xs font-semibold">
             Emitente
             <select
@@ -4252,6 +4429,17 @@ function CatDialog({ open, close, workers, busy, save }: any) {
               className="mt-1"
               value={form.employerCnae}
               onChange={event => set("employerCnae", event.target.value)}
+            />
+          </label>
+          <label className="text-xs font-semibold">
+            CNPJ/inscrição do empregador
+            <Input
+              className="mt-1"
+              value={form.employerRegistrationNumber}
+              onChange={event =>
+                set("employerRegistrationNumber", event.target.value)
+              }
+              placeholder="Se vazio, utiliza o cadastro da empresa"
             />
           </label>
           <label className="text-xs font-semibold">
@@ -4293,18 +4481,66 @@ function CatDialog({ open, close, workers, busy, save }: any) {
             </label>
             <label className="text-xs font-semibold">
               Tipo de local
-              <Input
-                className="mt-1"
+              <select
+                className="mt-1 h-10 w-full border bg-white px-3 text-sm"
                 value={form.locationType}
                 onChange={event => set("locationType", event.target.value)}
-              />
+              >
+                <option value="1">
+                  Estabelecimento do empregador no Brasil
+                </option>
+                <option value="2">
+                  Estabelecimento do empregador no exterior
+                </option>
+                <option value="3">Estabelecimento de terceiros</option>
+                <option value="4">Via pública</option>
+                <option value="5">Área rural</option>
+                <option value="6">Embarcação</option>
+                <option value="9">Outros</option>
+              </select>
             </label>
             <label className="text-xs font-semibold">
-              Local
+              Logradouro/local
               <Input
                 className="mt-1"
                 value={form.location}
                 onChange={event => set("location", event.target.value)}
+              />
+            </label>
+            <label className="text-xs font-semibold">
+              Número
+              <Input
+                className="mt-1"
+                value={form.locationNumber}
+                onChange={event => set("locationNumber", event.target.value)}
+                placeholder="S/N quando não houver"
+              />
+            </label>
+            <label className="text-xs font-semibold">
+              Complemento
+              <Input
+                className="mt-1"
+                value={form.locationComplement}
+                onChange={event =>
+                  set("locationComplement", event.target.value)
+                }
+              />
+            </label>
+            <label className="text-xs font-semibold">
+              Bairro
+              <Input
+                className="mt-1"
+                value={form.neighborhood}
+                onChange={event => set("neighborhood", event.target.value)}
+              />
+            </label>
+            <label className="text-xs font-semibold">
+              CEP
+              <Input
+                className="mt-1"
+                value={form.postalCode}
+                onChange={event => set("postalCode", event.target.value)}
+                placeholder="Somente números"
               />
             </label>
             <label className="text-xs font-semibold md:col-span-2">
@@ -4324,6 +4560,16 @@ function CatDialog({ open, close, workers, busy, save }: any) {
               />
             </label>
             <label className="text-xs font-semibold">
+              Código IBGE do município
+              <Input
+                className="mt-1"
+                maxLength={7}
+                value={form.eventCityCode}
+                onChange={event => set("eventCityCode", event.target.value)}
+                placeholder="7 dígitos"
+              />
+            </label>
+            <label className="text-xs font-semibold">
               UF
               <Input
                 className="mt-1 uppercase"
@@ -4334,6 +4580,43 @@ function CatDialog({ open, close, workers, busy, save }: any) {
                 }
               />
             </label>
+            {form.locationType === "3" ? (
+              <label className="text-xs font-semibold">
+                Inscrição do estabelecimento terceiro
+                <Input
+                  className="mt-1"
+                  value={form.locationRegistration}
+                  onChange={event =>
+                    set("locationRegistration", event.target.value)
+                  }
+                />
+              </label>
+            ) : null}
+            {form.locationType === "2" ? (
+              <>
+                <label className="text-xs font-semibold">
+                  Código do país
+                  <Input
+                    className="mt-1"
+                    maxLength={3}
+                    value={form.eventCountryCode}
+                    onChange={event =>
+                      set("eventCountryCode", event.target.value)
+                    }
+                  />
+                </label>
+                <label className="text-xs font-semibold">
+                  Código postal no exterior
+                  <Input
+                    className="mt-1"
+                    value={form.foreignPostalCode}
+                    onChange={event =>
+                      set("foreignPostalCode", event.target.value)
+                    }
+                  />
+                </label>
+              </>
+            ) : null}
           </div>
           <label className="block text-xs font-semibold">
             Descreva o acidente ocorrido
@@ -4457,6 +4740,17 @@ function CatDialog({ open, close, workers, busy, save }: any) {
               />{" "}
               Houve óbito
             </label>
+            {form.deathOccurred || form.catType === "comunicacao_obito" ? (
+              <label className="text-xs font-semibold">
+                Data do óbito
+                <Input
+                  className="mt-1"
+                  type="date"
+                  value={form.deathDate}
+                  onChange={event => set("deathDate", event.target.value)}
+                />
+              </label>
+            ) : null}
           </div>
         </fieldset>
         <fieldset className="grid gap-3 border p-3 md:grid-cols-2 lg:grid-cols-4">
@@ -4516,11 +4810,15 @@ function CatDialog({ open, close, workers, busy, save }: any) {
           <div className="grid grid-cols-3 gap-2">
             <label className="text-xs font-semibold">
               Conselho
-              <Input
-                className="mt-1"
+              <select
+                className="mt-1 h-10 w-full border bg-white px-2 text-sm"
                 value={form.doctorCouncil}
                 onChange={event => set("doctorCouncil", event.target.value)}
-              />
+              >
+                <option value="CRM">CRM</option>
+                <option value="CRO">CRO</option>
+                <option value="RMS">RMS</option>
+              </select>
             </label>
             <label className="text-xs font-semibold">
               Registro
@@ -4559,475 +4857,17 @@ function CatDialog({ open, close, workers, busy, save }: any) {
           </Button>
           <Button
             disabled={
-              busy ||
+              validation.isPending ||
               !form.collaboratorId ||
               !form.eventAt ||
-              form.description.trim().length < 5 ||
-              !form.causativeAgentCode ||
-              !form.generatingSituationCode ||
-              !form.bodyPartCode ||
-              !form.injuryNatureCode
+              form.description.trim().length < 10
             }
-            onClick={submit}
+            onClick={() => validation.mutate(buildPayload())}
           >
-            {busy ? "Salvando..." : "Registrar CAT e preparar S-2210"}
-          </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function LegacyCatDialog({ open, close, workers, busy, save }: any) {
-  const [form, setForm] = useState<any>({
-    collaboratorId: 0,
-    eventAt: "",
-    emitterType: "empregador",
-    catType: "inicial",
-    initiative: "empregador",
-    registrationSource: "plataforma",
-    employerRegistrationType: "cnpj",
-    employerCnae: "",
-    accidentType: "tipico",
-    hoursWorkedBeforeAccident: "",
-    lastWorkedDate: "",
-    locationType: "estabelecimento_empregador",
-    location: "",
-    locationDetail: "",
-    eventCity: "",
-    eventUf: "",
-    eventCountry: "Brasil",
-    description: "",
-    causativeAgentCode: "",
-    causativeAgent: "",
-    generatingSituationCode: "",
-    bodyPartCode: "",
-    bodyPart: "",
-    laterality: "nao_aplicavel",
-    injuryNatureCode: "",
-    injuryNature: "",
-    leaveRequired: false,
-    policeReport: false,
-    deathOccurred: false,
-    deathDate: "",
-    medicalAttendanceAt: "",
-    hospitalization: false,
-    treatmentDays: "",
-    diagnosis: "",
-    cid: "",
-    doctorName: "",
-    doctorCouncil: "CRM",
-    doctorUf: "",
-    doctorRegistration: "",
-    medicalNotes: "",
-  });
-  const set = (key: string, value: any) =>
-    setForm((current: any) => ({ ...current, [key]: value }));
-  const submit = () =>
-    save({
-      ...form,
-      collaboratorId: Number(form.collaboratorId),
-      eventAt: new Date(form.eventAt).toISOString(),
-      lastWorkedDate: form.lastWorkedDate || null,
-      deathDate: form.deathDate || null,
-      medicalAttendanceAt: form.medicalAttendanceAt
-        ? new Date(form.medicalAttendanceAt).toISOString()
-        : undefined,
-      treatmentDays:
-        form.treatmentDays === "" ? null : Number(form.treatmentDays),
-      eventUf: form.eventUf || undefined,
-      doctorUf: form.doctorUf || undefined,
-      witnesses: [],
-    });
-  return (
-    <Dialog open={open} onOpenChange={value => !value && close()}>
-      <DialogContent className="max-h-[94vh] max-w-5xl overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Comunicação de Acidente de Trabalho - CAT</DialogTitle>
-        </DialogHeader>
-        <div className="border-l-4 border-amber-400 bg-amber-50 p-3 text-sm">
-          O cadastro prepara o evento S-2210 no leiaute eSocial S-1.3/NT
-          06-2026. A transmissão continua pendente até a futura integração
-          oficial; o PDF gerado é um registro interno.
-        </div>
-        <fieldset className="grid gap-3 border p-3 md:grid-cols-2 lg:grid-cols-4">
-          <legend className="px-2 text-sm font-semibold">
-            Identificação e comunicação
-          </legend>
-          <label className="text-xs font-semibold lg:col-span-2">
-            Trabalhador
-            <select
-              className="mt-1 h-10 w-full border bg-white px-3 text-sm"
-              value={form.collaboratorId}
-              onChange={event =>
-                set("collaboratorId", Number(event.target.value))
-              }
-            >
-              <option value={0}>Selecione</option>
-              {workers.map((row: any) => (
-                <option key={row.id} value={row.id}>
-                  {row.name} ·{" "}
-                  {row.cpf || row.employee_registration || "sem identificador"}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="text-xs font-semibold">
-            Data e hora
-            <Input
-              className="mt-1"
-              type="datetime-local"
-              value={form.eventAt}
-              onChange={event => set("eventAt", event.target.value)}
-            />
-          </label>
-          <label className="text-xs font-semibold">
-            Tipo de CAT
-            <select
-              className="mt-1 h-10 w-full border bg-white px-3 text-sm"
-              value={form.catType}
-              onChange={event => set("catType", event.target.value)}
-            >
-              <option value="inicial">Inicial</option>
-              <option value="reabertura">Reabertura</option>
-              <option value="comunicacao_obito">Comunicação de óbito</option>
-            </select>
-          </label>
-          <label className="text-xs font-semibold">
-            Emitente
-            <select
-              className="mt-1 h-10 w-full border bg-white px-3 text-sm"
-              value={form.emitterType}
-              onChange={event => set("emitterType", event.target.value)}
-            >
-              <option value="empregador">Empregador</option>
-              <option value="sindicato">Sindicato</option>
-              <option value="medico">Médico</option>
-              <option value="dependente">Dependente</option>
-              <option value="autoridade_publica">Autoridade pública</option>
-            </select>
-          </label>
-          <label className="text-xs font-semibold">
-            Iniciativa
-            <select
-              className="mt-1 h-10 w-full border bg-white px-3 text-sm"
-              value={form.initiative}
-              onChange={event => set("initiative", event.target.value)}
-            >
-              <option value="empregador">Empregador</option>
-              <option value="ordem_judicial">Ordem judicial</option>
-              <option value="determinacao_fiscal">Determinação fiscal</option>
-              <option value="outros">Outros</option>
-            </select>
-          </label>
-          <label className="text-xs font-semibold">
-            CNAE do estabelecimento
-            <Input
-              className="mt-1"
-              value={form.employerCnae}
-              onChange={event => set("employerCnae", event.target.value)}
-            />
-          </label>
-          <label className="text-xs font-semibold">
-            Tipo de acidente
-            <select
-              className="mt-1 h-10 w-full border bg-white px-3 text-sm"
-              value={form.accidentType}
-              onChange={event => set("accidentType", event.target.value)}
-            >
-              <option value="tipico">Típico</option>
-              <option value="trajeto">Trajeto</option>
-              <option value="doenca_ocupacional">Doença ocupacional</option>
-            </select>
-          </label>
-        </fieldset>
-        <fieldset className="grid gap-3 border p-3 md:grid-cols-2 lg:grid-cols-4">
-          <legend className="px-2 text-sm font-semibold">Ocorrência</legend>
-          <label className="text-xs font-semibold">
-            Horas trabalhadas antes do acidente
-            <Input
-              className="mt-1"
-              value={form.hoursWorkedBeforeAccident}
-              onChange={event =>
-                set("hoursWorkedBeforeAccident", event.target.value)
-              }
-            />
-          </label>
-          <label className="text-xs font-semibold">
-            Último dia trabalhado
-            <Input
-              className="mt-1"
-              type="date"
-              value={form.lastWorkedDate}
-              onChange={event => set("lastWorkedDate", event.target.value)}
-            />
-          </label>
-          <label className="text-xs font-semibold">
-            Tipo de local
-            <Input
-              className="mt-1"
-              value={form.locationType}
-              onChange={event => set("locationType", event.target.value)}
-            />
-          </label>
-          <label className="text-xs font-semibold">
-            Local
-            <Input
-              className="mt-1"
-              value={form.location}
-              onChange={event => set("location", event.target.value)}
-            />
-          </label>
-          <label className="text-xs font-semibold lg:col-span-2">
-            Detalhamento do local
-            <Input
-              className="mt-1"
-              value={form.locationDetail}
-              onChange={event => set("locationDetail", event.target.value)}
-            />
-          </label>
-          <label className="text-xs font-semibold">
-            Município
-            <Input
-              className="mt-1"
-              value={form.eventCity}
-              onChange={event => set("eventCity", event.target.value)}
-            />
-          </label>
-          <label className="text-xs font-semibold">
-            UF
-            <Input
-              className="mt-1 uppercase"
-              maxLength={2}
-              value={form.eventUf}
-              onChange={event =>
-                set("eventUf", event.target.value.toUpperCase())
-              }
-            />
-          </label>
-          <label className="text-xs font-semibold lg:col-span-4">
-            Descrição detalhada
-            <Textarea
-              className="mt-1"
-              value={form.description}
-              onChange={event => set("description", event.target.value)}
-            />
-          </label>
-          <label className="text-xs font-semibold">
-            Código agente causador
-            <Input
-              className="mt-1"
-              value={form.causativeAgentCode}
-              onChange={event => set("causativeAgentCode", event.target.value)}
-            />
-          </label>
-          <label className="text-xs font-semibold">
-            Agente causador
-            <Input
-              className="mt-1"
-              value={form.causativeAgent}
-              onChange={event => set("causativeAgent", event.target.value)}
-            />
-          </label>
-          <label className="text-xs font-semibold">
-            Situação geradora (código)
-            <Input
-              className="mt-1"
-              value={form.generatingSituationCode}
-              onChange={event =>
-                set("generatingSituationCode", event.target.value)
-              }
-            />
-          </label>
-          <label className="text-xs font-semibold">
-            Lateralidade
-            <select
-              className="mt-1 h-10 w-full border bg-white px-3 text-sm"
-              value={form.laterality}
-              onChange={event => set("laterality", event.target.value)}
-            >
-              <option value="nao_aplicavel">Não aplicável</option>
-              <option value="esquerda">Esquerda</option>
-              <option value="direita">Direita</option>
-              <option value="ambos">Ambos</option>
-            </select>
-          </label>
-          <label className="text-xs font-semibold">
-            Código parte do corpo
-            <Input
-              className="mt-1"
-              value={form.bodyPartCode}
-              onChange={event => set("bodyPartCode", event.target.value)}
-            />
-          </label>
-          <label className="text-xs font-semibold">
-            Parte do corpo
-            <Input
-              className="mt-1"
-              value={form.bodyPart}
-              onChange={event => set("bodyPart", event.target.value)}
-            />
-          </label>
-          <label className="text-xs font-semibold">
-            Código natureza da lesão
-            <Input
-              className="mt-1"
-              value={form.injuryNatureCode}
-              onChange={event => set("injuryNatureCode", event.target.value)}
-            />
-          </label>
-          <label className="text-xs font-semibold">
-            Natureza da lesão
-            <Input
-              className="mt-1"
-              value={form.injuryNature}
-              onChange={event => set("injuryNature", event.target.value)}
-            />
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={form.leaveRequired}
-              onChange={event => set("leaveRequired", event.target.checked)}
-            />{" "}
-            Houve afastamento
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={form.policeReport}
-              onChange={event => set("policeReport", event.target.checked)}
-            />{" "}
-            Boletim policial
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={form.deathOccurred}
-              onChange={event => set("deathOccurred", event.target.checked)}
-            />{" "}
-            Houve óbito
-          </label>
-          {form.deathOccurred && (
-            <label className="text-xs font-semibold">
-              Data do óbito
-              <Input
-                className="mt-1"
-                type="date"
-                value={form.deathDate}
-                onChange={event => set("deathDate", event.target.value)}
-              />
-            </label>
-          )}
-        </fieldset>
-        <fieldset className="grid gap-3 border p-3 md:grid-cols-2 lg:grid-cols-4">
-          <legend className="px-2 text-sm font-semibold">
-            Atendimento médico
-          </legend>
-          <label className="text-xs font-semibold">
-            Data e hora
-            <Input
-              className="mt-1"
-              type="datetime-local"
-              value={form.medicalAttendanceAt}
-              onChange={event => set("medicalAttendanceAt", event.target.value)}
-            />
-          </label>
-          <label className="flex items-center gap-2 pt-6 text-sm">
-            <input
-              type="checkbox"
-              checked={form.hospitalization}
-              onChange={event => set("hospitalization", event.target.checked)}
-            />{" "}
-            Houve internação
-          </label>
-          <label className="text-xs font-semibold">
-            Dias de tratamento
-            <Input
-              className="mt-1"
-              type="number"
-              value={form.treatmentDays}
-              onChange={event => set("treatmentDays", event.target.value)}
-            />
-          </label>
-          <label className="text-xs font-semibold">
-            CID
-            <Input
-              className="mt-1"
-              value={form.cid}
-              onChange={event => set("cid", event.target.value)}
-            />
-          </label>
-          <label className="text-xs font-semibold lg:col-span-2">
-            Diagnóstico informado no atendimento
-            <Input
-              className="mt-1"
-              value={form.diagnosis}
-              onChange={event => set("diagnosis", event.target.value)}
-            />
-          </label>
-          <label className="text-xs font-semibold">
-            Profissional
-            <Input
-              className="mt-1"
-              value={form.doctorName}
-              onChange={event => set("doctorName", event.target.value)}
-            />
-          </label>
-          <div className="grid grid-cols-3 gap-2">
-            <label className="text-xs font-semibold">
-              Conselho
-              <Input
-                className="mt-1"
-                value={form.doctorCouncil}
-                onChange={event => set("doctorCouncil", event.target.value)}
-              />
-            </label>
-            <label className="text-xs font-semibold">
-              Registro
-              <Input
-                className="mt-1"
-                value={form.doctorRegistration}
-                onChange={event =>
-                  set("doctorRegistration", event.target.value)
-                }
-              />
-            </label>
-            <label className="text-xs font-semibold">
-              UF
-              <Input
-                className="mt-1 uppercase"
-                maxLength={2}
-                value={form.doctorUf}
-                onChange={event =>
-                  set("doctorUf", event.target.value.toUpperCase())
-                }
-              />
-            </label>
-          </div>
-          <label className="text-xs font-semibold lg:col-span-4">
-            Observações médicas
-            <Textarea
-              className="mt-1"
-              value={form.medicalNotes}
-              onChange={event => set("medicalNotes", event.target.value)}
-            />
-          </label>
-        </fieldset>
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={close}>
-            Cancelar
-          </Button>
-          <Button
-            disabled={
-              busy ||
-              !form.collaboratorId ||
-              !form.eventAt ||
-              form.description.trim().length < 5
-            }
-            onClick={submit}
-          >
-            {busy ? "Salvando..." : "Registrar CAT e preparar S-2210"}
+            <ShieldCheck size={14} className="mr-2" />
+            {validation.isPending
+              ? "Conferindo dados..."
+              : "Conferir CAT antes de salvar"}
           </Button>
         </div>
       </DialogContent>

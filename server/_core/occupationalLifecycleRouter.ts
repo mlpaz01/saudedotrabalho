@@ -20,6 +20,11 @@ import {
   orderLabel,
 } from "./occupationalLifecycle";
 import { classifyExamPlanning } from "./occupationalExamPlanning";
+import {
+  mysqlDateTime,
+  normalizeCatLocationType,
+  validateCatDraft,
+} from "./catValidation";
 import { protectedProcedure, router } from "./trpc";
 
 let occupationalTablesReady = false;
@@ -640,8 +645,15 @@ export async function ensureOccupationalTables() {
     ["location_detail", "TEXT NULL"],
     ["location_registration", "VARCHAR(80) NULL"],
     ["event_city", "VARCHAR(180) NULL"],
+    ["event_city_code", "VARCHAR(7) NULL"],
     ["event_uf", "VARCHAR(2) NULL"],
     ["event_country", "VARCHAR(100) NULL"],
+    ["event_country_code", "VARCHAR(3) NULL"],
+    ["location_number", "VARCHAR(20) NULL"],
+    ["location_complement", "VARCHAR(120) NULL"],
+    ["neighborhood", "VARCHAR(120) NULL"],
+    ["postal_code", "VARCHAR(12) NULL"],
+    ["foreign_postal_code", "VARCHAR(20) NULL"],
     ["body_part_code", "VARCHAR(30) NULL"],
     ["laterality", "VARCHAR(30) NULL"],
     ["causative_agent_code", "VARCHAR(30) NULL"],
@@ -663,6 +675,10 @@ export async function ensureOccupationalTables() {
     ["medical_notes", "MEDIUMTEXT NULL"],
     ["esocial_version", "VARCHAR(60) NULL"],
     ["esocial_event_json", "LONGTEXT NULL"],
+    ["validation_status", "VARCHAR(30) NULL"],
+    ["validation_json", "LONGTEXT NULL"],
+    ["validated_at", "DATETIME NULL"],
+    ["confirmed_by", "INT NULL"],
     ["pdf_private_path", "VARCHAR(700) NULL"],
   ];
   for (const [column, definition] of catColumns)
@@ -1004,6 +1020,24 @@ export async function ensureClinicalConsultationExam(
 }
 
 function catEsocialPayload(input: any, company: any, worker: any) {
+  const dateTimeParts = (value: unknown) => {
+    const raw = String(value || "").trim();
+    const local = raw.match(
+      /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})(?::\d{2})?$/
+    );
+    if (local)
+      return { date: local[1], time: `${local[2]}${local[3]}` };
+    const parsed = new Date(raw);
+    return Number.isNaN(parsed.getTime())
+      ? { date: null, time: null }
+      : {
+          date: parsed.toISOString().slice(0, 10),
+          time: parsed.toISOString().slice(11, 16).replace(":", ""),
+        };
+  };
+  const eventAt = dateTimeParts(input.eventAt);
+  const attendanceAt = dateTimeParts(input.medicalAttendanceAt);
+  const onlyDigits = (value: unknown) => String(value || "").replace(/\D/g, "");
   return {
     layout: "eSocial S-1.3 - NT 06/2026",
     event: "S-2210",
@@ -1011,12 +1045,12 @@ function catEsocialPayload(input: any, company: any, worker: any) {
     employer: {
       registrationType: input.employerRegistrationType || "cnpj",
       registrationNumber:
-        input.employerRegistrationNumber || company?.cnpj || null,
+        onlyDigits(input.employerRegistrationNumber || company?.cnpj) || null,
       cnae: input.employerCnae || null,
     },
     worker: {
       id: Number(worker?.id || input.collaboratorId),
-      cpf: worker?.cpf || null,
+      cpf: onlyDigits(worker?.cpf) || null,
       name: worker?.name || null,
       registration: worker?.employee_registration || null,
     },
@@ -1024,17 +1058,32 @@ function catEsocialPayload(input: any, company: any, worker: any) {
       type: input.catType,
       initiative: input.initiative,
       emitterType: input.emitterType,
-      eventAt: input.eventAt,
+      accidentDate: eventAt.date,
+      accidentTime: eventAt.time,
       accidentType: input.accidentType || null,
-      hoursWorkedBeforeAccident: input.hoursWorkedBeforeAccident || null,
+      hoursWorkedBeforeAccident:
+        String(input.hoursWorkedBeforeAccident || "").replace(":", "") || null,
       lastWorkedDate: input.lastWorkedDate || null,
       location: {
-        type: input.locationType || null,
-        description: input.location || null,
+        type: normalizeCatLocationType(input.locationType) || null,
+        address: input.location || null,
+        number: input.locationNumber || null,
+        complement: input.locationComplement || null,
+        neighborhood: input.neighborhood || null,
+        postalCode: onlyDigits(input.postalCode) || null,
+        foreignPostalCode: input.foreignPostalCode || null,
         detail: input.locationDetail || null,
         city: input.eventCity || null,
+        cityCode: onlyDigits(input.eventCityCode) || null,
         uf: input.eventUf || null,
         country: input.eventCountry || "Brasil",
+        countryCode: onlyDigits(input.eventCountryCode) || "105",
+        registration:
+          onlyDigits(input.locationRegistration) ||
+          (normalizeCatLocationType(input.locationType) === "1"
+            ? onlyDigits(company?.cnpj)
+            : "") ||
+          null,
       },
       causativeAgent: {
         code: input.causativeAgentCode || null,
@@ -1060,11 +1109,15 @@ function catEsocialPayload(input: any, company: any, worker: any) {
       },
       policeReport: Boolean(input.policeReport),
       medical: {
-        attendanceAt: input.medicalAttendanceAt || null,
+        attendanceDate: attendanceAt.date,
+        attendanceTime: attendanceAt.time,
         hospitalization: Boolean(input.hospitalization),
         treatmentDays: input.treatmentDays ?? null,
         diagnosis: input.diagnosis || null,
-        cid: input.cid || null,
+        cid:
+          String(input.cid || "")
+            .replace(/[^a-zA-Z0-9]/g, "")
+            .toUpperCase() || null,
         professional: {
           name: input.doctorName || null,
           council: input.doctorCouncil || null,
@@ -1218,6 +1271,165 @@ async function detectMovements(db: any, companyId: number) {
 }
 
 const dateInput = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+
+const catInputSchema = z.object({
+  collaboratorId: z.number().int().positive(),
+  eventAt: z.string().min(10).max(40),
+  emitterType: z
+    .enum([
+      "empregador",
+      "sindicato",
+      "medico",
+      "dependente",
+      "autoridade_publica",
+    ])
+    .default("empregador"),
+  catType: z
+    .enum(["inicial", "reabertura", "comunicacao_obito"])
+    .default("inicial"),
+  initiative: z
+    .enum(["empregador", "ordem_judicial", "determinacao_fiscal", "outros"])
+    .default("empregador"),
+  registrationSource: z
+    .enum(["plataforma", "importacao", "integracao"])
+    .default("plataforma"),
+  catNumber: z.string().max(100).optional(),
+  originReceipt: z.string().max(120).optional(),
+  employerRegistrationType: z
+    .enum(["cnpj", "cpf", "caepf", "cno"])
+    .default("cnpj"),
+  employerRegistrationNumber: z.string().max(40).optional(),
+  employerCnae: z.string().max(20).optional(),
+  location: z.string().max(5000).optional(),
+  locationNumber: z.string().max(20).optional(),
+  locationComplement: z.string().max(120).optional(),
+  neighborhood: z.string().max(120).optional(),
+  postalCode: z.string().max(12).optional(),
+  foreignPostalCode: z.string().max(20).optional(),
+  accidentType: z.string().max(100).optional(),
+  hoursWorkedBeforeAccident: z.string().max(30).optional(),
+  lastWorkedDate: dateInput.optional().nullable(),
+  locationType: z.string().max(80).optional(),
+  locationDetail: z.string().max(5000).optional(),
+  locationRegistration: z.string().max(80).optional(),
+  eventCity: z.string().max(180).optional(),
+  eventCityCode: z.string().max(7).optional(),
+  eventUf: z.string().max(2).optional(),
+  eventCountry: z.string().max(100).default("Brasil"),
+  eventCountryCode: z.string().max(3).default("105"),
+  description: z.string().min(5).max(50000),
+  causativeAgent: z.string().max(10000).optional(),
+  causativeAgentCode: z.string().max(30).optional(),
+  generatingSituationCode: z.string().max(30).optional(),
+  generatingSituation: z.string().max(10000).optional(),
+  bodyPart: z.string().max(180).optional(),
+  bodyPartCode: z.string().max(30).optional(),
+  laterality: z
+    .enum(["nao_aplicavel", "esquerda", "direita", "ambos"])
+    .default("nao_aplicavel"),
+  injuryNature: z.string().max(180).optional(),
+  injuryNatureCode: z.string().max(30).optional(),
+  leaveRequired: z.boolean().default(false),
+  policeReport: z.boolean().default(false),
+  deathOccurred: z.boolean().default(false),
+  deathDate: dateInput.optional().nullable(),
+  medicalAttendanceAt: z.string().max(40).optional(),
+  hospitalization: z.boolean().default(false),
+  treatmentDays: z.number().int().min(0).max(9999).optional().nullable(),
+  diagnosis: z.string().max(20000).optional(),
+  cid: z.string().max(20).optional(),
+  doctorName: z.string().max(255).optional(),
+  doctorCouncil: z.string().max(20).optional(),
+  doctorUf: z.string().max(2).optional(),
+  doctorRegistration: z.string().max(40).optional(),
+  medicalNotes: z.string().max(50000).optional(),
+  witnesses: z.array(z.string().max(255)).max(50).default([]),
+  confirmationAccepted: z.boolean().default(false),
+});
+
+type CatInput = z.infer<typeof catInputSchema>;
+
+function resolveCatOfficialCode(kind: CatCodeKind, code?: string) {
+  if (!code) return null;
+  return (
+    esocialCatCodes.find(
+      row => row.kind === kind && row.code === String(code)
+    ) || null
+  );
+}
+
+async function prepareCatConference(
+  db: any,
+  companyId: number,
+  input: CatInput
+) {
+  const [workerResult, companyResult]: any[] = await Promise.all([
+    db.execute(
+      drzSql`SELECT u.id,u.name,u.cpf,u.employee_registration,u.position,b.name branch_name,s.name sector_name FROM users u LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id WHERE u.id=${input.collaboratorId} AND u.company_id=${companyId} LIMIT 1`
+    ),
+    db.execute(
+      drzSql`SELECT name,cnpj,address FROM companies WHERE id=${companyId} LIMIT 1`
+    ),
+  ]);
+  const worker = rowsOf(workerResult)[0] || {};
+  const company = rowsOf(companyResult)[0] || {};
+  const codes = {
+    causativeAgent: resolveCatOfficialCode(
+      "causative_agent",
+      input.causativeAgentCode
+    ),
+    generatingSituation: resolveCatOfficialCode(
+      "generating_situation",
+      input.generatingSituationCode
+    ),
+    bodyPart: resolveCatOfficialCode("body_part", input.bodyPartCode),
+    injuryNature: resolveCatOfficialCode(
+      "injury_nature",
+      input.injuryNatureCode
+    ),
+  };
+  const validatedInput = {
+    ...input,
+    locationType: normalizeCatLocationType(input.locationType),
+    causativeAgent:
+      codes.causativeAgent?.description || input.causativeAgent || "",
+    generatingSituation:
+      codes.generatingSituation?.description || input.generatingSituation || "",
+    bodyPart: codes.bodyPart?.description || input.bodyPart || "",
+    injuryNature: codes.injuryNature?.description || input.injuryNature || "",
+    deathOccurred:
+      Boolean(input.deathOccurred) || input.catType === "comunicacao_obito",
+  };
+  const invalidOfficialCodes = [
+    [
+      "causativeAgentCode",
+      input.causativeAgentCode,
+      "14",
+      codes.causativeAgent,
+    ],
+    [
+      "generatingSituationCode",
+      input.generatingSituationCode,
+      "15",
+      codes.generatingSituation,
+    ],
+    ["bodyPartCode", input.bodyPartCode, "13", codes.bodyPart],
+    ["injuryNatureCode", input.injuryNatureCode, "17", codes.injuryNature],
+  ]
+    .filter(([, code, , match]) => Boolean(code) && !match)
+    .map(([field, code, table]) => ({
+      field: String(field),
+      code: String(code),
+      table: String(table),
+    }));
+  const validation = validateCatDraft({
+    input: validatedInput,
+    worker,
+    company,
+    invalidOfficialCodes,
+  });
+  return { worker, company, validatedInput, validation };
+}
 
 async function loadPcmsoOrderSource(
   db: any,
@@ -3503,7 +3715,25 @@ export const occupationalLifecycleRouter = router({
       const db = await getDb();
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      const expanded = `${input.description} queda escorregamento impacto piso máquina equipamento braço perna mão pé tronco lesão contusão fratura corte`;
+      const normalizedDescription = normalizeMatch(input.description);
+      const queryByKind: Record<CatCodeKind, string> = {
+        causative_agent: `${input.description} ${
+          /escada (portatil|movel)/.test(normalizedDescription)
+            ? "escada móvel"
+            : ""
+        }`,
+        generating_situation: `${input.description} queda impacto movimento`,
+        body_part: `${input.description} ${
+          normalizedDescription.includes("tornozelo")
+            ? "pé perna membro inferior"
+            : ""
+        }`,
+        injury_nature: `${input.description} ${
+          /(entorse|torcao|distensao)/.test(normalizedDescription)
+            ? "distensão torção"
+            : ""
+        }`,
+      };
       const candidates = Object.fromEntries(
         (
           [
@@ -3515,7 +3745,7 @@ export const occupationalLifecycleRouter = router({
         ).map(kind => {
           const ranked = catCandidates(
             kind,
-            expanded,
+            queryByKind[kind],
             kind === "causative_agent" ? 60 : 45
           );
           return [
@@ -3527,7 +3757,10 @@ export const occupationalLifecycleRouter = router({
           ];
         })
       );
-      let selected: Record<string, string> = {};
+      let selected: Record<
+        string,
+        string | { code?: string; confidence?: number; rationale?: string }
+      > = {};
       const apiKey = process.env.OPENROUTER_API_KEY || "";
       if (apiKey) {
         try {
@@ -3536,7 +3769,7 @@ export const occupationalLifecycleRouter = router({
               {
                 role: "system",
                 content:
-                  "Você auxilia o preenchimento de CAT no Brasil. Escolha somente códigos presentes nas listas fornecidas. Não invente código. Responda apenas JSON com as chaves causative_agent, generating_situation, body_part e injury_nature. Se não houver correspondência segura, use string vazia.",
+                  "Você auxilia a conferência de CAT no Brasil. Escolha somente códigos presentes nas listas fornecidas e considere também o campo application. Não invente códigos e não escolha por aproximação quando houver incompatibilidade. Dê preferência explícita a escada móvel quando o relato disser portátil/móvel e a Distensão, torção quando houver entorse/torção. Responda apenas JSON. Cada chave causative_agent, generating_situation, body_part e injury_nature deve conter {code, confidence, rationale}. Confidence deve variar de 0 a 1. Se não houver correspondência segura, use code vazio.",
               },
               {
                 role: "user",
@@ -3568,12 +3801,30 @@ export const occupationalLifecycleRouter = router({
             code: string;
             description: string;
           }>;
-          const requestedCode = String(selected[kind] || "");
+          const requested = selected[kind];
+          const requestedCode = String(
+            typeof requested === "string" ? requested : requested?.code || ""
+          );
+          const confidence =
+            typeof requested === "object"
+              ? Math.max(0, Math.min(1, Number(requested?.confidence || 0)))
+              : requestedCode
+                ? 0.7
+                : 0;
           const choice =
-            allowed.find(item => item.code === requestedCode) ||
-            allowed[0] ||
-            null;
-          return { kind, selected: choice, alternatives: allowed.slice(0, 5) };
+            confidence >= 0.55
+              ? allowed.find(item => item.code === requestedCode) || null
+              : null;
+          return {
+            kind,
+            selected: choice,
+            confidence,
+            rationale:
+              typeof requested === "object"
+                ? String(requested?.rationale || "")
+                : "",
+            alternatives: allowed.slice(0, 5),
+          };
         }
       );
       await audit(db, ctx, "cat_codes_suggested_by_ai", "cat", null, null, {
@@ -3583,85 +3834,13 @@ export const occupationalLifecycleRouter = router({
       return {
         suggestions,
         advisory:
-          "As sugestões são auxiliares e devem ser validadas pelo responsável pelo preenchimento da CAT.",
+          "Somente correspondências com confiança mínima foram preenchidas. As sugestões são auxiliares e devem ser validadas pelo responsável pela CAT.",
         source: "Tabelas oficiais 13, 14, 15 e 17 do eSocial S-1.3 NT 06/2026",
       };
     }),
 
-  createCat: protectedProcedure
-    .input(
-      z.object({
-        collaboratorId: z.number().int().positive(),
-        eventAt: z.string().min(10).max(40),
-        emitterType: z
-          .enum([
-            "empregador",
-            "sindicato",
-            "medico",
-            "dependente",
-            "autoridade_publica",
-          ])
-          .default("empregador"),
-        catType: z
-          .enum(["inicial", "reabertura", "comunicacao_obito"])
-          .default("inicial"),
-        initiative: z
-          .enum([
-            "empregador",
-            "ordem_judicial",
-            "determinacao_fiscal",
-            "outros",
-          ])
-          .default("empregador"),
-        registrationSource: z
-          .enum(["plataforma", "importacao", "integracao"])
-          .default("plataforma"),
-        catNumber: z.string().max(100).optional(),
-        originReceipt: z.string().max(120).optional(),
-        employerRegistrationType: z
-          .enum(["cnpj", "cpf", "caepf", "cno"])
-          .default("cnpj"),
-        employerRegistrationNumber: z.string().max(40).optional(),
-        employerCnae: z.string().max(20).optional(),
-        location: z.string().max(5000).optional(),
-        accidentType: z.string().max(100).optional(),
-        hoursWorkedBeforeAccident: z.string().max(30).optional(),
-        lastWorkedDate: dateInput.optional().nullable(),
-        locationType: z.string().max(80).optional(),
-        locationDetail: z.string().max(5000).optional(),
-        locationRegistration: z.string().max(80).optional(),
-        eventCity: z.string().max(180).optional(),
-        eventUf: z.string().max(2).optional(),
-        eventCountry: z.string().max(100).default("Brasil"),
-        description: z.string().min(5).max(50000),
-        causativeAgent: z.string().max(10000).optional(),
-        causativeAgentCode: z.string().max(30).optional(),
-        generatingSituationCode: z.string().max(30).optional(),
-        generatingSituation: z.string().max(10000).optional(),
-        bodyPart: z.string().max(180).optional(),
-        bodyPartCode: z.string().max(30).optional(),
-        laterality: z
-          .enum(["nao_aplicavel", "esquerda", "direita", "ambos"])
-          .default("nao_aplicavel"),
-        injuryNature: z.string().max(180).optional(),
-        injuryNatureCode: z.string().max(30).optional(),
-        leaveRequired: z.boolean().default(false),
-        policeReport: z.boolean().default(false),
-        deathOccurred: z.boolean().default(false),
-        deathDate: dateInput.optional().nullable(),
-        medicalAttendanceAt: z.string().max(40).optional(),
-        hospitalization: z.boolean().default(false),
-        treatmentDays: z.number().int().min(0).max(9999).optional().nullable(),
-        diagnosis: z.string().max(20000).optional(),
-        cid: z.string().max(20).optional(),
-        doctorName: z.string().max(255).optional(),
-        doctorCouncil: z.string().max(20).optional(),
-        doctorUf: z.string().max(2).optional(),
-        doctorRegistration: z.string().max(40).optional(),
-        medicalNotes: z.string().max(50000).optional(),
-        witnesses: z.array(z.string().max(255)).max(50).default([]),
-      })
-    )
+  validateCat: protectedProcedure
+    .input(catInputSchema)
     .mutation(async ({ ctx, input }) => {
       requireSesmt(ctx);
       await ensureOccupationalTables();
@@ -3675,70 +3854,118 @@ export const occupationalLifecycleRouter = router({
         input.collaboratorId,
         "Colaborador"
       );
-      const [workerResult, companyResult]: any[] = await Promise.all([
-        db.execute(
-          drzSql`SELECT u.id,u.name,u.cpf,u.employee_registration,u.position,b.name branch_name,s.name sector_name FROM users u LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id WHERE u.id=${input.collaboratorId} AND u.company_id=${companyId} LIMIT 1`
-        ),
-        db.execute(
-          drzSql`SELECT name,cnpj,address FROM companies WHERE id=${companyId} LIMIT 1`
-        ),
-      ]);
-      const worker = rowsOf(workerResult)[0] || {};
-      const company = rowsOf(companyResult)[0] || {};
-      const resolveOfficialCode = (kind: CatCodeKind, code?: string) => {
-        if (!code) return null;
-        const item = esocialCatCodes.find(
-          row => row.kind === kind && row.code === String(code)
-        );
-        if (!item)
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: `O código ${code} não pertence à tabela oficial ${kind} do eSocial S-1.3 NT 06/2026.`,
-          });
-        return item;
+      const prepared = await prepareCatConference(db, companyId, input);
+      await audit(
+        db,
+        ctx,
+        "cat_pre_save_validation",
+        "cat",
+        null,
+        input.collaboratorId,
+        {
+          status: prepared.validation.status,
+          errors: prepared.validation.errors,
+          warnings: prepared.validation.warnings,
+          issueCodes: prepared.validation.issues.map(issue => issue.code),
+        }
+      );
+      return {
+        ...prepared.validation,
+        source: "eSocial S-1.3 - NT 06/2026",
       };
-      const officialAgent = resolveOfficialCode(
-        "causative_agent",
-        input.causativeAgentCode
+    }),
+
+  createCat: protectedProcedure
+    .input(catInputSchema)
+    .mutation(async ({ ctx, input }) => {
+      requireSesmt(ctx);
+      await ensureOccupationalTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      await requireOwnedEntity(
+        db,
+        companyId,
+        "user",
+        input.collaboratorId,
+        "Colaborador"
       );
-      const officialSituation = resolveOfficialCode(
-        "generating_situation",
-        input.generatingSituationCode
-      );
-      const officialBodyPart = resolveOfficialCode(
-        "body_part",
-        input.bodyPartCode
-      );
-      const officialInjury = resolveOfficialCode(
-        "injury_nature",
-        input.injuryNatureCode
-      );
-      const validatedInput = {
-        ...input,
-        causativeAgent: officialAgent?.description || input.causativeAgent,
-        generatingSituation:
-          officialSituation?.description || input.generatingSituation,
-        bodyPart: officialBodyPart?.description || input.bodyPart,
-        injuryNature: officialInjury?.description || input.injuryNature,
-      };
+      const prepared = await prepareCatConference(db, companyId, input);
+      if (!prepared.validation.canSave) {
+        const details = prepared.validation.issues
+          .filter(issue => issue.severity === "error")
+          .slice(0, 3)
+          .map(issue => issue.message)
+          .join(" ");
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `A CAT possui informações obrigatórias ou incompatíveis. ${details}`,
+        });
+      }
+      if (prepared.validation.warnings && !input.confirmationAccepted)
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "A CAT possui alertas de conferência. Revise os itens e confirme conscientemente antes de registrar.",
+        });
+
+      const { worker, company, validatedInput, validation } = prepared;
+      const eventAt = mysqlDateTime(input.eventAt);
+      const medicalAttendanceAt = mysqlDateTime(input.medicalAttendanceAt);
       const esocialPayload = catEsocialPayload(validatedInput, company, worker);
-      const result: any =
-        await db.execute(drzSql`INSERT INTO occupational_cat_records
-        (company_id,collaborator_id,event_at,emitter_type,cat_type,initiative,registration_source,cat_number,origin_receipt,employer_registration_type,employer_registration_number,employer_cnae,location_text,accident_type,hours_worked_before_accident,last_worked_date,location_type,location_detail,location_registration,event_city,event_uf,event_country,description,causative_agent,causative_agent_code,generating_situation_code,generating_situation,body_part,body_part_code,laterality,injury_nature,injury_nature_code,leave_required,police_report,death_occurred,death_date,medical_attendance_at,hospitalization,treatment_days,diagnosis,cid,doctor_name,doctor_council,doctor_uf,doctor_registration,medical_notes,witnesses_json,status,esocial_status,esocial_version,esocial_event_json,created_by)
-        VALUES (${companyId},${input.collaboratorId},${input.eventAt},${input.emitterType},${input.catType},${input.initiative},${input.registrationSource},${input.catNumber || null},${input.originReceipt || null},${input.employerRegistrationType},${input.employerRegistrationNumber || company.cnpj || null},${input.employerCnae || null},${input.location || null},${input.accidentType || null},${input.hoursWorkedBeforeAccident || null},${input.lastWorkedDate || null},${input.locationType || null},${input.locationDetail || null},${input.locationRegistration || null},${input.eventCity || null},${input.eventUf?.toUpperCase() || null},${input.eventCountry},${input.description},${validatedInput.causativeAgent || null},${input.causativeAgentCode || null},${input.generatingSituationCode || null},${validatedInput.generatingSituation || null},${validatedInput.bodyPart || null},${input.bodyPartCode || null},${input.laterality},${validatedInput.injuryNature || null},${input.injuryNatureCode || null},${input.leaveRequired ? 1 : 0},${input.policeReport ? 1 : 0},${input.deathOccurred ? 1 : 0},${input.deathDate || null},${input.medicalAttendanceAt || null},${input.hospitalization ? 1 : 0},${input.treatmentDays ?? null},${input.diagnosis || null},${input.cid || null},${input.doctorName || null},${input.doctorCouncil || null},${input.doctorUf?.toUpperCase() || null},${input.doctorRegistration || null},${input.medicalNotes || null},${JSON.stringify(input.witnesses)},'rascunho','pendente_integracao','eSocial S-1.3 - NT 06/2026',${JSON.stringify(esocialPayload)},${Number(ctx.user.id)})`);
-      const id = Number((result as any)[0]?.insertId || 0);
-      await db.execute(
-        drzSql`INSERT INTO occupational_esocial_transmissions (company_id,entity_type,entity_id,event_code,layout_version,status,payload_json,requested_by) VALUES (${companyId},'cat',${id},'S-2210','S-1.3 NT 06/2026','pendente_integracao',${JSON.stringify(esocialPayload)},${Number(ctx.user.id)})`
-      );
+      let id = 0;
+      try {
+        const result: any =
+          await db.execute(drzSql`INSERT INTO occupational_cat_records
+          (company_id,collaborator_id,event_at,emitter_type,cat_type,initiative,registration_source,cat_number,origin_receipt,employer_registration_type,employer_registration_number,employer_cnae,location_text,location_number,location_complement,neighborhood,postal_code,foreign_postal_code,accident_type,hours_worked_before_accident,last_worked_date,location_type,location_detail,location_registration,event_city,event_city_code,event_uf,event_country,event_country_code,description,causative_agent,causative_agent_code,generating_situation_code,generating_situation,body_part,body_part_code,laterality,injury_nature,injury_nature_code,leave_required,police_report,death_occurred,death_date,medical_attendance_at,hospitalization,treatment_days,diagnosis,cid,doctor_name,doctor_council,doctor_uf,doctor_registration,medical_notes,witnesses_json,status,esocial_status,esocial_version,esocial_event_json,validation_status,validation_json,validated_at,confirmed_by,created_by)
+          VALUES (${companyId},${input.collaboratorId},${eventAt},${input.emitterType},${input.catType},${input.initiative},${input.registrationSource},${input.catNumber || null},${input.originReceipt || null},${input.employerRegistrationType},${input.employerRegistrationNumber || company.cnpj || null},${input.employerCnae || null},${input.location || null},${input.locationNumber || null},${input.locationComplement || null},${input.neighborhood || null},${input.postalCode || null},${input.foreignPostalCode || null},${input.accidentType || null},${input.hoursWorkedBeforeAccident || null},${input.lastWorkedDate || null},${validatedInput.locationType || null},${input.locationDetail || null},${input.locationRegistration || null},${input.eventCity || null},${input.eventCityCode || null},${input.eventUf?.toUpperCase() || null},${input.eventCountry},${input.eventCountryCode || "105"},${input.description},${validatedInput.causativeAgent || null},${input.causativeAgentCode || null},${input.generatingSituationCode || null},${validatedInput.generatingSituation || null},${validatedInput.bodyPart || null},${input.bodyPartCode || null},${input.laterality},${validatedInput.injuryNature || null},${input.injuryNatureCode || null},${input.leaveRequired ? 1 : 0},${input.policeReport ? 1 : 0},${validatedInput.deathOccurred ? 1 : 0},${input.deathDate || null},${medicalAttendanceAt},${input.hospitalization ? 1 : 0},${input.treatmentDays ?? null},${input.diagnosis || null},${
+            String(input.cid || "")
+              .replace(/[^a-zA-Z0-9]/g, "")
+              .toUpperCase() || null
+          },${input.doctorName || null},${input.doctorCouncil?.toUpperCase() || null},${input.doctorUf?.toUpperCase() || null},${input.doctorRegistration || null},${input.medicalNotes || null},${JSON.stringify(input.witnesses)},'registrada','pendente_integracao','eSocial S-1.3 - NT 06/2026',${JSON.stringify(esocialPayload)},${validation.status},${JSON.stringify(validation)},NOW(),${Number(ctx.user.id)},${Number(ctx.user.id)})`);
+        id = Number((result as any)[0]?.insertId || 0);
+        if (!id) throw new Error("CAT insert did not return an identifier");
+        await db.execute(
+          drzSql`INSERT INTO occupational_esocial_transmissions (company_id,entity_type,entity_id,event_code,layout_version,status,payload_json,requested_by) VALUES (${companyId},'cat',${id},'S-2210','S-1.3 NT 06/2026','pendente_integracao',${JSON.stringify(esocialPayload)},${Number(ctx.user.id)})`
+        );
+      } catch (error: any) {
+        if (id) {
+          try {
+            await db.execute(
+              drzSql`DELETE FROM occupational_cat_records WHERE id=${id} AND company_id=${companyId}`
+            );
+          } catch {}
+        }
+        const cause = error?.cause || error;
+        console.error("[CAT] database write failed", {
+          companyId,
+          collaboratorId: input.collaboratorId,
+          code: cause?.code || null,
+          errno: cause?.errno || null,
+          sqlState: cause?.sqlState || null,
+          message: String(cause?.message || "unknown database error").slice(
+            0,
+            500
+          ),
+        });
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message:
+            "Não foi possível registrar a CAT. Nenhum registro incompleto foi mantido. Revise os dados ou informe o suporte usando a referência CAT-GRAVACAO.",
+        });
+      }
       await audit(db, ctx, "cat_created", "cat", id, input.collaboratorId, {
         event: "S-2210",
         layout: "S-1.3 NT 06/2026",
+        validationStatus: validation.status,
+        validationWarnings: validation.warnings,
         transmission: "pendente_integracao",
       });
       return {
         ok: true,
         id,
         esocialEvent: "S-2210",
+        validationStatus: validation.status,
         transmission: "pendente_integracao",
         layout: "S-1.3 NT 06/2026",
       };
