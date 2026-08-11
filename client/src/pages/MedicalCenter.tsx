@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import AppLayout from "@/components/AppLayout";
 import PcmsoWorkspace from "@/components/medical/PcmsoWorkspace";
+import { RichTextEditor } from "@/components/RichTextEditor";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -2024,18 +2025,27 @@ function ProgramDialog({
             </Field>
           </div>
           <Field label="Introdução">
-            <Textarea value={intro} onChange={e => setIntro(e.target.value)} />
+            <RichTextEditor
+              value={intro}
+              onChange={setIntro}
+              minHeight={180}
+              placeholder="Digite a introdução do PCMSO..."
+            />
           </Field>
           <Field label="Objetivo">
-            <Textarea
+            <RichTextEditor
               value={objective}
-              onChange={e => setObjective(e.target.value)}
+              onChange={setObjective}
+              minHeight={140}
+              placeholder="Digite os objetivos do PCMSO..."
             />
           </Field>
           <Field label="Metodologia">
-            <Textarea
+            <RichTextEditor
               value={methodology}
-              onChange={e => setMethodology(e.target.value)}
+              onChange={setMethodology}
+              minHeight={160}
+              placeholder="Digite a metodologia do PCMSO..."
             />
           </Field>
           <div className="border p-3">
@@ -2061,14 +2071,14 @@ function ProgramDialog({
                     }
                     placeholder="Título do capítulo"
                   />
-                  <Textarea
-                    className="mt-2 min-h-24"
-                    value={chapter.content}
-                    onChange={e =>
-                      updateChapter(index, "content", e.target.value)
-                    }
-                    placeholder="Conteúdo do capítulo"
-                  />
+                  <div className="mt-2">
+                    <RichTextEditor
+                      value={chapter.content}
+                      onChange={value => updateChapter(index, "content", value)}
+                      minHeight={130}
+                      placeholder="Conteúdo do capítulo"
+                    />
+                  </div>
                   <Button
                     size="sm"
                     variant="ghost"

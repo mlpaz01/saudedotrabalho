@@ -18,6 +18,7 @@ import {
   ensureOccupationalTables,
 } from "./occupationalLifecycleRouter";
 import { loadDocumentDefaults } from "./documentDefaults";
+import { richTextToPlainText, sanitizeRichText } from "./richText";
 
 let tablesReady = false;
 
@@ -715,6 +716,41 @@ function esc(value: any) {
   );
 }
 
+const PCMSO_RICH_TEXT_FIELDS = [
+  "introduction",
+  "objective",
+  "field_of_application",
+  "guidelines",
+  "methodology",
+  "conduct_criteria",
+  "surveillance_methodology",
+  "critical_activities",
+  "immunization_methodology",
+  "conclusion",
+] as const;
+
+function sanitizePcmsoProgram(program: any) {
+  if (!program) return program;
+  const safe = { ...program };
+  for (const field of PCMSO_RICH_TEXT_FIELDS) {
+    safe[field] = sanitizeRichText(safe[field]);
+  }
+  try {
+    const chapters = JSON.parse(safe.chapters_json || "[]");
+    safe.chapters_json = JSON.stringify(
+      Array.isArray(chapters)
+        ? chapters.map((chapter: any) => ({
+            title: richTextToPlainText(chapter?.title),
+            content: sanitizeRichText(chapter?.content),
+          }))
+        : []
+    );
+  } catch {
+    safe.chapters_json = "[]";
+  }
+  return safe;
+}
+
 function privateImageDataUri(filePath: unknown) {
   const target = String(filePath || "").trim();
   if (!target || !fs.existsSync(target)) return "";
@@ -785,29 +821,29 @@ function buildPcmsoPdfHtml(input: {
     "Demissional",
   ];
   return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
-  @page{size:A4;margin:18mm 15mm}body{font-family:Arial,sans-serif;color:#172b3a;font-size:10pt;line-height:1.45}h1{font-size:25pt;color:#0e2c46}h2{margin-top:9mm;color:#0e2c46;border-bottom:2px solid #0096a6;padding-bottom:2mm}h3{margin-top:6mm;color:#0e2c46}table{width:100%;border-collapse:collapse;font-size:7.7pt;margin:3mm 0 6mm}th,td{border:1px solid #d7e1e8;padding:2mm;vertical-align:top}th{background:#0e2c46;color:#fff}.cover{height:240mm;display:flex;flex-direction:column;justify-content:center;text-align:center;page-break-after:always}.meta{color:#607486}.signature{margin-top:18mm;text-align:center}.signature img{display:block;max-width:70mm;max-height:24mm;object-fit:contain;margin:0 auto 2mm}.signature-line{border-top:1px solid #172b3a;width:80mm;margin:0 auto 2mm}.notice{border-left:3px solid #eab308;padding:3mm;background:#fffbeb;font-size:8.5pt}.toc{columns:2}.page-break{page-break-before:always}p{white-space:pre-wrap}</style></head><body>
+  @page{size:A4;margin:18mm 15mm}body{font-family:Arial,sans-serif;color:#172b3a;font-size:10pt;line-height:1.45}h1{font-size:25pt;color:#0e2c46}h2{margin-top:9mm;color:#0e2c46;border-bottom:2px solid #0096a6;padding-bottom:2mm}h3{margin-top:6mm;color:#0e2c46}table{width:100%;border-collapse:collapse;font-size:7.7pt;margin:3mm 0 6mm}th,td{border:1px solid #d7e1e8;padding:2mm;vertical-align:top}th{background:#0e2c46;color:#fff}.cover{height:240mm;display:flex;flex-direction:column;justify-content:center;text-align:center;page-break-after:always}.meta{color:#607486}.signature{margin-top:18mm;text-align:center}.signature img{display:block;max-width:70mm;max-height:24mm;object-fit:contain;margin:0 auto 2mm}.signature-line{border-top:1px solid #172b3a;width:80mm;margin:0 auto 2mm}.notice{border-left:3px solid #eab308;padding:3mm;background:#fffbeb;font-size:8.5pt}.toc{columns:2}.page-break{page-break-before:always}p{white-space:pre-wrap}.document-content ul,.document-content ol{padding-left:7mm}.document-content li{margin:1.2mm 0}.document-content li>p{margin:0}.document-content img{max-width:100%;height:auto}</style></head><body>
   <section class="cover"><h1>${esc(program.title)}</h1><h2>${esc(program.company_name)}</h2><p>CNPJ: ${esc(program.cnpj || "-")}<br>Vigência: ${esc(program.valid_from || "-")} a ${esc(program.valid_until || "-")}</p><p class="meta">Programa de Controle Médico de Saúde Ocupacional</p></section>
   <h2>Controle do documento</h2><table><tbody><tr><td><b>Versão</b></td><td>${esc(program.current_version || 1)}</td><td><b>Situação</b></td><td>${esc(program.status)}</td></tr><tr><td><b>PGR de referência</b></td><td>${esc(program.pgr_title || "-")}</td><td><b>Sincronização</b></td><td>${esc(program.pgr_synced_at || "-")}</td></tr></tbody></table>
   <h2>Identificação da organização</h2><p><b>Empresa:</b> ${esc(program.company_name)}<br><b>CNPJ:</b> ${esc(program.cnpj || "-")}<br><b>Endereço:</b> ${esc(program.address || "-")}<br><b>Médico responsável:</b> ${esc(program.doctor_name || "-")} · ${esc(program.doctor_crm || "-")}</p>
   <h2>Sumário</h2><ol class="toc">${sumario.map(item => `<li>${esc(item)}</li>`).join("")}</ol>
-  <h2>1. Apresentação</h2><p>${esc(program.introduction || "O PCMSO estabelece o acompanhamento médico ocupacional integrado aos riscos identificados no PGR.")}</p>
-  <h2>2. Objetivo</h2><p>${esc(program.objective || "Proteger e preservar a saúde dos trabalhadores em relação aos riscos ocupacionais.")}</p>
-  <h2>3. Campo de aplicação</h2><p>${esc(program.field_of_application || `Aplica-se à população trabalhadora vinculada aos ${groups.size} GSE(s) mestres desta organização, conectados ao PGR e ao PCMSO vigentes.`)}</p>
+  <h2>1. Apresentação</h2><div class="document-content">${sanitizeRichText(program.introduction || "O PCMSO estabelece o acompanhamento médico ocupacional integrado aos riscos identificados no PGR.")}</div>
+  <h2>2. Objetivo</h2><div class="document-content">${sanitizeRichText(program.objective || "Proteger e preservar a saúde dos trabalhadores em relação aos riscos ocupacionais.")}</div>
+  <h2>3. Campo de aplicação</h2><div class="document-content">${sanitizeRichText(program.field_of_application || `Aplica-se à população trabalhadora vinculada aos ${groups.size} GSE(s) mestres desta organização, conectados ao PGR e ao PCMSO vigentes.`)}</div>
   <h2>4. Base normativa</h2><p>NR-07 - Programa de Controle Médico de Saúde Ocupacional, NR-01 - Gerenciamento de Riscos Ocupacionais e demais referências legais e técnicas aplicáveis ao escopo. O documento apresenta requisitos pertinentes sem reproduzir integralmente as normas.</p>
-  <h2>5. Diretrizes do PCMSO</h2><p>${esc(program.guidelines || "Rastrear e detectar precocemente agravos relacionados ao trabalho, definir ações de vigilância, subsidiar medidas preventivas e manter documentação médica ocupacional sob confidencialidade.")}</p>
+  <h2>5. Diretrizes do PCMSO</h2><div class="document-content">${sanitizeRichText(program.guidelines || "Rastrear e detectar precocemente agravos relacionados ao trabalho, definir ações de vigilância, subsidiar medidas preventivas e manter documentação médica ocupacional sob confidencialidade.")}</div>
   <h2>6. Responsabilidades</h2><p><b>Organização:</b> garantir elaboração e implementação do programa, custear os procedimentos e fornecer informações atualizadas do PGR.<br><b>Médico responsável:</b> definir critérios médicos, validar o planejamento, analisar resultados consolidados e assinar o programa.<br><b>Médicos examinadores:</b> executar os exames conforme diretrizes e registrar os atos clínicos.<br><b>SESMT:</b> manter o PGR, apoiar controles, vacinação operacional e tratar solicitações de revisão.</p>
-  <h2>7. Metodologia de elaboração</h2><p>${esc(program.methodology || "Os GSEs mestres e sua população foram relacionados ao PGR. Os riscos ocupacionais foram então submetidos à análise médica para definição dos possíveis agravos, controles médicos, aplicabilidade e periodicidades.")}</p>
+  <h2>7. Metodologia de elaboração</h2><div class="document-content">${sanitizeRichText(program.methodology || "Os GSEs mestres e sua população foram relacionados ao PGR. Os riscos ocupacionais foram então submetidos à análise médica para definição dos possíveis agravos, controles médicos, aplicabilidade e periodicidades.")}</div>
   <div class="notice">A inteligência artificial foi utilizada apenas como apoio de estruturação e consistência. Sugestões não substituem decisão médica, diagnóstico, avaliação clínica ou responsabilidade técnica.</div>
   <h2>8. Integração entre PGR e PCMSO</h2><p>O PCMSO utiliza os GSEs, riscos, fontes geradoras, possíveis danos, classificações e detalhamentos técnicos do PGR. Alterações posteriores no PGR devem provocar nova revisão do programa. Divergências identificadas pelo médico são encaminhadas ao SESMT de forma rastreável.</p>
   <h2>9. Caracterização dos GSEs e planejamento médico</h2>${matrix || "<p>Nenhum risco importado.</p>"}
   <h2>10. Exames médicos ocupacionais</h2><p>O programa contempla os cinco exames ocupacionais previstos na NR-07, aplicados conforme os critérios e periodicidades definidos pelo médico:</p><ol>${examTypes.map(item => `<li>${item}</li>`).join("")}</ol>
-  <h2>11. Critérios de interpretação e conduta</h2><p>${esc(program.conduct_criteria || "Os achados clínicos e complementares devem ser interpretados pelo médico considerando história ocupacional, exposição, resultados anteriores, referências aplicáveis e condições individuais. Achados relevantes podem resultar em orientação, investigação, encaminhamento, restrição, acompanhamento ou solicitação de revisão do PGR, conforme julgamento médico.")}</p>
-  <h2>12. Vigilância ativa e passiva</h2><p>${esc(program.surveillance_methodology || "A vigilância passiva considera atendimentos espontâneos, queixas, atestados e registros clínicos. A vigilância ativa utiliza exames ocupacionais, acompanhamento programado, análise epidemiológica e busca de tendências relacionadas aos riscos do trabalho.")}</p>
-  <h2>13. Atividades críticas</h2><p>${esc(program.critical_activities || "Aptidão para atividades críticas deve ser avaliada de forma individual, considerando os riscos da tarefa, requisitos legais, condições clínicas e controles existentes, sem decisões automáticas pela plataforma.")}</p>
-  <h2>14. Imunização</h2><p>${esc(program.immunization_methodology || "Quando aplicável aos riscos e atividades, o SESMT organiza campanhas, registros e alertas de vacinação. O médico consulta o histórico para apoio à vigilância e orientação ocupacional.")}</p>
-  <h2>15. Relatório analítico</h2>${analyticalReport ? `<p>${esc(analyticalReport.narrative)}</p><p><b>Recomendações validadas:</b> ${esc(analyticalReport.recommendations)}</p><p>Período: ${esc(analyticalReport.period_start)} a ${esc(analyticalReport.period_end)}</p>` : "<p>Componente anual em elaboração. Esta prévia não é uma emissão definitiva do PCMSO.</p>"}
-  ${chapters.map((chapter, index) => `<h2>${16 + index}. ${esc(chapter.title)}</h2><p>${esc(chapter.content)}</p>`).join("")}
-  <h2>Conclusão</h2><p>${esc(program.conclusion || "O programa deverá ser acompanhado continuamente e revisto quando houver alterações relevantes no PGR, nos processos, nos riscos ou no perfil de saúde consolidado dos trabalhadores.")}</p>
+  <h2>11. Critérios de interpretação e conduta</h2><div class="document-content">${sanitizeRichText(program.conduct_criteria || "Os achados clínicos e complementares devem ser interpretados pelo médico considerando história ocupacional, exposição, resultados anteriores, referências aplicáveis e condições individuais. Achados relevantes podem resultar em orientação, investigação, encaminhamento, restrição, acompanhamento ou solicitação de revisão do PGR, conforme julgamento médico.")}</div>
+  <h2>12. Vigilância ativa e passiva</h2><div class="document-content">${sanitizeRichText(program.surveillance_methodology || "A vigilância passiva considera atendimentos espontâneos, queixas, atestados e registros clínicos. A vigilância ativa utiliza exames ocupacionais, acompanhamento programado, análise epidemiológica e busca de tendências relacionadas aos riscos do trabalho.")}</div>
+  <h2>13. Atividades críticas</h2><div class="document-content">${sanitizeRichText(program.critical_activities || "Aptidão para atividades críticas deve ser avaliada de forma individual, considerando os riscos da tarefa, requisitos legais, condições clínicas e controles existentes, sem decisões automáticas pela plataforma.")}</div>
+  <h2>14. Imunização</h2><div class="document-content">${sanitizeRichText(program.immunization_methodology || "Quando aplicável aos riscos e atividades, o SESMT organiza campanhas, registros e alertas de vacinação. O médico consulta o histórico para apoio à vigilância e orientação ocupacional.")}</div>
+  <h2>15. Relatório analítico</h2>${analyticalReport ? `<div class="document-content">${sanitizeRichText(analyticalReport.narrative)}</div><p><b>Recomendações validadas:</b></p><div class="document-content">${sanitizeRichText(analyticalReport.recommendations)}</div><p>Período: ${esc(analyticalReport.period_start)} a ${esc(analyticalReport.period_end)}</p>` : "<p>Componente anual em elaboração. Esta prévia não é uma emissão definitiva do PCMSO.</p>"}
+  ${chapters.map((chapter, index) => `<h2>${16 + index}. ${esc(richTextToPlainText(chapter.title))}</h2><div class="document-content">${sanitizeRichText(chapter.content)}</div>`).join("")}
+  <h2>Conclusão</h2><div class="document-content">${sanitizeRichText(program.conclusion || "O programa deverá ser acompanhado continuamente e revisto quando houver alterações relevantes no PGR, nos processos, nos riscos ou no perfil de saúde consolidado dos trabalhadores.")}</div>
   <h2>Anexos associados</h2><ol>${annexes.map(item => `<li>Anexo ${item.annex_number}: ${esc(item.title || item.file_name)}</li>`).join("") || "<li>Nenhum anexo associado.</li>"}</ol>
   <div class="signature">${signatureImage ? `<img src="${signatureImage}" alt="Assinatura do médico responsável">` : ""}<div class="signature-line"></div><b>${esc(program.doctor_name || "Médico responsável")}</b><br>${esc(program.doctor_crm || "CRM não informado")}<br>Registro de autoria e integridade: ${esc(program.signature_hash || "documento ainda não confirmado")}</div>
   </body></html>`;
@@ -928,8 +964,8 @@ export const medicalRouter = router({
     if (!db) return { introduction: "", conclusion: "" };
     const defaults = await loadDocumentDefaults(db, companyId, "pcmso");
     return {
-      introduction: String(defaults?.texto_introducao || ""),
-      conclusion: String(defaults?.texto_conclusao || ""),
+      introduction: sanitizeRichText(defaults?.texto_introducao),
+      conclusion: sanitizeRichText(defaults?.texto_conclusao),
     };
   }),
 
@@ -956,7 +992,7 @@ export const medicalRouter = router({
       const program: any = await db.execute(
         drzSql`SELECT p.*,g.title pgr_title,g.updated_at pgr_updated_at FROM pcmso_programs_v2 p LEFT JOIN pgr_documents g ON g.id=p.pgr_id WHERE p.id=${input.id} AND p.company_id=${companyId} LIMIT 1`
       );
-      const programRow = rowsOf(program)[0] || null;
+      let programRow = rowsOf(program)[0] || null;
       if (
         programRow?.pgr_updated_at &&
         programRow?.pgr_synced_at &&
@@ -969,6 +1005,7 @@ export const medicalRouter = router({
         );
         programRow.review_required = 1;
       }
+      programRow = sanitizePcmsoProgram(programRow);
       const monitoring: any = await db.execute(
         drzSql`SELECT m.*,e.name exam_name FROM pcmso_risk_monitoring_v2 m LEFT JOIN pcmso_exam_catalog_v2 e ON e.id=m.exam_id WHERE m.pcmso_id=${input.id} AND m.company_id=${companyId} ORDER BY m.gse_name,m.risk_name`
       );
@@ -1081,19 +1118,25 @@ export const medicalRouter = router({
         ? null
         : await loadDocumentDefaults(db, companyId, "pcmso");
       const introduction =
-        String(input.introduction || "").trim() ||
-        defaults?.texto_introducao ||
+        sanitizeRichText(input.introduction || defaults?.texto_introducao) ||
         null;
-      const objective = String(input.objective || "").trim() || null;
-      const methodology = String(input.methodology || "").trim() || null;
+      const objective = sanitizeRichText(input.objective) || null;
+      const methodology = sanitizeRichText(input.methodology) || null;
       const safeStatus =
         input.status === "vigente" ? "em_revisao" : input.status;
+      const requestedChapters = input.chapters.map(chapter => ({
+        title: richTextToPlainText(chapter.title).slice(0, 255),
+        content: sanitizeRichText(chapter.content),
+      }));
       const chapters =
         input.chapters.length || !defaults?.texto_conclusao
-          ? input.chapters
+          ? requestedChapters
           : [
-              ...input.chapters,
-              { title: "Conclusão", content: String(defaults.texto_conclusao) },
+              ...requestedChapters,
+              {
+                title: "Conclusão",
+                content: sanitizeRichText(defaults.texto_conclusao),
+              },
             ];
       let id = input.id || 0;
       if (id) {
