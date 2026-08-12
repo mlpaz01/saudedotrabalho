@@ -3,7 +3,7 @@ import AppLayout from "@/components/AppLayout";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import {
-  AlertTriangle, ArrowUpDown, BookOpen, FileText,
+  AlertTriangle, ArrowUpDown, BookOpen, Download, FileText,
   HardHat, Layers, Loader2, Package, Plus, Printer, Save, Search, Shield,
   Sparkles, Undo2, Users, X, Send, Upload, FolderOpen,
 } from "lucide-react";
@@ -359,6 +359,14 @@ function AlertsTab() {
 function ReportsTab() {
   const q = api.report.useQuery();
   const pdf = api.generateReportPdf.useMutation({ onSuccess: (r: any) => { if (r.url) window.open(r.url, "_blank"); toast.success("PDF gerado."); }, onError: (e: any) => toast.error(e?.message ?? "Erro ao gerar PDF.") });
+  const collaboratorsQ = api.listCollaborators.useQuery();
+  const [collaboratorId, setCollaboratorId] = useState(0);
+  const [year, setYear] = useState(new Date().getFullYear());
+  const individualQ = api.individualDeliveryReport.useQuery({ collaboratorId, year }, { enabled: collaboratorId > 0 });
+  const individualPdf = api.generateIndividualDeliveryReportPdf.useMutation({
+    onSuccess: (r: any) => { if (r.url) window.open(r.url, "_blank"); toast.success("Relatório individual gerado."); },
+    onError: (e: any) => toast.error(e?.message ?? "Erro ao gerar o relatório individual."),
+  });
   function csv() {
     const rows = q.data?.assets ?? [];
     const header = ["Tipo","Descricao","CA","Validade CA","Validade Produto","Estoque","Filial","Setor","PGR"];
@@ -367,12 +375,46 @@ function ReportsTab() {
     const blob = new Blob([content], { type: "text/csv;charset=utf-8" }); const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url; a.download = "gestao_epi_epc.csv"; a.click(); URL.revokeObjectURL(url);
   }
+  function individualCsv() {
+    const data = individualQ.data as any;
+    if (!data?.collaborator) return toast.error("Selecione um colaborador.");
+    const header = ["Data", "EPI", "Fabricante", "Modelo", "CA", "Lote", "Quantidade", "Unidade", "Motivo", "Situação do recibo", "Código"];
+    const body = (data.deliveries ?? []).map((item: any) => [dateOnly(item.delivery_date), item.asset_description, item.manufacturer || "", item.model || "", item.ca_number || "", item.lot || "", item.quantity, item.unit || "un", item.reason || "", ["assinado", "comprovado"].includes(String(item.signature_status)) ? "comprovado" : "pendente", item.receipt_code || ""]);
+    const content = [header, ...body].map(row => row.map((cell: any) => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(";")).join("\n");
+    const blob = new Blob(["\ufeff" + content], { type: "text/csv;charset=utf-8" }); const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a"); anchor.href = url; anchor.download = `epi_${String(data.collaborator.name || "colaborador").replace(/[^a-z0-9]+/gi, "_").toLowerCase()}_${year}.csv`; anchor.click(); URL.revokeObjectURL(url);
+  }
+  const individual = individualQ.data as any;
+  const summary = individual?.summary ?? {};
   return (
     <div className="mt-4 space-y-4">
       <div className="bg-white border rounded-xl p-4 flex flex-wrap justify-between gap-3">
         <div><h3 className="font-semibold">Relatórios de Gestão de EPI/EPC</h3><p className="text-sm text-slate-500">Gera evidência dinâmica para auditorias, Central de Conformidade e Anexo 8 do PGR.</p></div>
         <div className="flex gap-2"><button onClick={() => pdf.mutate()} className="px-3 py-1.5 bg-primary text-white rounded text-sm flex items-center gap-1">{pdf.isPending ? <Loader2 size={13} className="animate-spin" /> : <Printer size={13} />} PDF</button><button onClick={csv} className="px-3 py-1.5 border rounded text-sm">Excel/CSV</button></div>
       </div>
+      <section className="border border-slate-200 bg-white p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-4">
+          <div><h3 className="font-bold text-slate-900">Relatório individual de entregas</h3><p className="mt-1 text-sm text-slate-500">Consulte todas as entregas de EPI de uma pessoa em um exercício.</p></div>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={individualCsv} disabled={!individual?.collaborator} className="inline-flex items-center gap-1 rounded border px-3 py-2 text-sm font-semibold disabled:opacity-50"><Download size={14} /> CSV individual</button>
+            <button onClick={() => individualPdf.mutate({ collaboratorId, year })} disabled={!collaboratorId || individualPdf.isPending} className="inline-flex items-center gap-1 rounded bg-teal-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">{individualPdf.isPending ? <Loader2 size={14} className="animate-spin" /> : <Printer size={14} />} PDF individual</button>
+          </div>
+        </div>
+        <div className="grid gap-3 py-4 sm:grid-cols-[minmax(260px,1fr)_160px]">
+          <L l="Colaborador"><select className="field" value={collaboratorId} onChange={event => setCollaboratorId(Number(event.target.value))}><option value={0}>Selecione uma pessoa</option>{(collaboratorsQ.data ?? []).map((person: any) => <option key={person.id} value={person.id}>{person.name} · {person.branch_name || "Sem filial"} / {person.sector_name || "Sem setor"}</option>)}</select></L>
+          <L l="Exercício"><input type="number" min={2000} max={2100} className="field" value={year} onChange={event => setYear(Number(event.target.value || new Date().getFullYear()))} /></L>
+        </div>
+        {individualQ.isLoading && <Loading />}
+        {individual?.collaborator && <div className="space-y-4">
+          <div className="text-sm text-slate-600"><b className="text-slate-900">{individual.collaborator.name}</b> · {individual.collaborator.position || "Cargo não informado"} · {individual.collaborator.branch_name || "Sem filial"} / {individual.collaborator.sector_name || "Sem setor"}</div>
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-5">{[["Registros de entrega", summary.deliveryRecords ?? 0], ["Unidades entregues", summary.units ?? 0], ["EPIs distintos", summary.distinctEpis ?? 0], ["Comprovadas", summary.proven ?? 0], ["Pendentes", summary.pending ?? 0]].map(([label, value]) => <div key={String(label)} className="border-l-4 border-teal-600 bg-slate-50 p-3"><span className="block text-xs text-slate-500">{label}</span><b className="text-xl text-slate-900">{value}</b></div>)}</div>
+          <p className="text-xs text-slate-500">Registros representam eventos de fornecimento. Unidades representam a soma das quantidades entregues.</p>
+          <div className="overflow-x-auto border"><table className="w-full min-w-[850px] text-sm"><thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="p-2">Data</th><th className="p-2">EPI</th><th className="p-2">CA / Lote</th><th className="p-2">Quantidade</th><th className="p-2">Motivo</th><th className="p-2">Recibo</th><th className="p-2">Responsável</th></tr></thead><tbody>
+            {(individual.deliveries ?? []).map((item: any) => <tr key={item.id} className="border-t"><td className="p-2">{fmt(item.delivery_date)}</td><td className="p-2"><b>{item.asset_description}</b><div className="text-xs text-slate-500">{[item.manufacturer, item.model].filter(Boolean).join(" · ") || "-"}</div></td><td className="p-2">{item.ca_number || "-"}<div className="text-xs text-slate-500">Lote {item.lot || "-"}</div></td><td className="p-2">{item.quantity} {item.unit || "un"}</td><td className="p-2">{item.reason || "-"}</td><td className="p-2">{["assinado", "comprovado"].includes(String(item.signature_status)) ? <Badge tone="emerald">Comprovado</Badge> : <Badge tone="amber">Pendente</Badge>}<div className="mt-1 font-mono text-[10px] text-slate-500">{item.receipt_code || "-"}</div></td><td className="p-2">{item.responsible_name || "-"}</td></tr>)}
+            {(individual.deliveries ?? []).length === 0 && <tr><td colSpan={7} className="p-5 text-center text-slate-500">Nenhuma entrega de EPI encontrada para esta pessoa em {year}.</td></tr>}
+          </tbody></table></div>
+        </div>}
+      </section>
       <DashboardTab />
     </div>
   );

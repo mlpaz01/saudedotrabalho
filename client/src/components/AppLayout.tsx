@@ -11,6 +11,7 @@ import {
   Link2, Layers, RotateCcw, Activity, Search, LineChart, Signature, FileText,
   LifeBuoy, Headphones, HeartHandshake, BarChart3, ListChecks, BookMarked,
   Megaphone, Briefcase, Trophy, Printer, Pencil, Upload, HardHat, ClipboardCheck,
+  MessageSquareText,
 Syringe,} from "lucide-react";
 import { useEffect, useState } from "react";
 import { trpc } from "@/lib/trpc";
@@ -43,6 +44,7 @@ const employeeNav: NavItem[] = [
   { label: "Qualificacoes e Habilitacoes", href: "/qualificacoes", icon: <IdCard size={16} /> ,},
   { label: "Nocoes de Primeiros Socorros", href: "/primeiros-socorros", icon: <HeartHandshake size={16} /> ,},
   { label: "Meu EPI/EPC", href: "/meu-epi-epc", icon: <HardHat size={16} /> },
+  { label: "Meu DDS", href: "/dds", icon: <MessageSquareText size={16} /> },
   { label: "Minhas Vacinas",
     href: "/minhas-vacinas",
     icon: <Syringe size={16} />,
@@ -91,6 +93,7 @@ const adminSections: NavSection[] = [
       { label: "SIPAT", href: "/admin/sipat", notRoles: ["chefia", "sesmt", "psicologo"], icon: <Trophy size={16} /> ,},
       // P15 #4 — Gestão da CIPA (eleições, mandato, reuniões, indicadores).
       { label: "CIPA", href: "/admin/cipa", notRoles: ["chefia", "psicologo"], icon: <ShieldCheck size={16} /> ,},
+      { label: "DDS Online", href: "/admin/dds", roles: ["admin", "rh", "sesmt", "company_admin", "admin_global", "super_admin"], icon: <MessageSquareText size={16} /> ,},
     ],
   },
   {
@@ -266,6 +269,8 @@ const ITEM_LABELS: Record<string, string> = {
   "EPC / EPI": "EPC / EPI",
   "Gestao de EPI / EPC": "Gestão de EPI / EPC",
   "Meu EPI/EPC": "Meu EPI/EPC",
+  "Meu DDS": "Meu DDS",
+  "DDS Online": "DDS Online",
   "Minhas Vacinas": "Minhas Vacinas",
   "Central Medica": "Central Médica",
   "Manuais e Orientacoes": "Manuais e Orientações",

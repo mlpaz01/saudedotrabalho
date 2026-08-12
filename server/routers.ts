@@ -26,6 +26,7 @@ import {
   occupationalLifecycleRouter,
 } from "./_core/occupationalLifecycleRouter";
 import { occupationalPppRouter } from "./_core/occupationalPppRouter";
+import { ddsRouter } from "./_core/ddsRouter";
 
 import { medicalRouter } from "./_core/medicalRouter";
 import { technicalDocumentsRouter } from "./_core/technicalDocumentsRouter";
@@ -3827,6 +3828,118 @@ async function generateEpiEpcReportPdf(
   return `/uploads/epi_epc_reports/${fileName}`;
 }
 
+async function loadIndividualEpiReport(
+  db: any,
+  cid: number,
+  collaboratorId: number,
+  year: number
+) {
+  const [[collaborator]]: any = await execP(
+    db,
+    `SELECT u.id,u.name,u.cpf,u.employee_registration,u.position,b.name branch_name,s.name sector_name FROM users u LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id WHERE u.id=? AND u.company_id=? LIMIT 1`,
+    [collaboratorId, cid]
+  );
+  if (!collaborator)
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "Colaborador nao encontrado nesta empresa.",
+    });
+  const [deliveries]: any = await execP(
+    db,
+    `SELECT d.id,d.delivery_date,d.quantity,d.size,d.ca_number,d.lot,d.reason,d.signature_status,d.receipt_status,d.receipt_code,d.responsible_name,a.description asset_description,a.manufacturer,a.model,a.unit FROM epi_epc_deliveries d JOIN epi_epc_assets a ON a.id=d.asset_id WHERE d.company_id=? AND d.collaborator_id=? AND YEAR(d.delivery_date)=? AND a.type='epi' ORDER BY d.delivery_date,d.id`,
+    [cid, collaboratorId, year]
+  );
+  const rows = deliveries ?? [];
+  return {
+    collaborator,
+    year,
+    deliveries: rows,
+    summary: {
+      deliveryRecords: rows.length,
+      units: rows.reduce(
+        (sum: number, item: any) => sum + Number(item.quantity || 0),
+        0
+      ),
+      distinctEpis: new Set(rows.map((item: any) => item.asset_description))
+        .size,
+      proven: rows.filter((item: any) =>
+        ["assinado", "comprovado"].includes(String(item.signature_status))
+      ).length,
+      pending: rows.filter(
+        (item: any) =>
+          !["assinado", "comprovado"].includes(String(item.signature_status))
+      ).length,
+    },
+  };
+}
+
+async function generateIndividualEpiReportPdf(
+  db: any,
+  cid: number,
+  collaboratorId: number,
+  year: number
+) {
+  const data = await loadIndividualEpiReport(db, cid, collaboratorId, year);
+  const [[company]]: any = await execP(
+    db,
+    `SELECT name,cnpj FROM companies WHERE id=?`,
+    [cid]
+  );
+  const esc = (value: unknown) =>
+    String(value ?? "").replace(
+      /[<>&"]/g,
+      char =>
+        ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" })[
+          char
+        ] as string
+    );
+  const date = (value: any) =>
+    value ? new Date(value).toLocaleDateString("pt-BR") : "-";
+  const rows = data.deliveries
+    .map(
+      (item: any) =>
+        `<tr><td>${date(item.delivery_date)}</td><td>${esc(item.asset_description)}</td><td>${esc(item.manufacturer || "-")} / ${esc(item.model || "-")}</td><td>${esc(item.ca_number || "-")}</td><td>${esc(item.lot || "-")}</td><td>${Number(item.quantity || 0)} ${esc(item.unit || "un")}</td><td>${esc(item.reason || "-")}</td><td>${["assinado", "comprovado"].includes(String(item.signature_status)) ? "Comprovado" : "Pendente"}</td><td>${esc(item.receipt_code || "-")}</td></tr>`
+    )
+    .join("");
+  const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
+    @page{size:A4 landscape;margin:14mm}body{font-family:Arial,sans-serif;color:#172b3f;font-size:9pt}h1{font-size:21pt;color:#0e2c46;margin:0}.meta{color:#64748b;margin:4px 0 14px}.cards{display:grid;grid-template-columns:repeat(5,1fr);gap:7px;margin:12px 0}.card{border:1px solid #d8e2e8;padding:8px}.card b{display:block;font-size:15pt;color:#087f8c}table{width:100%;border-collapse:collapse;font-size:7.5pt}th,td{border:1px solid #d8e2e8;padding:5px;text-align:left}th{background:#e8f5f6}.note{margin-top:12px;border-left:4px solid #f3ad16;background:#fff8e5;padding:8px}
+  </style></head><body><h1>Relatorio Individual de Entrega de EPI</h1><div class="meta"><b>${esc(company?.name || "")}</b> · CNPJ ${esc(company?.cnpj || "-")} · Exercicio ${year}</div><p><b>Colaborador:</b> ${esc(data.collaborator.name)} · <b>CPF/Matricula:</b> ${esc(data.collaborator.cpf || data.collaborator.employee_registration || "-")}<br><b>Filial/Setor:</b> ${esc(data.collaborator.branch_name || "-")} / ${esc(data.collaborator.sector_name || "-")} · <b>Cargo:</b> ${esc(data.collaborator.position || "-")}</p>
+  <div class="cards"><div class="card">Entregas<b>${data.summary.deliveryRecords}</b></div><div class="card">Unidades<b>${data.summary.units}</b></div><div class="card">EPIs distintos<b>${data.summary.distinctEpis}</b></div><div class="card">Comprovadas<b>${data.summary.proven}</b></div><div class="card">Pendentes<b>${data.summary.pending}</b></div></div>
+  <table><thead><tr><th>Data</th><th>EPI</th><th>Fabricante/modelo</th><th>CA</th><th>Lote</th><th>Quantidade</th><th>Motivo</th><th>Recibo</th><th>Codigo</th></tr></thead><tbody>${rows || '<tr><td colspan="9">Nenhuma entrega de EPI localizada no exercicio.</td></tr>'}</tbody></table><div class="note">O numero de entregas representa registros de fornecimento. O total de unidades representa a soma das quantidades entregues e pode ser maior que o numero de registros.</div></body></html>`;
+  const puppeteer = (await import("puppeteer")).default;
+  const fs = await import("fs/promises");
+  const path = await import("path");
+  const outDir = "/var/www/saudedotrabalho/uploads/epi_epc_reports";
+  await fs.mkdir(outDir, { recursive: true });
+  const fileName = `epi_individual_${collaboratorId}_${year}_${Date.now()}.pdf`;
+  const browser = await puppeteer.launch({
+    executablePath:
+      process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium-browser",
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+    ],
+  });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(html, {
+      waitUntil: "domcontentloaded",
+      timeout: 15000,
+    });
+    await page.pdf({
+      path: path.join(outDir, fileName),
+      format: "A4",
+      landscape: true,
+      printBackground: true,
+    });
+  } finally {
+    await browser.close();
+  }
+  return { ...data, url: `/uploads/epi_epc_reports/${fileName}` };
+}
+
 async function loadFirstAidKitReport(db: any, cid: number) {
   const [rawRows]: any = await execP(
     db,
@@ -4432,6 +4545,7 @@ export const appRouter = router({
   occupationalHealth: occupationalHealthRouter,
   occupationalLifecycle: occupationalLifecycleRouter,
   occupationalPpp: occupationalPppRouter,
+  dds: ddsRouter,
   medical: medicalRouter,
   technicalDocuments: technicalDocumentsRouter,
   ehs: ehsRouter,
@@ -6555,7 +6669,8 @@ export const appRouter = router({
           );
         }
         if (input.employeeRegistration !== undefined) {
-          const registration = String(input.employeeRegistration || "").trim() || null;
+          const registration =
+            String(input.employeeRegistration || "").trim() || null;
           if (registration) {
             const duplicate: any = await db.execute(
               drzSql`SELECT id FROM users WHERE company_id=${urow.company_id} AND employee_registration=${registration} AND id<>${input.userId} LIMIT 1`
@@ -6563,7 +6678,8 @@ export const appRouter = router({
             if (firstDbRow(duplicate))
               throw new TRPCError({
                 code: "BAD_REQUEST",
-                message: "Matrícula já cadastrada para outro colaborador desta empresa.",
+                message:
+                  "Matrícula já cadastrada para outro colaborador desta empresa.",
               });
           }
           await db.execute(
@@ -21477,20 +21593,24 @@ Return only the JSON content object (no wrapper). Format per type:
 
           const masterGseId = Number(g.master_gse_id || 0);
           const cR: any = masterGseId
-            ? await db.execute(drzSql.raw(`SELECT cargo FROM (
+            ? await db.execute(
+                drzSql.raw(`SELECT cargo FROM (
                 SELECT DISTINCT position_name cargo FROM occupational_gse_scope WHERE company_id=${Number(cid)} AND gse_id=${masterGseId} AND NULLIF(TRIM(position_name),'') IS NOT NULL
                 UNION
                 SELECT DISTINCT u.position cargo FROM occupational_gse_worker_history h JOIN users u ON u.id=h.collaborator_id AND u.company_id=h.company_id WHERE h.company_id=${Number(cid)} AND h.gse_id=${masterGseId} AND h.is_current=1 AND NULLIF(TRIM(u.position),'') IS NOT NULL
-              ) master_cargos ORDER BY cargo`))
+              ) master_cargos ORDER BY cargo`)
+              )
             : await db.execute(
                 drzSql`SELECT cargo FROM pgr_gse_cargos WHERE gse_id=${input.gseId}`
               );
           const sR: any = masterGseId
-            ? await db.execute(drzSql.raw(`SELECT DISTINCT s.name FROM sectors s WHERE s.company_id=${Number(cid)} AND s.id IN (
+            ? await db.execute(
+                drzSql.raw(`SELECT DISTINCT s.name FROM sectors s WHERE s.company_id=${Number(cid)} AND s.id IN (
                 SELECT sector_id FROM occupational_gse_scope WHERE company_id=${Number(cid)} AND gse_id=${masterGseId} AND sector_id IS NOT NULL
                 UNION
                 SELECT u.sector_id FROM occupational_gse_worker_history h JOIN users u ON u.id=h.collaborator_id AND u.company_id=h.company_id WHERE h.company_id=${Number(cid)} AND h.gse_id=${masterGseId} AND h.is_current=1 AND u.sector_id IS NOT NULL
-              ) ORDER BY s.name`))
+              ) ORDER BY s.name`)
+              )
             : await db.execute(drzSql`
                 SELECT s.name FROM pgr_gse_setores c LEFT JOIN sectors s ON s.id=c.sector_id WHERE c.gse_id=${input.gseId}`);
           const cargos = ((cR as any)[0] ?? [])
@@ -30709,6 +30829,30 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
             drzSql`ALTER TABLE cipa_meetings ADD COLUMN action_plan_text TEXT NULL`
           );
         } catch (_) {}
+        try {
+          await db.execute(
+            drzSql`ALTER TABLE cipa_elections ADD COLUMN protocol_code VARCHAR(40) NULL`
+          );
+        } catch (_) {}
+        try {
+          await db.execute(
+            drzSql`CREATE UNIQUE INDEX uq_cipa_election_protocol ON cipa_elections(protocol_code)`
+          );
+        } catch (_) {}
+        await db.execute(drzSql`CREATE TABLE IF NOT EXISTS cipa_election_events (
+          id BIGINT AUTO_INCREMENT PRIMARY KEY,
+          election_id INT NOT NULL,
+          company_id INT NOT NULL,
+          event_type VARCHAR(80) NOT NULL,
+          description VARCHAR(500) NULL,
+          actor_user_id INT NULL,
+          details_json LONGTEXT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_cipa_election_event (company_id, election_id, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+        await db.execute(
+          drzSql`UPDATE cipa_elections SET protocol_code=CONCAT('CIPA-',YEAR(created_at),'-',LPAD(id,6,'0')) WHERE protocol_code IS NULL OR protocol_code=''`
+        );
         _cipaDdlDone = true;
       } catch (e) {
         console.warn("[cipa] DDL:", (e as any)?.message);
@@ -30732,6 +30876,28 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           message: "Apenas integrantes da CIPA e RH/SESMT registram reuniões.",
         });
       }
+    }
+    async function logCipaElectionEvent(
+      db: any,
+      cid: number,
+      electionId: number,
+      actorUserId: number | null,
+      eventType: string,
+      description: string,
+      details: unknown = null
+    ) {
+      await execP(
+        db,
+        `INSERT INTO cipa_election_events (election_id,company_id,event_type,description,actor_user_id,details_json) VALUES (?,?,?,?,?,?)`,
+        [
+          electionId,
+          cid,
+          eventType,
+          description,
+          actorUserId,
+          details ? JSON.stringify(details) : null,
+        ]
+      );
     }
     async function generateCipaMeetingPdf(
       db: any,
@@ -30947,6 +31113,133 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         total: voters.length,
       };
     }
+    async function generateCipaElectionDossierPdf(
+      db: any,
+      cid: number,
+      electionId: number
+    ) {
+      const puppeteer = (await import("puppeteer")).default;
+      const fs = await import("fs/promises");
+      const path = await import("path");
+      const esc = (value: unknown) =>
+        String(value ?? "").replace(
+          /[<>&"]/g,
+          char =>
+            ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" })[
+              char
+            ] as string
+        );
+      const [[election]]: any = await execP(
+        db,
+        `SELECT e.*,c.name company_name,c.cnpj company_cnpj FROM cipa_elections e JOIN companies c ON c.id=e.company_id WHERE e.id=? AND e.company_id=? LIMIT 1`,
+        [electionId, cid]
+      );
+      if (!election)
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Eleicao nao encontrada.",
+        });
+      const [[eligible]]: any = await execP(
+        db,
+        `SELECT COUNT(*) total FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`,
+        [cid]
+      );
+      const [[voters]]: any = await execP(
+        db,
+        `SELECT COUNT(*) total,MIN(voted_at) first_vote,MAX(voted_at) last_vote FROM cipa_voters WHERE election_id=?`,
+        [electionId]
+      );
+      const [[votes]]: any = await execP(
+        db,
+        `SELECT COUNT(*) total FROM cipa_votes WHERE election_id=?`,
+        [electionId]
+      );
+      const [candidates]: any = await execP(
+        db,
+        `SELECT c.id,c.name,c.cargo,c.chapa,s.name sector_name,COUNT(v.id) votes FROM cipa_candidates c LEFT JOIN sectors s ON s.id=c.sector_id LEFT JOIN cipa_votes v ON v.candidate_id=c.id AND v.election_id=c.election_id WHERE c.election_id=? GROUP BY c.id ORDER BY votes DESC,c.id`,
+        [electionId]
+      );
+      const [members]: any = await execP(
+        db,
+        `SELECT name,role,mandate_start,mandate_end,status FROM cipa_members WHERE election_id=? AND company_id=? ORDER BY FIELD(role,'titular','suplente'),name`,
+        [electionId, cid]
+      );
+      const [events]: any = await execP(
+        db,
+        `SELECT e.*,u.name actor_name FROM cipa_election_events e LEFT JOIN users u ON u.id=e.actor_user_id WHERE e.election_id=? AND e.company_id=? ORDER BY e.created_at,e.id`,
+        [electionId, cid]
+      );
+      const totalEligible = Number(eligible?.total || 0);
+      const totalVoters = Number(voters?.total || 0);
+      const turnout = totalEligible
+        ? Math.round((totalVoters / totalEligible) * 1000) / 10
+        : 0;
+      const date = (value: any) =>
+        value ? new Date(value).toLocaleDateString("pt-BR") : "-";
+      const dateTime = (value: any) =>
+        value ? new Date(value).toLocaleString("pt-BR") : "-";
+      const candidateRows = (candidates ?? [])
+        .map(
+          (candidate: any, index: number) =>
+            `<tr><td>${index + 1}</td><td>${esc(candidate.name)}</td><td>${esc(candidate.cargo || "-")}</td><td>${esc(candidate.sector_name || "-")}</td><td>${Number(candidate.votes || 0)}</td></tr>`
+        )
+        .join("");
+      const memberRows = (members ?? [])
+        .map(
+          (member: any) =>
+            `<tr><td>${esc(member.name)}</td><td>${esc(member.role)}</td><td>${date(member.mandate_start)}</td><td>${date(member.mandate_end)}</td><td>${esc(member.status)}</td></tr>`
+        )
+        .join("");
+      const eventRows = (events ?? [])
+        .map(
+          (event: any) =>
+            `<tr><td>${dateTime(event.created_at)}</td><td>${esc(event.event_type)}</td><td>${esc(event.description || "-")}</td><td>${esc(event.actor_name || "Sistema")}</td></tr>`
+        )
+        .join("");
+      const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
+        @page{size:A4;margin:16mm}body{font-family:Arial,sans-serif;color:#172b3f;font-size:9pt;line-height:1.4}h1{font-size:22pt;color:#0e2c46;margin:0}h2{font-size:13pt;color:#0e2c46;border-bottom:2px solid #0796a5;padding-bottom:4px;margin-top:18px}.meta{color:#64748b;margin:4px 0 16px}.protocol{display:inline-block;background:#0e2c46;color:white;padding:7px 12px;font-weight:bold}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin:12px 0}.card{border:1px solid #d8e2e8;padding:8px}.card b{display:block;font-size:15pt;color:#087f8c}table{width:100%;border-collapse:collapse;font-size:8pt}th,td{border:1px solid #d8e2e8;padding:5px;text-align:left}th{background:#e8f5f6}.note{background:#fff8e5;border-left:4px solid #f3ad16;padding:9px;margin-top:14px}.footer{position:fixed;bottom:6mm;color:#94a3b8;font-size:7pt}
+      </style></head><body><h1>Dossie do Processo Eleitoral da CIPA</h1><div class="meta"><b>${esc(election.company_name)}</b> · CNPJ ${esc(election.company_cnpj || "-")}</div><div class="protocol">Protocolo interno: ${esc(election.protocol_code)}</div>
+      <h2>1. Identificacao e cronograma</h2><p><b>Processo:</b> ${esc(election.name)}<br><b>Status:</b> ${esc(election.status)}<br><b>Inscricoes:</b> ${date(election.inscription_start)} a ${date(election.inscription_end)}<br><b>Votacao:</b> ${date(election.voting_start)} a ${date(election.voting_end)}<br><b>Vagas:</b> ${Number(election.seats_titular || 0)} titulares e ${Number(election.seats_suplente || 0)} suplentes<br><b>Criterio de desempate:</b> ${esc(election.tie_break_note || "Nao informado")}</p>
+      <h2>2. Participacao e integridade</h2><div class="cards"><div class="card">Elegiveis<b>${totalEligible}</b></div><div class="card">Votantes<b>${totalVoters}</b></div><div class="card">Votos apurados<b>${Number(votes?.total || 0)}</b></div><div class="card">Participacao<b>${turnout}%</b></div></div><p>Primeiro voto: ${dateTime(voters?.first_vote)} · Ultimo voto: ${dateTime(voters?.last_vote)}.</p><p>O sistema mantém a evidência nominal de participação separada da urna de votos. Este relatório não permite relacionar eleitor e candidato.</p>
+      <h2>3. Candidatos e apuracao</h2><table><thead><tr><th>Class.</th><th>Candidato</th><th>Cargo</th><th>Setor</th><th>Votos</th></tr></thead><tbody>${candidateRows || '<tr><td colspan="5">Nenhum candidato cadastrado.</td></tr>'}</tbody></table>
+      <h2>4. Composicao resultante</h2><table><thead><tr><th>Integrante</th><th>Condicao</th><th>Inicio</th><th>Fim</th><th>Status</th></tr></thead><tbody>${memberRows || '<tr><td colspan="5">Composicao ainda nao registrada.</td></tr>'}</tbody></table>
+      <h2>5. Linha do tempo auditavel</h2><table><thead><tr><th>Data/hora</th><th>Evento</th><th>Descricao</th><th>Responsavel</th></tr></thead><tbody>${eventRows || '<tr><td colspan="4">Nenhum evento complementar registrado.</td></tr>'}</tbody></table>
+      <div class="note"><b>Importante:</b> o protocolo identifica o processo dentro da plataforma e facilita auditoria e consulta. Ele nao representa homologacao ou validacao governamental. A conformidade depende do cumprimento dos requisitos, prazos, publicidade, sigilo, participacao e documentos exigidos pela NR-05 e pelas regras coletivas aplicaveis.</div><div class="footer">Plataforma Saude do Trabalho · Documento emitido em ${new Date().toLocaleString("pt-BR")}</div></body></html>`;
+      const outDir = "/var/www/saudedotrabalho/uploads/cipa_elections";
+      await fs.mkdir(outDir, { recursive: true });
+      const fileName = `cipa_processo_${electionId}_${Date.now()}.pdf`;
+      const browser = await puppeteer.launch({
+        executablePath:
+          process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium-browser",
+        headless: true,
+        args: [
+          "--no-sandbox",
+          "--disable-setuid-sandbox",
+          "--disable-dev-shm-usage",
+        ],
+      });
+      try {
+        const page = await browser.newPage();
+        await page.setContent(html, {
+          waitUntil: "domcontentloaded",
+          timeout: 15000,
+        });
+        await page.pdf({
+          path: path.join(outDir, fileName),
+          format: "A4",
+          printBackground: true,
+        });
+      } finally {
+        await browser.close();
+      }
+      return {
+        url: `/uploads/cipa_elections/${fileName}`,
+        protocolCode: election.protocol_code,
+        totalEligible,
+        totalVoters,
+        turnout,
+      };
+    }
     function fillCipaReminderTemplate(text: string, user: any, election: any) {
       const end = election.voting_end
         ? new Date(election.voting_end).toLocaleDateString("pt-BR")
@@ -31047,6 +31340,15 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
               ]
             );
             if (input.status && before && before.status !== input.status) {
+              await logCipaElectionEvent(
+                db,
+                cid,
+                input.id,
+                Number(ctx.user.id),
+                `status_${input.status}`,
+                `Etapa alterada de ${before.status} para ${input.status}.`,
+                { previousStatus: before.status, status: input.status }
+              );
               await notifyCipaStatusChange(
                 db,
                 cid,
@@ -31077,7 +31379,23 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
               input.tieBreakNote || null,
             ]
           );
-          return { ok: true, id: Number((res as any).insertId ?? 0) };
+          const id = Number((res as any).insertId ?? 0);
+          const protocol = `CIPA-${new Date().getFullYear()}-${String(id).padStart(6, "0")}`;
+          await execP(
+            db,
+            `UPDATE cipa_elections SET protocol_code=? WHERE id=? AND company_id=?`,
+            [protocol, id, cid]
+          );
+          await logCipaElectionEvent(
+            db,
+            cid,
+            id,
+            Number(ctx.user.id),
+            "processo_criado",
+            "Processo eleitoral criado na plataforma.",
+            { protocolCode: protocol }
+          );
+          return { ok: true, id, protocolCode: protocol };
         }),
 
       communicationAudience: adminOrRhProcedure.query(async ({ ctx }) => {
@@ -31095,6 +31413,84 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           whatsapp: Number(row?.whatsapp ?? 0),
         };
       }),
+
+      electionDossierPreview: adminOrRhProcedure
+        .input(z.object({ electionId: z.number().int() }))
+        .query(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb();
+          if (!db || !cid) return null;
+          await ensureCipaTables(db);
+          const [[election]]: any = await execP(
+            db,
+            `SELECT * FROM cipa_elections WHERE id=? AND company_id=? LIMIT 1`,
+            [input.electionId, cid]
+          );
+          if (!election) return null;
+          const [[eligible]]: any = await execP(
+            db,
+            `SELECT COUNT(*) total FROM users u WHERE u.company_id=? AND ${activeEmployeeWhere("u")}`,
+            [cid]
+          );
+          const [[voters]]: any = await execP(
+            db,
+            `SELECT COUNT(*) total FROM cipa_voters WHERE election_id=?`,
+            [input.electionId]
+          );
+          const [[votes]]: any = await execP(
+            db,
+            `SELECT COUNT(*) total FROM cipa_votes WHERE election_id=?`,
+            [input.electionId]
+          );
+          const [[candidates]]: any = await execP(
+            db,
+            `SELECT COUNT(*) total FROM cipa_candidates WHERE election_id=?`,
+            [input.electionId]
+          );
+          const [[events]]: any = await execP(
+            db,
+            `SELECT COUNT(*) total FROM cipa_election_events WHERE election_id=? AND company_id=?`,
+            [input.electionId, cid]
+          );
+          const totalEligible = Number(eligible?.total || 0);
+          const totalVoters = Number(voters?.total || 0);
+          return {
+            protocolCode: election.protocol_code,
+            status: election.status,
+            totalEligible,
+            totalVoters,
+            totalVotes: Number(votes?.total || 0),
+            totalCandidates: Number(candidates?.total || 0),
+            totalEvents: Number(events?.total || 0),
+            turnout: totalEligible
+              ? Math.round((totalVoters / totalEligible) * 1000) / 10
+              : 0,
+          };
+        }),
+
+      generateElectionDossier: adminOrRhProcedure
+        .input(z.object({ electionId: z.number().int() }))
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb();
+          if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+          await ensureCipaTables(db);
+          const result = await generateCipaElectionDossierPdf(
+            db,
+            cid,
+            input.electionId
+          );
+          await logCipaElectionEvent(
+            db,
+            cid,
+            input.electionId,
+            Number(ctx.user.id),
+            "dossie_gerado",
+            "Dossie do processo eleitoral gerado em PDF.",
+            result
+          );
+          return result;
+        }),
 
       listCandidates: protectedProcedure
         .input(z.object({ electionId: z.number().int() }))
@@ -31607,6 +32003,23 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
             db,
             `UPDATE cipa_elections SET status='apurada' WHERE id=?`,
             [input.electionId]
+          );
+          await logCipaElectionEvent(
+            db,
+            cid,
+            input.electionId,
+            Number(ctx.user.id),
+            "apuracao_concluida",
+            "Apuracao concluida e composicao da CIPA registrada.",
+            {
+              titulares: titulares.length,
+              suplentes: suplentes.length,
+              votos: ranked.reduce(
+                (sum: number, candidate: any) =>
+                  sum + Number(candidate.votes || 0),
+                0
+              ),
+            }
           );
           await notifyCipaStatusChange(
             db,
@@ -33688,6 +34101,57 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
         const url = await generateEpiEpcReportPdf(db, cid);
         return { ok: true, url };
       }),
+      individualDeliveryReport: adminOrRhProcedure
+        .input(
+          z.object({
+            collaboratorId: z.number().int(),
+            year: z.number().int().min(2000).max(2100),
+          })
+        )
+        .query(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb();
+          if (!db || !cid)
+            return {
+              collaborator: null,
+              year: input.year,
+              deliveries: [],
+              summary: {
+                deliveryRecords: 0,
+                units: 0,
+                distinctEpis: 0,
+                proven: 0,
+                pending: 0,
+              },
+            };
+          await ensureEpiEpcTables(db);
+          return loadIndividualEpiReport(
+            db,
+            cid,
+            input.collaboratorId,
+            input.year
+          );
+        }),
+      generateIndividualDeliveryReportPdf: adminOrRhProcedure
+        .input(
+          z.object({
+            collaboratorId: z.number().int(),
+            year: z.number().int().min(2000).max(2100),
+          })
+        )
+        .mutation(async ({ ctx, input }) => {
+          const cid = (ctx.user as any).companyId;
+          const db = await getDb();
+          if (!db || !cid) throw new TRPCError({ code: "BAD_REQUEST" });
+          await ensureEpiEpcTables(db);
+          const report = await generateIndividualEpiReportPdf(
+            db,
+            cid,
+            input.collaboratorId,
+            input.year
+          );
+          return { ok: true, url: report.url, summary: report.summary };
+        }),
       dashboard: protectedProcedure.query(async ({ ctx }) => {
         const cid = (ctx.user as any).companyId;
         const db = await getDb();

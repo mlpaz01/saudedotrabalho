@@ -76,6 +76,8 @@ import AdminCipa from "@/pages/admin/AdminCipa";
 import AdminCorporateMinutes from "@/pages/admin/AdminCorporateMinutes";
 import AdminFirstAid from "@/pages/admin/AdminFirstAid";
 import AdminEpiEpcManagement from "@/pages/admin/AdminEpiEpcManagement";
+import AdminDds from "@/pages/admin/AdminDds";
+import Dds from "@/pages/Dds";
 import CampanhasIndex, { CampanhaDetail } from "@/pages/Campanhas";
 import Configurador from "@/pages/admin/Configurador";
 import AdminBranches from "@/pages/admin/AdminBranches";
@@ -251,6 +253,7 @@ function Router() {
       <Route path="/qualificacoes" component={() => <ProtectedRoute component={Qualificacoes} />} />
       <Route path="/primeiros-socorros" component={() => <ProtectedRoute component={FirstAid} />} />
       <Route path="/meu-epi-epc" component={() => <ProtectedRoute component={MyEpiEpc} />} />
+      <Route path="/dds" component={() => <ProtectedRoute component={Dds} />} />
       <Route path="/minhas-vacinas"
           component={() => <ProtectedRoute component={MyVaccines} />}
         />
@@ -359,6 +362,7 @@ function Router() {
       {/* P15 #5 — Kit de Primeiros Socorros (NR-07) */}
       <Route path="/admin/primeiros-socorros" component={() => (<ProtectedRoute component={AdminFirstAid} adminOnly />)} />
       <Route path="/admin/gestao-epi-epc" component={() => (<ProtectedRoute component={AdminEpiEpcManagement} adminOnly />)} />
+      <Route path="/admin/dds" component={() => (<ProtectedRoute component={AdminDds} adminOnly />)} />
       {/* Bruno R5-P6 #1 — Dashboard dos Ciclos Psicossociais (PRIORIDADE MÁXIMA) */}
       <Route path="/admin/ciclos-dashboard" component={() => (<ProtectedRoute component={AdminCyclesDashboard} adminOnly />)} />
       {/* Bruno R5-P6 #6 — Dashboard de Prazos do Plano de Ação (RH visão completa, Chefia só setor) */}
