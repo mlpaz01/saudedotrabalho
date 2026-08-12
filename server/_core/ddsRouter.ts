@@ -137,9 +137,12 @@ function esc(value: unknown) {
 
 function formatDate(value: unknown) {
   if (!value) return "-";
-  const date = new Date(String(value));
+  const text = String(value);
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})/.exec(text);
+  if (dateOnly) return `${dateOnly[3]}/${dateOnly[2]}/${dateOnly[1]}`;
+  const date = new Date(text);
   return Number.isNaN(date.getTime())
-    ? String(value)
+    ? text
     : date.toLocaleDateString("pt-BR");
 }
 
@@ -191,7 +194,7 @@ async function generateDdsReport(
   <div class="note">A confirmacao eletrônica comprova o acesso e o aceite individual ao conteúdo registrado. O DDS não substitui treinamentos legalmente obrigatórios quando a norma aplicável exigir conteúdo, carga horária, instrutor ou certificação específicos.</div>
   </body></html>`;
   const puppeteer = (await import("puppeteer")).default;
-  const outDir = "/var/www/saudedotrabalho/uploads/dds";
+  const outDir = path.join(process.cwd(), "uploads", "dds");
   await fs.mkdir(outDir, { recursive: true });
   const fileName = `dds_${sessionId}_${Date.now()}.pdf`;
   const browser = await puppeteer.launch({

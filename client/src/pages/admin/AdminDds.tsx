@@ -568,9 +568,12 @@ function Status({ value }: { value: string }) {
 
 function datePt(value: unknown) {
   if (!value) return "-";
-  const date = new Date(String(value));
+  const text = String(value);
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})/.exec(text);
+  if (dateOnly) return `${dateOnly[3]}/${dateOnly[2]}/${dateOnly[1]}`;
+  const date = new Date(text);
   return Number.isNaN(date.getTime())
-    ? String(value)
+    ? text
     : date.toLocaleDateString("pt-BR");
 }
 
