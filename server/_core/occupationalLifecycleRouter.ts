@@ -787,6 +787,7 @@ export async function ensureOccupationalTables() {
     exam_type VARCHAR(30) NOT NULL DEFAULT 'complementar',
     description TEXT,
     default_periodicity VARCHAR(120),
+    periodicity_rules_json LONGTEXT,
     is_active TINYINT(1) NOT NULL DEFAULT 1,
     created_by INT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -818,6 +819,12 @@ export async function ensureOccupationalTables() {
     "pcmso_exam_catalog_v2",
     "reference_guidance",
     "MEDIUMTEXT NULL"
+  );
+  await ensureColumn(
+    db,
+    "pcmso_exam_catalog_v2",
+    "periodicity_rules_json",
+    "LONGTEXT NULL"
   );
   await ensureColumn(db, "pgr_gse", "master_gse_id", "INT NULL");
   const defaultQuestions = [
@@ -2008,6 +2015,30 @@ export const occupationalLifecycleRouter = router({
         category: z.string().max(80).optional(),
         description: z.string().max(10000).optional(),
         defaultPeriodicity: z.string().max(120).optional(),
+        periodicityRules: z
+          .array(
+            z.object({
+              appointmentType: z.enum([
+                "admissional",
+                "periodico",
+                "demissional",
+                "retorno_trabalho",
+                "mudanca_risco_funcao",
+                "outro",
+              ]),
+              periodicity: z.enum([
+                "no_atendimento",
+                "6_meses",
+                "anual",
+                "bienal",
+                "personalizada",
+              ]),
+              intervalMonths: z.number().int().min(1).max(120).nullable().optional(),
+              notes: z.string().max(1000).optional(),
+            })
+          )
+          .max(30)
+          .default([]),
         resultType: z
           .enum(["qualitativo", "quantitativo", "misto"])
           .default("qualitativo"),
@@ -2023,16 +2054,35 @@ export const occupationalLifecycleRouter = router({
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       let id = Number(input.id || 0);
+      const periodicityLabels: Record<string, string> = {
+        no_atendimento: "No atendimento",
+        "6_meses": "6 meses",
+        anual: "Anual",
+        bienal: "Bienal",
+        personalizada: "Conforme configuração específica",
+      };
+      const preferredRule =
+        input.periodicityRules.find(rule => rule.appointmentType === "periodico") ||
+        input.periodicityRules[0];
+      const defaultPeriodicity =
+        input.defaultPeriodicity ||
+        (preferredRule
+          ? preferredRule.periodicity === "personalizada" &&
+            preferredRule.intervalMonths
+            ? `${preferredRule.intervalMonths} meses`
+            : periodicityLabels[preferredRule.periodicity]
+          : undefined);
+      const periodicityRulesJson = JSON.stringify(input.periodicityRules);
       if (id) {
         await requireOwnedEntity(db, companyId, "exam", id, "Exame");
         await db.execute(
-          drzSql`UPDATE pcmso_exam_catalog_v2 SET name=${input.name},exam_type=${input.examType},category=${input.category || null},description=${input.description || null},default_periodicity=${input.defaultPeriodicity || null},result_type=${input.resultType},default_unit=${input.defaultUnit || null},reference_guidance=${input.referenceGuidance || null},is_active=${input.isActive ? 1 : 0} WHERE id=${id} AND company_id=${companyId}`
+          drzSql`UPDATE pcmso_exam_catalog_v2 SET name=${input.name},exam_type=${input.examType},category=${input.category || null},description=${input.description || null},default_periodicity=${defaultPeriodicity || null},periodicity_rules_json=${periodicityRulesJson},result_type=${input.resultType},default_unit=${input.defaultUnit || null},reference_guidance=${input.referenceGuidance || null},is_active=${input.isActive ? 1 : 0} WHERE id=${id} AND company_id=${companyId}`
         );
       } else {
         const result: any =
           await db.execute(drzSql`INSERT INTO pcmso_exam_catalog_v2
-          (company_id,name,exam_type,category,description,default_periodicity,result_type,default_unit,reference_guidance,is_active,created_by)
-          VALUES (${companyId},${input.name},${input.examType},${input.category || null},${input.description || null},${input.defaultPeriodicity || null},${input.resultType},${input.defaultUnit || null},${input.referenceGuidance || null},${input.isActive ? 1 : 0},${Number(ctx.user.id)})`);
+          (company_id,name,exam_type,category,description,default_periodicity,periodicity_rules_json,result_type,default_unit,reference_guidance,is_active,created_by)
+          VALUES (${companyId},${input.name},${input.examType},${input.category || null},${input.description || null},${defaultPeriodicity || null},${periodicityRulesJson},${input.resultType},${input.defaultUnit || null},${input.referenceGuidance || null},${input.isActive ? 1 : 0},${Number(ctx.user.id)})`);
         id = Number((result as any)[0]?.insertId || 0);
       }
       await audit(
@@ -2670,7 +2720,7 @@ export const occupationalLifecycleRouter = router({
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       const result: any =
-        await db.execute(drzSql`SELECT o.*,u.name collaborator_name,u.cpf,u.employee_registration,u.position,b.name branch_name,s.name sector_name,c.name company_name,c.cnpj,g.code gse_code,g.name gse_name,e.name exam_name,p.trade_name provider_trade_name,p.legal_name provider_legal_name,p.address provider_address,pc.doctor_name,pc.doctor_crm,pc.doctor_signature_private_path
+        await db.execute(drzSql`SELECT o.*,u.name collaborator_name,u.cpf,u.employee_registration,u.position,b.name branch_name,s.name sector_name,c.name company_name,c.cnpj,g.code gse_code,g.name gse_name,e.name exam_name,p.trade_name provider_trade_name,p.legal_name provider_legal_name,p.address provider_address,pc.doctor_name,pc.doctor_crm,pc.doctor_request_signature_private_path doctor_signature_private_path,pc.doctor_request_stamp_private_path doctor_stamp_private_path
         FROM occupational_exam_orders o JOIN users u ON u.id=o.collaborator_id JOIN companies c ON c.id=o.company_id LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id LEFT JOIN occupational_gse_master g ON g.id=o.gse_id JOIN pcmso_exam_catalog_v2 e ON e.id=o.exam_id LEFT JOIN occupational_health_providers p ON p.id=o.provider_id LEFT JOIN pcmso_programs_v2 pc ON pc.id=o.pcmso_id WHERE o.id=${input.id} AND o.company_id=${companyId} LIMIT 1`);
       const row = rowsOf(result)[0];
       if (!row) throw new TRPCError({ code: "NOT_FOUND" });
@@ -2678,11 +2728,12 @@ export const occupationalLifecycleRouter = router({
       const signatureImage = privateImageDataUri(
         row.doctor_signature_private_path
       );
+      const stampImage = privateImageDataUri(row.doctor_stamp_private_path);
       const requestDetails =
         row.request_type === "repeticao"
           ? `<p><b>Tipo da solicitação:</b> REPETIÇÃO DE EXAME<br><b>Justificativa:</b> ${esc(row.repeat_justification || "Não informada")}</p>`
           : `<p><b>Tipo da solicitação:</b> Requisição normal</p>`;
-      const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>@page{size:A4;margin:18mm}body{font-family:Arial;color:#173047;font-size:10pt;line-height:1.45}header{border-bottom:4px solid #0895a5;padding-bottom:8mm;margin-bottom:10mm}h1{font-size:20pt;margin:0;color:#0e2c46}h2{font-size:12pt;color:#0e2c46;margin-top:8mm}.grid{display:grid;grid-template-columns:1fr 1fr;gap:3mm 8mm}.box{border:1px solid #d8e2e8;padding:4mm;margin-top:5mm}.tag{display:inline-block;background:#e6f7f8;color:#087583;padding:2mm 3mm;font-weight:bold}.sign{margin-top:18mm;text-align:center}.sign img{display:block;max-width:65mm;max-height:24mm;object-fit:contain;margin:0 auto 1mm}.line{border-top:1px solid #173047;width:85mm;margin:auto}</style></head><body><header><h1>REQUISIÇÃO DE EXAME OCUPACIONAL${version > 1 ? ` - ${esc(orderLabel(version).toUpperCase())}` : ""}</h1><p><b>${esc(row.company_name)}</b><br>CNPJ: ${esc(row.cnpj || "-")}</p></header><span class="tag">${esc(row.order_number)} · Exercício ${esc(row.exercise_year || new Date(row.issue_date).getFullYear())} · válida até ${esc(row.valid_until)}</span><h2>Trabalhador</h2><div class="grid"><div><b>Nome:</b> ${esc(row.collaborator_name)}</div><div><b>CPF:</b> ${esc(row.cpf || "-")}</div><div><b>Matrícula:</b> ${esc(row.employee_registration || "-")}</div><div><b>Cargo:</b> ${esc(row.position || "-")}</div><div><b>Filial:</b> ${esc(row.branch_name || "-")}</div><div><b>Setor:</b> ${esc(row.sector_name || "-")}</div><div><b>GSE:</b> ${esc([row.gse_code, row.gse_name].filter(Boolean).join(" - ") || "-")}</div></div><div class="box"><h2>Exame solicitado</h2><p style="font-size:16pt"><b>${esc(row.exam_name)}</b></p>${requestDetails}<p><b>Prestador:</b> ${esc(row.provider_trade_name || row.provider_legal_name || "A definir")}<br><b>Local:</b> ${esc(row.service_location || row.provider_address || "A definir")}<br><b>Orientações:</b> ${esc(row.orientations || "Seguir as orientações do prestador.")}</p></div>${version > 1 ? `<p><b>Documento versionado:</b> esta é a ${esc(orderLabel(version))} da requisição ${esc(row.parent_order_id)}. A versão anterior permanece no histórico.</p>` : ""}<div class="sign">${signatureImage ? `<img src="${signatureImage}" alt="Assinatura do médico responsável">` : ""}<div class="line"></div><b>${esc(row.doctor_name || "Responsável pelo PCMSO")}</b><br>${esc(row.doctor_crm || "CRM não informado")}</div></body></html>`;
+      const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>@page{size:A4;margin:18mm}body{font-family:Arial;color:#173047;font-size:10pt;line-height:1.45}header{border-bottom:4px solid #0895a5;padding-bottom:8mm;margin-bottom:10mm}h1{font-size:20pt;margin:0;color:#0e2c46}h2{font-size:12pt;color:#0e2c46;margin-top:8mm}.grid{display:grid;grid-template-columns:1fr 1fr;gap:3mm 8mm}.box{border:1px solid #d8e2e8;padding:4mm;margin-top:5mm}.tag{display:inline-block;background:#e6f7f8;color:#087583;padding:2mm 3mm;font-weight:bold}.sign{margin-top:18mm;text-align:center}.sign img{display:block;max-width:65mm;max-height:24mm;object-fit:contain;margin:0 auto 1mm}.line{border-top:1px solid #173047;width:85mm;margin:auto}</style></head><body><header><h1>REQUISIÇÃO DE EXAME OCUPACIONAL${version > 1 ? ` - ${esc(orderLabel(version).toUpperCase())}` : ""}</h1><p><b>${esc(row.company_name)}</b><br>CNPJ: ${esc(row.cnpj || "-")}</p></header><span class="tag">${esc(row.order_number)} · Exercício ${esc(row.exercise_year || new Date(row.issue_date).getFullYear())} · válida até ${esc(row.valid_until)}</span><h2>Trabalhador</h2><div class="grid"><div><b>Nome:</b> ${esc(row.collaborator_name)}</div><div><b>CPF:</b> ${esc(row.cpf || "-")}</div><div><b>Matrícula:</b> ${esc(row.employee_registration || "-")}</div><div><b>Cargo:</b> ${esc(row.position || "-")}</div><div><b>Filial:</b> ${esc(row.branch_name || "-")}</div><div><b>Setor:</b> ${esc(row.sector_name || "-")}</div><div><b>GSE:</b> ${esc([row.gse_code, row.gse_name].filter(Boolean).join(" - ") || "-")}</div></div><div class="box"><h2>Exame solicitado</h2><p style="font-size:16pt"><b>${esc(row.exam_name)}</b></p>${requestDetails}<p><b>Prestador:</b> ${esc(row.provider_trade_name || row.provider_legal_name || "A definir")}<br><b>Local:</b> ${esc(row.service_location || row.provider_address || "A definir")}<br><b>Orientações:</b> ${esc(row.orientations || "Seguir as orientações do prestador.")}</p></div>${version > 1 ? `<p><b>Documento versionado:</b> esta é a ${esc(orderLabel(version))} da requisição ${esc(row.parent_order_id)}. A versão anterior permanece no histórico.</p>` : ""}<div class="sign">${signatureImage ? `<img src="${signatureImage}" alt="Assinatura do médico responsável">` : ""}${stampImage ? `<img src="${stampImage}" alt="Carimbo do médico responsável">` : ""}<div class="line"></div><b>Médico solicitante: ${esc(row.doctor_name || "Responsável pelo PCMSO")}</b><br>${esc(row.doctor_crm || "CRM não informado")}</div></body></html>`;
       const fileName = `requisicao_${String(row.order_number).replace(/[^a-zA-Z0-9_-]/g, "_")}.pdf`;
       const target = await renderPdf(companyId, "exam-orders", fileName, html);
       await db.execute(
@@ -2714,7 +2765,7 @@ export const occupationalLifecycleRouter = router({
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       const ids = [...new Set(input.ids)].join(",");
       const result: any = await db.execute(
-        drzSql.raw(`SELECT o.*,u.name collaborator_name,u.cpf,u.employee_registration,u.position,b.name branch_name,s.name sector_name,c.name company_name,c.cnpj,g.code gse_code,g.name gse_name,e.name exam_name,p.trade_name provider_trade_name,p.legal_name provider_legal_name,p.address provider_address,pc.doctor_name,pc.doctor_crm,pc.doctor_signature_private_path
+        drzSql.raw(`SELECT o.*,u.name collaborator_name,u.cpf,u.employee_registration,u.position,b.name branch_name,s.name sector_name,c.name company_name,c.cnpj,g.code gse_code,g.name gse_name,e.name exam_name,p.trade_name provider_trade_name,p.legal_name provider_legal_name,p.address provider_address,pc.doctor_name,pc.doctor_crm,pc.doctor_request_signature_private_path doctor_signature_private_path,pc.doctor_request_stamp_private_path doctor_stamp_private_path
         FROM occupational_exam_orders o JOIN users u ON u.id=o.collaborator_id JOIN companies c ON c.id=o.company_id LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id LEFT JOIN occupational_gse_master g ON g.id=o.gse_id JOIN pcmso_exam_catalog_v2 e ON e.id=o.exam_id LEFT JOIN occupational_health_providers p ON p.id=o.provider_id LEFT JOIN pcmso_programs_v2 pc ON pc.id=o.pcmso_id
         WHERE o.company_id=${companyId} AND o.id IN (${ids}) ORDER BY e.name,u.name`)
       );
@@ -2725,11 +2776,12 @@ export const occupationalLifecycleRouter = router({
           const signatureImage = privateImageDataUri(
             row.doctor_signature_private_path
           );
+          const stampImage = privateImageDataUri(row.doctor_stamp_private_path);
           const requestDetails =
             row.request_type === "repeticao"
               ? `<br><b>Tipo:</b> REPETIÇÃO DE EXAME<br><b>Justificativa:</b> ${esc(row.repeat_justification || "Não informada")}`
               : `<br><b>Tipo:</b> Requisição normal`;
-          return `<section class="page"><header><h1>REQUISIÇÃO DE EXAME OCUPACIONAL</h1><p><b>${esc(row.company_name)}</b> · CNPJ ${esc(row.cnpj || "-")}</p></header><p class="tag">${esc(row.order_number)} · ${esc(orderLabel(Number(row.version_number || 1)))} · Exercício ${esc(row.exercise_year || new Date(row.issue_date).getFullYear())} · válida até ${esc(row.valid_until)}</p><h2>${esc(row.exam_name)}</h2><div class="grid"><div><b>Trabalhador:</b> ${esc(row.collaborator_name)}</div><div><b>CPF:</b> ${esc(row.cpf || "-")}</div><div><b>Matrícula:</b> ${esc(row.employee_registration || "-")}</div><div><b>Cargo:</b> ${esc(row.position || "-")}</div><div><b>Filial:</b> ${esc(row.branch_name || "-")}</div><div><b>Setor:</b> ${esc(row.sector_name || "-")}</div><div><b>GSE:</b> ${esc([row.gse_code, row.gse_name].filter(Boolean).join(" - ") || "-")}</div></div><div class="box"><b>Prestador:</b> ${esc(row.provider_trade_name || row.provider_legal_name || "A definir")}<br><b>Local:</b> ${esc(row.service_location || row.provider_address || "A definir")}<br><b>Orientações:</b> ${esc(row.orientations || "Seguir as orientações do prestador.")}${requestDetails}</div><div class="sign">${signatureImage ? `<img src="${signatureImage}" alt="Assinatura do médico responsável">` : ""}<div></div><b>${esc(row.doctor_name || "Responsável pelo PCMSO")}</b><br>${esc(row.doctor_crm || "CRM não informado")}</div></section>`;
+          return `<section class="page"><header><h1>REQUISIÇÃO DE EXAME OCUPACIONAL</h1><p><b>${esc(row.company_name)}</b> · CNPJ ${esc(row.cnpj || "-")}</p></header><p class="tag">${esc(row.order_number)} · ${esc(orderLabel(Number(row.version_number || 1)))} · Exercício ${esc(row.exercise_year || new Date(row.issue_date).getFullYear())} · válida até ${esc(row.valid_until)}</p><h2>${esc(row.exam_name)}</h2><div class="grid"><div><b>Trabalhador:</b> ${esc(row.collaborator_name)}</div><div><b>CPF:</b> ${esc(row.cpf || "-")}</div><div><b>Matrícula:</b> ${esc(row.employee_registration || "-")}</div><div><b>Cargo:</b> ${esc(row.position || "-")}</div><div><b>Filial:</b> ${esc(row.branch_name || "-")}</div><div><b>Setor:</b> ${esc(row.sector_name || "-")}</div><div><b>GSE:</b> ${esc([row.gse_code, row.gse_name].filter(Boolean).join(" - ") || "-")}</div></div><div class="box"><b>Prestador:</b> ${esc(row.provider_trade_name || row.provider_legal_name || "A definir")}<br><b>Local:</b> ${esc(row.service_location || row.provider_address || "A definir")}<br><b>Orientações:</b> ${esc(row.orientations || "Seguir as orientações do prestador.")}${requestDetails}</div><div class="sign">${signatureImage ? `<img src="${signatureImage}" alt="Assinatura do médico responsável">` : ""}${stampImage ? `<img src="${stampImage}" alt="Carimbo do médico responsável">` : ""}<div></div><b>Médico solicitante: ${esc(row.doctor_name || "Responsável pelo PCMSO")}</b><br>${esc(row.doctor_crm || "CRM não informado")}</div></section>`;
         })
         .join("");
       const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>@page{size:A4;margin:15mm}body{font-family:Arial;color:#173047;font-size:10pt}.page{break-after:page;min-height:255mm}.page:last-child{break-after:auto}header{border-bottom:4px solid #0895a5;padding-bottom:5mm}h1{font-size:18pt;margin:0}h2{font-size:16pt;margin-top:10mm}.tag{background:#e6f7f8;padding:3mm;font-weight:bold}.grid{display:grid;grid-template-columns:1fr 1fr;gap:4mm 8mm}.box{border:1px solid #d8e2e8;padding:5mm;margin-top:8mm}.sign{margin-top:20mm;text-align:center}.sign img{display:block;max-width:65mm;max-height:24mm;object-fit:contain;margin:0 auto 1mm}.sign div{border-top:1px solid #173047;width:85mm;margin:auto}</style></head><body>${pages}</body></html>`;

@@ -150,6 +150,7 @@ const adminSections: NavSection[] = [
     section: "Saude Ocupacional",
     items: [
       { label: "Operacao Ocupacional", href: "/admin/saude-ocupacional", roles: ["sesmt", "admin", "company_admin", "admin_global", "super_admin"], icon: <ClipboardCheck size={16} /> },
+      { label: "Eventos eSocial", href: "/admin/esocial", roles: ["sesmt", "admin", "company_admin", "admin_global", "super_admin"], icon: <FileCheck size={16} /> },
       { label: "Atestados e Afastamentos", href: "/admin/atestados-afastamentos", roles: ["admin", "rh", "sesmt", "company_admin", "admin_global", "super_admin", "chefia",], icon: <Stethoscope size={16} /> ,
        },
       { label: "Gestao de Vacinacao", href: "/admin/vacinacao", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <Syringe size={16} /> },
@@ -194,6 +195,7 @@ const superAdminNav: NavItem[] = [
   { label: "Catalogo Master", href: "/super-admin/catalogo", notRoles: ["sesmt", "psicologo"], icon: <Library size={16} /> ,},
   { label: "Horários de acesso", href: "/super-admin/horarios", notRoles: ["sesmt", "psicologo"], icon: <Clock size={16} /> ,},
   { label: "Integrações", href: "/super-admin/integracoes", notRoles: ["sesmt", "psicologo"], icon: <Link2 size={16} /> ,},
+  { label: "Central eSocial", href: "/super-admin/integracoes/esocial", notRoles: ["sesmt", "psicologo"], icon: <FileCheck size={16} /> ,},
   { label: "CRM / Financeiro", href: "/super-admin/crm", notRoles: ["sesmt", "psicologo"], icon: <Briefcase size={16} /> ,},
   { label: "White Label", href: "/super-admin/white-label", notRoles: ["sesmt", "psicologo"], icon: <Store size={16} /> ,
   },
@@ -291,6 +293,8 @@ const ITEM_LABELS: Record<string, string> = {
   Clientes: "Clientes",
   "Catalogo Master": "Catálogo Master",
   Integrações: "Integrações",
+  "Central eSocial": "Central eSocial",
+  "Eventos eSocial": "Eventos eSocial",
 };
 
 const SECTION_LABELS: Record<string, string> = {

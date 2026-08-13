@@ -27,10 +27,15 @@ import {
 } from "./_core/occupationalLifecycleRouter";
 import { occupationalPppRouter } from "./_core/occupationalPppRouter";
 import { ddsRouter } from "./_core/ddsRouter";
+import { esocialRouter } from "./_core/esocialRouter";
 
 import { medicalRouter } from "./_core/medicalRouter";
 import { technicalDocumentsRouter } from "./_core/technicalDocumentsRouter";
 import { resolveImportedRoles } from "./_core/importRoles";
+import {
+  MAX_DOCUMENT_RICH_TEXT_BYTES,
+  normalizeDocumentRichText,
+} from "./_core/richText";
 
 import { systemRouter } from "./_core/systemRouter";
 
@@ -4546,6 +4551,7 @@ export const appRouter = router({
   occupationalLifecycle: occupationalLifecycleRouter,
   occupationalPpp: occupationalPppRouter,
   dds: ddsRouter,
+  esocial: esocialRouter,
   medical: medicalRouter,
   technicalDocuments: technicalDocumentsRouter,
   ehs: ehsRouter,
@@ -17840,8 +17846,8 @@ Return only the JSON content object (no wrapper). Format per type:
       .input(
         z.object({
           companyId: z.number().optional(),
-          textoIntroducao: z.string().max(60000),
-          textoConclusao: z.string().max(60000),
+          textoIntroducao: z.string().max(4_000_000),
+          textoConclusao: z.string().max(4_000_000),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -17858,6 +17864,14 @@ Return only the JSON content object (no wrapper). Format per type:
         const uid = (ctx.user as any).id ?? null;
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        let textoIntroducao: string;
+        let textoConclusao: string;
+        try {
+          textoIntroducao = normalizeDocumentRichText(input.textoIntroducao);
+          textoConclusao = normalizeDocumentRichText(input.textoConclusao);
+        } catch (error: any) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "O texto formatado excede o limite técnico." });
+        }
         await execP(
           db,
           `CREATE TABLE IF NOT EXISTS sesmt_default_texts (
@@ -17875,7 +17889,7 @@ Return only the JSON content object (no wrapper). Format per type:
           VALUES (?, ?, ?, ?)
           ON DUPLICATE KEY UPDATE texto_introducao=VALUES(texto_introducao),
             texto_conclusao=VALUES(texto_conclusao), updated_by_user_id=VALUES(updated_by_user_id)`,
-          [cid, input.textoIntroducao, input.textoConclusao, uid]
+          [cid, textoIntroducao, textoConclusao, uid]
         );
         return { ok: true };
       }),
@@ -18006,8 +18020,8 @@ Return only the JSON content object (no wrapper). Format per type:
           ]),
           scope: z.enum(["company", "global"]).default("company"),
           companyId: z.number().int().optional(),
-          textoIntroducao: z.string().max(120000),
-          textoConclusao: z.string().max(120000),
+          textoIntroducao: z.string().max(4_000_000),
+          textoConclusao: z.string().max(4_000_000),
           applyToCurrent: z.boolean().optional(),
           applyToFuture: z.boolean().optional(),
         })
@@ -18018,6 +18032,29 @@ Return only the JSON content object (no wrapper). Format per type:
         const uid = (ctx.user as any).id ?? null;
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        let textoIntroducao: string;
+        let textoConclusao: string;
+        try {
+          textoIntroducao = normalizeDocumentRichText(input.textoIntroducao);
+          textoConclusao = normalizeDocumentRichText(input.textoConclusao);
+        } catch (error: any) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              error?.message ||
+              `O conteúdo formatado excede ${Math.round(MAX_DOCUMENT_RICH_TEXT_BYTES / 1_000_000)} MB.`,
+          });
+        }
+        const normalization = {
+          introduction: {
+            received: input.textoIntroducao.length,
+            saved: textoIntroducao.length,
+          },
+          conclusion: {
+            received: input.textoConclusao.length,
+            saved: textoConclusao.length,
+          },
+        };
         // R5-P9 #19: usa company_id_key + UNIQUE uq_scope_v3 pra ON DUPLICATE KEY UPDATE funcionar inclusive no global (NULL).
         await execP(
           db,
@@ -18052,8 +18089,8 @@ Return only the JSON content object (no wrapper). Format per type:
               apply_to_future=VALUES(apply_to_future), updated_by_user_id=VALUES(updated_by_user_id)`,
             [
               input.docType,
-              input.textoIntroducao,
-              input.textoConclusao,
+              textoIntroducao,
+              textoConclusao,
               applyFuture,
               uid,
             ]
@@ -18076,15 +18113,15 @@ Return only the JSON content object (no wrapper). Format per type:
                 [
                   c.id,
                   input.docType,
-                  input.textoIntroducao,
-                  input.textoConclusao,
+                  textoIntroducao,
+                  textoConclusao,
                   uid,
                 ]
               );
               applied++;
             }
           }
-          return { ok: true, appliedToCompanies: applied };
+          return { ok: true, appliedToCompanies: applied, normalization };
         }
 
         const cid = isGlobal ? input.companyId : (ctx.user as any).companyId;
@@ -18099,9 +18136,9 @@ Return only the JSON content object (no wrapper). Format per type:
           VALUES ('company', ?, ?, ?, ?, ?)
           ON DUPLICATE KEY UPDATE texto_introducao=VALUES(texto_introducao), texto_conclusao=VALUES(texto_conclusao),
             updated_by_user_id=VALUES(updated_by_user_id)`,
-          [cid, input.docType, input.textoIntroducao, input.textoConclusao, uid]
+          [cid, input.docType, textoIntroducao, textoConclusao, uid]
         );
-        return { ok: true };
+        return { ok: true, normalization };
       }),
   }),
 
@@ -18471,8 +18508,8 @@ Return only the JSON content object (no wrapper). Format per type:
           notasTecnicas: z.string().optional(),
           // Sprint 1.7-A: textos personalizáveis do PGR (carregados do SESMT no
           // createBlank; o usuário pode editar por PGR sem afetar o padrão).
-          textoIntroducao: z.string().max(60000).optional(),
-          textoConclusao: z.string().max(60000).optional(),
+          textoIntroducao: z.string().max(4_000_000).optional(),
+          textoConclusao: z.string().max(4_000_000).optional(),
           // Bruno R4 #6: sumário editável (HTML opcional; quando vazio, PDF gera automático)
           sumarioCustom: z.string().max(20000).optional().nullable(),
           caracterizacaoSetores: z.array(z.any()).optional(),
@@ -18488,6 +18525,14 @@ Return only the JSON content object (no wrapper). Format per type:
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
         const uid = (ctx.user as any).id;
+        let textoIntroducao: string | undefined;
+        let textoConclusao: string | undefined;
+        try {
+          textoIntroducao = input.textoIntroducao === undefined ? undefined : normalizeDocumentRichText(input.textoIntroducao);
+          textoConclusao = input.textoConclusao === undefined ? undefined : normalizeDocumentRichText(input.textoConclusao);
+        } catch (error: any) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: error?.message || "O texto formatado excede o limite técnico." });
+        }
         // Bruno R4 #6 — ALTER idempotente da coluna sumario_custom
         try {
           await db.execute(
@@ -18538,8 +18583,8 @@ Return only the JSON content object (no wrapper). Format per type:
               logo_url=${input.logoUrl ?? null}, ghe_funcoes=${ghe}, revisoes=${revs}, inventario=${inv},
               gse_grupos=${gse}, epc_itens=${epc}, epi_itens=${epi},
               plano_psicossocial=${psy}, notas_tecnicas=${input.notasTecnicas ?? null},
-              texto_introducao=COALESCE(${input.textoIntroducao ?? null}, texto_introducao),
-              texto_conclusao=COALESCE(${input.textoConclusao ?? null}, texto_conclusao),
+              texto_introducao=COALESCE(${textoIntroducao ?? null}, texto_introducao),
+              texto_conclusao=COALESCE(${textoConclusao ?? null}, texto_conclusao),
               sumario_custom=${input.sumarioCustom ?? null},
               caracterizacao_setores=${carac}, cronograma_preventivo=${cron},
               hierarquia_controle=${hier}, nao_conformidades=${nc}, treinamentos_nr=${trein}
@@ -18561,7 +18606,7 @@ Return only the JSON content object (no wrapper). Format per type:
             contato, email, num_funcionarios, objeto_contrato, horarios_trabalho, regime_trabalho, obra,
             vigencia_inicio, vigencia_fim, contratante_ativo, contratante_razao, contratante_cnpj, contratante_endereco,
             contratante_atividade, contratante_grau_risco, contratante_contato, contratante_email,
-            resp_tecnico_nome, resp_tecnico_registro, resp_tecnico_profissao, resp_tecnico_art, resp_tecnico_empresa, resp_tecnico_assinatura_url, resp_tecnico_validade_ate, logo_url, ghe_funcoes, revisoes, inventario, gse_grupos, epc_itens, epi_itens, plano_psicossocial, notas_tecnicas, caracterizacao_setores, cronograma_preventivo, hierarquia_controle, nao_conformidades, treinamentos_nr, created_by_user_id
+            resp_tecnico_nome, resp_tecnico_registro, resp_tecnico_profissao, resp_tecnico_art, resp_tecnico_empresa, resp_tecnico_assinatura_url, resp_tecnico_validade_ate, logo_url, ghe_funcoes, revisoes, inventario, gse_grupos, epc_itens, epi_itens, plano_psicossocial, notas_tecnicas, texto_introducao, texto_conclusao, sumario_custom, caracterizacao_setores, cronograma_preventivo, hierarquia_controle, nao_conformidades, treinamentos_nr, created_by_user_id
           ) VALUES (
             ${cid}, ${input.branchId ?? null}, ${input.title ?? "PGR - Programa de Gerenciamento de Riscos"}, ${input.razaoSocial ?? null}, ${input.nomeFantasia ?? null},
             ${input.cnpj ?? null}, ${input.endereco ?? null}, ${input.atividadePrincipal ?? null}, ${input.grauRisco ?? null},
@@ -18572,7 +18617,7 @@ Return only the JSON content object (no wrapper). Format per type:
             ${input.contratanteContato ?? null}, ${input.contratanteEmail ?? null}, ${input.respTecnicoNome ?? null},
             ${input.respTecnicoRegistro ?? null}, ${input.respTecnicoProfissao ?? null}, ${input.respTecnicoArt ?? null},
             ${input.respTecnicoEmpresa ?? null}, ${input.respTecnicoAssinaturaUrl ?? null}, ${input.respTecnicoValidadeAte ?? null},
-            ${input.logoUrl ?? null}, ${ghe}, ${revs}, ${inv}, ${gse}, ${epc}, ${epi}, ${psy}, ${input.notasTecnicas ?? null}, ${carac}, ${cron}, ${hier}, ${nc}, ${trein}, ${uid}
+            ${input.logoUrl ?? null}, ${ghe}, ${revs}, ${inv}, ${gse}, ${epc}, ${epi}, ${psy}, ${input.notasTecnicas ?? null}, ${textoIntroducao ?? null}, ${textoConclusao ?? null}, ${input.sumarioCustom ?? null}, ${carac}, ${cron}, ${hier}, ${nc}, ${trein}, ${uid}
           )`);
         const newId = Number((ins as any)[0]?.insertId ?? 0);
         return { id: newId };

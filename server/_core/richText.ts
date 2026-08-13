@@ -87,6 +87,18 @@ export function sanitizeRichText(value: unknown) {
   }).trim();
 }
 
+export const MAX_DOCUMENT_RICH_TEXT_BYTES = 15_000_000;
+
+export function normalizeDocumentRichText(value: unknown) {
+  const normalized = sanitizeRichText(value);
+  if (Buffer.byteLength(normalized, "utf8") > MAX_DOCUMENT_RICH_TEXT_BYTES) {
+    throw new Error(
+      "O texto formatado excede o limite técnico de 15 MB. Remova imagens incorporadas ou conteúdo duplicado e tente novamente."
+    );
+  }
+  return normalized;
+}
+
 export function richTextToPlainText(value: unknown) {
   return sanitizeHtml(String(value || ""), {
     allowedTags: [],

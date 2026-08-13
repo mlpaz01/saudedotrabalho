@@ -67,6 +67,17 @@ export default function AdminSesmtDefaults() {
           `Texto global salvo e aplicado a ${r.appliedToCompanies} empresa(s).`
         );
       else toast.success("Texto padrão salvo.");
+      const received =
+        Number(r?.normalization?.introduction?.received || 0) +
+        Number(r?.normalization?.conclusion?.received || 0);
+      const saved =
+        Number(r?.normalization?.introduction?.saved || 0) +
+        Number(r?.normalization?.conclusion?.saved || 0);
+      if (received > saved + 1000)
+        toast.info(
+          `A formatação invisível do editor foi limpa: ${received.toLocaleString("pt-BR")} caracteres recebidos e ${saved.toLocaleString("pt-BR")} salvos.`,
+          { duration: 7000 }
+        );
       dataQ.refetch();
     },
     onError: (e: any) => toast.error(e?.message ?? "Erro ao salvar"),

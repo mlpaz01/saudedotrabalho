@@ -68,6 +68,7 @@ import SuperAdminCatalog from "@/pages/superadmin/SuperAdminCatalog";
 import SuperAdminAccessHours from "@/pages/superadmin/SuperAdminAccessHours";
 import CommercialCrm from "@/pages/CommercialCrm";
 import SuperAdminIntegrations from "@/pages/superadmin/SuperAdminIntegrations";
+import ESocialCenter from "@/pages/ESocialCenter";
 import SuperAdminWhiteLabel from "@/pages/superadmin/SuperAdminWhiteLabel";
 import WhiteLabelNetworkAdmin from "@/pages/WhiteLabelNetworkAdmin";
 import IntermediadorDashboard from "@/pages/IntermediadorDashboard";
@@ -343,6 +344,7 @@ function Router() {
       <Route path="/admin/pcmso" component={() => <MedicalRoute component={MedicalCenter} />}
         />
       <Route path="/admin/saude-ocupacional" component={() => <OccupationalRoute component={OccupationalOperations} />} />
+      <Route path="/admin/esocial" component={() => <OccupationalRoute component={ESocialCenter} />} />
       <Route path="/admin/ppp" component={() => <ProtectedRoute component={AdminPpp} adminOnly />} />
         <Route
           path="/medico"
@@ -397,6 +399,7 @@ function Router() {
       <Route path="/super-admin/catalogo" component={() => <SuperAdminRoute component={SuperAdminCatalog} />} />
       <Route path="/super-admin/horarios" component={() => (<SuperAdminRoute component={SuperAdminAccessHours} />)} />
       <Route path="/super-admin/integracoes" component={() => (<SuperAdminRoute component={SuperAdminIntegrations} />)} />
+      <Route path="/super-admin/integracoes/esocial" component={() => (<SuperAdminRoute component={ESocialCenter} />)} />
       <Route path="/super-admin/crm" component={() => <SuperAdminRoute component={CommercialCrm} />} />
       <Route path="/super-admin/white-label" component={() => <SuperAdminRoute component={SuperAdminWhiteLabel} />} />
       <Route path="/rede" component={() => (<WhiteLabelNetworkRoute component={WhiteLabelNetworkAdmin} />)} />

@@ -163,6 +163,11 @@ async function ensureTables() {
     crm_state VARCHAR(10),
     specialty VARCHAR(180),
     signature_private_path VARCHAR(600),
+    stamp_private_path VARCHAR(600),
+    authorize_signature_use TINYINT(1) NOT NULL DEFAULT 0,
+    authorize_pcmso_signature TINYINT(1) NOT NULL DEFAULT 0,
+    authorize_exam_request_signature TINYINT(1) NOT NULL DEFAULT 0,
+    authorization_updated_at DATETIME NULL,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_med_profile_company (company_id)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
@@ -185,6 +190,7 @@ async function ensureTables() {
     doctor_name VARCHAR(255),
     doctor_crm VARCHAR(80),
     doctor_signature_private_path VARCHAR(600),
+    doctor_stamp_private_path VARCHAR(600),
     current_version INT NOT NULL DEFAULT 1,
     pdf_private_path VARCHAR(600),
     created_by INT NOT NULL,
@@ -201,6 +207,7 @@ async function ensureTables() {
     exam_type VARCHAR(30) NOT NULL DEFAULT 'complementar',
     description TEXT,
     default_periodicity VARCHAR(120),
+    periodicity_rules_json LONGTEXT,
     is_active TINYINT(1) NOT NULL DEFAULT 1,
     created_by INT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -545,6 +552,66 @@ async function ensureTables() {
   await ensureColumn(db, "pcmso_programs_v2", "conclusion", "MEDIUMTEXT NULL");
   await ensureColumn(
     db,
+    "pcmso_exam_catalog_v2",
+    "periodicity_rules_json",
+    "LONGTEXT NULL"
+  );
+  await ensureColumn(
+    db,
+    "pcmso_programs_v2",
+    "template_driven",
+    "TINYINT(1) NOT NULL DEFAULT 0"
+  );
+  await ensureColumn(
+    db,
+    "pcmso_programs_v2",
+    "doctor_stamp_private_path",
+    "VARCHAR(600) NULL"
+  );
+  await ensureColumn(
+    db,
+    "pcmso_programs_v2",
+    "doctor_request_signature_private_path",
+    "VARCHAR(600) NULL"
+  );
+  await ensureColumn(
+    db,
+    "pcmso_programs_v2",
+    "doctor_request_stamp_private_path",
+    "VARCHAR(600) NULL"
+  );
+  await ensureColumn(
+    db,
+    "medical_professional_profiles",
+    "stamp_private_path",
+    "VARCHAR(600) NULL"
+  );
+  await ensureColumn(
+    db,
+    "medical_professional_profiles",
+    "authorize_signature_use",
+    "TINYINT(1) NOT NULL DEFAULT 0"
+  );
+  await ensureColumn(
+    db,
+    "medical_professional_profiles",
+    "authorize_pcmso_signature",
+    "TINYINT(1) NOT NULL DEFAULT 0"
+  );
+  await ensureColumn(
+    db,
+    "medical_professional_profiles",
+    "authorize_exam_request_signature",
+    "TINYINT(1) NOT NULL DEFAULT 0"
+  );
+  await ensureColumn(
+    db,
+    "medical_professional_profiles",
+    "authorization_updated_at",
+    "DATETIME NULL"
+  );
+  await ensureColumn(
+    db,
     "pcmso_programs_v2",
     "integration_score",
     "INT NOT NULL DEFAULT 0"
@@ -774,6 +841,7 @@ function buildPcmsoPdfHtml(input: {
   const signatureImage = privateImageDataUri(
     program.doctor_signature_private_path
   );
+  const stampImage = privateImageDataUri(program.doctor_stamp_private_path);
   let chapters: any[] = [];
   try {
     chapters = JSON.parse(program.chapters_json || "[]");
@@ -789,12 +857,12 @@ function buildPcmsoPdfHtml(input: {
         `<h3>${esc([rows[0]?.master_gse_code, gse].filter(Boolean).join(" - "))} · População atual: ${esc(rows[0]?.population_count || 0)} trabalhador(es)</h3><table><thead><tr><th>Risco ocupacional</th><th>Possíveis agravos</th><th>Controle médico validado</th><th>Periodicidade</th><th>Critério/observação</th></tr></thead><tbody>${rows
           .map(
             row =>
-              `<tr><td><b>${esc(row.risk_name)}</b><br>${esc(row.risk_type || "-")}<br><small>${esc(row.risk_classification || "-")}</small></td><td>${esc(row.possible_aggravations || "Não registrado")}</td><td>${esc(String(row.monitoring_kind || "").replaceAll("_", " "))}<br><b>${esc(row.monitoring_name || row.exam_name || "-")}</b></td><td>${esc(row.periodicity || "Definida conforme avaliação médica")}</td><td>${esc(row.observations || "-")}</td></tr>`
+              `<tr><td><b>${esc(row.risk_name)}</b><br>${esc(row.risk_type || "-")}<br><small>${esc(row.risk_classification || "-")}</small>${row.technical_detail ? `<br><small><b>Detalhamento do PGR:</b> ${esc(row.technical_detail)}</small>` : ""}</td><td>${esc(row.possible_aggravations || "Não registrado")}</td><td>${esc(String(row.monitoring_kind || "").replaceAll("_", " "))}<br><b>${esc(row.monitoring_name || row.exam_name || "-")}</b></td><td>${esc(row.periodicity || "Definida conforme avaliação médica")}</td><td>${esc(row.observations || "-")}</td></tr>`
           )
           .join("")}</tbody></table>`
     )
     .join("");
-  const sumario = [
+  const legacySummary = [
     "Apresentação",
     "Objetivo",
     "Campo de aplicação",
@@ -820,32 +888,53 @@ function buildPcmsoPdfHtml(input: {
     "Mudança de risco ocupacional",
     "Demissional",
   ];
+  const customChapters = chapters.filter(
+    chapter =>
+      !/^conclus[aã]o$/i.test(richTextToPlainText(chapter?.title || "").trim())
+  );
+  const templateDriven = Boolean(Number(program.template_driven));
+  const summaryItems = templateDriven
+    ? [
+        "Conteúdo técnico padronizado (itens 1 a 14)",
+        ...customChapters.map(chapter => richTextToPlainText(chapter.title)),
+        "15. Detalhamento dos GSEs e integração com o PGR",
+        "16. Conclusão",
+        "Anexos associados",
+      ]
+    : legacySummary;
+  const pgrReference = `<div class="notice"><b>PGR de referência:</b> ${esc(program.pgr_title || "Não informado")}<br><b>Responsável técnico do PGR:</b> ${esc(program.pgr_responsible_name || "Não informado")} ${program.pgr_responsible_registration ? `· ${esc(program.pgr_responsible_registration)}` : ""}</div>`;
+  const templateBody = `
+    <section class="document-content technical-template">${sanitizeRichText(program.introduction || "")}</section>
+    ${customChapters.map(chapter => `<h2>${esc(richTextToPlainText(chapter.title))}</h2><div class="document-content">${sanitizeRichText(chapter.content)}</div>`).join("")}
+    <h2>15. Detalhamento dos GSEs e integração com o PGR</h2>${pgrReference}${matrix || "<p>Nenhum risco importado.</p>"}
+    <h2>16. Conclusão</h2><div class="document-content">${sanitizeRichText(program.conclusion || "O programa deverá ser acompanhado continuamente e revisto quando houver alterações relevantes no PGR, nos processos, nos riscos ou no perfil de saúde consolidado dos trabalhadores.")}</div>`;
+  const legacyBody = `
+    <h2>1. Apresentação</h2><div class="document-content">${sanitizeRichText(program.introduction || "O PCMSO estabelece o acompanhamento médico ocupacional integrado aos riscos identificados no PGR.")}</div>
+    <h2>2. Objetivo</h2><div class="document-content">${sanitizeRichText(program.objective || "Proteger e preservar a saúde dos trabalhadores em relação aos riscos ocupacionais.")}</div>
+    <h2>3. Campo de aplicação</h2><div class="document-content">${sanitizeRichText(program.field_of_application || `Aplica-se à população trabalhadora vinculada aos ${groups.size} GSE(s) mestres desta organização, conectados ao PGR e ao PCMSO vigentes.`)}</div>
+    <h2>4. Base normativa</h2><p>NR-07 - Programa de Controle Médico de Saúde Ocupacional, NR-01 - Gerenciamento de Riscos Ocupacionais e demais referências legais e técnicas aplicáveis ao escopo.</p>
+    <h2>5. Diretrizes do PCMSO</h2><div class="document-content">${sanitizeRichText(program.guidelines || "Rastrear e detectar precocemente agravos relacionados ao trabalho, definir ações de vigilância, subsidiar medidas preventivas e manter documentação médica ocupacional sob confidencialidade.")}</div>
+    <h2>6. Responsabilidades</h2><p><b>Organização:</b> garantir elaboração e implementação do programa, custear os procedimentos e fornecer informações atualizadas do PGR.<br><b>Médico responsável:</b> definir critérios médicos, validar o planejamento, analisar resultados consolidados e assinar o programa.<br><b>SESMT:</b> manter o PGR e apoiar os controles operacionais.</p>
+    <h2>7. Metodologia de elaboração</h2><div class="document-content">${sanitizeRichText(program.methodology || "Os GSEs mestres e sua população foram relacionados ao PGR. Os riscos ocupacionais foram submetidos à análise médica para definição dos controles e periodicidades.")}</div>
+    <h2>8. Integração entre PGR e PCMSO</h2>${pgrReference}
+    <h2>9. Caracterização dos GSEs e planejamento médico</h2>${matrix || "<p>Nenhum risco importado.</p>"}
+    <h2>10. Exames médicos ocupacionais</h2><ol>${examTypes.map(item => `<li>${item}</li>`).join("")}</ol>
+    <h2>11. Critérios de interpretação e conduta</h2><div class="document-content">${sanitizeRichText(program.conduct_criteria || "Os achados devem ser interpretados pelo médico considerando história ocupacional, exposição, resultados anteriores e condições individuais.")}</div>
+    <h2>12. Vigilância ativa e passiva</h2><div class="document-content">${sanitizeRichText(program.surveillance_methodology || "A vigilância considera atendimentos, queixas, atestados, exames ocupacionais e análise epidemiológica.")}</div>
+    <h2>13. Atividades críticas</h2><div class="document-content">${sanitizeRichText(program.critical_activities || "A aptidão para atividades críticas deve ser avaliada individualmente pelo médico.")}</div>
+    <h2>14. Imunização</h2><div class="document-content">${sanitizeRichText(program.immunization_methodology || "Quando aplicável, o histórico de imunização integra a vigilância ocupacional.")}</div>
+    <h2>15. Relatório analítico</h2>${analyticalReport ? `<div class="document-content">${sanitizeRichText(analyticalReport.narrative)}</div><div class="document-content">${sanitizeRichText(analyticalReport.recommendations)}</div>` : "<p>Componente anual em elaboração.</p>"}
+    ${customChapters.map((chapter, index) => `<h2>${16 + index}. ${esc(richTextToPlainText(chapter.title))}</h2><div class="document-content">${sanitizeRichText(chapter.content)}</div>`).join("")}
+    <h2>Conclusão</h2><div class="document-content">${sanitizeRichText(program.conclusion || "O programa deverá ser acompanhado continuamente e revisto quando houver alterações relevantes.")}</div>`;
   return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
   @page{size:A4;margin:18mm 15mm}body{font-family:Arial,sans-serif;color:#172b3a;font-size:10pt;line-height:1.45}h1{font-size:25pt;color:#0e2c46}h2{margin-top:9mm;color:#0e2c46;border-bottom:2px solid #0096a6;padding-bottom:2mm}h3{margin-top:6mm;color:#0e2c46}table{width:100%;border-collapse:collapse;font-size:7.7pt;margin:3mm 0 6mm}th,td{border:1px solid #d7e1e8;padding:2mm;vertical-align:top}th{background:#0e2c46;color:#fff}.cover{height:240mm;display:flex;flex-direction:column;justify-content:center;text-align:center;page-break-after:always}.meta{color:#607486}.signature{margin-top:18mm;text-align:center}.signature img{display:block;max-width:70mm;max-height:24mm;object-fit:contain;margin:0 auto 2mm}.signature-line{border-top:1px solid #172b3a;width:80mm;margin:0 auto 2mm}.notice{border-left:3px solid #eab308;padding:3mm;background:#fffbeb;font-size:8.5pt}.toc{columns:2}.page-break{page-break-before:always}p{white-space:pre-wrap}.document-content ul,.document-content ol{padding-left:7mm}.document-content li{margin:1.2mm 0}.document-content li>p{margin:0}.document-content img{max-width:100%;height:auto}</style></head><body>
   <section class="cover"><h1>${esc(program.title)}</h1><h2>${esc(program.company_name)}</h2><p>CNPJ: ${esc(program.cnpj || "-")}<br>Vigência: ${esc(program.valid_from || "-")} a ${esc(program.valid_until || "-")}</p><p class="meta">Programa de Controle Médico de Saúde Ocupacional</p></section>
   <h2>Controle do documento</h2><table><tbody><tr><td><b>Versão</b></td><td>${esc(program.current_version || 1)}</td><td><b>Situação</b></td><td>${esc(program.status)}</td></tr><tr><td><b>PGR de referência</b></td><td>${esc(program.pgr_title || "-")}</td><td><b>Sincronização</b></td><td>${esc(program.pgr_synced_at || "-")}</td></tr></tbody></table>
   <h2>Identificação da organização</h2><p><b>Empresa:</b> ${esc(program.company_name)}<br><b>CNPJ:</b> ${esc(program.cnpj || "-")}<br><b>Endereço:</b> ${esc(program.address || "-")}<br><b>Médico responsável:</b> ${esc(program.doctor_name || "-")} · ${esc(program.doctor_crm || "-")}</p>
-  <h2>Sumário</h2><ol class="toc">${sumario.map(item => `<li>${esc(item)}</li>`).join("")}</ol>
-  <h2>1. Apresentação</h2><div class="document-content">${sanitizeRichText(program.introduction || "O PCMSO estabelece o acompanhamento médico ocupacional integrado aos riscos identificados no PGR.")}</div>
-  <h2>2. Objetivo</h2><div class="document-content">${sanitizeRichText(program.objective || "Proteger e preservar a saúde dos trabalhadores em relação aos riscos ocupacionais.")}</div>
-  <h2>3. Campo de aplicação</h2><div class="document-content">${sanitizeRichText(program.field_of_application || `Aplica-se à população trabalhadora vinculada aos ${groups.size} GSE(s) mestres desta organização, conectados ao PGR e ao PCMSO vigentes.`)}</div>
-  <h2>4. Base normativa</h2><p>NR-07 - Programa de Controle Médico de Saúde Ocupacional, NR-01 - Gerenciamento de Riscos Ocupacionais e demais referências legais e técnicas aplicáveis ao escopo. O documento apresenta requisitos pertinentes sem reproduzir integralmente as normas.</p>
-  <h2>5. Diretrizes do PCMSO</h2><div class="document-content">${sanitizeRichText(program.guidelines || "Rastrear e detectar precocemente agravos relacionados ao trabalho, definir ações de vigilância, subsidiar medidas preventivas e manter documentação médica ocupacional sob confidencialidade.")}</div>
-  <h2>6. Responsabilidades</h2><p><b>Organização:</b> garantir elaboração e implementação do programa, custear os procedimentos e fornecer informações atualizadas do PGR.<br><b>Médico responsável:</b> definir critérios médicos, validar o planejamento, analisar resultados consolidados e assinar o programa.<br><b>Médicos examinadores:</b> executar os exames conforme diretrizes e registrar os atos clínicos.<br><b>SESMT:</b> manter o PGR, apoiar controles, vacinação operacional e tratar solicitações de revisão.</p>
-  <h2>7. Metodologia de elaboração</h2><div class="document-content">${sanitizeRichText(program.methodology || "Os GSEs mestres e sua população foram relacionados ao PGR. Os riscos ocupacionais foram então submetidos à análise médica para definição dos possíveis agravos, controles médicos, aplicabilidade e periodicidades.")}</div>
-  <div class="notice">A inteligência artificial foi utilizada apenas como apoio de estruturação e consistência. Sugestões não substituem decisão médica, diagnóstico, avaliação clínica ou responsabilidade técnica.</div>
-  <h2>8. Integração entre PGR e PCMSO</h2><p>O PCMSO utiliza os GSEs, riscos, fontes geradoras, possíveis danos, classificações e detalhamentos técnicos do PGR. Alterações posteriores no PGR devem provocar nova revisão do programa. Divergências identificadas pelo médico são encaminhadas ao SESMT de forma rastreável.</p>
-  <h2>9. Caracterização dos GSEs e planejamento médico</h2>${matrix || "<p>Nenhum risco importado.</p>"}
-  <h2>10. Exames médicos ocupacionais</h2><p>O programa contempla os cinco exames ocupacionais previstos na NR-07, aplicados conforme os critérios e periodicidades definidos pelo médico:</p><ol>${examTypes.map(item => `<li>${item}</li>`).join("")}</ol>
-  <h2>11. Critérios de interpretação e conduta</h2><div class="document-content">${sanitizeRichText(program.conduct_criteria || "Os achados clínicos e complementares devem ser interpretados pelo médico considerando história ocupacional, exposição, resultados anteriores, referências aplicáveis e condições individuais. Achados relevantes podem resultar em orientação, investigação, encaminhamento, restrição, acompanhamento ou solicitação de revisão do PGR, conforme julgamento médico.")}</div>
-  <h2>12. Vigilância ativa e passiva</h2><div class="document-content">${sanitizeRichText(program.surveillance_methodology || "A vigilância passiva considera atendimentos espontâneos, queixas, atestados e registros clínicos. A vigilância ativa utiliza exames ocupacionais, acompanhamento programado, análise epidemiológica e busca de tendências relacionadas aos riscos do trabalho.")}</div>
-  <h2>13. Atividades críticas</h2><div class="document-content">${sanitizeRichText(program.critical_activities || "Aptidão para atividades críticas deve ser avaliada de forma individual, considerando os riscos da tarefa, requisitos legais, condições clínicas e controles existentes, sem decisões automáticas pela plataforma.")}</div>
-  <h2>14. Imunização</h2><div class="document-content">${sanitizeRichText(program.immunization_methodology || "Quando aplicável aos riscos e atividades, o SESMT organiza campanhas, registros e alertas de vacinação. O médico consulta o histórico para apoio à vigilância e orientação ocupacional.")}</div>
-  <h2>15. Relatório analítico</h2>${analyticalReport ? `<div class="document-content">${sanitizeRichText(analyticalReport.narrative)}</div><p><b>Recomendações validadas:</b></p><div class="document-content">${sanitizeRichText(analyticalReport.recommendations)}</div><p>Período: ${esc(analyticalReport.period_start)} a ${esc(analyticalReport.period_end)}</p>` : "<p>Componente anual em elaboração. Esta prévia não é uma emissão definitiva do PCMSO.</p>"}
-  ${chapters.map((chapter, index) => `<h2>${16 + index}. ${esc(richTextToPlainText(chapter.title))}</h2><div class="document-content">${sanitizeRichText(chapter.content)}</div>`).join("")}
-  <h2>Conclusão</h2><div class="document-content">${sanitizeRichText(program.conclusion || "O programa deverá ser acompanhado continuamente e revisto quando houver alterações relevantes no PGR, nos processos, nos riscos ou no perfil de saúde consolidado dos trabalhadores.")}</div>
+  <h2>Sumário</h2><ol class="toc">${summaryItems.map(item => `<li>${esc(item)}</li>`).join("")}</ol>
+  ${templateDriven ? templateBody : legacyBody}
   <h2>Anexos associados</h2><ol>${annexes.map(item => `<li>Anexo ${item.annex_number}: ${esc(item.title || item.file_name)}</li>`).join("") || "<li>Nenhum anexo associado.</li>"}</ol>
-  <div class="signature">${signatureImage ? `<img src="${signatureImage}" alt="Assinatura do médico responsável">` : ""}<div class="signature-line"></div><b>${esc(program.doctor_name || "Médico responsável")}</b><br>${esc(program.doctor_crm || "CRM não informado")}<br>Registro de autoria e integridade: ${esc(program.signature_hash || "documento ainda não confirmado")}</div>
+  <div class="signature">${signatureImage ? `<img src="${signatureImage}" alt="Assinatura do médico responsável">` : ""}${stampImage ? `<img src="${stampImage}" alt="Carimbo do médico responsável">` : ""}<div class="signature-line"></div><b>${esc(program.doctor_name || "Médico responsável")}</b><br>${esc(program.doctor_crm || "CRM não informado")}<br>Registro de autoria e integridade: ${esc(program.signature_hash || "documento ainda não confirmado")}</div>
   </body></html>`;
 }
 
@@ -902,7 +991,7 @@ export const medicalRouter = router({
     const db = await getDb();
     if (!db) return null;
     const result: any = await db.execute(
-      drzSql`SELECT p.crm,p.crm_state,p.specialty,(p.signature_private_path IS NOT NULL) has_signature,u.name FROM users u LEFT JOIN medical_professional_profiles p ON p.user_id=u.id WHERE u.id=${Number(ctx.user.id)} LIMIT 1`
+      drzSql`SELECT p.crm,p.crm_state,p.specialty,(p.signature_private_path IS NOT NULL) has_signature,(p.stamp_private_path IS NOT NULL) has_stamp,p.authorize_signature_use,p.authorize_pcmso_signature,p.authorize_exam_request_signature,p.authorization_updated_at,u.name FROM users u LEFT JOIN medical_professional_profiles p ON p.user_id=u.id WHERE u.id=${Number(ctx.user.id)} LIMIT 1`
     );
     return rowsOf(result)[0] || null;
   }),
@@ -915,6 +1004,11 @@ export const medicalRouter = router({
         specialty: z.string().max(180).optional(),
         signatureBase64: z.string().max(8_000_000).optional(),
         signatureFileName: z.string().max(255).optional(),
+        stampBase64: z.string().max(8_000_000).optional(),
+        stampFileName: z.string().max(255).optional(),
+        authorizeSignatureUse: z.boolean().default(false),
+        authorizePcmsoSignature: z.boolean().default(false),
+        authorizeExamRequestSignature: z.boolean().default(false),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -931,9 +1025,21 @@ export const medicalRouter = router({
           input.signatureFileName || "assinatura.png",
           input.signatureBase64
         ).target;
-      await db.execute(drzSql`INSERT INTO medical_professional_profiles (user_id,company_id,crm,crm_state,specialty,signature_private_path)
-      VALUES (${Number(ctx.user.id)},${companyId},${input.crm},${input.crmState},${input.specialty || null},${signature})
-      ON DUPLICATE KEY UPDATE crm=VALUES(crm),crm_state=VALUES(crm_state),specialty=VALUES(specialty),signature_private_path=COALESCE(VALUES(signature_private_path),signature_private_path)`);
+      let stamp: string | null = null;
+      if (input.stampBase64)
+        stamp = savePrivateFile(
+          companyId,
+          "stamps",
+          input.stampFileName || "carimbo.png",
+          input.stampBase64
+        ).target;
+      const allowAny = input.authorizeSignatureUse ? 1 : 0;
+      const allowPcmso = allowAny && input.authorizePcmsoSignature ? 1 : 0;
+      const allowRequests =
+        allowAny && input.authorizeExamRequestSignature ? 1 : 0;
+      await db.execute(drzSql`INSERT INTO medical_professional_profiles (user_id,company_id,crm,crm_state,specialty,signature_private_path,stamp_private_path,authorize_signature_use,authorize_pcmso_signature,authorize_exam_request_signature,authorization_updated_at)
+      VALUES (${Number(ctx.user.id)},${companyId},${input.crm},${input.crmState},${input.specialty || null},${signature},${stamp},${allowAny},${allowPcmso},${allowRequests},NOW())
+      ON DUPLICATE KEY UPDATE crm=VALUES(crm),crm_state=VALUES(crm_state),specialty=VALUES(specialty),signature_private_path=COALESCE(VALUES(signature_private_path),signature_private_path),stamp_private_path=COALESCE(VALUES(stamp_private_path),stamp_private_path),authorize_signature_use=VALUES(authorize_signature_use),authorize_pcmso_signature=VALUES(authorize_pcmso_signature),authorize_exam_request_signature=VALUES(authorize_exam_request_signature),authorization_updated_at=NOW()`);
       await audit(
         db,
         ctx,
@@ -1075,6 +1181,8 @@ export const medicalRouter = router({
         introduction: z.string().max(100000).optional(),
         objective: z.string().max(100000).optional(),
         methodology: z.string().max(100000).optional(),
+        conclusion: z.string().max(4_000_000).optional(),
+        useStandardTemplate: z.boolean().default(true),
         chapters: z
           .array(
             z.object({
@@ -1095,7 +1203,7 @@ export const medicalRouter = router({
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       const profile: any = await db.execute(
-        drzSql`SELECT u.name,p.crm,p.crm_state,p.signature_private_path FROM users u LEFT JOIN medical_professional_profiles p ON p.user_id=u.id WHERE u.id=${Number(ctx.user.id)} LIMIT 1`
+        drzSql`SELECT u.name,p.crm,p.crm_state,p.signature_private_path,p.stamp_private_path,p.authorize_signature_use,p.authorize_pcmso_signature,p.authorize_exam_request_signature FROM users u LEFT JOIN medical_professional_profiles p ON p.user_id=u.id WHERE u.id=${Number(ctx.user.id)} LIMIT 1`
       );
       const doctor = rowsOf(profile)[0] || {};
       if (!doctor.crm)
@@ -1122,22 +1230,23 @@ export const medicalRouter = router({
         null;
       const objective = sanitizeRichText(input.objective) || null;
       const methodology = sanitizeRichText(input.methodology) || null;
+      const conclusion =
+        sanitizeRichText(input.conclusion || defaults?.texto_conclusao) || null;
       const safeStatus =
         input.status === "vigente" ? "em_revisao" : input.status;
       const requestedChapters = input.chapters.map(chapter => ({
         title: richTextToPlainText(chapter.title).slice(0, 255),
         content: sanitizeRichText(chapter.content),
       }));
-      const chapters =
-        input.chapters.length || !defaults?.texto_conclusao
-          ? requestedChapters
-          : [
-              ...requestedChapters,
-              {
-                title: "Conclusão",
-                content: sanitizeRichText(defaults.texto_conclusao),
-              },
-            ];
+      const chapters = requestedChapters.filter(
+        chapter => !/^conclus[aã]o$/i.test(chapter.title.trim())
+      );
+      const allowPcmsoSignature =
+        Number(doctor.authorize_signature_use) === 1 &&
+        Number(doctor.authorize_pcmso_signature) === 1;
+      const allowRequestSignature =
+        Number(doctor.authorize_signature_use) === 1 &&
+        Number(doctor.authorize_exam_request_signature) === 1;
       let id = input.id || 0;
       if (id) {
         const own: any = await db.execute(
@@ -1145,15 +1254,15 @@ export const medicalRouter = router({
         );
         if (!rowsOf(own).length) throw new TRPCError({ code: "NOT_FOUND" });
         await db.execute(
-          drzSql`UPDATE pcmso_programs_v2 SET pgr_id=${input.pgrId || null},title=${title},status=${safeStatus},valid_from=${input.validFrom || null},valid_until=${input.validUntil || null},introduction=${introduction},objective=${objective},methodology=${methodology},chapters_json=${JSON.stringify(chapters)},header_text=${input.headerText || null},footer_text=${input.footerText || null},doctor_user_id=${Number(ctx.user.id)},doctor_name=${doctor.name},doctor_crm=${`${doctor.crm}/${doctor.crm_state}`},doctor_signature_private_path=${doctor.signature_private_path || null},saved_at=NOW(),saved_by=${Number(ctx.user.id)} WHERE id=${id} AND company_id=${companyId}`
+          drzSql`UPDATE pcmso_programs_v2 SET pgr_id=${input.pgrId || null},title=${title},status=${safeStatus},valid_from=${input.validFrom || null},valid_until=${input.validUntil || null},introduction=${introduction},objective=${objective},methodology=${methodology},conclusion=${conclusion},template_driven=${input.useStandardTemplate ? 1 : 0},chapters_json=${JSON.stringify(chapters)},header_text=${input.headerText || null},footer_text=${input.footerText || null},doctor_user_id=${Number(ctx.user.id)},doctor_name=${doctor.name},doctor_crm=${`${doctor.crm}/${doctor.crm_state}`},doctor_signature_private_path=${allowPcmsoSignature ? doctor.signature_private_path || null : null},doctor_stamp_private_path=${allowPcmsoSignature ? doctor.stamp_private_path || null : null},doctor_request_signature_private_path=${allowRequestSignature ? doctor.signature_private_path || null : null},doctor_request_stamp_private_path=${allowRequestSignature ? doctor.stamp_private_path || null : null},saved_at=NOW(),saved_by=${Number(ctx.user.id)} WHERE id=${id} AND company_id=${companyId}`
         );
         await audit(db, ctx, "pcmso_updated", "pcmso", id, null, {
           status: safeStatus,
         });
       } else {
         const result: any =
-          await db.execute(drzSql`INSERT INTO pcmso_programs_v2 (company_id,pgr_id,title,status,valid_from,valid_until,introduction,objective,methodology,chapters_json,header_text,footer_text,doctor_user_id,doctor_name,doctor_crm,doctor_signature_private_path,created_by)
-        VALUES (${companyId},${input.pgrId || null},${title},${safeStatus},${input.validFrom || null},${input.validUntil || null},${introduction},${objective},${methodology},${JSON.stringify(chapters)},${input.headerText || null},${input.footerText || null},${Number(ctx.user.id)},${doctor.name},${`${doctor.crm}/${doctor.crm_state}`},${doctor.signature_private_path || null},${Number(ctx.user.id)})`);
+          await db.execute(drzSql`INSERT INTO pcmso_programs_v2 (company_id,pgr_id,title,status,valid_from,valid_until,introduction,objective,methodology,conclusion,template_driven,chapters_json,header_text,footer_text,doctor_user_id,doctor_name,doctor_crm,doctor_signature_private_path,doctor_stamp_private_path,doctor_request_signature_private_path,doctor_request_stamp_private_path,created_by)
+        VALUES (${companyId},${input.pgrId || null},${title},${safeStatus},${input.validFrom || null},${input.validUntil || null},${introduction},${objective},${methodology},${conclusion},${input.useStandardTemplate ? 1 : 0},${JSON.stringify(chapters)},${input.headerText || null},${input.footerText || null},${Number(ctx.user.id)},${doctor.name},${`${doctor.crm}/${doctor.crm_state}`},${allowPcmsoSignature ? doctor.signature_private_path || null : null},${allowPcmsoSignature ? doctor.stamp_private_path || null : null},${allowRequestSignature ? doctor.signature_private_path || null : null},${allowRequestSignature ? doctor.stamp_private_path || null : null},${Number(ctx.user.id)})`);
         id = Number((result as any)[0]?.insertId || 0);
         await db.execute(
           drzSql`UPDATE pcmso_programs_v2 SET saved_at=NOW(),saved_by=${Number(ctx.user.id)} WHERE id=${id} AND company_id=${companyId}`
@@ -1287,6 +1396,30 @@ export const medicalRouter = router({
         examType: z.enum(["clinico", "complementar"]),
         description: z.string().max(10000).optional(),
         defaultPeriodicity: z.string().max(120).optional(),
+        periodicityRules: z
+          .array(
+            z.object({
+              appointmentType: z.enum([
+                "admissional",
+                "periodico",
+                "demissional",
+                "retorno_trabalho",
+                "mudanca_risco_funcao",
+                "outro",
+              ]),
+              periodicity: z.enum([
+                "no_atendimento",
+                "6_meses",
+                "anual",
+                "bienal",
+                "personalizada",
+              ]),
+              intervalMonths: z.number().int().min(1).max(120).nullable().optional(),
+              notes: z.string().max(1000).optional(),
+            })
+          )
+          .max(30)
+          .default([]),
         isActive: z.boolean().default(true),
       })
     )
@@ -1297,13 +1430,32 @@ export const medicalRouter = router({
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       let id = input.id || 0;
+      const periodicityLabels: Record<string, string> = {
+        no_atendimento: "No atendimento",
+        "6_meses": "6 meses",
+        anual: "Anual",
+        bienal: "Bienal",
+        personalizada: "Conforme configuração específica",
+      };
+      const preferredRule =
+        input.periodicityRules.find(rule => rule.appointmentType === "periodico") ||
+        input.periodicityRules[0];
+      const defaultPeriodicity =
+        input.defaultPeriodicity ||
+        (preferredRule
+          ? preferredRule.periodicity === "personalizada" &&
+            preferredRule.intervalMonths
+            ? `${preferredRule.intervalMonths} meses`
+            : periodicityLabels[preferredRule.periodicity]
+          : undefined);
+      const periodicityRulesJson = JSON.stringify(input.periodicityRules);
       if (id)
         await db.execute(
-          drzSql`UPDATE pcmso_exam_catalog_v2 SET name=${input.name},exam_type=${input.examType},description=${input.description || null},default_periodicity=${input.defaultPeriodicity || null},is_active=${input.isActive ? 1 : 0} WHERE id=${id} AND company_id=${companyId}`
+          drzSql`UPDATE pcmso_exam_catalog_v2 SET name=${input.name},exam_type=${input.examType},description=${input.description || null},default_periodicity=${defaultPeriodicity || null},periodicity_rules_json=${periodicityRulesJson},is_active=${input.isActive ? 1 : 0} WHERE id=${id} AND company_id=${companyId}`
         );
       else {
         const result: any = await db.execute(
-          drzSql`INSERT INTO pcmso_exam_catalog_v2 (company_id,name,exam_type,description,default_periodicity,is_active,created_by) VALUES (${companyId},${input.name},${input.examType},${input.description || null},${input.defaultPeriodicity || null},${input.isActive ? 1 : 0},${Number(ctx.user.id)})`
+          drzSql`INSERT INTO pcmso_exam_catalog_v2 (company_id,name,exam_type,description,default_periodicity,periodicity_rules_json,is_active,created_by) VALUES (${companyId},${input.name},${input.examType},${input.description || null},${defaultPeriodicity || null},${periodicityRulesJson},${input.isActive ? 1 : 0},${Number(ctx.user.id)})`
         );
         id = Number((result as any)[0]?.insertId || 0);
       }
@@ -1953,7 +2105,7 @@ export const medicalRouter = router({
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       const programResult: any = await db.execute(
-        drzSql`SELECT p.*,c.name company_name,c.cnpj,c.address,g.title pgr_title FROM pcmso_programs_v2 p JOIN companies c ON c.id=p.company_id LEFT JOIN pgr_documents g ON g.id=p.pgr_id WHERE p.id=${input.id} AND p.company_id=${companyId} LIMIT 1`
+        drzSql`SELECT p.*,c.name company_name,c.cnpj,c.address,g.title pgr_title,rt.name pgr_responsible_name,rt.registration pgr_responsible_registration FROM pcmso_programs_v2 p JOIN companies c ON c.id=p.company_id LEFT JOIN pgr_documents g ON g.id=p.pgr_id LEFT JOIN responsible_technicians rt ON rt.company_id=p.company_id AND (rt.is_default_pgr=1 OR rt.is_default=1) WHERE p.id=${input.id} AND p.company_id=${companyId} ORDER BY rt.is_default_pgr DESC,rt.is_default DESC LIMIT 1`
       );
       const program = rowsOf(programResult)[0];
       if (!program) throw new TRPCError({ code: "NOT_FOUND" });

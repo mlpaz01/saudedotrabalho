@@ -133,6 +133,8 @@ export default function MedicalCenter() {
   const [programOpen, setProgramOpen] = useState(false);
   const [programDraft, setProgramDraft] = useState<any>(null);
   const [annexOpen, setAnnexOpen] = useState(false);
+  const [examOpen, setExamOpen] = useState(false);
+  const [examDraft, setExamDraft] = useState<any>(null);
   const [vaccineOpen, setVaccineOpen] = useState(false);
   const [partnerOpen, setPartnerOpen] = useState(false);
   const [campaignOpen, setCampaignOpen] = useState(false);
@@ -275,6 +277,15 @@ export default function MedicalCenter() {
       programQ.refetch();
       setAnnexOpen(false);
       toast.success("Anexo arquivado no PCMSO.");
+    },
+    onError: error => toast.error(error.message),
+  });
+  const examSave = trpc.medical.upsertExam.useMutation({
+    onSuccess: () => {
+      examsQ.refetch();
+      setExamOpen(false);
+      setExamDraft(null);
+      toast.success("Catálogo de exames atualizado.");
     },
     onError: error => toast.error(error.message),
   });
@@ -620,25 +631,60 @@ export default function MedicalCenter() {
 
         {tab === "exames" && (
           <Panel
-            title="Exames ocupacionais e ASO"
-            subtitle="O PCMSO define o planejamento; a execução clínica e os ASOs permanecem vinculados ao prontuário, sem cadastro paralelo de exames."
+            title="Catálogo Mestre de Exames"
+            subtitle="Fonte única para PCMSO, atendimentos e requisições, com regras por tipo de atendimento."
+            action={
+              <Button
+                size="sm"
+                onClick={() => {
+                  setExamDraft(null);
+                  setExamOpen(true);
+                }}
+              >
+                <Plus size={14} className="mr-1" /> Exame
+              </Button>
+            }
           >
-            <div className="grid gap-3 md:grid-cols-5">
-              {[
-                "Admissional",
-                "Periódico",
-                "Retorno ao trabalho",
-                "Mudança de risco",
-                "Demissional",
-              ].map(name => (
-                <div
-                  className="border bg-slate-50 p-3 text-sm font-semibold"
-                  key={name}
-                >
-                  <CheckCircle2 className="mb-2 text-teal-700" size={18} />
-                  {name}
-                </div>
-              ))}
+            <div className="overflow-auto border">
+              <table className="w-full min-w-[760px] text-sm">
+                <thead className="bg-slate-50 text-xs">
+                  <tr>
+                    <th className="p-2 text-left">Exame</th>
+                    <th className="p-2 text-left">Tipo</th>
+                    <th className="p-2 text-left">Periodicidade principal</th>
+                    <th className="p-2 text-center">Regras</th>
+                    <th className="p-2"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {((examsQ.data || []) as any[]).map(row => {
+                    let rules: any[] = [];
+                    try {
+                      rules = JSON.parse(row.periodicity_rules_json || "[]");
+                    } catch {}
+                    return (
+                      <tr className="border-t" key={row.id}>
+                        <td className="p-2 font-medium">{row.name}</td>
+                        <td className="p-2">{row.exam_type}</td>
+                        <td className="p-2">{row.default_periodicity || "-"}</td>
+                        <td className="p-2 text-center">{rules.length}</td>
+                        <td className="p-2 text-right">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              setExamDraft(row);
+                              setExamOpen(true);
+                            }}
+                          >
+                            Editar
+                          </Button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           </Panel>
         )}
@@ -902,6 +948,16 @@ export default function MedicalCenter() {
           save={payload => vaccinationSave.mutate(payload)}
           busy={vaccinationSave.isPending}
         />
+        <ExamDialog
+          open={examOpen}
+          close={() => {
+            setExamOpen(false);
+            setExamDraft(null);
+          }}
+          initial={examDraft}
+          save={payload => examSave.mutate(payload)}
+          busy={examSave.isPending}
+        />
       </div>
     </AppLayout>
   );
@@ -925,17 +981,34 @@ function Dashboard({
   );
   const [signatureBase64, setSignatureBase64] = useState("");
   const [signatureFileName, setSignatureFileName] = useState("");
+  const [stampBase64, setStampBase64] = useState("");
+  const [stampFileName, setStampFileName] = useState("");
+  const [authorizeSignatureUse, setAuthorizeSignatureUse] = useState(false);
+  const [authorizePcmsoSignature, setAuthorizePcmsoSignature] = useState(false);
+  const [authorizeExamRequestSignature, setAuthorizeExamRequestSignature] =
+    useState(false);
   useEffect(() => {
     setCrm(profile?.crm || "");
     setCrmState(profile?.crm_state || "");
     setSpecialty(profile?.specialty || "Medicina do Trabalho");
     setSignatureBase64("");
     setSignatureFileName("");
+    setStampBase64("");
+    setStampFileName("");
+    setAuthorizeSignatureUse(Boolean(profile?.authorize_signature_use));
+    setAuthorizePcmsoSignature(Boolean(profile?.authorize_pcmso_signature));
+    setAuthorizeExamRequestSignature(
+      Boolean(profile?.authorize_exam_request_signature)
+    );
   }, [
     profile?.crm,
     profile?.crm_state,
     profile?.specialty,
     profile?.has_signature,
+    profile?.has_stamp,
+    profile?.authorize_signature_use,
+    profile?.authorize_pcmso_signature,
+    profile?.authorize_exam_request_signature,
   ]);
   const cards = [
     ["PCMSO cadastrados", data?.pcmsoTotal || 0],
@@ -959,7 +1032,7 @@ function Dashboard({
         title="Identificação do médico responsável"
         subtitle="CRM, UF e especialidade são exigidos para criar e assinar versões do PCMSO."
       >
-        <div className="grid gap-3 md:grid-cols-5">
+        <div className="grid gap-3 md:grid-cols-3">
           <Field label="CRM">
             <Input
               value={crm}
@@ -1008,7 +1081,78 @@ function Dashboard({
                   : "Nenhuma assinatura cadastrada"}
             </span>
           </Field>
-          <div className="flex items-end">
+          <Field label="Carimbo do médico">
+            <Input
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              onChange={event => {
+                const file = event.target.files?.[0];
+                if (!file) return;
+                if (file.size > 8_000_000) {
+                  toast.error("O carimbo deve ter no máximo 8 MB.");
+                  return;
+                }
+                const reader = new FileReader();
+                reader.onload = () => {
+                  setStampBase64(String(reader.result || ""));
+                  setStampFileName(file.name);
+                };
+                reader.readAsDataURL(file);
+              }}
+            />
+            <span className="mt-1 block text-[11px] text-slate-500">
+              {stampBase64
+                ? "Novo carimbo pronto para salvar"
+                : profile?.has_stamp
+                  ? "Carimbo cadastrado"
+                  : "Nenhum carimbo cadastrado"}
+            </span>
+          </Field>
+          <div className="md:col-span-3 border bg-slate-50 p-3 space-y-2">
+            <label className="flex items-start gap-2 text-sm font-medium">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={authorizeSignatureUse}
+                onChange={event => {
+                  setAuthorizeSignatureUse(event.target.checked);
+                  if (!event.target.checked) {
+                    setAuthorizePcmsoSignature(false);
+                    setAuthorizeExamRequestSignature(false);
+                  }
+                }}
+              />
+              Autorizar utilização da minha assinatura nos documentos gerados
+              pela plataforma.
+            </label>
+            <div className="grid gap-2 pl-6 sm:grid-cols-2">
+              <label className="flex gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={authorizePcmsoSignature}
+                  disabled={!authorizeSignatureUse}
+                  onChange={e => setAuthorizePcmsoSignature(e.target.checked)}
+                />
+                PCMSO
+              </label>
+              <label className="flex gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={authorizeExamRequestSignature}
+                  disabled={!authorizeSignatureUse}
+                  onChange={e =>
+                    setAuthorizeExamRequestSignature(e.target.checked)
+                  }
+                />
+                Requisições de exames
+              </label>
+            </div>
+            <p className="text-xs text-slate-500">
+              A autorização fica registrada com data, usuário e escopo. Alterá-la
+              afeta apenas novas emissões.
+            </p>
+          </div>
+          <div className="flex items-end md:col-span-3 justify-end">
             <Button
               disabled={!crm || crmState.length !== 2 || saving}
               onClick={() =>
@@ -1018,6 +1162,11 @@ function Dashboard({
                   specialty,
                   signatureBase64: signatureBase64 || undefined,
                   signatureFileName: signatureFileName || undefined,
+                  stampBase64: stampBase64 || undefined,
+                  stampFileName: stampFileName || undefined,
+                  authorizeSignatureUse,
+                  authorizePcmsoSignature,
+                  authorizeExamRequestSignature,
                 })
               }
             >
@@ -1924,6 +2073,8 @@ function ProgramDialog({
   const [intro, setIntro] = useState("");
   const [objective, setObjective] = useState("");
   const [methodology, setMethodology] = useState("");
+  const [conclusion, setConclusion] = useState("");
+  const [useStandardTemplate, setUseStandardTemplate] = useState(true);
   const [headerText, setHeaderText] = useState("");
   const [footerText, setFooterText] = useState("");
   const [chapters, setChapters] = useState<
@@ -1944,12 +2095,20 @@ function ProgramDialog({
     setMethodology(initial?.methodology || "");
     setHeaderText(initial?.header_text || "");
     setFooterText(initial?.footer_text || "");
+    const conclusionChapter = parsed.find((chapter: any) =>
+      /^conclus[aã]o$/i.test(String(chapter?.title || "").trim())
+    );
+    setConclusion(
+      initial?.conclusion || conclusionChapter?.content || defaults?.conclusion || ""
+    );
+    setUseStandardTemplate(
+      initial ? Boolean(initial.template_driven) : Boolean(defaults?.introduction)
+    );
     setChapters(
-      initial
-        ? parsed
-        : defaults?.conclusion
-          ? [{ title: "Conclusão", content: defaults.conclusion }]
-          : []
+      parsed.filter(
+        (chapter: any) =>
+          !/^conclus[aã]o$/i.test(String(chapter?.title || "").trim())
+      )
     );
   }, [initial, open, defaults]);
   const updateChapter = (
@@ -2032,6 +2191,21 @@ function ProgramDialog({
               placeholder="Digite a introdução do PCMSO..."
             />
           </Field>
+          <label className="flex items-start gap-2 border bg-sky-50 p-3 text-sm">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={useStandardTemplate}
+              onChange={e => setUseStandardTemplate(e.target.checked)}
+            />
+            <span>
+              <b>Usar o texto padrão como corpo técnico integral.</b>
+              <span className="block text-xs text-slate-600">
+                Evita misturar o modelo global com os capítulos antigos. O PDF
+                seguirá: texto padrão, detalhamento dos GSEs e conclusão.
+              </span>
+            </span>
+          </label>
           <Field label="Objetivo">
             <RichTextEditor
               value={objective}
@@ -2098,6 +2272,14 @@ function ProgramDialog({
               )}
             </div>
           </div>
+          <Field label="Conclusão">
+            <RichTextEditor
+              value={conclusion}
+              onChange={setConclusion}
+              minHeight={180}
+              placeholder="Digite a conclusão do PCMSO..."
+            />
+          </Field>
           <div className="grid gap-3 md:grid-cols-2">
             <Field label="Cabeçalho">
               <Input
@@ -2125,6 +2307,8 @@ function ProgramDialog({
                 introduction: intro,
                 objective,
                 methodology,
+                conclusion,
+                useStandardTemplate,
                 chapters,
                 headerText,
                 footerText,
@@ -2146,23 +2330,56 @@ function ProgramDialog({
 function ExamDialog({
   open,
   close,
+  initial,
   save,
   busy,
 }: {
   open: boolean;
   close: () => void;
+  initial?: any;
   save: (p: any) => void;
   busy: boolean;
 }) {
+  const emptyRule = {
+    appointmentType: "periodico",
+    periodicity: "anual",
+    intervalMonths: null as number | null,
+    notes: "",
+  };
   const [name, setName] = useState("");
   const [type, setType] = useState("complementar");
-  const [periodicity, setPeriodicity] = useState("");
   const [description, setDescription] = useState("");
+  const [rules, setRules] = useState<any[]>([emptyRule]);
+  useEffect(() => {
+    let savedRules: any[] = [];
+    try {
+      savedRules = JSON.parse(initial?.periodicity_rules_json || "[]");
+    } catch {}
+    setName(initial?.name || "");
+    setType(initial?.exam_type || "complementar");
+    setDescription(initial?.description || "");
+    setRules(savedRules.length ? savedRules : [{ ...emptyRule }]);
+  }, [initial, open]);
+  const appointmentLabels: Record<string, string> = {
+    admissional: "Admissional",
+    periodico: "Periódico",
+    demissional: "Demissional",
+    retorno_trabalho: "Retorno ao trabalho",
+    mudanca_risco_funcao: "Mudança de risco/função",
+    outro: "Outro",
+  };
+  const periodicityLabels: Record<string, string> = {
+    no_atendimento: "No atendimento",
+    "6_meses": "6 meses",
+    anual: "Anual",
+    bienal: "Bienal",
+    personalizada: "Personalizada",
+  };
   return (
     <Dialog open={open} onOpenChange={v => !v && close()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Novo exame ou monitoramento</DialogTitle>
+          <DialogTitle>{initial ? "Editar exame" : "Novo exame"}</DialogTitle>
         </DialogHeader>
         <div className="grid gap-3">
           <Field label="Nome">
@@ -2178,12 +2395,90 @@ function ExamDialog({
               <option value="complementar">Complementar</option>
             </select>
           </Field>
-          <Field label="Periodicidade padrão">
-            <Input
-              value={periodicity}
-              onChange={e => setPeriodicity(e.target.value)}
-            />
-          </Field>
+          <div className="border p-3">
+            <div className="mb-2 flex items-center justify-between">
+              <b className="text-sm">Regras por atendimento</b>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setRules(rows => [...rows, { ...emptyRule }])}
+              >
+                <Plus size={13} className="mr-1" /> Regra
+              </Button>
+            </div>
+            <div className="space-y-2">
+              {rules.map((rule, index) => (
+                <div className="grid gap-2 border bg-slate-50 p-2 sm:grid-cols-[1fr_1fr_110px_auto]" key={index}>
+                  <select
+                    className="border bg-white p-2 text-sm"
+                    value={rule.appointmentType}
+                    onChange={e =>
+                      setRules(rows =>
+                        rows.map((item, i) =>
+                          i === index
+                            ? { ...item, appointmentType: e.target.value }
+                            : item
+                        )
+                      )
+                    }
+                  >
+                    {Object.entries(appointmentLabels).map(([value, label]) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
+                  </select>
+                  <select
+                    className="border bg-white p-2 text-sm"
+                    value={rule.periodicity}
+                    onChange={e =>
+                      setRules(rows =>
+                        rows.map((item, i) =>
+                          i === index
+                            ? { ...item, periodicity: e.target.value }
+                            : item
+                        )
+                      )
+                    }
+                  >
+                    {Object.entries(periodicityLabels).map(([value, label]) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
+                  </select>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={120}
+                    disabled={rule.periodicity !== "personalizada"}
+                    value={rule.intervalMonths || ""}
+                    placeholder="meses"
+                    onChange={e =>
+                      setRules(rows =>
+                        rows.map((item, i) =>
+                          i === index
+                            ? {
+                                ...item,
+                                intervalMonths: e.target.value
+                                  ? Number(e.target.value)
+                                  : null,
+                              }
+                            : item
+                        )
+                      )
+                    }
+                  />
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    disabled={rules.length === 1}
+                    onClick={() =>
+                      setRules(rows => rows.filter((_, i) => i !== index))
+                    }
+                  >
+                    ×
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
           <Field label="Descrição">
             <Textarea
               value={description}
@@ -2194,9 +2489,10 @@ function ExamDialog({
             disabled={!name || busy}
             onClick={() =>
               save({
+                id: initial?.id,
                 name,
                 examType: type,
-                defaultPeriodicity: periodicity || undefined,
+                periodicityRules: rules,
                 description: description || undefined,
                 isActive: true,
               })

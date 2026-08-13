@@ -17,16 +17,26 @@ const DEFAULT_FEATURES = [
   ["Gestão e Comunicação", "campaigns", "Campanhas por E-mail", "Comunicação segmentada com colaboradores"],
   ["Gestão e Comunicação", "whatsapp", "WhatsApp", "Comunicação oficial quando a integração estiver disponível"],
   ["Gestão e Comunicação", "profiles", "Áreas por Perfil", "Experiências próprias para RH, SESMT, liderança e colaboradores"],
+  ["Gestão e Comunicação", "corporate_minutes", "Atas Corporativas", "Reuniões, decisões, assinaturas, evidências e planos de ação"],
+  ["Gestão e Comunicação", "ethics_channel", "Canal de Ética e Denúncias", "Relatos protegidos, acompanhamento e rastreabilidade"],
   ["Conformidade e Saúde", "pgr", "Gestão do PGR", "Inventário, plano de ação, evidências e documentos"],
+  ["Conformidade e Saúde", "pcmso", "PCMSO Integrado", "Programa médico conectado ao PGR, GSEs e exames"],
+  ["Conformidade e Saúde", "medical_center", "Central Médica", "Prontuário ocupacional, atendimentos e histórico clínico restrito"],
+  ["Conformidade e Saúde", "exam_requests", "Exames, Requisições e ASO", "Planejamento por GSE, requisições e acompanhamento ocupacional"],
+  ["Conformidade e Saúde", "cat", "CAT Digital", "Comunicação de acidente com conferência e preparação eSocial"],
+  ["Conformidade e Saúde", "ppp", "PPP e Histórico Laboral", "Linha do tempo ocupacional integrada ao PGR, LTCAT e exames"],
+  ["Conformidade e Saúde", "vaccination", "Vacinação Corporativa", "Campanhas, doses, comprovantes e alertas"],
   ["Conformidade e Saúde", "compliance", "Central de Conformidade", "Indicadores e pendências rastreáveis"],
   ["Conformidade e Saúde", "epi_epc", "Gestão de EPI/EPC", "Controle digital de equipamentos, entregas e recibos"],
   ["Conformidade e Saúde", "occupational_leave", "Atestados e Afastamentos", "Fluxo de validação, absenteísmo e retorno"],
   ["Conformidade e Saúde", "first_aid", "Primeiros Socorros", "Kits, aprendizagem e evidências"],
   ["Conformidade e Saúde", "cipa", "Gestão da CIPA", "Eleições, atas, reuniões e capacitação"],
   ["Conformidade e Saúde", "sipat", "SIPAT Digital", "Programação, conteúdo e participação"],
+  ["Conformidade e Saúde", "dds", "DDS Online", "Diálogo diário de segurança com presença, aceite e protocolo"],
   ["Conteúdo e Aprendizagem", "courses", "Biblioteca de Cursos", "Treinamentos, trilhas e conteúdos digitais"],
   ["Conteúdo e Aprendizagem", "certificates", "Certificados", "Emissão automática e validação"],
   ["Conteúdo e Aprendizagem", "preventive", "Saúde Preventiva", "Campanhas e biblioteca preventiva"],
+  ["Conteúdo e Aprendizagem", "ai_studio", "Estúdio de Conteúdo com IA", "Cursos e pesquisas estruturados com apoio de inteligência artificial"],
   ["Tecnologia e Operações", "ai", "Inteligência Artificial", "Assistentes para conteúdo, análises e documentos"],
   ["Tecnologia e Operações", "ocr", "OCR", "Leitura assistida de questionários e documentos"],
   ["Tecnologia e Operações", "survey_editor", "Editor Livre", "Criação de questionários personalizados"],
@@ -149,6 +159,12 @@ async function ensureCommercialTables() {
     "objective_text TEXT NULL",
     "selected_features_json JSON NULL",
     "services_json JSON NULL",
+    "presented_plan_ids_json JSON NULL",
+    "plan_overrides_json JSON NULL",
+    "recommended_plan_id INT NULL",
+    "selected_plan_id INT NULL",
+    "implementation_days INT NULL",
+    "payment_terms_text TEXT NULL",
     "conditions_text TEXT NULL",
     "next_steps_text TEXT NULL",
     "discount_value DECIMAL(12,2) NOT NULL DEFAULT 0",
@@ -174,14 +190,12 @@ async function getScope(user: any): Promise<CommercialScope> {
 async function seedScope(scope: CommercialScope) {
   await ensureCommercialTables();
   const db = await getDb(); if (!db) return;
-  const existing: any = await db.execute(drzSql`SELECT COUNT(*) AS c FROM commercial_feature_catalog WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId}`);
-  if (Number(rowsOf(existing)[0]?.c || 0) === 0) {
-    for (let i = 0; i < DEFAULT_FEATURES.length; i++) {
-      const [category, code, name, description] = DEFAULT_FEATURES[i];
-      await db.execute(drzSql`INSERT INTO commercial_feature_catalog
-        (owner_type, owner_id, category, code, name, description, sort_order)
-        VALUES (${scope.ownerType}, ${scope.ownerId}, ${category}, ${code}, ${name}, ${description}, ${i + 1})`);
-    }
+  for (let i = 0; i < DEFAULT_FEATURES.length; i++) {
+    const [category, code, name, description] = DEFAULT_FEATURES[i];
+    await db.execute(drzSql`INSERT INTO commercial_feature_catalog
+      (owner_type, owner_id, category, code, name, description, sort_order)
+      VALUES (${scope.ownerType}, ${scope.ownerId}, ${category}, ${code}, ${name}, ${description}, ${i + 1})
+      ON DUPLICATE KEY UPDATE category=VALUES(category),name=VALUES(name),description=VALUES(description),sort_order=VALUES(sort_order)`);
   }
   const settings: any = await db.execute(drzSql`SELECT owner_id FROM commercial_brand_settings WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId}`);
   if (!rowsOf(settings).length) {
@@ -234,6 +248,11 @@ async function seedScope(scope: CommercialScope) {
       for (const featureId of featureIds.slice(0, 15)) await db.execute(drzSql`INSERT IGNORE INTO commercial_plan_features (plan_id,feature_id) VALUES (${Number(complete.id)},${featureId})`);
     }
   }
+  const fullPlansResult: any = await db.execute(drzSql`SELECT id FROM commercial_plan_catalog WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} AND name IN ('Plano Completo','Enterprise Premium')`);
+  const activeFeaturesResult: any = await db.execute(drzSql`SELECT id FROM commercial_feature_catalog WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} AND is_active=1`);
+  for (const plan of rowsOf(fullPlansResult))
+    for (const feature of rowsOf(activeFeaturesResult))
+      await db.execute(drzSql`INSERT IGNORE INTO commercial_plan_features (plan_id,feature_id) VALUES (${Number(plan.id)},${Number(feature.id)})`);
 }
 
 const commercialProcedure = protectedProcedure.use(async ({ ctx, next }) => {
@@ -254,10 +273,13 @@ const proposalInput = z.object({
   id: z.number().int().positive().optional(), proposalTitle: z.string().min(2).max(255), companyName: z.string().min(2).max(255), tradeName: z.string().max(255).optional(),
   cnpj: z.string().max(30).optional(), contactName: z.string().max(180).optional(), contactRole: z.string().max(120).optional(), contactEmail: z.string().max(180).optional(),
   contactPhone: z.string().max(60).optional(), employees: z.number().int().min(0).default(0), planId: z.number().int().positive().nullable().optional(),
+  presentedPlans: z.array(z.object({ planId: z.number().int().positive(), monthlyValue: z.number().min(0), setupValue: z.number().min(0), employees: z.number().int().min(0), featureIds: z.array(z.number().int().positive()).default([]), optionalFeatureIds: z.array(z.number().int().positive()).default([]), limitsText: z.string().max(5000).optional() })).min(1).max(12),
+  recommendedPlanId: z.number().int().positive().nullable().optional(), selectedPlanId: z.number().int().positive().nullable().optional(),
   selectedFeatureIds: z.array(z.number().int().positive()).default([]), presentationText: z.string().max(20000).optional(), objectiveText: z.string().max(20000).optional(),
   setupValue: z.number().min(0).default(0), monthlyValue: z.number().min(0).default(0), discountValue: z.number().min(0).default(0), discountPct: z.number().min(0).max(100).default(0),
   services: z.array(z.object({ name: z.string().min(1), value: z.number().min(0).default(0), description: z.string().optional() })).default([]),
   conditionsText: z.string().max(20000).optional(), nextStepsText: z.string().max(20000).optional(), validityDays: z.number().int().min(1).max(365).default(15),
+  implementationDays: z.number().int().min(0).max(730).nullable().optional(), paymentTermsText: z.string().max(10000).optional(),
   status: z.enum(["lead", "negociacao", "proposta_enviada", "aguardando_retorno", "aprovada", "reprovada", "convertida"]).default("lead"), notes: z.string().max(20000).optional(),
 });
 
@@ -307,6 +329,8 @@ async function createProposalPdf(scope: CommercialScope, proposalId: number) {
   const grouped = new Map<string, any[]>();
   for (const f of features) grouped.set(String(f.category), [...(grouped.get(String(f.category)) || []), f]);
   const services = (() => { try { return JSON.parse(p.services_json || "[]"); } catch { return []; } })();
+  const presentedIds: number[] = (() => { try { return JSON.parse(p.presented_plan_ids_json || "[]").map(Number); } catch { return []; } })();
+  const overrides: any[] = (() => { try { return JSON.parse(p.plan_overrides_json || "[]"); } catch { return []; } })();
   const primary = /^#[0-9a-f]{6}$/i.test(brand.primary_color || "") ? brand.primary_color : "#0E2C46";
   const secondary = /^#[0-9a-f]{6}$/i.test(brand.secondary_color || "") ? brand.secondary_color : "#0096A6";
   const logo = await logoDataUri(brand.logo_url);
@@ -317,19 +341,24 @@ async function createProposalPdf(scope: CommercialScope, proposalId: number) {
   const total = Math.max(0, setup + monthly + servicesTotal - discount);
   const categoryHtml = [...grouped.entries()].map(([category, items]) => `<section><h2>${esc(category)}</h2><div class="feature-grid">${items.map((f) => `<div class="feature"><b>${esc(f.name)}</b><span>${esc(f.description || "Disponível no ecossistema da plataforma")}</span></div>`).join("")}</div></section>`).join("");
   const allPlansResult: any = await db.execute(drzSql`SELECT pl.*, GROUP_CONCAT(pf.feature_id) AS feature_ids FROM commercial_plan_catalog pl LEFT JOIN commercial_plan_features pf ON pf.plan_id=pl.id WHERE pl.owner_type=${scope.ownerType} AND pl.owner_id=${scope.ownerId} AND pl.is_active=1 GROUP BY pl.id ORDER BY pl.sort_order, pl.id`);
-  const plans = rowsOf(allPlansResult);
+  const allPlans = rowsOf(allPlansResult);
+  const plans = (presentedIds.length ? allPlans.filter((plan: any) => presentedIds.includes(Number(plan.id))) : allPlans).map((plan: any) => {
+    const override = overrides.find((item: any) => Number(item.planId) === Number(plan.id)) || {};
+    return { ...plan, proposalMonthly: Number(override.monthlyValue ?? plan.fixed_monthly_price ?? 0), proposalSetup: Number(override.setupValue ?? plan.setup_price ?? 0), proposalEmployees: Number(override.employees ?? p.qtd_colaboradores ?? 0), proposalFeatureIds: Array.isArray(override.featureIds) ? override.featureIds.map(Number) : String(plan.feature_ids || "").split(",").filter(Boolean).map(Number), proposalOptionalFeatureIds: Array.isArray(override.optionalFeatureIds) ? override.optionalFeatureIds.map(Number) : [], proposalLimits: override.limitsText || "" };
+  });
   const matrixFeatures = features;
-  const matrix = plans.length ? `<section><h2>Matriz de planos</h2><p class="small">A matriz comercial cadastrada é a fonte única de verdade para o CRM e para este documento.</p><table><thead><tr><th>Funcionalidade</th>${plans.map((x) => `<th>${esc(x.name)}</th>`).join("")}</tr></thead><tbody>${matrixFeatures.map((f) => `<tr><td><span class="small">${esc(f.category)}</span><br>${esc(f.name)}</td>${plans.map((pl) => `<td class="center">${String(pl.feature_ids || "").split(",").includes(String(f.id)) ? "Incluído" : "-"}</td>`).join("")}</tr>`).join("")}</tbody></table></section>` : "";
+  const matrix = plans.length ? `<section><h2>Matriz comparativa dos planos</h2><p class="small">✓ Incluído &nbsp;&nbsp; — Não incluído &nbsp;&nbsp; * Adicional/opcional. A recomendação comercial não representa contratação.</p><table><thead><tr><th>Funcionalidade</th>${plans.map((x: any) => `<th>${esc(x.name)}${Number(p.recommended_plan_id) === Number(x.id) ? `<br><span class="recommended">★ Recomendado</span>` : ""}${Number(p.selected_plan_id) === Number(x.id) ? `<br><span class="contracted">Selecionado</span>` : ""}</th>`).join("")}</tr></thead><tbody>${matrixFeatures.map((f) => `<tr><td><span class="small">${esc(f.category)}</span><br>${esc(f.name)}</td>${plans.map((pl: any) => `<td class="center">${pl.proposalFeatureIds.includes(Number(f.id)) ? "✓ Incluído" : pl.proposalOptionalFeatureIds.includes(Number(f.id)) ? "* Adicional" : "— Não incluído"}</td>`).join("")}</tr>`).join("")}</tbody></table></section>` : "";
+  const investmentOptions = plans.map((plan: any) => { const employees = Number(plan.proposalEmployees || p.qtd_colaboradores || 0); const perEmployee = employees ? plan.proposalMonthly / employees : 0; return `<div class="plan-option ${Number(p.recommended_plan_id) === Number(plan.id) ? "is-recommended" : ""}"><div class="plan-label">${Number(p.selected_plan_id) === Number(plan.id) ? "PLANO SELECIONADO" : Number(p.recommended_plan_id) === Number(plan.id) ? "PLANO RECOMENDADO" : "PLANO DISPONÍVEL"}</div><h3>${esc(plan.name)}</h3><p>${esc(plan.description || "")}</p><div class="price">${money(plan.proposalMonthly)}<span> / mês</span></div><p><b>Implantação:</b> ${money(plan.proposalSetup)}<br><b>Colaboradores considerados:</b> ${employees.toLocaleString("pt-BR")}${plan.employee_limit ? `<br><b>Limite do plano:</b> ${Number(plan.employee_limit).toLocaleString("pt-BR")} colaboradores` : ""}${plan.cnpj_limit ? `<br><b>Limite:</b> ${Number(plan.cnpj_limit).toLocaleString("pt-BR")} CNPJ(s)` : ""}${plan.proposalLimits ? `<br>${esc(plan.proposalLimits)}` : ""}</p>${employees ? `<p class="small">${money(perEmployee)} por colaborador/mês · ${money(perEmployee / 30)} por colaborador/dia</p>` : ""}</div>`; }).join("");
   const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
-    @page{size:A4;margin:18mm 16mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#243447;margin:0;font-size:10.5pt;line-height:1.5}.cover{height:250mm;display:flex;flex-direction:column;justify-content:space-between;page-break-after:always;background:${primary};color:#fff;margin:-18mm -16mm;padding:28mm 22mm}.cover img{max-width:210px;max-height:90px;object-fit:contain;object-position:left center}.eyebrow{font-size:10pt;text-transform:uppercase;letter-spacing:1.5px;color:${secondary};font-weight:700}.cover h1{font-size:36pt;line-height:1.08;margin:24mm 0 8mm}.cover .client{font-size:19pt}.cover .meta{border-top:1px solid rgba(255,255,255,.35);padding-top:8mm}h2{font-size:18pt;color:${primary};border-bottom:3px solid ${secondary};padding-bottom:3mm;margin:10mm 0 5mm}h3{color:${primary};font-size:13pt}.lead{font-size:13pt;color:#475569}.feature-grid{display:grid;grid-template-columns:1fr 1fr;gap:4mm}.feature{border:1px solid #dbe5ea;padding:4mm;border-radius:6px;min-height:24mm}.feature b{display:block;color:${primary};font-size:11pt}.feature span{display:block;color:#64748b;font-size:9pt;margin-top:2mm}.investment{background:#f3f7f9;border-left:5px solid ${secondary};padding:6mm;margin:6mm 0}.price{font-size:24pt;color:${primary};font-weight:800}.small{font-size:8.5pt;color:#64748b}table{width:100%;border-collapse:collapse;font-size:8.5pt}th{background:${primary};color:white;text-align:left;padding:2.5mm}td{border-bottom:1px solid #dbe5ea;padding:2.5mm}.center{text-align:center}.footer{margin-top:14mm;border-top:1px solid #dbe5ea;padding-top:5mm;color:#64748b}.page-break{page-break-before:always}section{break-inside:avoid}
+    @page{size:A4;margin:18mm 16mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#243447;margin:0;font-size:10.5pt;line-height:1.5}.cover{height:250mm;display:flex;flex-direction:column;justify-content:space-between;page-break-after:always;background:${primary};color:#fff;margin:-18mm -16mm;padding:28mm 22mm}.cover img{max-width:210px;max-height:90px;object-fit:contain;object-position:left center}.eyebrow{font-size:10pt;text-transform:uppercase;letter-spacing:1.5px;color:${secondary};font-weight:700}.cover h1{font-size:36pt;line-height:1.08;margin:24mm 0 8mm}.cover .client{font-size:19pt}.cover .meta{border-top:1px solid rgba(255,255,255,.35);padding-top:8mm}h2{font-size:18pt;color:${primary};border-bottom:3px solid ${secondary};padding-bottom:3mm;margin:10mm 0 5mm;break-after:avoid}h3{color:${primary};font-size:13pt}.lead{font-size:13pt;color:#475569}.feature-grid{display:grid;grid-template-columns:1fr 1fr;gap:4mm}.feature{border:1px solid #dbe5ea;padding:4mm;border-radius:6px;min-height:24mm;break-inside:avoid}.feature b{display:block;color:${primary};font-size:11pt}.feature span{display:block;color:#64748b;font-size:9pt;margin-top:2mm}.investment{background:#f3f7f9;border-left:5px solid ${secondary};padding:6mm;margin:6mm 0}.price{font-size:24pt;color:${primary};font-weight:800}.price span{font-size:11pt}.small{font-size:8.5pt;color:#64748b}table{width:100%;border-collapse:collapse;font-size:8.5pt}thead{display:table-header-group}tr{break-inside:avoid}th{background:${primary};color:white;text-align:left;padding:2.5mm}td{border-bottom:1px solid #dbe5ea;padding:2.5mm}.center{text-align:center}.footer{margin-top:14mm;border-top:1px solid #dbe5ea;padding-top:5mm;color:#64748b}.page-break{break-before:page;height:0}.recommended{color:#ffe082;font-size:8pt}.contracted{color:#b7f7cf;font-size:8pt}.plan-options{display:grid;grid-template-columns:repeat(3,1fr);gap:4mm}.plan-option{border:1px solid #dbe5ea;padding:5mm;break-inside:avoid}.plan-option.is-recommended{border:2px solid ${secondary}}.plan-label{font-size:7.5pt;font-weight:700;color:${secondary}}
   </style></head><body>
   <div class="cover"><div>${logo ? `<img src="${logo}">` : `<div style="font-size:22pt;font-weight:800">${esc(brand.brand_name)}</div>`}</div><div><div class="eyebrow">Proposta comercial</div><h1>${esc(p.proposal_title || "Solução integrada em Saúde e Segurança do Trabalho")}</h1><div class="client">Preparada para ${esc(p.razao_social)}</div></div><div class="meta">Validade: ${Number(p.validade_dias || 15)} dias<br>Emissão: ${new Date().toLocaleDateString("pt-BR")}</div></div>
   <section><div class="eyebrow">Apresentação</div><h2>${esc(brand.brand_name || "Nossa plataforma")}</h2><p class="lead">${esc(p.presentation_text || brand.presentation_text || "")}</p><h3>Objetivo da proposta</h3><p>${esc(p.objective_text || brand.objective_text || "")}</p><p><b>Cliente:</b> ${esc(p.razao_social)}${p.cnpj ? ` | <b>CNPJ:</b> ${esc(p.cnpj)}` : ""}<br><b>Responsável:</b> ${esc(p.responsavel || "A definir")} | <b>Colaboradores:</b> ${Number(p.qtd_colaboradores || 0).toLocaleString("pt-BR")}</p></section>
   <section><div class="eyebrow">Ecossistema completo</div><h2>Todas as funcionalidades disponíveis</h2><p>Conheça o universo completo da plataforma. A matriz seguinte demonstra com transparência o que está incluído em cada plano comercial.</p></section>
   ${categoryHtml || `<section><h2>Funcionalidades disponíveis</h2><p>O catálogo comercial ainda não possui funcionalidades ativas.</p></section>`}
-  <div class="page-break"></div>${matrix}
-  <section><h2>Investimento personalizado</h2><div class="investment"><div class="small">PLANO SELECIONADO</div><h3>${esc(p.plan_name || "Plano personalizado")}</h3><p>${esc(p.plan_description || "")}</p><div class="price">${money(monthly)}<span style="font-size:11pt"> / mês</span></div>${setup ? `<p><b>Implantação:</b> ${money(setup)}</p>` : ""}${discount ? `<p><b>Desconto comercial:</b> ${money(discount)}</p>` : ""}${services.map((s: any) => `<p><b>${esc(s.name)}:</b> ${money(s.value)} ${esc(s.description || "")}</p>`).join("")}<p><b>Investimento inicial estimado:</b> ${money(total)}</p></div><p>${Number(p.qtd_colaboradores || 0) > 0 ? `O investimento recorrente corresponde a aproximadamente <b>${money(monthly / Number(p.qtd_colaboradores))} por colaborador/mês</b> e ${money(monthly / Number(p.qtd_colaboradores) / 30)} por colaborador/dia.` : ""}</p></section>
-  <section><h2>Condições comerciais</h2><p>${esc(p.conditions_text || brand.commercial_terms || "")}</p><h2>Próximos passos</h2><p>${esc(p.next_steps_text || brand.next_steps_text || "")}</p></section>
+  ${matrix}
+  <section><h2>Investimento personalizado</h2><div class="plan-options">${investmentOptions}</div>${services.length ? `<div class="investment"><h3>Serviços e custos adicionais</h3>${services.map((s: any) => `<p><b>${esc(s.name)}:</b> ${money(s.value)} ${esc(s.description || "")}</p>`).join("")}</div>` : ""}${discount ? `<p><b>Desconto comercial condicionado:</b> ${money(discount)}</p>` : ""}</section>
+  <section><h2>Condições comerciais</h2><p>${esc(p.conditions_text || brand.commercial_terms || "")}</p>${p.payment_terms_text ? `<h3>Condições de pagamento</h3><p>${esc(p.payment_terms_text)}</p>` : ""}${p.implementation_days ? `<p><b>Prazo estimado de implantação:</b> ${Number(p.implementation_days)} dias.</p>` : ""}<h2>Próximos passos</h2><p>${esc(p.next_steps_text || brand.next_steps_text || "")}</p></section>
   <div class="footer"><b>${esc(brand.contact_name || brand.brand_name || "Contato comercial")}</b><br>${esc(brand.contact_email || "")} ${brand.contact_phone ? ` | ${esc(brand.contact_phone)}` : ""}<br>${esc(brand.website || "")}</div>
   </body></html>`;
   const puppeteer = (await import("puppeteer")).default;
@@ -376,10 +405,25 @@ export const commercialRouter = router({
   listProposals: commercialProcedure.query(async ({ ctx }) => { const s = (ctx as any).commercialScope as CommercialScope; const db = await getDb(); if (!db) return []; const r: any = await db.execute(drzSql.raw(`SELECT p.*, pl.name AS plan_name FROM commercial_proposals p LEFT JOIN commercial_plan_catalog pl ON pl.id=p.commercial_plan_id WHERE ${scopeSql(s, "p")} ORDER BY p.updated_at DESC, p.id DESC LIMIT 500`)); return rowsOf(r); }),
   upsertProposal: commercialProcedure.input(proposalInput).mutation(async ({ ctx, input }) => {
     const s = (ctx as any).commercialScope as CommercialScope; const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-    if (input.planId) { const owned: any = await db.execute(drzSql`SELECT id FROM commercial_plan_catalog WHERE id=${input.planId} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId}`); if (!rowsOf(owned).length) throw new TRPCError({ code: "FORBIDDEN", message: "Plano fora do ambiente comercial." }); }
-    const annual = input.monthlyValue * 12; const selected = JSON.stringify(input.selectedFeatureIds); const services = JSON.stringify(input.services); let id = input.id || 0;
-    if (id) { const owned: any = await db.execute(drzSql`SELECT id FROM commercial_proposals WHERE id=${id} AND commercial_owner_type=${s.ownerType} AND commercial_owner_id=${s.ownerId}`); if (!rowsOf(owned).length) throw new TRPCError({ code: "FORBIDDEN" }); await db.execute(drzSql`UPDATE commercial_proposals SET proposal_title=${input.proposalTitle}, razao_social=${input.companyName}, nome_fantasia=${input.tradeName || input.companyName}, cnpj=${input.cnpj || null}, responsavel=${input.contactName || null}, cargo=${input.contactRole || null}, email=${input.contactEmail || null}, telefone=${input.contactPhone || null}, qtd_colaboradores=${input.employees}, commercial_plan_id=${input.planId ?? null}, selected_features_json=${selected}, presentation_text=${input.presentationText || null}, objective_text=${input.objectiveText || null}, setup_value=${input.setupValue}, valor_mensal=${input.monthlyValue}, valor_anual=${annual}, valor_total=${annual + input.setupValue - input.discountValue}, discount_value=${input.discountValue}, desconto_pct=${input.discountPct}, services_json=${services}, conditions_text=${input.conditionsText || null}, next_steps_text=${input.nextStepsText || null}, validade_dias=${input.validityDays}, status=${input.status}, observacoes=${input.notes || null} WHERE id=${id}`); }
-    else { const r: any = await db.execute(drzSql`INSERT INTO commercial_proposals (commercial_owner_type, commercial_owner_id, white_label_partner_id, proposal_title, razao_social, nome_fantasia, cnpj, responsavel, cargo, email, telefone, qtd_colaboradores, commercial_plan_id, selected_features_json, presentation_text, objective_text, setup_value, valor_mensal, valor_anual, valor_total, discount_value, desconto_pct, services_json, conditions_text, next_steps_text, validade_dias, status, observacoes, created_by_user_id) VALUES (${s.ownerType}, ${s.ownerId}, ${s.ownerType === "white_label" ? s.ownerId : null}, ${input.proposalTitle}, ${input.companyName}, ${input.tradeName || input.companyName}, ${input.cnpj || null}, ${input.contactName || null}, ${input.contactRole || null}, ${input.contactEmail || null}, ${input.contactPhone || null}, ${input.employees}, ${input.planId ?? null}, ${selected}, ${input.presentationText || null}, ${input.objectiveText || null}, ${input.setupValue}, ${input.monthlyValue}, ${annual}, ${annual + input.setupValue - input.discountValue}, ${input.discountValue}, ${input.discountPct}, ${services}, ${input.conditionsText || null}, ${input.nextStepsText || null}, ${input.validityDays}, ${input.status}, ${input.notes || null}, ${ctx.user.id})`); id = Number((Array.isArray(r) ? r[0] : r)?.insertId || 0); }
+    const presentedIds = [...new Set(input.presentedPlans.map(item => item.planId))];
+    const planIdsToValidate = [...new Set([...presentedIds, input.recommendedPlanId || 0, input.selectedPlanId || 0].filter(Boolean))];
+    if (planIdsToValidate.length) {
+      const owned: any = await db.execute(drzSql.raw(`SELECT id FROM commercial_plan_catalog WHERE id IN (${planIdsToValidate.join(",")}) AND owner_type='${s.ownerType}' AND owner_id=${s.ownerId}`));
+      if (rowsOf(owned).length !== planIdsToValidate.length) throw new TRPCError({ code: "FORBIDDEN", message: "Existe plano fora deste ambiente comercial." });
+    }
+    if (input.recommendedPlanId && !presentedIds.includes(input.recommendedPlanId)) throw new TRPCError({ code: "BAD_REQUEST", message: "O plano recomendado precisa estar entre os planos apresentados." });
+    if (input.selectedPlanId && !presentedIds.includes(input.selectedPlanId)) throw new TRPCError({ code: "BAD_REQUEST", message: "O plano selecionado precisa estar entre os planos apresentados." });
+    const selectedPlan = input.presentedPlans.find(item => item.planId === input.selectedPlanId);
+    const recurring = Number(selectedPlan?.monthlyValue || 0);
+    const selectedSetup = Number(selectedPlan?.setupValue || 0);
+    const annual = recurring * 12;
+    const selected = JSON.stringify(input.selectedFeatureIds);
+    const services = JSON.stringify(input.services);
+    const presented = JSON.stringify(presentedIds);
+    const overrides = JSON.stringify(input.presentedPlans);
+    let id = input.id || 0;
+    if (id) { const owned: any = await db.execute(drzSql`SELECT id FROM commercial_proposals WHERE id=${id} AND commercial_owner_type=${s.ownerType} AND commercial_owner_id=${s.ownerId}`); if (!rowsOf(owned).length) throw new TRPCError({ code: "FORBIDDEN" }); await db.execute(drzSql`UPDATE commercial_proposals SET proposal_title=${input.proposalTitle}, razao_social=${input.companyName}, nome_fantasia=${input.tradeName || input.companyName}, cnpj=${input.cnpj || null}, responsavel=${input.contactName || null}, cargo=${input.contactRole || null}, email=${input.contactEmail || null}, telefone=${input.contactPhone || null}, qtd_colaboradores=${input.employees}, commercial_plan_id=${input.selectedPlanId ?? null},selected_plan_id=${input.selectedPlanId ?? null},recommended_plan_id=${input.recommendedPlanId ?? null},presented_plan_ids_json=${presented},plan_overrides_json=${overrides}, selected_features_json=${selected}, presentation_text=${input.presentationText || null}, objective_text=${input.objectiveText || null}, setup_value=${selectedSetup}, valor_mensal=${recurring}, valor_anual=${annual}, valor_total=${annual + selectedSetup - input.discountValue}, discount_value=${input.discountValue}, desconto_pct=${input.discountPct}, services_json=${services}, conditions_text=${input.conditionsText || null},payment_terms_text=${input.paymentTermsText || null},implementation_days=${input.implementationDays ?? null}, next_steps_text=${input.nextStepsText || null}, validade_dias=${input.validityDays}, status=${input.status}, observacoes=${input.notes || null} WHERE id=${id}`); }
+    else { const r: any = await db.execute(drzSql`INSERT INTO commercial_proposals (commercial_owner_type, commercial_owner_id, white_label_partner_id, proposal_title, razao_social, nome_fantasia, cnpj, responsavel, cargo, email, telefone, qtd_colaboradores, commercial_plan_id,selected_plan_id,recommended_plan_id,presented_plan_ids_json,plan_overrides_json, selected_features_json, presentation_text, objective_text, setup_value, valor_mensal, valor_anual, valor_total, discount_value, desconto_pct, services_json, conditions_text,payment_terms_text,implementation_days, next_steps_text, validade_dias, status, observacoes, created_by_user_id) VALUES (${s.ownerType}, ${s.ownerId}, ${s.ownerType === "white_label" ? s.ownerId : null}, ${input.proposalTitle}, ${input.companyName}, ${input.tradeName || input.companyName}, ${input.cnpj || null}, ${input.contactName || null}, ${input.contactRole || null}, ${input.contactEmail || null}, ${input.contactPhone || null}, ${input.employees}, ${input.selectedPlanId ?? null},${input.selectedPlanId ?? null},${input.recommendedPlanId ?? null},${presented},${overrides}, ${selected}, ${input.presentationText || null}, ${input.objectiveText || null}, ${selectedSetup}, ${recurring}, ${annual}, ${annual + selectedSetup - input.discountValue}, ${input.discountValue}, ${input.discountPct}, ${services}, ${input.conditionsText || null},${input.paymentTermsText || null},${input.implementationDays ?? null}, ${input.nextStepsText || null}, ${input.validityDays}, ${input.status}, ${input.notes || null}, ${ctx.user.id})`); id = Number((Array.isArray(r) ? r[0] : r)?.insertId || 0); }
     return { ok: true, id };
   }),
   generatePdf: commercialProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => ({ url: await createProposalPdf((ctx as any).commercialScope, input.id) })),
@@ -392,7 +436,9 @@ export const commercialRouter = router({
     if(!sent.ok)throw new TRPCError({code:"INTERNAL_SERVER_ERROR",message:sent.error||"Falha no envio."}); await db.execute(drzSql`UPDATE commercial_proposals SET status='proposta_enviada', pdf_url=${pdfUrl} WHERE id=${input.id}`); return{ok:true,preview:sent.preview,url:pdfUrl};
   }),
   approveProposal: commercialProcedure.input(z.object({ id: z.number().int().positive(), createFinancialSchedule: z.boolean().default(true) })).mutation(async ({ ctx, input }) => {
-    const s = (ctx as any).commercialScope as CommercialScope; const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); const r: any = await db.execute(drzSql.raw(`SELECT p.*, pl.name AS plan_name FROM commercial_proposals p LEFT JOIN commercial_plan_catalog pl ON pl.id=p.commercial_plan_id WHERE p.id=${input.id} AND ${scopeSql(s, "p")} LIMIT 1`)); const p = rowsOf(r)[0]; if (!p) throw new TRPCError({ code: "NOT_FOUND" }); await db.execute(drzSql`UPDATE commercial_proposals SET status='aprovada' WHERE id=${input.id}`);
+    const s = (ctx as any).commercialScope as CommercialScope; const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); const r: any = await db.execute(drzSql.raw(`SELECT p.*, pl.name AS plan_name FROM commercial_proposals p LEFT JOIN commercial_plan_catalog pl ON pl.id=p.commercial_plan_id WHERE p.id=${input.id} AND ${scopeSql(s, "p")} LIMIT 1`)); const p = rowsOf(r)[0]; if (!p) throw new TRPCError({ code: "NOT_FOUND" });
+    if (!p.selected_plan_id || !p.commercial_plan_id) throw new TRPCError({ code: "BAD_REQUEST", message: "Defina explicitamente o plano contratado antes de aprovar a proposta." });
+    await db.execute(drzSql`UPDATE commercial_proposals SET status='aprovada' WHERE id=${input.id}`);
     if (input.createFinancialSchedule) { const ex: any = await db.execute(drzSql`SELECT id FROM commercial_contracts_v2 WHERE proposal_id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId}`); if (!rowsOf(ex).length) { const today = new Date().toISOString().slice(0,10); const c: any = await db.execute(drzSql`INSERT INTO commercial_contracts_v2 (owner_type, owner_id, proposal_id, company_name, cnpj, plan_name, setup_value, monthly_value, start_date) VALUES (${s.ownerType}, ${s.ownerId}, ${input.id}, ${p.razao_social}, ${p.cnpj || null}, ${p.plan_name || null}, ${Number(p.setup_value || 0)}, ${Number(p.valor_mensal || 0)}, ${today})`); const contractId = Number((Array.isArray(c) ? c[0] : c)?.insertId || 0); if (Number(p.setup_value || 0) > 0) await db.execute(drzSql`INSERT INTO commercial_receivables_v2 (owner_type, owner_id, contract_id, proposal_id, company_name, reference_month, kind, amount, due_date) VALUES (${s.ownerType}, ${s.ownerId}, ${contractId}, ${input.id}, ${p.razao_social}, ${today.slice(0,7)}, 'setup', ${Number(p.setup_value)}, ${today})`); for (let i=0;i<12;i++){ const d=new Date(); d.setMonth(d.getMonth()+i); const due=d.toISOString().slice(0,10); await db.execute(drzSql`INSERT INTO commercial_receivables_v2 (owner_type, owner_id, contract_id, proposal_id, company_name, reference_month, kind, amount, due_date) VALUES (${s.ownerType}, ${s.ownerId}, ${contractId}, ${input.id}, ${p.razao_social}, ${due.slice(0,7)}, 'mensalidade', ${Number(p.valor_mensal || 0)}, ${due})`); } } }
     return { ok: true };
   }),
