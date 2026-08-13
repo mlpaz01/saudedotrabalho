@@ -344,7 +344,19 @@ async function createProposalPdf(scope: CommercialScope, proposalId: number) {
   const allPlans = rowsOf(allPlansResult);
   const plans = (presentedIds.length ? allPlans.filter((plan: any) => presentedIds.includes(Number(plan.id))) : allPlans).map((plan: any) => {
     const override = overrides.find((item: any) => Number(item.planId) === Number(plan.id)) || {};
-    return { ...plan, proposalMonthly: Number(override.monthlyValue ?? plan.fixed_monthly_price ?? 0), proposalSetup: Number(override.setupValue ?? plan.setup_price ?? 0), proposalEmployees: Number(override.employees ?? p.qtd_colaboradores ?? 0), proposalFeatureIds: Array.isArray(override.featureIds) ? override.featureIds.map(Number) : String(plan.feature_ids || "").split(",").filter(Boolean).map(Number), proposalOptionalFeatureIds: Array.isArray(override.optionalFeatureIds) ? override.optionalFeatureIds.map(Number) : [], proposalLimits: override.limitsText || "" };
+    const employees = Number(override.employees ?? p.qtd_colaboradores ?? 0);
+    const isLegacySelectedPlan = Number(p.commercial_plan_id) === Number(plan.id) && Number(p.valor_mensal || 0) > 0;
+    const monthly = override.monthlyValue != null
+      ? Number(override.monthlyValue)
+      : isLegacySelectedPlan
+        ? Number(p.valor_mensal)
+        : Number(plan.fixed_monthly_price || 0) + Number(plan.price_per_employee || 0) * employees;
+    const planSetup = override.setupValue != null
+      ? Number(override.setupValue)
+      : isLegacySelectedPlan && Number(p.setup_value || 0) > 0
+        ? Number(p.setup_value)
+        : Number(plan.setup_price || 0);
+    return { ...plan, proposalMonthly: monthly, proposalSetup: planSetup, proposalEmployees: employees, proposalFeatureIds: Array.isArray(override.featureIds) ? override.featureIds.map(Number) : String(plan.feature_ids || "").split(",").filter(Boolean).map(Number), proposalOptionalFeatureIds: Array.isArray(override.optionalFeatureIds) ? override.optionalFeatureIds.map(Number) : [], proposalLimits: override.limitsText || "" };
   });
   const matrixFeatures = features;
   const matrix = plans.length ? `<section><h2>Matriz comparativa dos planos</h2><p class="small">✓ Incluído &nbsp;&nbsp; — Não incluído &nbsp;&nbsp; * Adicional/opcional. A recomendação comercial não representa contratação.</p><table><thead><tr><th>Funcionalidade</th>${plans.map((x: any) => `<th>${esc(x.name)}${Number(p.recommended_plan_id) === Number(x.id) ? `<br><span class="recommended">★ Recomendado</span>` : ""}${Number(p.selected_plan_id) === Number(x.id) ? `<br><span class="contracted">Selecionado</span>` : ""}</th>`).join("")}</tr></thead><tbody>${matrixFeatures.map((f) => `<tr><td><span class="small">${esc(f.category)}</span><br>${esc(f.name)}</td>${plans.map((pl: any) => `<td class="center">${pl.proposalFeatureIds.includes(Number(f.id)) ? "✓ Incluído" : pl.proposalOptionalFeatureIds.includes(Number(f.id)) ? "* Adicional" : "— Não incluído"}</td>`).join("")}</tr>`).join("")}</tbody></table></section>` : "";
