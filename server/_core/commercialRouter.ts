@@ -300,7 +300,7 @@ async function logoDataUri(url?: string | null): Promise<string | null> {
   if (!url) return null;
   try {
     if (url.startsWith("/uploads/")) {
-      const file = path.join("/var/www/saudedotrabalho", url);
+      const file = path.join(process.cwd(), url.replace(/^\/+/, ""));
       if (fs.existsSync(file)) return `data:image/${path.extname(file).slice(1) || "png"};base64,${fs.readFileSync(file).toString("base64")}`;
     }
     if (url.startsWith("/plataforma/")) {
@@ -362,7 +362,7 @@ async function createProposalPdf(scope: CommercialScope, proposalId: number) {
   <div class="footer"><b>${esc(brand.contact_name || brand.brand_name || "Contato comercial")}</b><br>${esc(brand.contact_email || "")} ${brand.contact_phone ? ` | ${esc(brand.contact_phone)}` : ""}<br>${esc(brand.website || "")}</div>
   </body></html>`;
   const puppeteer = (await import("puppeteer")).default;
-  const outDir = process.env.NODE_ENV === "production" ? "/var/www/saudedotrabalho/uploads/proposals" : path.join(process.cwd(), "uploads", "proposals");
+  const outDir = path.join(process.cwd(), "uploads", "proposals");
   fs.mkdirSync(outDir, { recursive: true });
   const filename = `proposta_${scope.ownerType}_${scope.ownerId}_${proposalId}_${Date.now()}.pdf`;
   const outPath = path.join(outDir, filename);
