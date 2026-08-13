@@ -141,7 +141,7 @@ export const esocialRouter = router({
       COALESCE(i.status,'not_configured') integration_status,i.environment,i.layout_version,
       i.certificate_alias,i.certificate_valid_until,i.last_validation_at,i.last_error
       FROM companies c LEFT JOIN esocial_company_integrations i ON i.company_id=c.id
-      WHERE (${companyId}=0 OR c.id=${companyId}) AND c.is_active=1 ORDER BY c.name`);
+      WHERE (${companyId}=0 OR c.id=${companyId}) AND c.is_active=1 AND TRIM(COALESCE(c.name,''))<>'' ORDER BY c.name`);
     return rowsOf(result);
   }),
 
@@ -199,7 +199,9 @@ export const esocialRouter = router({
     const companyId = companyOf(ctx, input.companyId);
     const status = input.status || "";
     const eventCode = input.eventCode || "";
-    const result: any = await db.execute(drzSql`SELECT t.*,c.name company_name,c.cnpj company_cnpj,
+    const safeEventCode = eventCode.replace(/[^A-Za-z0-9-]/g, "");
+    const safeStatus = status.replace(/[^a-z_]/g, "");
+    const result: any = await db.execute(drzSql.raw(`SELECT t.*,c.name company_name,c.cnpj company_cnpj,
       COALESCE(t.collaborator_id,cat.collaborator_id) resolved_collaborator_id,
       u.name collaborator_name,u.cpf collaborator_cpf,u.employee_registration,
       cat.accident_at,cat.validation_status,cat.validation_json
@@ -207,8 +209,8 @@ export const esocialRouter = router({
       JOIN companies c ON c.id=t.company_id
       LEFT JOIN occupational_cat_records cat ON t.entity_type='cat' AND cat.id=t.entity_id AND cat.company_id=t.company_id
       LEFT JOIN users u ON u.id=COALESCE(t.collaborator_id,cat.collaborator_id) AND u.company_id=t.company_id
-      WHERE t.company_id=${companyId} AND (${status}='' OR t.status=${status}) AND (${eventCode}='' OR t.event_code=${eventCode})
-      ORDER BY t.updated_at DESC,t.id DESC LIMIT ${input.limit}`);
+      WHERE t.company_id=${companyId}${safeStatus ? ` AND t.status='${safeStatus}'` : ""}${safeEventCode ? ` AND t.event_code='${safeEventCode}'` : ""}
+      ORDER BY t.updated_at DESC,t.id DESC LIMIT ${Number(input.limit)}`));
     return rowsOf(result).map(row => ({ ...row, issues: validationIssues(row), payload: parseJson(row.payload_json), response: parseJson(row.response_json) }));
   }),
 
