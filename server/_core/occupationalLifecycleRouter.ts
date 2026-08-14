@@ -236,7 +236,7 @@ async function loadAsoProcedureState(
 ) {
   const [expectedResult, completedResult]: any[] = await Promise.all([
     db.execute(drzSql`SELECT DISTINCT
-      CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END exam_id,
+      COALESCE(m.exam_id,${clinicalExamId}) exam_id,
       e.name
       FROM occupational_gse_worker_history h
       JOIN pcmso_risk_monitoring_v2 m ON m.company_id=h.company_id AND m.master_gse_id=h.gse_id
@@ -245,7 +245,7 @@ async function loadAsoProcedureState(
         AND (m.monitoring_kind='avaliacao_clinica' OR m.exam_id IS NOT NULL)
         AND m.suggestion_status IN ('aprovada','editada')
       JOIN pcmso_exam_catalog_v2 e ON e.company_id=h.company_id
-        AND e.id=(CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END)
+        AND e.id=COALESCE(m.exam_id,${clinicalExamId})
         AND e.is_active=1
       WHERE h.company_id=${companyId} AND h.collaborator_id=${collaboratorId} AND h.is_current=1`),
     db.execute(drzSql`SELECT r.exam_id,e.name,r.classification,r.performed_at,r.reviewed_at
@@ -1454,7 +1454,7 @@ async function loadPcmsoOrderSource(
   const result: any = await db.execute(
     drzSql`SELECT u.id collaborator_id,u.name collaborator_name,u.cpf,u.employee_registration,
       h.gse_id,g.code gse_code,g.name gse_name,m.id monitoring_id,m.pcmso_id,
-      m.monitoring_kind,CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END exam_id,
+      m.monitoring_kind,COALESCE(m.exam_id,${clinicalExamId}) exam_id,
       e.name exam_name,p.title pcmso_title,p.status pcmso_status
     FROM users u
     JOIN occupational_gse_worker_history h ON h.collaborator_id=u.id AND h.company_id=u.company_id AND h.is_current=1
@@ -1466,7 +1466,7 @@ async function loadPcmsoOrderSource(
     LEFT JOIN occupational_gse_pgr_links l ON l.company_id=m.company_id AND l.pgr_gse_id=m.pgr_gse_id
     JOIN pcmso_programs_v2 p ON p.id=m.pcmso_id AND p.company_id=u.company_id
       AND p.status IN ('em_revisao','vigente') AND (p.saved_at IS NOT NULL OR p.status='vigente')
-    JOIN pcmso_exam_catalog_v2 e ON e.id=(CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END)
+    JOIN pcmso_exam_catalog_v2 e ON e.id=COALESCE(m.exam_id,${clinicalExamId})
       AND e.company_id=u.company_id AND e.is_active=1
     WHERE u.id=${collaboratorId} AND u.company_id=${companyId} AND ${drzSql.raw(activeEmployeeSql("u"))}
       AND COALESCE(m.master_gse_id,l.gse_id)=h.gse_id
@@ -2286,12 +2286,12 @@ export const occupationalLifecycleRouter = router({
       drzSql.raw(`SELECT u.id collaborator_id,u.name collaborator_name,u.cpf,u.employee_registration,u.position,
       u.branch_id,u.sector_id,
       b.name branch_name,s.name sector_name,h.gse_id,g.code gse_code,g.name gse_name,
-      m.id monitoring_id,m.pcmso_id,CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END exam_id,
+      m.id monitoring_id,m.pcmso_id,COALESCE(m.exam_id,${clinicalExamId}) exam_id,
       m.monitoring_kind,m.periodicity,m.applicability,e.name exam_name,p.title pcmso_title,p.pgr_id,pg.title pgr_title,
-      (SELECT GROUP_CONCAT(DISTINCT COALESCE(hp.trade_name,hp.legal_name) ORDER BY COALESCE(hp.trade_name,hp.legal_name) SEPARATOR '||') FROM occupational_provider_exams pe JOIN occupational_health_providers hp ON hp.id=pe.provider_id AND hp.company_id=pe.company_id AND hp.is_active=1 WHERE pe.company_id=u.company_id AND pe.exam_id=(CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END) AND pe.is_active=1) recommended_providers,
-      (SELECT o.status FROM occupational_exam_orders o WHERE o.company_id=u.company_id AND o.collaborator_id=u.id AND o.exam_id=(CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END) AND o.pcmso_id=m.pcmso_id ORDER BY o.version_number DESC,o.created_at DESC LIMIT 1) latest_order_status,
-      (SELECT o.id FROM occupational_exam_orders o WHERE o.company_id=u.company_id AND o.collaborator_id=u.id AND o.exam_id=(CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END) AND o.pcmso_id=m.pcmso_id ORDER BY o.version_number DESC,o.created_at DESC LIMIT 1) latest_order_id,
-      (SELECT MAX(r.performed_at) FROM occupational_exam_results r WHERE r.company_id=u.company_id AND r.collaborator_id=u.id AND r.exam_id=(CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END)) latest_result_at
+      (SELECT GROUP_CONCAT(DISTINCT COALESCE(hp.trade_name,hp.legal_name) ORDER BY COALESCE(hp.trade_name,hp.legal_name) SEPARATOR '||') FROM occupational_provider_exams pe JOIN occupational_health_providers hp ON hp.id=pe.provider_id AND hp.company_id=pe.company_id AND hp.is_active=1 WHERE pe.company_id=u.company_id AND pe.exam_id=COALESCE(m.exam_id,${clinicalExamId}) AND pe.is_active=1) recommended_providers,
+      (SELECT o.status FROM occupational_exam_orders o WHERE o.company_id=u.company_id AND o.collaborator_id=u.id AND o.exam_id=COALESCE(m.exam_id,${clinicalExamId}) AND o.pcmso_id=m.pcmso_id ORDER BY o.version_number DESC,o.created_at DESC LIMIT 1) latest_order_status,
+      (SELECT o.id FROM occupational_exam_orders o WHERE o.company_id=u.company_id AND o.collaborator_id=u.id AND o.exam_id=COALESCE(m.exam_id,${clinicalExamId}) AND o.pcmso_id=m.pcmso_id ORDER BY o.version_number DESC,o.created_at DESC LIMIT 1) latest_order_id,
+      (SELECT MAX(r.performed_at) FROM occupational_exam_results r WHERE r.company_id=u.company_id AND r.collaborator_id=u.id AND r.exam_id=COALESCE(m.exam_id,${clinicalExamId})) latest_result_at
       FROM users u
       JOIN occupational_gse_worker_history h ON h.collaborator_id=u.id AND h.company_id=u.company_id AND h.is_current=1
       JOIN occupational_gse_master g ON g.id=h.gse_id AND g.company_id=u.company_id
@@ -2299,7 +2299,7 @@ export const occupationalLifecycleRouter = router({
       LEFT JOIN occupational_gse_pgr_links l ON l.company_id=m.company_id AND l.pgr_gse_id=m.pgr_gse_id
       JOIN pcmso_programs_v2 p ON p.id=m.pcmso_id AND p.company_id=u.company_id AND p.status IN ('em_revisao','vigente') AND (p.saved_at IS NOT NULL OR p.status='vigente') AND (p.valid_from IS NULL OR p.valid_from<=CURDATE()) AND (p.valid_until IS NULL OR p.valid_until>=CURDATE())
       LEFT JOIN pgr_documents pg ON pg.id=p.pgr_id AND pg.company_id=u.company_id
-      JOIN pcmso_exam_catalog_v2 e ON e.id=(CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END) AND e.company_id=u.company_id AND e.is_active=1
+      JOIN pcmso_exam_catalog_v2 e ON e.id=COALESCE(m.exam_id,${clinicalExamId}) AND e.company_id=u.company_id AND e.is_active=1
       LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id
       WHERE u.company_id=${companyId} AND ${activeEmployeeSql("u")} AND COALESCE(m.master_gse_id,l.gse_id)=h.gse_id
       ORDER BY e.name,u.name`)
@@ -4386,7 +4386,7 @@ export const occupationalLifecycleRouter = router({
       );
       const result: any = await db.execute(
         drzSql.raw(
-          `SELECT u.id collaborator_id,u.name collaborator_name,u.cpf,u.employee_registration,u.position,u.branch_id,u.sector_id,b.name branch_name,s.name sector_name,h.gse_id,g.code gse_code,g.name gse_name,m.id monitoring_id,m.pcmso_id,m.monitoring_kind,m.periodicity,CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END exam_id,e.name exam_name,p.title pcmso_title,pg.title pgr_title,(SELECT o.status FROM occupational_exam_orders o WHERE o.company_id=u.company_id AND o.collaborator_id=u.id AND o.exam_id=(CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END) AND o.pcmso_id=m.pcmso_id ORDER BY o.version_number DESC,o.created_at DESC LIMIT 1) latest_order_status,(SELECT MAX(r.performed_at) FROM occupational_exam_results r WHERE r.company_id=u.company_id AND r.collaborator_id=u.id AND r.exam_id=(CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END)) latest_result_at FROM users u JOIN occupational_gse_worker_history h ON h.collaborator_id=u.id AND h.company_id=u.company_id AND h.is_current=1 JOIN occupational_gse_master g ON g.id=h.gse_id AND g.company_id=u.company_id JOIN pcmso_risk_monitoring_v2 m ON m.company_id=u.company_id AND m.master_gse_id=h.gse_id AND m.monitoring_kind IN ('avaliacao_clinica','exame_complementar') AND (m.monitoring_kind='avaliacao_clinica' OR m.exam_id IS NOT NULL) AND m.suggestion_status IN ('aprovada','editada') JOIN pcmso_programs_v2 p ON p.id=m.pcmso_id AND p.company_id=u.company_id AND p.status='vigente' AND (p.valid_from IS NULL OR p.valid_from<=CURDATE()) AND (p.valid_until IS NULL OR p.valid_until>=CURDATE()) LEFT JOIN pgr_documents pg ON pg.id=p.pgr_id AND pg.company_id=u.company_id JOIN pcmso_exam_catalog_v2 e ON e.id=(CASE WHEN m.monitoring_kind='avaliacao_clinica' THEN ${clinicalExamId} ELSE m.exam_id END) AND e.company_id=u.company_id AND e.is_active=1 LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id WHERE u.company_id=${companyId} AND ${activeEmployeeSql("u")} ORDER BY b.name,s.name,g.code,e.name,u.name`
+          `SELECT u.id collaborator_id,u.name collaborator_name,u.cpf,u.employee_registration,u.position,u.branch_id,u.sector_id,b.name branch_name,s.name sector_name,h.gse_id,g.code gse_code,g.name gse_name,m.id monitoring_id,m.pcmso_id,m.monitoring_kind,m.periodicity,COALESCE(m.exam_id,${clinicalExamId}) exam_id,e.name exam_name,p.title pcmso_title,pg.title pgr_title,(SELECT o.status FROM occupational_exam_orders o WHERE o.company_id=u.company_id AND o.collaborator_id=u.id AND o.exam_id=COALESCE(m.exam_id,${clinicalExamId}) AND o.pcmso_id=m.pcmso_id ORDER BY o.version_number DESC,o.created_at DESC LIMIT 1) latest_order_status,(SELECT MAX(r.performed_at) FROM occupational_exam_results r WHERE r.company_id=u.company_id AND r.collaborator_id=u.id AND r.exam_id=COALESCE(m.exam_id,${clinicalExamId})) latest_result_at FROM users u JOIN occupational_gse_worker_history h ON h.collaborator_id=u.id AND h.company_id=u.company_id AND h.is_current=1 JOIN occupational_gse_master g ON g.id=h.gse_id AND g.company_id=u.company_id JOIN pcmso_risk_monitoring_v2 m ON m.company_id=u.company_id AND m.master_gse_id=h.gse_id AND m.monitoring_kind IN ('avaliacao_clinica','exame_complementar') AND (m.monitoring_kind='avaliacao_clinica' OR m.exam_id IS NOT NULL) AND m.suggestion_status IN ('aprovada','editada') JOIN pcmso_programs_v2 p ON p.id=m.pcmso_id AND p.company_id=u.company_id AND p.status='vigente' AND (p.valid_from IS NULL OR p.valid_from<=CURDATE()) AND (p.valid_until IS NULL OR p.valid_until>=CURDATE()) LEFT JOIN pgr_documents pg ON pg.id=p.pgr_id AND pg.company_id=u.company_id JOIN pcmso_exam_catalog_v2 e ON e.id=COALESCE(m.exam_id,${clinicalExamId}) AND e.company_id=u.company_id AND e.is_active=1 LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id WHERE u.company_id=${companyId} AND ${activeEmployeeSql("u")} ORDER BY b.name,s.name,g.code,e.name,u.name`
         )
       );
       const dedup = new Map<string, any>();

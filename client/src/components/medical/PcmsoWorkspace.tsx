@@ -7,6 +7,7 @@ import {
   Download,
   FileSearch,
   FileText,
+  Pencil,
   Plus,
   RefreshCw,
   Save,
@@ -33,6 +34,7 @@ type PcmsoWorkspaceProps = {
   onDownload: (kind: "pcmso_annex" | "pcmso_version", id: number) => void;
   onImport: (id: number) => void;
   onDecision: (payload: any) => void;
+  onDeleteMonitoring: (id: number) => void;
   onGenerateAi: () => void;
   onAudit: () => void;
   onAnalyticalReport: (payload: {
@@ -139,6 +141,7 @@ export default function PcmsoWorkspace({
   onDownload,
   onImport,
   onDecision,
+  onDeleteMonitoring,
   onGenerateAi,
   onAudit,
   onAnalyticalReport,
@@ -162,16 +165,36 @@ export default function PcmsoWorkspace({
   const program = data?.program;
   const monitoring = (data?.monitoring || []) as any[];
   const groups = useMemo(() => {
-    const result = new Map<string, any[]>();
+    const risks = new Map<string, any[]>();
     monitoring.forEach(row => {
-      const key = row.gse_name || "GSE não identificado";
-      result.set(key, [...(result.get(key) || []), row]);
+      const key = String(row.source_monitoring_id || row.id);
+      risks.set(key, [...(risks.get(key) || []), row]);
+    });
+    const result = new Map<
+      string,
+      Array<{ source: any; rows: any[]; items: any[] }>
+    >();
+    risks.forEach(rows => {
+      const source = rows.find(row => Number(row.is_primary)) || rows[0];
+      const item = {
+        source,
+        rows,
+        items: rows.filter(row => row.monitoring_kind !== "nao_definido"),
+      };
+      const gseKey = source.gse_name || "GSE não identificado";
+      result.set(gseKey, [...(result.get(gseKey) || []), item]);
     });
     return [...result.entries()];
   }, [monitoring]);
-  const pending = monitoring.filter(
-    row => row.monitoring_kind === "nao_definido"
-  ).length;
+  const riskCount = groups.reduce(
+    (total, [, risks]) => total + risks.length,
+    0
+  );
+  const pending = groups.reduce(
+    (total, [, risks]) =>
+      total + risks.filter(risk => !risk.items.length).length,
+    0
+  );
   const latestAudit = data?.audits?.[0];
   const visiblePrograms = programs.filter(row => {
     if (programStatus === "todos") return true;
@@ -299,7 +322,7 @@ export default function PcmsoWorkspace({
                   Number(program.ai_audit_score) >= 80 ? "success" : "warning"
                 }
               />
-              <Metric label="Riscos importados" value={monitoring.length} />
+              <Metric label="Riscos importados" value={riskCount} />
               <Metric
                 label="Decisões pendentes"
                 value={pending}
@@ -356,7 +379,7 @@ export default function PcmsoWorkspace({
                       </div>
                       <div>
                         <span className="text-xs text-slate-500">Riscos</span>
-                        <b className="block">{monitoring.length}</b>
+                        <b className="block">{riskCount}</b>
                       </div>
                       <div>
                         <span className="text-xs text-slate-500">
@@ -424,7 +447,7 @@ export default function PcmsoWorkspace({
             description="Risco identificado no PGR → possível agravo → controle médico → periodicidade. Não há prescrição automática."
           >
             <div className="space-y-5">
-              {groups.map(([gseName, rows]) => (
+              {groups.map(([gseName, risks]) => (
                 <div className="border" key={gseName}>
                   <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-slate-50 px-4 py-3">
                     <div>
@@ -434,16 +457,17 @@ export default function PcmsoWorkspace({
                       <h3 className="font-semibold">{gseName}</h3>
                     </div>
                     <Badge variant="outline" className="rounded-sm">
-                      {rows.length} risco(s)
+                      {risks.length} risco(s)
                     </Badge>
                   </div>
                   <div className="divide-y">
-                    {rows.map(row => (
-                      <MonitoringRow
-                        key={row.id}
-                        row={row}
+                    {risks.map(risk => (
+                      <RiskMonitoringRow
+                        key={risk.source.id}
+                        risk={risk}
                         exams={exams}
                         save={onDecision}
+                        remove={onDeleteMonitoring}
                       />
                     ))}
                   </div>
@@ -699,85 +723,140 @@ function DocumentList({
   );
 }
 
-function MonitoringRow({
-  row,
+function RiskMonitoringRow({
+  risk,
   exams,
   save,
+  remove,
 }: {
-  row: any;
+  risk: { source: any; rows: any[]; items: any[] };
   exams: any[];
   save: (payload: any) => void;
+  remove: (id: number) => void;
 }) {
-  const [kind, setKind] = useState(row.monitoring_kind || "nao_definido");
-  const [name, setName] = useState(row.monitoring_name || "");
-  const [examId, setExamId] = useState(Number(row.exam_id || 0));
-  const [periodicity, setPeriodicity] = useState(row.periodicity || "");
+  const { source, items } = risk;
   const [aggravations, setAggravations] = useState(
-    row.possible_aggravations || ""
+    source.possible_aggravations || ""
   );
-  const [observations, setObservations] = useState(row.observations || "");
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [selectedExam, setSelectedExam] = useState("");
+  const [periodicity, setPeriodicity] = useState("");
+  const [observations, setObservations] = useState("");
+  const [usingSuggestion, setUsingSuggestion] = useState(false);
   const suggestionAvailable =
-    row.suggestion_status === "revisar" &&
-    Boolean(row.suggested_monitoring_kind);
-  const decisionSaved =
-    Boolean(row.decision_at) && row.monitoring_kind !== "nao_definido";
+    source.suggestion_status === "revisar" &&
+    Boolean(source.suggested_monitoring_kind);
+  const activeExams = exams.filter(exam => Number(exam.is_active));
 
   useEffect(() => {
-    setKind(row.monitoring_kind || "nao_definido");
-    setName(row.monitoring_name || row.exam_name || "");
-    setExamId(Number(row.exam_id || 0));
-    setPeriodicity(row.periodicity || "");
-    setAggravations(row.possible_aggravations || "");
-    setObservations(row.observations || "");
-  }, [row]);
+    setAggravations(source.possible_aggravations || "");
+  }, [source.id, source.possible_aggravations]);
 
-  const submit = (suggestionStatus = "editada") =>
+  const resetEditor = () => {
+    setEditorOpen(false);
+    setEditingId(null);
+    setSelectedExam("");
+    setPeriodicity("");
+    setObservations("");
+    setUsingSuggestion(false);
+  };
+
+  const openNew = () => {
+    setEditingId(items.length ? null : Number(source.id));
+    setSelectedExam("");
+    setPeriodicity("");
+    setObservations("");
+    setUsingSuggestion(false);
+    setEditorOpen(true);
+  };
+
+  const openEdit = (item: any) => {
+    setEditingId(Number(item.id));
+    setSelectedExam(
+      item.monitoring_kind === "nao_aplicavel"
+        ? "__not_applicable"
+        : item.exam_id
+          ? String(item.exam_id)
+          : "__clinical"
+    );
+    setPeriodicity(item.periodicity || "");
+    setObservations(item.observations || "");
+    setUsingSuggestion(item.suggestion_status === "aprovada");
+    setEditorOpen(true);
+  };
+
+  const useSuggestion = () => {
+    const suggestedName = String(source.suggested_monitoring_name || "")
+      .trim()
+      .toLocaleLowerCase("pt-BR");
+    const matchingExam = activeExams.find(
+      exam =>
+        String(exam.name || "")
+          .trim()
+          .toLocaleLowerCase("pt-BR") === suggestedName
+    );
+    setEditingId(items.length ? null : Number(source.id));
+    setSelectedExam(
+      matchingExam
+        ? String(matchingExam.id)
+        : source.suggested_monitoring_kind === "avaliacao_clinica"
+          ? "__clinical"
+          : ""
+    );
+    setPeriodicity(source.suggested_periodicity || "");
+    setObservations("");
+    setUsingSuggestion(true);
+    setEditorOpen(true);
+  };
+
+  const submit = () => {
+    const selected = activeExams.find(
+      exam => Number(exam.id) === Number(selectedExam)
+    );
+    const monitoringKind =
+      selectedExam === "__not_applicable"
+        ? "nao_aplicavel"
+        : selectedExam === "__clinical" || selected?.exam_type === "clinico"
+          ? "avaliacao_clinica"
+          : "exame_complementar";
     save({
-      id: Number(row.id),
-      monitoringKind: kind,
-      examId: kind === "exame_complementar" ? examId || null : null,
-      monitoringName: name || undefined,
+      ...(editingId ? { id: editingId } : { sourceId: Number(source.id) }),
+      monitoringKind,
+      examId: selected ? Number(selected.id) : null,
+      monitoringName: selected?.name || undefined,
       possibleAggravations: aggravations || undefined,
       periodicity: periodicity || undefined,
       observations: observations || undefined,
-      aiRationale: row.ai_rationale || undefined,
-      suggestionStatus,
+      aiRationale: usingSuggestion
+        ? source.ai_rationale || undefined
+        : undefined,
+      suggestionStatus: usingSuggestion ? "aprovada" : "editada",
     });
-
-  const acceptSuggestion = () => {
-    const nextKind = row.suggested_monitoring_kind || "nao_definido";
-    const nextName = row.suggested_monitoring_name || "";
-    const nextPeriodicity = row.suggested_periodicity || "";
-    setKind(nextKind);
-    setName(nextName);
-    setPeriodicity(nextPeriodicity);
-    save({
-      id: Number(row.id),
-      monitoringKind: nextKind,
-      examId: null,
-      monitoringName: nextName || undefined,
-      possibleAggravations: aggravations || undefined,
-      periodicity: nextPeriodicity || undefined,
-      observations: observations || undefined,
-      aiRationale: row.ai_rationale || undefined,
-      suggestionStatus: "aprovada",
-    });
+    resetEditor();
   };
 
+  const selectedCatalogExam = activeExams.find(
+    exam => Number(exam.id) === Number(selectedExam)
+  );
+  const canSave = Boolean(
+    selectedExam && (selectedExam.startsWith("__") || selectedCatalogExam)
+  );
+
   return (
-    <div className="grid gap-4 p-4 xl:grid-cols-[1.05fr_1fr_1.15fr]">
+    <div className="grid gap-4 p-4 xl:grid-cols-[1fr_1fr_1.25fr]">
       <div>
         <div className="flex flex-wrap items-center gap-2">
-          <b className="text-sm text-slate-950">{row.risk_name}</b>
+          <b className="text-sm text-slate-950">{source.risk_name}</b>
           <Badge variant="outline" className="rounded-sm">
-            {row.risk_classification || "Sem classificação"}
+            {source.risk_classification || "Sem classificação"}
           </Badge>
         </div>
         <p className="mt-1 text-xs text-slate-500">
-          {row.risk_type || "Tipo não informado"}
+          {source.risk_type || "Tipo não informado"}
         </p>
         <p className="mt-3 whitespace-pre-wrap text-sm text-slate-600">
-          {row.technical_detail ||
+          {source.technical_detail ||
             "O PGR não possui detalhamento técnico para este risco."}
         </p>
       </div>
@@ -798,18 +877,24 @@ function MonitoringRow({
               <Sparkles size={14} /> Sugestão assistida
             </div>
             <p className="mt-1">
-              {row.suggested_monitoring_name || "Sem monitoramento sugerido"} ·{" "}
-              {row.suggested_periodicity || "periodicidade a definir"}
+              {source.suggested_monitoring_name || "Sem monitoramento sugerido"}{" "}
+              · {source.suggested_periodicity || "periodicidade a definir"}
             </p>
-            <p className="mt-1 text-sky-800">{row.ai_rationale}</p>
+            <p className="mt-1 text-sky-800">{source.ai_rationale}</p>
             <div className="mt-3 flex flex-wrap gap-2">
-              <Button size="sm" onClick={acceptSuggestion}>
-                Aceitar sugestão
+              <Button size="sm" onClick={useSuggestion}>
+                Usar na inclusão
               </Button>
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => submit("ignorada")}
+                onClick={() =>
+                  save({
+                    id: Number(source.id),
+                    monitoringKind: "nao_definido",
+                    suggestionStatus: "ignorada",
+                  })
+                }
               >
                 Ignorar
               </Button>
@@ -818,91 +903,154 @@ function MonitoringRow({
         ) : null}
       </div>
 
-      <div className="grid gap-2">
-        {decisionSaved ? (
-          <div className="flex items-center gap-2 border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900">
-            <CheckCircle2 size={14} /> Decisão salva:{" "}
-            {row.exam_name || row.monitoring_name || "controle definido"}
+      <div>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <h4 className="text-sm font-semibold text-slate-950">
+              Exames e avaliações
+            </h4>
+            <p className="text-xs text-slate-500">
+              {items.length
+                ? `${items.length} procedimento(s) definido(s)`
+                : "Nenhum procedimento definido"}
+            </p>
           </div>
-        ) : null}
-        <label className="text-xs font-semibold text-slate-700">
-          Decisão médica
-          <select
-            className="mt-1 h-9 w-full border bg-white px-2 text-sm"
-            value={kind}
-            onChange={event => setKind(event.target.value)}
-          >
-            <option value="nao_definido">Pendente de decisão</option>
-            <option value="avaliacao_clinica">Avaliação clínica</option>
-            <option value="exame_complementar">Exame complementar</option>
-            <option value="nao_aplicavel">
-              Sem controle adicional aplicável
-            </option>
-          </select>
-        </label>
-        {kind !== "nao_definido" && kind !== "nao_aplicavel" ? (
-          kind === "exame_complementar" ? (
-            <label className="text-xs font-semibold text-slate-700">
-              Exame do Catálogo Mestre
-              <select
-                className="mt-1 h-10 w-full border bg-white px-2 text-sm"
-                value={examId}
-                onChange={event => {
-                  const selectedId = Number(event.target.value);
-                  const selected = exams.find(
-                    exam => Number(exam.id) === selectedId
-                  );
-                  setExamId(selectedId);
-                  setName(selected?.name || "");
-                  if (selected?.default_periodicity)
-                    setPeriodicity(selected.default_periodicity);
-                }}
-              >
-                <option value={0}>Pesquisar e selecionar exame...</option>
-                {exams
-                  .filter(
-                    exam =>
-                      Number(exam.is_active) &&
-                      exam.exam_type === "complementar"
-                  )
-                  .map(exam => (
+          <Button size="sm" onClick={openNew}>
+            <Plus className="mr-1" size={14} /> Adicionar exame/avaliação
+          </Button>
+        </div>
+
+        <div className="divide-y border">
+          {items.map(item => (
+            <div
+              className="grid min-h-16 grid-cols-[1fr_auto] items-center gap-3 p-3"
+              key={item.id}
+            >
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <b className="text-sm text-slate-900">
+                    {item.exam_name ||
+                      item.monitoring_name ||
+                      "Controle definido"}
+                  </b>
+                  <Badge variant="outline" className="rounded-sm text-[10px]">
+                    {item.monitoring_kind === "avaliacao_clinica"
+                      ? "Avaliação clínica"
+                      : item.monitoring_kind === "nao_aplicavel"
+                        ? "Não aplicável"
+                        : "Exame complementar"}
+                  </Badge>
+                </div>
+                <p className="mt-1 text-xs text-slate-500">
+                  {item.periodicity || "Periodicidade definida pelo médico"}
+                  {item.observations ? ` · ${item.observations}` : ""}
+                </p>
+              </div>
+              <div className="flex gap-1">
+                <Button
+                  aria-label="Editar exame/avaliação"
+                  size="icon"
+                  title="Editar exame/avaliação"
+                  variant="ghost"
+                  onClick={() => openEdit(item)}
+                >
+                  <Pencil size={15} />
+                </Button>
+                <Button
+                  aria-label="Excluir exame/avaliação"
+                  className="text-rose-700"
+                  size="icon"
+                  title="Excluir exame/avaliação"
+                  variant="ghost"
+                  onClick={() => {
+                    if (
+                      window.confirm(
+                        "Excluir este exame/avaliação do risco? O histórico da ação será preservado."
+                      )
+                    )
+                      remove(Number(item.id));
+                  }}
+                >
+                  <Trash2 size={15} />
+                </Button>
+              </div>
+            </div>
+          ))}
+          {!items.length ? (
+            <div className="p-4 text-center text-sm text-amber-800">
+              Pendente de decisão médica.
+            </div>
+          ) : null}
+        </div>
+
+        {editorOpen ? (
+          <div className="mt-3 border border-teal-300 bg-teal-50/40 p-3">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <b className="text-sm text-slate-950">
+                {editingId && items.some(item => Number(item.id) === editingId)
+                  ? "Editar exame/avaliação"
+                  : "Adicionar exame/avaliação"}
+              </b>
+              <Button size="sm" variant="ghost" onClick={resetEditor}>
+                Cancelar
+              </Button>
+            </div>
+            <div className="grid gap-3">
+              <label className="text-xs font-semibold text-slate-700">
+                Exame ou avaliação
+                <select
+                  className="mt-1 h-10 w-full border bg-white px-2 text-sm"
+                  value={selectedExam}
+                  onChange={event => {
+                    const value = event.target.value;
+                    const selected = activeExams.find(
+                      exam => Number(exam.id) === Number(value)
+                    );
+                    setSelectedExam(value);
+                    if (selected?.default_periodicity)
+                      setPeriodicity(selected.default_periodicity);
+                  }}
+                >
+                  <option value="">Selecione no Catálogo Mestre...</option>
+                  <option value="__clinical">
+                    Avaliação clínica ocupacional
+                  </option>
+                  {activeExams.map(exam => (
                     <option key={exam.id} value={exam.id}>
                       {exam.name} ·{" "}
-                      {exam.default_periodicity || "periodicidade médica"}
+                      {exam.exam_type === "clinico"
+                        ? "avaliação clínica"
+                        : "exame complementar"}
                     </option>
                   ))}
-              </select>
-            </label>
-          ) : (
-            <div className="border border-sky-200 bg-sky-50 p-2 text-xs text-sky-900">
-              Avaliação clínica ocupacional vinculada automaticamente ao
-              Catálogo Mestre.
+                  <option value="__not_applicable">
+                    Sem exame/avaliação adicional aplicável
+                  </option>
+                </select>
+              </label>
+              <label className="text-xs font-semibold text-slate-700">
+                Periodicidade
+                <Input
+                  className="mt-1"
+                  value={periodicity}
+                  onChange={event => setPeriodicity(event.target.value)}
+                  placeholder="Ex.: anual"
+                />
+              </label>
+              <label className="text-xs font-semibold text-slate-700">
+                Observação e critério
+                <Textarea
+                  className="mt-1 min-h-16"
+                  value={observations}
+                  onChange={event => setObservations(event.target.value)}
+                />
+              </label>
+              <Button disabled={!canSave} onClick={submit}>
+                <Save className="mr-1" size={14} /> Salvar exame/avaliação
+              </Button>
             </div>
-          )
+          </div>
         ) : null}
-        <label className="text-xs font-semibold text-slate-700">
-          Periodicidade
-          <Input
-            className="mt-1"
-            value={periodicity}
-            onChange={event => setPeriodicity(event.target.value)}
-            placeholder="Ex.: admissional e anual, conforme avaliação médica"
-          />
-        </label>
-        <label className="text-xs font-semibold text-slate-700">
-          Observação e critério
-          <Textarea
-            className="mt-1 min-h-16"
-            value={observations}
-            onChange={event => setObservations(event.target.value)}
-          />
-        </label>
-        <Button
-          disabled={kind === "exame_complementar" && !examId}
-          onClick={() => submit("editada")}
-        >
-          <CheckCircle2 className="mr-1" size={14} /> Salvar decisão médica
-        </Button>
       </div>
     </div>
   );

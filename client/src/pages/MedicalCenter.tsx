@@ -272,6 +272,13 @@ export default function MedicalCenter() {
     },
     onError: error => toast.error(error.message),
   });
+  const deleteMonitoring = trpc.medical.deleteMonitoring.useMutation({
+    onSuccess: async () => {
+      await programQ.refetch();
+      toast.success("Exame/avaliação removido do risco.");
+    },
+    onError: error => toast.error(error.message),
+  });
   const annexSave = trpc.medical.addAnnex.useMutation({
     onSuccess: () => {
       programQ.refetch();
@@ -582,6 +589,7 @@ export default function MedicalCenter() {
               importPgr.mutate({ pcmsoId: selectedProgramId, pgrId })
             }
             onDecision={payload => decideMonitoring.mutate(payload)}
+            onDeleteMonitoring={id => deleteMonitoring.mutate({ id })}
             onGenerateAi={() =>
               selectedProgramId && pcmsoAi.mutate({ id: selectedProgramId })
             }
@@ -617,6 +625,8 @@ export default function MedicalCenter() {
             }
             busy={
               importPgr.isPending ||
+              decideMonitoring.isPending ||
+              deleteMonitoring.isPending ||
               pdfGenerate.isPending ||
               pcmsoAi.isPending ||
               pcmsoAudit.isPending ||
