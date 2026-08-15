@@ -9,7 +9,7 @@ import {
   activeEmployeeSql,
   ensureActiveEmployeeColumns,
 } from "./activeEmployees";
-import { sendEmail } from "./email";
+import { buildWelcomeEmail, getEmailLinkBaseUrl, sendEmail } from "./email";
 import { orChat } from "./contentforge/openrouter";
 import esocialCatCodesData from "./data/esocialCatCodes.json";
 import {
@@ -430,6 +430,45 @@ export async function ensureOccupationalTables() {
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uq_occ_provider_exam (company_id, provider_id, exam_id),
     INDEX idx_occ_provider_exam_catalog (company_id, exam_id, is_active)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+
+  await db.execute(drzSql`CREATE TABLE IF NOT EXISTS occupational_provider_users (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    company_id INT NOT NULL,
+    provider_id INT NOT NULL,
+    user_id INT NOT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_by INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_occ_provider_user (company_id, provider_id, user_id),
+    INDEX idx_occ_provider_user_login (user_id, is_active),
+    INDEX idx_occ_provider_user_company (company_id, provider_id, is_active)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+
+  await db.execute(drzSql`CREATE TABLE IF NOT EXISTS occupational_provider_order_progress (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    company_id INT NOT NULL,
+    provider_id INT NOT NULL,
+    order_id BIGINT NOT NULL,
+    workflow_status VARCHAR(40) NOT NULL DEFAULT 'recebida',
+    scheduled_at DATETIME NULL,
+    performed_at DATETIME NULL,
+    professional_name VARCHAR(255) NULL,
+    professional_registry_type VARCHAR(40) NULL,
+    professional_registry_number VARCHAR(100) NULL,
+    notes TEXT NULL,
+    amount DECIMAL(12,2) NULL,
+    proof_private_path VARCHAR(700) NULL,
+    proof_original_name VARCHAR(255) NULL,
+    proof_uploaded_by INT NULL,
+    proof_uploaded_at DATETIME NULL,
+    result_id BIGINT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_occ_provider_progress_order (company_id, provider_id, order_id),
+    INDEX idx_occ_provider_progress_status (company_id, provider_id, workflow_status),
+    INDEX idx_occ_provider_progress_period (company_id, provider_id, performed_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
 
   await db.execute(drzSql`CREATE TABLE IF NOT EXISTS occupational_exam_orders (
@@ -1142,7 +1181,7 @@ function catEsocialPayload(
   };
 }
 
-async function audit(
+export async function audit(
   db: any,
   ctx: any,
   action: string,
@@ -1174,7 +1213,29 @@ async function notifyCollaboratorDocument(
     .catch(() => undefined);
 }
 
-function privateDocumentPayload(companyId: number, documentPath: unknown) {
+async function notifyProviderOrder(
+  db: any,
+  companyId: number,
+  providerId: number | null | undefined,
+  orderId: number,
+  orderNumber: string
+) {
+  if (!providerId) return;
+  const usersResult: any = await db.execute(
+    drzSql`SELECT user_id FROM occupational_provider_users WHERE company_id=${companyId} AND provider_id=${providerId} AND is_active=1`
+  );
+  for (const row of rowsOf(usersResult)) {
+    const userId = Number(row.user_id);
+    await db
+      .execute(drzSql`INSERT INTO notifications
+        (user_id,company_id,type,priority,title,body,link,icon,dedup_key)
+        VALUES (${userId},${companyId},'requisicao_clinica','alta','Nova requisição ocupacional',${`A requisição ${orderNumber} foi direcionada à clínica para atendimento.`},'/clinica','stethoscope',${`provider-order:${orderId}:${userId}`})
+        ON DUPLICATE KEY UPDATE read_at=NULL,created_at=NOW()`)
+      .catch(() => undefined);
+  }
+}
+
+export function privateDocumentPayload(companyId: number, documentPath: unknown) {
   const value = String(documentPath || "").trim();
   const root = path.resolve(privateRoot(companyId));
   const resolved = path.resolve(value || root);
@@ -1210,7 +1271,7 @@ function privateRoot(companyId: number) {
   return target;
 }
 
-function savePrivateFile(
+export function savePrivateFile(
   companyId: number,
   folder: string,
   fileName: string,
@@ -1232,7 +1293,7 @@ function savePrivateFile(
   return target;
 }
 
-function esc(value: any) {
+export function esc(value: any) {
   return String(value ?? "").replace(
     /[&<>"']/g,
     char =>
@@ -1263,7 +1324,7 @@ function privateImageDataUri(storedPath: unknown) {
   return `data:${mime};base64,${fs.readFileSync(filePath).toString("base64")}`;
 }
 
-async function renderPdf(
+export async function renderPdf(
   companyId: number,
   folder: string,
   name: string,
@@ -2148,6 +2209,10 @@ export const occupationalLifecycleRouter = router({
     const result: any = await db.execute(drzSql`SELECT p.*,
       (SELECT GROUP_CONCAT(pe.exam_id ORDER BY pe.exam_id) FROM occupational_provider_exams pe WHERE pe.company_id=p.company_id AND pe.provider_id=p.id AND pe.is_active=1) exam_ids,
       (SELECT GROUP_CONCAT(e.name ORDER BY e.name SEPARATOR '||') FROM occupational_provider_exams pe JOIN pcmso_exam_catalog_v2 e ON e.id=pe.exam_id AND e.company_id=pe.company_id WHERE pe.company_id=p.company_id AND pe.provider_id=p.id AND pe.is_active=1) exam_names,
+      (SELECT u.id FROM occupational_provider_users pu JOIN users u ON u.id=pu.user_id WHERE pu.company_id=p.company_id AND pu.provider_id=p.id ORDER BY pu.is_active DESC,pu.id DESC LIMIT 1) access_user_id,
+      (SELECT u.name FROM occupational_provider_users pu JOIN users u ON u.id=pu.user_id WHERE pu.company_id=p.company_id AND pu.provider_id=p.id ORDER BY pu.is_active DESC,pu.id DESC LIMIT 1) access_name,
+      (SELECT u.email FROM occupational_provider_users pu JOIN users u ON u.id=pu.user_id WHERE pu.company_id=p.company_id AND pu.provider_id=p.id ORDER BY pu.is_active DESC,pu.id DESC LIMIT 1) access_email,
+      (SELECT pu.is_active FROM occupational_provider_users pu WHERE pu.company_id=p.company_id AND pu.provider_id=p.id ORDER BY pu.is_active DESC,pu.id DESC LIMIT 1) access_active,
       (SELECT COUNT(*) FROM occupational_exam_orders o WHERE o.company_id=p.company_id AND o.provider_id=p.id) history_count
       FROM occupational_health_providers p WHERE p.company_id=${companyId}
       ORDER BY p.is_active DESC,p.credential_status='ativo' DESC,p.trade_name,p.legal_name`);
@@ -2224,6 +2289,213 @@ export const occupationalLifecycleRouter = router({
         id
       );
       return { ok: true, id };
+    }),
+
+  provisionProviderAccess: protectedProcedure
+    .input(
+      z.object({
+        providerId: z.number().int().positive(),
+        name: z.string().min(2).max(255),
+        email: z.string().email().max(320),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      requireSesmt(ctx);
+      await ensureOccupationalTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      await requireOwnedEntity(
+        db,
+        companyId,
+        "provider",
+        input.providerId,
+        "Prestador"
+      );
+
+      const providerResult: any = await db.execute(
+        drzSql`SELECT legal_name,trade_name,cnpj FROM occupational_health_providers WHERE id=${input.providerId} AND company_id=${companyId} LIMIT 1`
+      );
+      const provider = rowsOf(providerResult)[0];
+      const providerCnpj = String(provider?.cnpj || "").replace(/\D/g, "");
+      if (providerCnpj.length !== 14) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "Informe um CNPJ válido no cadastro do credenciado antes de criar o acesso.",
+        });
+      }
+
+      const email = input.email.trim().toLowerCase();
+      const existingResult: any = await db.execute(
+        drzSql`SELECT id,role,company_id FROM users WHERE LOWER(email)=${email} LIMIT 1`
+      );
+      const existing = rowsOf(existingResult)[0];
+      if (existing && String(existing.role || "") !== "clinica") {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message:
+            "Este e-mail já pertence a outro perfil. Utilize um e-mail exclusivo para o portal da clínica.",
+        });
+      }
+
+      let userId = Number(existing?.id || 0);
+      if (userId) {
+        const mappedResult: any = await db.execute(drzSql`SELECT hp.cnpj
+          FROM occupational_provider_users pu
+          JOIN occupational_health_providers hp ON hp.id=pu.provider_id AND hp.company_id=pu.company_id
+          WHERE pu.user_id=${userId} AND pu.is_active=1`);
+        const incompatible = rowsOf(mappedResult).some(
+          (row: any) =>
+            String(row.cnpj || "").replace(/\D/g, "") !== providerCnpj
+        );
+        if (incompatible) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "Este login já está vinculado a outro CNPJ de clínica. Crie um acesso separado para preservar o isolamento.",
+          });
+        }
+        await db.execute(
+          drzSql`UPDATE users SET name=${input.name},role='clinica',is_active=1,employment_status='active',counts_as_employee=0 WHERE id=${userId}`
+        );
+      } else {
+        const openId = `clinic:${crypto
+          .createHash("sha256")
+          .update(`${companyId}:${email}`)
+          .digest("hex")
+          .slice(0, 48)}`;
+        const created: any = await db.execute(drzSql`INSERT INTO users
+          (openId,name,email,loginMethod,role,company_id,is_active,employment_status,counts_as_employee)
+          VALUES (${openId},${input.name},${email},'corporate','clinica',${companyId},1,'active',0)`);
+        userId = Number((created as any)[0]?.insertId || 0);
+      }
+
+      await db.execute(
+        drzSql`UPDATE occupational_provider_users SET is_active=0 WHERE company_id=${companyId} AND provider_id=${input.providerId} AND user_id<>${userId}`
+      );
+      await db.execute(drzSql`INSERT INTO occupational_provider_users
+        (company_id,provider_id,user_id,is_active,created_by)
+        VALUES (${companyId},${input.providerId},${userId},1,${Number(ctx.user.id)})
+        ON DUPLICATE KEY UPDATE is_active=1,updated_at=NOW()`);
+
+      const companyResult: any = await db.execute(
+        drzSql`SELECT name FROM companies WHERE id=${companyId} LIMIT 1`
+      );
+      const companyName = String(
+        rowsOf(companyResult)[0]?.name || "Saúde do Trabalho"
+      );
+      const token = crypto.randomBytes(32).toString("hex");
+      const expiresAt = new Date(Date.now() + 7 * 24 * 3600 * 1000);
+      const activationExpires = expiresAt
+        .toISOString()
+        .slice(0, 19)
+        .replace("T", " ");
+      await db.execute(drzSql`INSERT INTO corporate_emails
+        (email,company,employeeName,isActive,employment_status,company_id,role,userId,activation_token,activation_expires_at)
+        VALUES (${email},${companyName},${input.name},1,'active',${companyId},'clinica',${userId},${token},${activationExpires})
+        ON DUPLICATE KEY UPDATE employeeName=VALUES(employeeName),isActive=1,employment_status='active',role='clinica',userId=VALUES(userId),activation_token=IF(hasSetPassword=1,activation_token,VALUES(activation_token)),activation_expires_at=IF(hasSetPassword=1,activation_expires_at,VALUES(activation_expires_at))`);
+
+      const activationState: any = await db.execute(
+        drzSql`SELECT hasSetPassword FROM corporate_emails WHERE email=${email} LIMIT 1`
+      );
+      const needsActivation =
+        Number(rowsOf(activationState)[0]?.hasSetPassword || 0) !== 1;
+      let emailSent = false;
+      let emailWarning: string | undefined;
+      if (needsActivation) {
+        try {
+          const base = getEmailLinkBaseUrl();
+          const link = `${base}/ativar?token=${token}`;
+          const sent = await sendEmail({
+            to: email,
+            toName: input.name,
+            subject: "Acesso ao Portal da Clínica Credenciada",
+            html: buildWelcomeEmail({
+              name: input.name,
+              companyName,
+              link,
+              base,
+            }),
+          });
+          emailSent = Boolean(sent.ok && !sent.preview);
+          if (sent.preview)
+            emailWarning = "SMTP não configurado; convite mantido para ativação.";
+          else if (!sent.ok)
+            emailWarning = `E-mail não enviado: ${sent.error || "falha desconhecida"}`;
+        } catch (error: any) {
+          emailWarning = `Falha ao enviar o convite: ${error?.message || "erro desconhecido"}`;
+        }
+      }
+
+      await audit(
+        db,
+        ctx,
+        "provider_access_provisioned",
+        "health_provider",
+        input.providerId,
+        null,
+        { userId, email, providerCnpj }
+      );
+      return { ok: true, userId, needsActivation, emailSent, emailWarning };
+    }),
+
+  setProviderAccessActive: protectedProcedure
+    .input(
+      z.object({
+        providerId: z.number().int().positive(),
+        active: z.boolean(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      requireSesmt(ctx);
+      await ensureOccupationalTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      await requireOwnedEntity(
+        db,
+        companyId,
+        "provider",
+        input.providerId,
+        "Prestador"
+      );
+      const mappingResult: any = await db.execute(
+        drzSql`SELECT user_id FROM occupational_provider_users WHERE company_id=${companyId} AND provider_id=${input.providerId} ORDER BY is_active DESC,id DESC LIMIT 1`
+      );
+      const userId = Number(rowsOf(mappingResult)[0]?.user_id || 0);
+      if (!userId) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Crie o acesso da clínica antes de alterar sua situação.",
+        });
+      }
+      await db.execute(
+        drzSql`UPDATE occupational_provider_users SET is_active=${input.active ? 1 : 0} WHERE company_id=${companyId} AND provider_id=${input.providerId} AND user_id=${userId}`
+      );
+      const activeMappings: any = await db.execute(
+        drzSql`SELECT COUNT(*) total FROM occupational_provider_users WHERE user_id=${userId} AND is_active=1`
+      );
+      const hasActiveMapping =
+        Number(rowsOf(activeMappings)[0]?.total || 0) > 0;
+      await db.execute(
+        drzSql`UPDATE users SET is_active=${hasActiveMapping ? 1 : 0},employment_status=${hasActiveMapping ? "active" : "inactive"} WHERE id=${userId} AND role='clinica'`
+      );
+      await db.execute(
+        drzSql`UPDATE corporate_emails SET isActive=${hasActiveMapping ? 1 : 0},employment_status=${hasActiveMapping ? "active" : "inactive"} WHERE userId=${userId} AND role='clinica'`
+      );
+      await audit(
+        db,
+        ctx,
+        input.active
+          ? "provider_access_reactivated"
+          : "provider_access_deactivated",
+        "health_provider",
+        input.providerId,
+        null,
+        { userId }
+      );
+      return { ok: true };
     }),
 
   setProviderActive: protectedProcedure
@@ -2307,13 +2579,41 @@ export const occupationalLifecycleRouter = router({
       drzSql`UPDATE occupational_exam_orders SET status='vencida' WHERE company_id=${companyId} AND valid_until<CURDATE() AND status IN ('pendente','enviada')`
     );
     const result: any =
-      await db.execute(drzSql`SELECT o.*,u.name collaborator_name,u.cpf,u.employee_registration,u.position,b.name branch_name,s.name sector_name,g.code gse_code,g.name gse_name,e.name exam_name,p.trade_name provider_trade_name,p.legal_name provider_legal_name
-      FROM occupational_exam_orders o JOIN users u ON u.id=o.collaborator_id LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id LEFT JOIN occupational_gse_master g ON g.id=o.gse_id JOIN pcmso_exam_catalog_v2 e ON e.id=o.exam_id LEFT JOIN occupational_health_providers p ON p.id=o.provider_id WHERE o.company_id=${companyId} ORDER BY o.created_at DESC LIMIT 1500`);
+      await db.execute(drzSql`SELECT o.*,u.name collaborator_name,u.cpf,u.employee_registration,u.position,b.name branch_name,s.name sector_name,g.code gse_code,g.name gse_name,e.name exam_name,p.trade_name provider_trade_name,p.legal_name provider_legal_name,
+      COALESCE(pp.workflow_status,'recebida') provider_workflow_status,pp.scheduled_at provider_scheduled_at,pp.performed_at provider_performed_at,
+      pp.professional_name provider_professional_name,pp.professional_registry_type provider_registry_type,
+      pp.professional_registry_number provider_registry_number,pp.amount provider_amount,
+      pp.proof_private_path provider_proof_private_path,pp.proof_uploaded_at provider_proof_uploaded_at,pp.result_id provider_result_id
+      FROM occupational_exam_orders o JOIN users u ON u.id=o.collaborator_id LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id LEFT JOIN occupational_gse_master g ON g.id=o.gse_id JOIN pcmso_exam_catalog_v2 e ON e.id=o.exam_id LEFT JOIN occupational_health_providers p ON p.id=o.provider_id LEFT JOIN occupational_provider_order_progress pp ON pp.order_id=o.id AND pp.company_id=o.company_id AND pp.provider_id=o.provider_id WHERE o.company_id=${companyId} ORDER BY o.created_at DESC LIMIT 1500`);
     return rowsOf(result).map((row: any) => ({
       ...row,
       version_label: orderLabel(Number(row.version_number || 1)),
     }));
   }),
+
+  getProviderSignedProof: protectedProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ ctx, input }) => {
+      requireOperational(ctx);
+      await ensureOccupationalTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const result: any = await db.execute(drzSql`SELECT pp.proof_private_path
+        FROM occupational_provider_order_progress pp
+        JOIN occupational_exam_orders o ON o.id=pp.order_id AND o.company_id=pp.company_id AND o.provider_id=pp.provider_id
+        WHERE pp.order_id=${input.id} AND pp.company_id=${companyId} LIMIT 1`);
+      const row = rowsOf(result)[0];
+      const file = privateDocumentPayload(companyId, row?.proof_private_path);
+      await audit(
+        db,
+        ctx,
+        "provider_signed_proof_downloaded",
+        "exam_order",
+        input.id
+      );
+      return { fileName: file.fileName, dataBase64: file.dataBase64 };
+    }),
 
   listExamPopulation: protectedProcedure.query(async ({ ctx }) => {
     requireOperational(ctx);
@@ -2566,6 +2866,13 @@ export const occupationalLifecycleRouter = router({
           "Nova requisicao de exame ocupacional",
           "Uma requisicao vigente foi disponibilizada em seus documentos ocupacionais."
         );
+        await notifyProviderOrder(
+          db,
+          companyId,
+          input.providerId,
+          id,
+          number
+        );
         await audit(
           db,
           ctx,
@@ -2677,6 +2984,13 @@ export const occupationalLifecycleRouter = router({
           "Nova requisicao de exame ocupacional",
           "Uma requisicao vigente foi disponibilizada em seus documentos ocupacionais."
         );
+        await notifyProviderOrder(
+          db,
+          companyId,
+          input.providerId,
+          id,
+          number
+        );
         await audit(
           db,
           ctx,
@@ -2769,6 +3083,13 @@ export const occupationalLifecycleRouter = router({
         id,
         "Requisicao de exame atualizada",
         "A requisicao anterior foi substituida. Consulte apenas a nova versao vigente em seus documentos ocupacionais."
+      );
+      await notifyProviderOrder(
+        db,
+        companyId,
+        input.providerId,
+        id,
+        number
       );
       await audit(
         db,

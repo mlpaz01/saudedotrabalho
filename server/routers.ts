@@ -25,6 +25,7 @@ import {
   ensureOccupationalTables,
   occupationalLifecycleRouter,
 } from "./_core/occupationalLifecycleRouter";
+import { clinicPortalRouter } from "./_core/clinicPortalRouter";
 import { occupationalPppRouter } from "./_core/occupationalPppRouter";
 import { ddsRouter } from "./_core/ddsRouter";
 import { esocialRouter } from "./_core/esocialRouter";
@@ -4549,6 +4550,7 @@ export const appRouter = router({
   commercial: commercialRouter,
   occupationalHealth: occupationalHealthRouter,
   occupationalLifecycle: occupationalLifecycleRouter,
+  clinicPortal: clinicPortalRouter,
   occupationalPpp: occupationalPppRouter,
   dds: ddsRouter,
   esocial: esocialRouter,
@@ -6082,6 +6084,7 @@ export const appRouter = router({
           rh: "RH / Saude",
           sesmt: "SESMT",
           medico: "Médico do Trabalho",
+          clinica: "Clínica Credenciada",
           cipa: "CIPA",
           admin: "Administrador",
           company_admin: "Admin Empresa",

@@ -2,6 +2,7 @@ import { NOT_ADMIN_ERR_MSG, UNAUTHED_ERR_MSG } from '@shared/const';
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
+import { isClinicProcedureAllowed } from "./clinicPortal";
 
 const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
@@ -16,6 +17,12 @@ const requireUser = t.middleware(async opts => {
   if (!ctx.user) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
   }
+
+  if (ctx.user.role === "clinica" && !isClinicProcedureAllowed(opts.path))
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Este recurso não faz parte do acesso da clínica credenciada.",
+    });
 
   return next({
     ctx: {

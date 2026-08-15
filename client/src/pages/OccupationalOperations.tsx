@@ -19,6 +19,7 @@ import {
   ClipboardCheck,
   ClipboardList,
   Download,
+  FileCheck2,
   FileClock,
   FileHeart,
   FilePlus2,
@@ -147,6 +148,7 @@ export default function OccupationalOperations() {
   const [examEditing, setExamEditing] = useState<any>(null);
   const [providerOpen, setProviderOpen] = useState(false);
   const [providerEditing, setProviderEditing] = useState<any>(null);
+  const [providerAccess, setProviderAccess] = useState<any>(null);
   const [reissue, setReissue] = useState<any>(null);
   const [review, setReview] = useState<any>(null);
   const [clinicalWorkerId, setClinicalWorkerId] = useState(0);
@@ -258,6 +260,11 @@ export default function OccupationalOperations() {
       },
       onError: error => toast.error(error.message),
     });
+  const providerSignedProof =
+    trpc.occupationalLifecycle.getProviderSignedProof.useMutation({
+      onSuccess: result => downloadData(result.dataBase64, result.fileName),
+      onError: error => toast.error(error.message),
+    });
   const emailOrder = trpc.occupationalLifecycle.sendExamOrderEmail.useMutation({
     onSuccess: result => {
       refresh();
@@ -315,6 +322,30 @@ export default function OccupationalOperations() {
     },
     onError: error => toast.error(error.message),
   });
+  const providerAccessCreate =
+    trpc.occupationalLifecycle.provisionProviderAccess.useMutation({
+      onSuccess: async result => {
+        await refresh();
+        setProviderAccess(null);
+        if (result.emailSent)
+          toast.success("Acesso criado e convite enviado para a clínica.");
+        else if (result.needsActivation)
+          toast.warning(
+            result.emailWarning ||
+              "Acesso criado; confira a configuração de e-mail para entregar o convite."
+          );
+        else toast.success("Acesso da clínica atualizado.");
+      },
+      onError: error => toast.error(error.message),
+    });
+  const providerAccessActive =
+    trpc.occupationalLifecycle.setProviderAccessActive.useMutation({
+      onSuccess: async () => {
+        await refresh();
+        toast.success("Situação do acesso da clínica atualizada.");
+      },
+      onError: error => toast.error(error.message),
+    });
   const providerActive =
     trpc.occupationalLifecycle.setProviderActive.useMutation({
       onSuccess: async () => {
@@ -897,7 +928,7 @@ export default function OccupationalOperations() {
               }
             >
               <div className="overflow-auto border">
-                <table className="w-full min-w-[1220px] text-sm">
+                <table className="w-full min-w-[1390px] text-sm">
                   <thead className="bg-slate-50 text-xs text-slate-600">
                     <tr>
                       <th className="w-10 p-2">
@@ -923,6 +954,7 @@ export default function OccupationalOperations() {
                       <th className="p-2 text-left">Prestador</th>
                       <th className="p-2 text-left">Validade</th>
                       <th className="p-2 text-left">Situação</th>
+                      <th className="p-2 text-left">Clínica</th>
                       <th className="p-2 text-right">Ações</th>
                     </tr>
                   </thead>
@@ -990,7 +1022,44 @@ export default function OccupationalOperations() {
                           </Badge>
                         </td>
                         <td className="p-2">
+                          {row.provider_id ? (
+                            <>
+                              <Badge
+                                className={`rounded-sm ${row.provider_workflow_status === "concluida" ? "bg-emerald-100 text-emerald-800" : row.provider_workflow_status === "resultado_enviado" ? "bg-sky-100 text-sky-800" : "bg-amber-100 text-amber-800"}`}
+                              >
+                                {String(
+                                  row.provider_workflow_status || "recebida"
+                                ).replaceAll("_", " ")}
+                              </Badge>
+                              <br />
+                              <span className="text-xs text-slate-500">
+                                {row.provider_proof_private_path
+                                  ? "Comprovante anexado"
+                                  : "Comprovante pendente"}
+                              </span>
+                            </>
+                          ) : (
+                            <span className="text-xs text-slate-500">
+                              Sem clínica vinculada
+                            </span>
+                          )}
+                        </td>
+                        <td className="p-2">
                           <div className="flex justify-end gap-1">
+                            {row.provider_proof_private_path && (
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                title="Abrir comprovante assinado"
+                                onClick={() =>
+                                  providerSignedProof.mutate({
+                                    id: Number(row.id),
+                                  })
+                                }
+                              >
+                                <FileCheck2 size={15} />
+                              </Button>
+                            )}
                             <Button
                               size="icon"
                               variant="ghost"
@@ -1187,7 +1256,7 @@ export default function OccupationalOperations() {
             }
           >
             <div className="overflow-auto border">
-              <table className="w-full min-w-[1180px] text-sm">
+              <table className="w-full min-w-[1320px] text-sm">
                 <thead className="bg-slate-50 text-xs text-slate-600">
                   <tr>
                     <th className="p-2 text-left">Prestador</th>
@@ -1196,6 +1265,7 @@ export default function OccupationalOperations() {
                     <th className="p-2 text-left">Contato</th>
                     <th className="p-2 text-left">Exames vinculados</th>
                     <th className="p-2 text-left">Credenciamento</th>
+                    <th className="p-2 text-left">Portal da clínica</th>
                     <th className="p-2 text-left">Histórico</th>
                     {!isDoctor && <th className="p-2 text-right">Ações</th>}
                   </tr>
@@ -1242,11 +1312,41 @@ export default function OccupationalOperations() {
                         </span>
                       </td>
                       <td className="p-2">
+                        {row.access_user_id ? (
+                          <>
+                            <Badge
+                              className={`rounded-sm ${Number(row.access_active) ? "bg-emerald-100 text-emerald-800" : "bg-slate-200 text-slate-700"}`}
+                            >
+                              {Number(row.access_active) ? "Ativo" : "Bloqueado"}
+                            </Badge>
+                            <br />
+                            <span className="text-xs font-medium">
+                              {row.access_name || "Responsável"}
+                            </span>
+                            <br />
+                            <span className="text-xs text-slate-500">
+                              {row.access_email}
+                            </span>
+                          </>
+                        ) : (
+                          <span className="text-xs text-slate-500">
+                            Acesso não criado
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-2">
                         {Number(row.history_count || 0)} requisição(ões)
                       </td>
                       {!isDoctor && (
                         <td className="p-2">
                           <div className="flex justify-end gap-1">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setProviderAccess(row)}
+                            >
+                              {row.access_user_id ? "Acesso" : "Criar acesso"}
+                            </Button>
                             <Button
                               size="sm"
                               variant="outline"
@@ -1821,6 +1921,20 @@ export default function OccupationalOperations() {
           exams={exams}
           busy={providerSave.isPending}
           save={(payload: any) => providerSave.mutate(payload)}
+        />
+        <ProviderAccessDialog
+          row={providerAccess}
+          close={() => setProviderAccess(null)}
+          busy={
+            providerAccessCreate.isPending || providerAccessActive.isPending
+          }
+          save={(payload: any) => providerAccessCreate.mutate(payload)}
+          setActive={(active: boolean) =>
+            providerAccessActive.mutate({
+              providerId: Number(providerAccess.id),
+              active,
+            })
+          }
         />
         <CatDialog
           open={catOpen}
@@ -3655,6 +3769,103 @@ function ProviderDialog({ open, close, row, exams, busy, save }: any) {
             {busy ? "Salvando..." : "Salvar prestador"}
           </Button>
         </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ProviderAccessDialog({ row, close, busy, save, setActive }: any) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  useEffect(() => {
+    if (!row) return;
+    setName(row.access_name || row.contact_name || row.trade_name || "");
+    setEmail(row.access_email || row.email || "");
+  }, [row]);
+  return (
+    <Dialog open={Boolean(row)} onOpenChange={value => !value && close()}>
+      <DialogContent className="max-w-xl">
+        <DialogHeader>
+          <DialogTitle>Portal da clínica credenciada</DialogTitle>
+        </DialogHeader>
+        {row && (
+          <div className="space-y-4">
+            <div className="border bg-slate-50 p-3 text-sm">
+              <b>{row.trade_name || row.legal_name}</b>
+              <br />
+              <span className="text-slate-600">
+                CNPJ: {row.cnpj || "não informado"}
+              </span>
+            </div>
+            <p className="text-sm text-slate-600">
+              Este acesso visualiza somente requisições direcionadas a este
+              credenciado. A clínica não poderá pesquisar colaboradores nem
+              acessar áreas internas da empresa.
+            </p>
+            <label className="block text-xs font-semibold">
+              Responsável pelo acesso
+              <Input
+                className="mt-1"
+                value={name}
+                onChange={event => setName(event.target.value)}
+              />
+            </label>
+            <label className="block text-xs font-semibold">
+              E-mail de acesso
+              <Input
+                className="mt-1"
+                type="email"
+                value={email}
+                onChange={event => setEmail(event.target.value)}
+              />
+            </label>
+            {row.access_user_id && (
+              <div className="flex items-center justify-between border p-3">
+                <div>
+                  <p className="text-sm font-semibold">Situação do acesso</p>
+                  <p className="text-xs text-slate-500">
+                    {Number(row.access_active)
+                      ? "Login liberado"
+                      : "Login bloqueado"}
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => {
+                    setActive(!Number(row.access_active));
+                    close();
+                  }}
+                >
+                  {Number(row.access_active) ? "Bloquear" : "Reativar"}
+                </Button>
+              </div>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={close}>
+                Cancelar
+              </Button>
+              <Button
+                disabled={
+                  busy || name.trim().length < 2 || !email.includes("@")
+                }
+                onClick={() =>
+                  save({
+                    providerId: Number(row.id),
+                    name: name.trim(),
+                    email: email.trim().toLowerCase(),
+                  })
+                }
+              >
+                {busy
+                  ? "Salvando..."
+                  : row.access_user_id
+                    ? "Atualizar acesso"
+                    : "Criar e enviar convite"}
+              </Button>
+            </div>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   );

@@ -113,6 +113,7 @@ import OccupationalOperations from "@/pages/OccupationalOperations";
 import AdminPpp from "@/pages/admin/AdminPpp";
 import MyVaccines from "@/pages/MyVaccines";
 import MyOccupationalDocuments from "@/pages/MyOccupationalDocuments";
+import ClinicPortal from "@/pages/ClinicPortal";
 import SuperAdminGuidance from "@/pages/superadmin/SuperAdminGuidance";
 import SuperAdminAnamnesis from "@/pages/superadmin/SuperAdminAnamnesis";
 import AdminFatores from "@/pages/admin/AdminFatores";
@@ -186,6 +187,14 @@ function MedicalRoute({ component: Component ,}: { component: React.ComponentTyp
   return <Component />;
 }
 
+function ClinicRoute({ component: Component }: { component: React.ComponentType }) {
+  const { user, loading } = useAuth();
+  if (loading) return (<div className="min-h-screen brand-gradient flex items-center justify-center"><div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" /></div>);
+  if (!user) return <Redirect to="/login" />;
+  if (user.role !== "clinica") return <Redirect to="/inicio" />;
+  return <Component />;
+}
+
 function OccupationalRoute({ component: Component }: { component: React.ComponentType }) {
   const { user, loading } = useAuth();
   if (loading) return (<div className="min-h-screen brand-gradient flex items-center justify-center"><div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" /></div>);
@@ -229,6 +238,7 @@ function RoleAwareDashboard() {
   if (user.role === "chefia") return <Redirect to="/admin/chefia-dashboard" />;
   if (user.role === "intermediador") return <Redirect to="/intermediador" />;
   if (user.role === "medico") return <Redirect to="/medico"/>;
+  if (user.role === "clinica") return <Redirect to="/clinica"/>;
   if (isManagerRole(user.role)) return <ManagerDashboard />;
   return <Redirect to="/inicio" />;
 }
@@ -262,6 +272,7 @@ function Router() {
         <Route
           path="/meus-atestados" component={() => <ProtectedRoute component={OccupationalHealth} />} />
       <Route path="/documentos-ocupacionais" component={() => <ProtectedRoute component={MyOccupationalDocuments} />} />
+      <Route path="/clinica" component={() => <ClinicRoute component={ClinicPortal} />} />
       <Route path="/admin/qualificacoes" component={() => (<ProtectedRoute component={AdminQualifications} adminOnly />)} />
       <Route path="/area-de-descompressao" component={() => <ProtectedRoute component={Decompression} />} />
       <Route path="/dashboard-classic" component={() => <ProtectedRoute component={Dashboard} />} />

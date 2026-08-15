@@ -235,6 +235,25 @@ const medicalNav: NavSection[] = [
   },
 ];
 
+const clinicNav: NavSection[] = [
+  {
+    section: "Clínica Credenciada",
+    items: [
+      {
+        label: "Portal da Clínica",
+        href: "/clinica",
+        icon: <Building2 size={16} />,
+      },
+      {
+        label: "Manual do Usuario",
+        href: "/manual",
+        icon: <BookMarked size={16} />,
+      },
+      { label: "Suporte", href: "/suporte", icon: <LifeBuoy size={16} /> },
+    ],
+  },
+];
+
 const ITEM_LABELS: Record<string, string> = {
   Suporte: "Suporte",
   "Manual do Usuario": "Manual do Usuário",
@@ -709,6 +728,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const isSuperAdmin = user?.role === "super_admin" && !isImpersonating;
   const isWhiteLabelNetworkAdmin = user?.role === "company_admin";
   const isMedical = user?.role === "medico";
+  const isClinic = user?.role === "clinica";
   const isAdmin =
     isSuperAdmin ||
     user?.role === "admin" ||
@@ -741,7 +761,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   const filteredEmployeeNav: NavItem[] = employeeNav.filter(navAllowed);
   // B3 — Programa de Acolhimento: visible only when eligible (non-managers).
-  const elig = trpc.scheduling.myEligibility.useQuery(undefined, { enabled: !!user ,});
+  const elig = trpc.scheduling.myEligibility.useQuery(undefined, { enabled: !!user && !isClinic ,});
   const isManagerForAcolhimento = user && ["admin","rh","admin_global","company_admin","super_admin","psicologo","chefia",].includes(String((user as any)?.role));
   if (!isManagerForAcolhimento && elig.data?.eligible) {
     filteredEmployeeNav.push({ label: "Agendar Acolhimento", href: "/acolhimento", icon: <HeartHandshake size={16} /> ,});
@@ -754,7 +774,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const isIntermediador = user?.role === "intermediador";
   const homeHref = isIntermediador ? "/intermediador"
     : isMedical
-      ? "/medico": isWhiteLabelNetworkAdmin && !isImpersonating ? "/rede"
+      ? "/medico"
+      : isClinic
+        ? "/clinica": isWhiteLabelNetworkAdmin && !isImpersonating ? "/rede"
     : user?.role === "chefia" ? "/admin/chefia"
     : user?.role === "psicologo" ? "/admin/agenda"  // VÍDEO V5 — psicólogo abre direto na agenda
     : isAdmin ? "/dashboard" : "/inicio";
@@ -810,6 +832,15 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             {isMedical ? (
               <>
                 {medicalNav.map(sec => (
+                  <div key={sec.section}>
+                    <div className="sdt-sl">{sec.section.toUpperCase()}</div>
+                    {sec.items.map(item => renderNavItem(item))}
+                  </div>
+                ))}
+              </>
+            ) : isClinic ? (
+              <>
+                {clinicNav.map(sec => (
                   <div key={sec.section}>
                     <div className="sdt-sl">{sec.section.toUpperCase()}</div>
                     {sec.items.map(item => renderNavItem(item))}

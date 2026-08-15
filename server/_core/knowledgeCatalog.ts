@@ -866,6 +866,70 @@ export const knowledgeArticles: KnowledgeArticle[] = [
     screenshots: [],
     updatedAt,
   },
+  {
+    slug: "portal-clinica-credenciada",
+    title: "Como operar o Portal da Clínica Credenciada",
+    summary:
+      "Recebimento de requisições, agendamento, realização, envio de resultados, comprovantes assinados e demonstrativo de atendimentos.",
+    module: "Clínica Credenciada",
+    route: "/clinica",
+    roles: ["clinica"],
+    keywords: [
+      "clínica",
+      "credenciado",
+      "requisição",
+      "agendamento",
+      "resultado",
+      "ocr",
+      "comprovante",
+      "faturamento",
+      "demonstrativo",
+    ],
+    whatIs:
+      "O portal é a área restrita da clínica credenciada para tratar exclusivamente as requisições encaminhadas pelo SESMT.",
+    purpose:
+      "Acompanhar o atendimento sem acesso livre ao cadastro da empresa, devolver resultados com rastreabilidade e comprovar a produção do período.",
+    accessPath: "Menu > Portal da Clínica",
+    steps: [
+      "Abra Requisições e localize o trabalhador pelo nome, CPF, matrícula, exame ou número da requisição.",
+      "Atualize a situação para agendamento pendente ou agendada e informe a data quando ela estiver definida.",
+      "Depois do atendimento, registre a data de realização e o profissional responsável.",
+      "Use Lançar resultado para digitar as informações ou ler uma imagem com OCR; sempre revise as sugestões antes do envio.",
+      "Imprima a requisição, colha a assinatura do credenciado e anexe a via assinada na mesma requisição.",
+      "Abra Demonstrativo e faturamento, selecione o período e confira valores e comprovantes pendentes antes de gerar o PDF.",
+    ],
+    cautions: [
+      "A clínica visualiza somente trabalhadores com requisições encaminhadas para o seu credenciamento.",
+      "O OCR auxilia a digitação e não substitui a conferência do profissional responsável.",
+      "O comprovante assinado deve permanecer vinculado ao atendimento correspondente.",
+    ],
+    faq: [
+      {
+        question: "Posso pesquisar outro colaborador da empresa?",
+        answer:
+          "Não. A pesquisa funciona apenas dentro das requisições encaminhadas à clínica.",
+      },
+      {
+        question: "O resultado enviado fica ligado a quem?",
+        answer:
+          "A plataforma usa o trabalhador, o exame e a empresa definidos na requisição original; esses vínculos não podem ser trocados pela clínica.",
+      },
+    ],
+    problems: [
+      {
+        problem: "A requisição não aparece no portal.",
+        solution:
+          "Peça ao SESMT para confirmar se a requisição vigente foi direcionada ao mesmo credenciado e CNPJ do seu acesso.",
+      },
+      {
+        problem: "O demonstrativo indica comprovante pendente.",
+        solution:
+          "Abra a requisição correspondente e anexe a via assinada pelo profissional que realizou o atendimento.",
+      },
+    ],
+    screenshots: [],
+    updatedAt,
+  },
 ];
 
 function normalize(value: unknown) {

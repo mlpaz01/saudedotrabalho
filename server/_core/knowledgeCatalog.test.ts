@@ -16,4 +16,18 @@ describe("knowledge catalog", () => {
     const articles = searchKnowledgeArticles("white label domínio créditos", "user", 20);
     expect(articles.some((article) => article.slug === "white-label-rede")).toBe(false);
   });
+
+  it("entrega somente a orientação operacional ao perfil da clínica", () => {
+    const articles = searchKnowledgeArticles(
+      "como anexar requisição assinada e gerar faturamento",
+      "clinica",
+      20
+    );
+    expect(articles.map(article => article.slug)).toContain(
+      "portal-clinica-credenciada"
+    );
+    expect(
+      articles.some(article => article.slug === "dossie-colaborador")
+    ).toBe(false);
+  });
 });
