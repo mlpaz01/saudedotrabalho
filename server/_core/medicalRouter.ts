@@ -44,6 +44,21 @@ function companyOf(ctx: any) {
   return companyId;
 }
 
+async function notifyCollaboratorReferral(
+  db: any,
+  companyId: number,
+  collaboratorId: number,
+  referralId: number
+) {
+  const key = `occupational-document:referral:${referralId}:u${collaboratorId}`;
+  await db
+    .execute(drzSql`INSERT INTO notifications
+      (user_id,company_id,type,priority,title,body,link,icon,dedup_key)
+      VALUES (${collaboratorId},${companyId},'documento_ocupacional','media','Novo encaminhamento medico','Um encaminhamento foi emitido e esta disponivel em seus documentos ocupacionais.','/documentos-ocupacionais','file-text',${key})
+      ON DUPLICATE KEY UPDATE body=VALUES(body),read_at=NULL,created_at=NOW()`)
+    .catch(() => undefined);
+}
+
 function requireDoctor(ctx: any) {
   if (roleOf(ctx) !== "medico") {
     throw new TRPCError({
@@ -2441,6 +2456,12 @@ export const medicalRouter = router({
         drzSql`INSERT INTO medical_referrals_v2 (company_id,collaborator_id,encounter_id,doctor_user_id,referral_date,destination_type,destination_name,reason,guidance,observations) VALUES (${companyId},${input.collaboratorId},${input.encounterId || null},${Number(ctx.user.id)},${input.referralDate},${input.destinationType},${input.destinationName || null},${input.reason || null},${input.guidance || null},${input.observations || null})`
       );
       const id = Number((result as any)[0]?.insertId || 0);
+      await notifyCollaboratorReferral(
+        db,
+        companyId,
+        input.collaboratorId,
+        id
+      );
       await audit(
         db,
         ctx,

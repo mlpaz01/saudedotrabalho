@@ -1156,6 +1156,50 @@ async function audit(
     VALUES (${companyOf(ctx)},${Number(ctx.user.id)},${action},${entityType},${entityId || null},${collaboratorId || null},${details ? JSON.stringify(details) : null})`);
 }
 
+async function notifyCollaboratorDocument(
+  db: any,
+  companyId: number,
+  collaboratorId: number,
+  kind: "exam_order" | "aso" | "exam_result" | "referral",
+  entityId: number,
+  title: string,
+  body: string
+) {
+  const key = `occupational-document:${kind}:${entityId}:u${collaboratorId}`;
+  await db
+    .execute(drzSql`INSERT INTO notifications
+      (user_id,company_id,type,priority,title,body,link,icon,dedup_key)
+      VALUES (${collaboratorId},${companyId},'documento_ocupacional','media',${title},${body},'/documentos-ocupacionais','file-text',${key})
+      ON DUPLICATE KEY UPDATE title=VALUES(title),body=VALUES(body),link=VALUES(link),read_at=NULL,created_at=NOW()`)
+    .catch(() => undefined);
+}
+
+function privateDocumentPayload(companyId: number, documentPath: unknown) {
+  const value = String(documentPath || "").trim();
+  const root = path.resolve(privateRoot(companyId));
+  const resolved = path.resolve(value || root);
+  if (!value || !resolved.startsWith(`${root}${path.sep}`) || !fs.existsSync(resolved)) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "Documento digital não encontrado.",
+    });
+  }
+  const extension = path.extname(resolved).toLowerCase();
+  const mime =
+    extension === ".pdf"
+      ? "application/pdf"
+      : extension === ".png"
+        ? "image/png"
+        : extension === ".jpg" || extension === ".jpeg"
+          ? "image/jpeg"
+          : "application/octet-stream";
+  return {
+    resolved,
+    fileName: path.basename(resolved),
+    dataBase64: `data:${mime};base64,${fs.readFileSync(resolved).toString("base64")}`,
+  };
+}
+
 function privateRoot(companyId: number) {
   const root =
     process.env.NODE_ENV === "production"
@@ -2513,6 +2557,15 @@ export const occupationalLifecycleRouter = router({
         const id = Number((inserted as any)[0]?.insertId || 0);
         ids.push(id);
         created++;
+        await notifyCollaboratorDocument(
+          db,
+          companyId,
+          item.collaboratorId,
+          "exam_order",
+          id,
+          "Nova requisicao de exame ocupacional",
+          "Uma requisicao vigente foi disponibilizada em seus documentos ocupacionais."
+        );
         await audit(
           db,
           ctx,
@@ -2615,6 +2668,15 @@ export const occupationalLifecycleRouter = router({
           VALUES (${companyId},${number},1,${collaboratorId},${row.gse_id || null},${input.pcmsoId || null},${input.examId},${input.exerciseYear},${decision.requestKind},${decision.requestKind === "repeticao" ? input.justification || null : null},${input.providerId || null},${input.serviceMode},${input.serviceLocation || null},CURDATE(),${input.validUntil},'pendente',${input.orientations || null},${Number(ctx.user.id)})`);
         const id = Number((result as any)[0]?.insertId || 0);
         ids.push(id);
+        await notifyCollaboratorDocument(
+          db,
+          companyId,
+          collaboratorId,
+          "exam_order",
+          id,
+          "Nova requisicao de exame ocupacional",
+          "Uma requisicao vigente foi disponibilizada em seus documentos ocupacionais."
+        );
         await audit(
           db,
           ctx,
@@ -2698,6 +2760,15 @@ export const occupationalLifecycleRouter = router({
       const id = Number((inserted as any)[0]?.insertId || 0);
       await db.execute(
         drzSql`UPDATE occupational_exam_orders SET status='substituida' WHERE id=${input.id} AND company_id=${companyId}`
+      );
+      await notifyCollaboratorDocument(
+        db,
+        companyId,
+        Number(original.collaborator_id),
+        "exam_order",
+        id,
+        "Requisicao de exame atualizada",
+        "A requisicao anterior foi substituida. Consulte apenas a nova versao vigente em seus documentos ocupacionais."
       );
       await audit(
         db,
@@ -3186,6 +3257,17 @@ export const occupationalLifecycleRouter = router({
         input.collaboratorId,
         { source: input.source, identityStatus: input.identityStatus }
       );
+      if (documentPath && input.identityStatus === "confirmado") {
+        await notifyCollaboratorDocument(
+          db,
+          companyId,
+          input.collaboratorId,
+          "exam_result",
+          id,
+          "Novo resultado de exame",
+          "Um resultado de exame identificado para voce foi disponibilizado em seus documentos ocupacionais."
+        );
+      }
       return { ok: true, id, classification };
     }),
 
@@ -3662,6 +3744,15 @@ export const occupationalLifecycleRouter = router({
       const target = await renderPdf(companyId, "aso", `aso_${id}.pdf`, html);
       await db.execute(
         drzSql`UPDATE occupational_asos SET pdf_private_path=${target},status='finalizado' WHERE id=${id} AND company_id=${companyId}`
+      );
+      await notifyCollaboratorDocument(
+        db,
+        companyId,
+        input.collaboratorId,
+        "aso",
+        id,
+        "Novo ASO disponivel",
+        "Seu Atestado de Saude Ocupacional foi finalizado e esta disponivel para consulta."
       );
       await audit(db, ctx, "aso_issued", "aso", id, input.collaboratorId, {
         type: input.asoType,
@@ -4714,6 +4805,150 @@ export const occupationalLifecycleRouter = router({
           ],
         },
         note: "Monitorações pontuais são históricas e não entram na meta anual de exames periódicos.",
+      };
+    }),
+
+  myOccupationalDocuments: protectedProcedure.query(async ({ ctx }) => {
+    await ensureOccupationalTables();
+    const db = await getDb();
+    const companyId = companyOf(ctx);
+    const collaboratorId = Number(ctx.user.id);
+    if (!db) return { orders: [], asos: [], results: [], referrals: [] };
+
+    const [ordersResult, asosResult, resultsResult] = await Promise.all([
+      db.execute(drzSql`SELECT o.id,o.order_number,o.version_number,o.exercise_year,o.request_type,o.issue_date,o.valid_until,o.status,o.service_mode,o.service_location,o.pdf_private_path,e.name exam_name,p.trade_name provider_name
+        FROM occupational_exam_orders o
+        JOIN pcmso_exam_catalog_v2 e ON e.id=o.exam_id AND e.company_id=o.company_id
+        LEFT JOIN occupational_health_providers p ON p.id=o.provider_id AND p.company_id=o.company_id
+        WHERE o.company_id=${companyId} AND o.collaborator_id=${collaboratorId}
+          AND o.status IN ('pendente','enviada')
+          AND (o.valid_until IS NULL OR o.valid_until>=CURDATE())
+        ORDER BY o.created_at DESC,o.id DESC`),
+      db.execute(drzSql`SELECT id,aso_type,fitness_status,status,issued_at,pdf_private_path
+        FROM occupational_asos
+        WHERE company_id=${companyId} AND collaborator_id=${collaboratorId}
+          AND status='finalizado' AND pdf_private_path IS NOT NULL
+        ORDER BY issued_at DESC,id DESC`),
+      db.execute(drzSql`SELECT r.id,r.performed_at,r.laboratory_name,r.classification,r.reviewed_at,r.document_private_path,e.name exam_name
+        FROM occupational_exam_results r
+        JOIN pcmso_exam_catalog_v2 e ON e.id=r.exam_id AND e.company_id=r.company_id
+        WHERE r.company_id=${companyId} AND r.collaborator_id=${collaboratorId}
+          AND r.identity_status='confirmado' AND r.document_private_path IS NOT NULL
+        ORDER BY r.performed_at DESC,r.id DESC`),
+    ]);
+
+    let referrals: any[] = [];
+    try {
+      const referralResult: any = await db.execute(
+        drzSql`SELECT r.id,r.referral_date,r.destination_type,r.destination_name,r.reason,r.guidance,r.created_at,u.name doctor_name,p.crm,p.crm_state
+          FROM medical_referrals_v2 r
+          JOIN users u ON u.id=r.doctor_user_id
+          LEFT JOIN medical_professional_profiles p ON p.user_id=r.doctor_user_id
+          WHERE r.company_id=${companyId} AND r.collaborator_id=${collaboratorId}
+          ORDER BY r.referral_date DESC,r.id DESC`
+      );
+      referrals = rowsOf(referralResult);
+    } catch {
+      referrals = [];
+    }
+
+    return {
+      orders: rowsOf(ordersResult),
+      asos: rowsOf(asosResult),
+      results: rowsOf(resultsResult),
+      referrals,
+    };
+  }),
+
+  downloadMyOccupationalDocument: protectedProcedure
+    .input(
+      z.object({
+        kind: z.enum(["exam_order", "aso", "exam_result", "referral"]),
+        id: z.number().int().positive(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      await ensureOccupationalTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      const collaboratorId = Number(ctx.user.id);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+      if (input.kind === "exam_order") {
+        const result: any = await db.execute(
+          drzSql`SELECT o.*,e.name exam_name,p.trade_name provider_name,u.name collaborator_name,u.cpf,u.employee_registration,c.name company_name,c.cnpj
+            FROM occupational_exam_orders o
+            JOIN users u ON u.id=o.collaborator_id AND u.company_id=o.company_id
+            JOIN companies c ON c.id=o.company_id
+            JOIN pcmso_exam_catalog_v2 e ON e.id=o.exam_id AND e.company_id=o.company_id
+            LEFT JOIN occupational_health_providers p ON p.id=o.provider_id AND p.company_id=o.company_id
+            WHERE o.id=${input.id} AND o.company_id=${companyId} AND o.collaborator_id=${collaboratorId}
+              AND o.status IN ('pendente','enviada')
+              AND (o.valid_until IS NULL OR o.valid_until>=CURDATE()) LIMIT 1`
+        );
+        const row = rowsOf(result)[0];
+        if (!row)
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Requisicao vigente nao encontrada.",
+          });
+        let file = String(row.pdf_private_path || "").trim();
+        if (!file || !fs.existsSync(file)) {
+          const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>@page{size:A4;margin:18mm}body{font-family:Arial;color:#173047;font-size:10pt;line-height:1.5}h1{border-bottom:4px solid #0895a5;padding-bottom:5mm}.box{border:1px solid #d8e2e8;padding:5mm;margin:5mm 0}.tag{font-weight:700;color:#087583}</style></head><body><h1>REQUISICAO DE EXAME OCUPACIONAL</h1><p><b>${esc(row.company_name)}</b><br>CNPJ: ${esc(row.cnpj || "-")}</p><div class="box"><p><b>Trabalhador:</b> ${esc(row.collaborator_name)}<br><b>CPF:</b> ${esc(row.cpf || "-")}<br><b>Matricula:</b> ${esc(row.employee_registration || "-")}</p></div><div class="box"><p class="tag">${esc(row.order_number)}</p><p><b>Exame:</b> ${esc(row.exam_name)}<br><b>Prestador:</b> ${esc(row.provider_name || "A definir")}<br><b>Local:</b> ${esc(row.service_location || "A definir")}<br><b>Validade:</b> ${esc(row.valid_until || "Nao informada")}</p><p><b>Orientacoes:</b> ${esc(row.orientations || "Seguir as orientacoes do prestador.")}</p></div><p>Esta e a via digital vigente. Requisicoes substituidas permanecem somente na trilha de auditoria.</p></body></html>`;
+          file = await renderPdf(
+            companyId,
+            "exam-orders",
+            `requisicao_${String(row.order_number).replace(/[^a-zA-Z0-9_-]/g, "_")}.pdf`,
+            html
+          );
+          await db.execute(
+            drzSql`UPDATE occupational_exam_orders SET pdf_private_path=${file} WHERE id=${input.id} AND company_id=${companyId}`
+          );
+        }
+        await audit(db, ctx, "employee_document_downloaded", "exam_order", input.id, collaboratorId);
+        const payload = privateDocumentPayload(companyId, file);
+        return { fileName: payload.fileName, dataBase64: payload.dataBase64 };
+      }
+
+      if (input.kind === "aso") {
+        const result: any = await db.execute(
+          drzSql`SELECT pdf_private_path FROM occupational_asos WHERE id=${input.id} AND company_id=${companyId} AND collaborator_id=${collaboratorId} AND status='finalizado' LIMIT 1`
+        );
+        const row = rowsOf(result)[0];
+        if (!row) throw new TRPCError({ code: "NOT_FOUND" });
+        const payload = privateDocumentPayload(companyId, row.pdf_private_path);
+        await audit(db, ctx, "employee_document_downloaded", "aso", input.id, collaboratorId);
+        return { fileName: payload.fileName, dataBase64: payload.dataBase64 };
+      }
+
+      if (input.kind === "exam_result") {
+        const result: any = await db.execute(
+          drzSql`SELECT document_private_path FROM occupational_exam_results WHERE id=${input.id} AND company_id=${companyId} AND collaborator_id=${collaboratorId} AND identity_status='confirmado' LIMIT 1`
+        );
+        const row = rowsOf(result)[0];
+        if (!row) throw new TRPCError({ code: "NOT_FOUND" });
+        const payload = privateDocumentPayload(companyId, row.document_private_path);
+        await audit(db, ctx, "employee_document_downloaded", "exam_result", input.id, collaboratorId);
+        return { fileName: payload.fileName, dataBase64: payload.dataBase64 };
+      }
+
+      const referralResult: any = await db.execute(
+        drzSql`SELECT r.*,u.name doctor_name,p.crm,p.crm_state,c.name company_name,c.cnpj,w.name collaborator_name,w.cpf,w.employee_registration
+          FROM medical_referrals_v2 r
+          JOIN users u ON u.id=r.doctor_user_id
+          JOIN users w ON w.id=r.collaborator_id AND w.company_id=r.company_id
+          JOIN companies c ON c.id=r.company_id
+          LEFT JOIN medical_professional_profiles p ON p.user_id=r.doctor_user_id
+          WHERE r.id=${input.id} AND r.company_id=${companyId} AND r.collaborator_id=${collaboratorId} LIMIT 1`
+      );
+      const row = rowsOf(referralResult)[0];
+      if (!row) throw new TRPCError({ code: "NOT_FOUND" });
+      const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>@page{size:A4;margin:18mm}body{font-family:Arial;color:#173047;font-size:10pt;line-height:1.55}h1{border-bottom:4px solid #0895a5;padding-bottom:5mm}.box{border:1px solid #d8e2e8;padding:5mm;margin:6mm 0}.sign{margin-top:22mm;text-align:center}.line{border-top:1px solid #173047;width:85mm;margin:auto}</style></head><body><h1>ENCAMINHAMENTO MEDICO OCUPACIONAL</h1><p><b>${esc(row.company_name)}</b><br>CNPJ: ${esc(row.cnpj || "-")}</p><div class="box"><b>Colaborador:</b> ${esc(row.collaborator_name)}<br><b>CPF:</b> ${esc(row.cpf || "-")}<br><b>Matricula:</b> ${esc(row.employee_registration || "-")}<br><b>Data:</b> ${esc(row.referral_date)}</div><div class="box"><b>Destino:</b> ${esc(row.destination_name || String(row.destination_type || "").replaceAll("_", " "))}<br><br><b>Motivo:</b><br>${esc(row.reason || "Nao informado")}<br><br><b>Orientacoes:</b><br>${esc(row.guidance || "Nao informadas")}</div><div class="sign"><div class="line"></div><b>${esc(row.doctor_name)}</b><br>${esc([row.crm, row.crm_state].filter(Boolean).join("/") || "CRM nao informado")}</div></body></html>`;
+      const file = await renderPdf(companyId, "referrals", `encaminhamento_${input.id}.pdf`, html);
+      await audit(db, ctx, "employee_document_downloaded", "medical_referral", input.id, collaboratorId);
+      return {
+        fileName: path.basename(file),
+        dataBase64: `data:application/pdf;base64,${fs.readFileSync(file).toString("base64")}`,
       };
     }),
 

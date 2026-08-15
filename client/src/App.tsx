@@ -112,6 +112,7 @@ import MedicalCenter from "@/pages/MedicalCenter";
 import OccupationalOperations from "@/pages/OccupationalOperations";
 import AdminPpp from "@/pages/admin/AdminPpp";
 import MyVaccines from "@/pages/MyVaccines";
+import MyOccupationalDocuments from "@/pages/MyOccupationalDocuments";
 import SuperAdminGuidance from "@/pages/superadmin/SuperAdminGuidance";
 import SuperAdminAnamnesis from "@/pages/superadmin/SuperAdminAnamnesis";
 import AdminFatores from "@/pages/admin/AdminFatores";
@@ -260,6 +261,7 @@ function Router() {
         />
         <Route
           path="/meus-atestados" component={() => <ProtectedRoute component={OccupationalHealth} />} />
+      <Route path="/documentos-ocupacionais" component={() => <ProtectedRoute component={MyOccupationalDocuments} />} />
       <Route path="/admin/qualificacoes" component={() => (<ProtectedRoute component={AdminQualifications} adminOnly />)} />
       <Route path="/area-de-descompressao" component={() => <ProtectedRoute component={Decompression} />} />
       <Route path="/dashboard-classic" component={() => <ProtectedRoute component={Dashboard} />} />

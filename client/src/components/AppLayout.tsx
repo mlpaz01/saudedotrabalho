@@ -5,7 +5,7 @@ import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard, BookOpen, Award, Leaf, LogOut,
   Users, Bell, ChevronRight, Menu, Building2,
-  ShieldCheck, FileSearch, Home, Clock, IdCard, FileCheck, CalendarClock,
+  ShieldCheck, FileSearch, Home, Clock, IdCard, FileCheck, FileCheck2, CalendarClock,
   Shield, Library, Settings2, Store, Wrench, ShieldQuestion, ClipboardList,
   Mail, ShieldAlert, CreditCard, FolderOpen, GraduationCap, Stethoscope,
   Link2, Layers, RotateCcw, Activity, Search, LineChart, Signature, FileText,
@@ -51,6 +51,7 @@ const employeeNav: NavItem[] = [
   },
   {
     label:"Meus Atestados", href: "/meus-atestados", icon: <Stethoscope size={16} /> ,},
+  { label: "Documentos Ocupacionais", href: "/documentos-ocupacionais", icon: <FileCheck2 size={16} /> },
   { label: "Certificados", href: "/certificados", icon: <Award size={16} />, feature: "certificates" ,},
   { label: "Pesquisas", href: "/pesquisas", icon: <ClipboardList size={16} />, feature: "surveys" ,},
   // SP5 #3 — Campanhas Preventivas visíveis ao colaborador
@@ -243,6 +244,7 @@ const ITEM_LABELS: Record<string, string> = {
   "Meus Cursos": "Meus Cursos",
   "Qualificacoes e Habilitacoes": "Qualificações e Habilitações",
   "Nocoes de Primeiros Socorros": "Noções de Primeiros Socorros",
+  "Documentos Ocupacionais": "Documentos Ocupacionais",
   Certificados: "Certificados",
   Pesquisas: "Pesquisas",
   "Area de Descompressao": "Área de Descompressão",
