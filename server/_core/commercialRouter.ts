@@ -339,7 +339,9 @@ async function getScope(user: any): Promise<CommercialScope> {
   return { ownerType: "white_label", ownerId: partnerId };
 }
 
-async function seedScope(scope: CommercialScope) {
+const seedScopeInFlight = new Map<string, Promise<void>>();
+
+async function seedScopeUnlocked(scope: CommercialScope) {
   await ensureCommercialTables();
   const db = await getDb(); if (!db) return;
   for (let i = 0; i < DEFAULT_PILLARS.length; i++) {
@@ -393,7 +395,7 @@ async function seedScope(scope: CommercialScope) {
   ] as const;
   for (let i = 0; i < officialPlans.length; i++) {
     const [name, description, employeePrice, featureCodes] = officialPlans[i];
-    const existing: any = await db.execute(drzSql`SELECT id FROM commercial_plan_catalog WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} AND name=${name} LIMIT 1`);
+    const existing: any = await db.execute(drzSql`SELECT id FROM commercial_plan_catalog WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} AND name=${name} ORDER BY is_active DESC,updated_at DESC,id DESC LIMIT 1`);
     let planId = Number(rowsOf(existing)[0]?.id || 0);
     if (!planId) {
       const inserted: any = await db.execute(drzSql`INSERT INTO commercial_plan_catalog
@@ -406,6 +408,21 @@ async function seedScope(scope: CommercialScope) {
       if ((featureCodes as readonly string[]).includes(String(feature.code)))
         await db.execute(drzSql`INSERT IGNORE INTO commercial_plan_features (plan_id,feature_id,access_level) VALUES (${planId},${Number(feature.id)},'included')`);
     }
+
+    // Multiple tRPC queries can open the CRM together. Consolidate any plans
+    // created by an older concurrent seed without deleting their history.
+    const duplicatesResult: any = await db.execute(drzSql`SELECT id FROM commercial_plan_catalog
+      WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} AND name=${name} AND id<>${planId}`);
+    for (const duplicate of rowsOf(duplicatesResult)) {
+      const duplicateId = Number(duplicate.id);
+      await db.execute(drzSql`INSERT IGNORE INTO commercial_plan_features (plan_id,feature_id,access_level,limitations_text)
+        SELECT ${planId},feature_id,access_level,limitations_text FROM commercial_plan_features WHERE plan_id=${duplicateId}`);
+      await db.execute(drzSql`UPDATE commercial_proposals SET commercial_plan_id=${planId} WHERE commercial_plan_id=${duplicateId}`);
+      await db.execute(drzSql`UPDATE commercial_proposals SET selected_plan_id=${planId} WHERE selected_plan_id=${duplicateId}`);
+      await db.execute(drzSql`UPDATE commercial_proposals SET recommended_plan_id=${planId} WHERE recommended_plan_id=${duplicateId}`);
+      await db.execute(drzSql`UPDATE commercial_plan_catalog SET is_active=0 WHERE id=${duplicateId}`);
+    }
+    await db.execute(drzSql`UPDATE commercial_plan_catalog SET is_active=1 WHERE id=${planId}`);
   }
   await db.execute(drzSql`UPDATE commercial_plan_catalog SET is_active=0 WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} AND name IN ('Enterprise Start','Enterprise Business','Enterprise Premium','Plano Essencial','Plano Profissional','Plano Completo')`);
 
@@ -433,6 +450,16 @@ async function seedScope(scope: CommercialScope) {
   for (const plan of rowsOf(fullPlansResult))
     for (const feature of rowsOf(activeFeaturesResult))
       await db.execute(drzSql`INSERT IGNORE INTO commercial_plan_features (plan_id,feature_id) VALUES (${Number(plan.id)},${Number(feature.id)})`);
+}
+
+async function seedScope(scope: CommercialScope) {
+  const key = `${scope.ownerType}:${scope.ownerId}`;
+  const current = seedScopeInFlight.get(key);
+  if (current) return current;
+
+  const seed = seedScopeUnlocked(scope).finally(() => seedScopeInFlight.delete(key));
+  seedScopeInFlight.set(key, seed);
+  return seed;
 }
 
 const commercialProcedure = protectedProcedure.use(async ({ ctx, next }) => {
