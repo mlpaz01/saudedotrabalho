@@ -915,22 +915,45 @@ function RiskTab({ filters, drill, setDrill }: { filters: any; drill: DrillState
 }
 
 /* ==================== SAVED ANALYSES TAB ==================== */
+const SOURCE_OPTIONS = [
+  { value: 'learning', label: 'Cursos, pesquisas e certificados' },
+  { value: 'psychosocial', label: 'NR-01 e riscos psicossociais' },
+  { value: 'pcd', label: 'Gestão de PCD' },
+  { value: 'pca', label: 'Programa de Conservação Auditiva' },
+  { value: 'medical', label: 'ASO, exames e anamnese' },
+  { value: 'pcmso', label: 'PCMSO' },
+  { value: 'gse', label: 'GSE e população ocupacional' },
+];
 const METRIC_OPTIONS = [
-  { value: 'course_completion', label: '% de conclusão de curso' },
-  { value: 'modules_completed', label: 'Cursos concluídos (contagem)' },
-  { value: 'survey_response', label: 'Pesquisas respondidas (contagem)' },
-  { value: 'certificates', label: 'Certificados emitidos' },
-  { value: 'active_users', label: 'Usuários ativos (30d)' },
-  { value: 'risk_avg', label: 'Risco médio (score DRPS)' },
-  { value: 'risk_critical_count', label: 'Riscos críticos+altos (contagem)' },
+  { source: 'learning', value: 'course_completion', label: '% de conclusão de curso' },
+  { source: 'learning', value: 'modules_completed', label: 'Cursos concluídos' },
+  { source: 'learning', value: 'survey_response', label: 'Pesquisas respondidas' },
+  { source: 'learning', value: 'certificates', label: 'Certificados emitidos' },
+  { source: 'learning', value: 'active_users', label: 'Usuários ativos (30d)' },
+  { source: 'psychosocial', value: 'risk_avg', label: 'Risco médio (score DRPS)' },
+  { source: 'psychosocial', value: 'risk_critical_count', label: 'Riscos críticos e altos' },
+  { source: 'pcd', value: 'pcd_count', label: 'PCDs declarados' },
+  { source: 'pcd', value: 'pcd_validated_count', label: 'PCDs validados' },
+  { source: 'pcd', value: 'pcd_pending_documents', label: 'PCDs com documentação pendente' },
+  { source: 'pca', value: 'pca_cases', label: 'Trabalhadores em acompanhamento' },
+  { source: 'pca', value: 'pca_repeats', label: 'Repetições de audiometria' },
+  { source: 'pca', value: 'pca_referrals', label: 'Encaminhamentos ao otorrino' },
+  { source: 'medical', value: 'aso_count', label: 'ASOs emitidos' },
+  { source: 'medical', value: 'exam_result_count', label: 'Resultados de exames lançados' },
+  { source: 'medical', value: 'anamnesis_count', label: 'Anamneses registradas' },
+  { source: 'pcmso', value: 'pcmso_count', label: 'PCMSOs por situação' },
+  { source: 'gse', value: 'gse_workers', label: 'Trabalhadores vinculados a GSE' },
 ];
 const DIMENSION_OPTIONS = [
-  { value: 'branch', label: 'Filial' },
-  { value: 'sector', label: 'Setor' },
-  { value: 'role', label: 'Cargo' },
-  { value: 'module', label: 'Curso' },
-  { value: 'risk_factor', label: 'Fator de risco' },
-  { value: 'period', label: 'Período (mês)' },
+  { sources: ['learning','psychosocial','pcd','pca','medical','gse'], value: 'branch', label: 'Filial' },
+  { sources: ['learning','psychosocial','pcd','pca','medical','gse'], value: 'sector', label: 'Setor' },
+  { sources: ['learning','pcd','pca','medical','gse'], value: 'role', label: 'Cargo' },
+  { sources: ['learning'], value: 'module', label: 'Curso' },
+  { sources: ['psychosocial'], value: 'risk_factor', label: 'Fator de risco' },
+  { sources: ['pcd'], value: 'disability_type', label: 'Tipo de deficiência' },
+  { sources: ['pcd','pca','medical','pcmso'], value: 'status', label: 'Situação' },
+  { sources: ['pca','medical','gse'], value: 'gse', label: 'GSE' },
+  { sources: ['learning','pcd','pca','medical','pcmso','gse'], value: 'period', label: 'Período (mês)' },
 ];
 const CHART_OPTIONS = [
   { value: 'bar', label: 'Barra' },
@@ -950,7 +973,7 @@ function SavedTab() {
   const [filterChartType, setFilterChartType] = useState<string | undefined>(undefined);
   const [draft, setDraft] = useState({
     name: '', description: '',
-    metric: 'course_completion', dimension: 'sector',
+    source: 'learning', metric: 'course_completion', dimension: 'sector',
     chartType: 'bar', isShared: false,
     branchId: undefined as number | undefined,
     sectorId: undefined as number | undefined,
@@ -971,13 +994,14 @@ function SavedTab() {
 
   function resetBuilder() {
     setShowBuilder(false); setEditingId(null);
-    setDraft({ name: '', description: '', metric: 'course_completion', dimension: 'sector', chartType: 'bar', isShared: false, branchId: undefined, sectorId: undefined });
+    setDraft({ name: '', description: '', source: 'learning', metric: 'course_completion', dimension: 'sector', chartType: 'bar', isShared: false, branchId: undefined, sectorId: undefined });
   }
 
   function startEdit(a: any) {
     setEditingId(a.id);
     setDraft({
       name: a.name, description: a.description ?? '',
+      source: a.filters?.source || METRIC_OPTIONS.find(option => option.value === a.metric)?.source || 'learning',
       metric: a.metric, dimension: a.dimension,
       chartType: a.chartType, isShared: a.isShared,
       branchId: a.filters?.branchId, sectorId: a.filters?.sectorId,
@@ -992,7 +1016,7 @@ function SavedTab() {
       description: draft.description || undefined,
       metric: draft.metric,
       dimension: draft.dimension,
-      filters: { branchId: draft.branchId, sectorId: draft.sectorId },
+      filters: { source: draft.source, branchId: draft.branchId, sectorId: draft.sectorId },
       chartType: draft.chartType,
       isShared: draft.isShared,
     };
@@ -1006,6 +1030,8 @@ function SavedTab() {
   if (filterChartType) list = list.filter((a: any) => a.chartType === filterChartType);
   const listSort = useSort(list, "lastRunAt", "desc");
   const filterOpts = filtersQ.data;
+  const sourceMetrics = METRIC_OPTIONS.filter(option => option.source === draft.source);
+  const sourceDimensions = DIMENSION_OPTIONS.filter(option => option.sources.includes(draft.source));
 
   return (
     <div className="space-y-6">
@@ -1044,15 +1070,30 @@ function SavedTab() {
               <input value={draft.description} onChange={e => setDraft({...draft, description: e.target.value})} className="w-full px-3 py-2 border border-border rounded-lg text-sm" placeholder="Opcional" />
             </div>
             <div>
+              <label className="text-xs font-medium text-muted-foreground block mb-1">Fonte de dados*</label>
+              <select
+                value={draft.source}
+                onChange={e => {
+                  const source = e.target.value;
+                  const metric = METRIC_OPTIONS.find(option => option.source === source)?.value || '';
+                  const dimension = DIMENSION_OPTIONS.find(option => option.sources.includes(source))?.value || 'period';
+                  setDraft({...draft, source, metric, dimension});
+                }}
+                className="w-full px-3 py-2 border border-border rounded-lg text-sm"
+              >
+                {SOURCE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+            <div>
               <label className="text-xs font-medium text-muted-foreground block mb-1">Métrica principal*</label>
               <select value={draft.metric} onChange={e => setDraft({...draft, metric: e.target.value})} className="w-full px-3 py-2 border border-border rounded-lg text-sm">
-                {METRIC_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                {sourceMetrics.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground block mb-1">Dimensão de cruzamento*</label>
               <select value={draft.dimension} onChange={e => setDraft({...draft, dimension: e.target.value})} className="w-full px-3 py-2 border border-border rounded-lg text-sm">
-                {DIMENSION_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                {sourceDimensions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </div>
             <div>
@@ -1103,6 +1144,7 @@ function SavedTab() {
                 {a.isShared && <Share2 size={14} className="text-primary shrink-0 ml-2" />}
               </div>
               <div className="flex flex-wrap gap-1 mt-2 mb-3">
+                <span className="text-xs px-2 py-0.5 bg-slate-100 text-slate-700 rounded-full">{SOURCE_OPTIONS.find(source => source.value === (a.filters?.source || METRIC_OPTIONS.find(metric => metric.value === a.metric)?.source))?.label || "Plataforma"}</span>
                 <span className="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded-full">{METRIC_OPTIONS.find(m => m.value === a.metric)?.label ?? a.metric}</span>
                 <span className="text-xs px-2 py-0.5 bg-secondary/20 text-foreground rounded-full">por {DIMENSION_OPTIONS.find(d => d.value === a.dimension)?.label ?? a.dimension}</span>
               </div>

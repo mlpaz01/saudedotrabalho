@@ -8,6 +8,11 @@ import { protectedProcedure, router } from "./trpc";
 import { getWhiteLabelPartnerIdForCompany } from "./whiteLabelAccess";
 import { getEmailLinkBaseUrl, sendEmail } from "./email";
 import { ensureCrmTables } from "./crm";
+import { publishAutomaticKnowledgeArticles } from "./guidanceRouter";
+import {
+  PLATFORM_FEATURE_MANIFEST,
+  PLATFORM_RELEASE,
+} from "./platformFeatureManifest";
 
 type CommercialScope = { ownerType: "global" | "white_label"; ownerId: number };
 
@@ -41,6 +46,8 @@ const FEATURE_PILLAR: Record<string, string> = {
   cipa: "cipa_sipat", sipat: "cipa_sipat", dds: "cipa_sipat", courses: "learning",
   certificates: "learning", preventive: "learning", ai_studio: "technology", ai: "technology",
   ocr: "technology", survey_editor: "technology", integrations: "integrations", reports: "reports",
+  pcd_management: "occupational_health", pca: "occupational_health", clinic_portal: "integrations",
+  custom_analytics: "business_intelligence", commercial_portfolio: "strategic_differentials",
 };
 
 const DEFAULT_ADDONS = [
@@ -98,6 +105,11 @@ const DEFAULT_FEATURES = [
   ["Tecnologia e Operações", "survey_editor", "Editor Livre", "Criação de questionários personalizados"],
   ["Tecnologia e Operações", "integrations", "Integrações e APIs", "Preparação para integração com sistemas corporativos"],
   ["Tecnologia e Operações", "reports", "Dashboards e Relatórios", "Indicadores gerenciais, PDF e planilhas"],
+  ["Conformidade e Saúde", "pcd_management", "Gestão de PCD", "Validação documental, enquadramento, auditoria e indicadores integrados ao dossiê"],
+  ["Conformidade e Saúde", "pca", "PCA - Conservação Auditiva", "Acompanhamento operacional de audiometrias, convocações e encaminhamentos"],
+  ["Conformidade e Saúde", "clinic_portal", "Portal de Clínicas Credenciadas", "Requisições, resultados, comprovantes e demonstrativos integrados"],
+  ["Tecnologia e Operações", "custom_analytics", "Análise Personalizada e BI", "Construtor de métricas com fontes, dimensões e filtros configuráveis"],
+  ["Tecnologia e Operações", "commercial_portfolio", "Portfólio Comercial Vivo", "Apresentações comerciais completas ou segmentadas geradas pela plataforma"],
 ] as const;
 
 let tablesReady = false;
@@ -110,6 +122,46 @@ async function ensureColumn(db: any, table: string, name: string, definition: st
   try {
     await db.execute(drzSql.raw(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`));
   } catch {}
+}
+
+async function synchronizePlatformManifest(db: any) {
+  for (let index = 0; index < PLATFORM_FEATURE_MANIFEST.length; index++) {
+    const feature = PLATFORM_FEATURE_MANIFEST[index];
+    await db.execute(drzSql`INSERT INTO commercial_feature_catalog
+      (owner_type,owner_id,category,code,name,description,pillar_code,module_name,sort_order,is_active,
+       manifest_version,problem_text,objective_text,benefits_json,resources_json,audience_json,flow_json,integrations_json,indicators_json)
+      VALUES ('global',0,${feature.category},${feature.code},${feature.name},${feature.description},${feature.pillarCode},${feature.moduleName},${1000 + index},1,
+       ${feature.version},${feature.problem},${feature.objective},${JSON.stringify(feature.benefits)},${JSON.stringify(feature.resources)},
+       ${JSON.stringify(feature.audience)},${JSON.stringify(feature.flow)},${JSON.stringify(feature.integrations)},${JSON.stringify(feature.indicators)})
+      ON DUPLICATE KEY UPDATE category=VALUES(category),name=VALUES(name),description=VALUES(description),pillar_code=VALUES(pillar_code),
+       module_name=VALUES(module_name),manifest_version=VALUES(manifest_version),problem_text=VALUES(problem_text),objective_text=VALUES(objective_text),
+       benefits_json=VALUES(benefits_json),resources_json=VALUES(resources_json),audience_json=VALUES(audience_json),flow_json=VALUES(flow_json),
+       integrations_json=VALUES(integrations_json),indicators_json=VALUES(indicators_json)`);
+  }
+  const manuals = await publishAutomaticKnowledgeArticles(
+    PLATFORM_FEATURE_MANIFEST.map(feature => ({
+      slug: `plataforma-${feature.code.replace(/_/g, "-")}`,
+      title: `Como utilizar ${feature.name}`,
+      summary: feature.description,
+      module: feature.moduleName,
+      route: feature.route,
+      roles: feature.roles,
+      keywords: feature.keywords,
+      whatIs: feature.objective,
+      purpose: feature.benefits.join(" "),
+      accessPath: `Menu > ${feature.moduleName}`,
+      steps: feature.flow.map((step, index) => `${index + 1}. ${step}: siga a etapa indicada e confirme os dados antes de avançar.`),
+      cautions: [
+        "Respeite as permissões do perfil e o isolamento de dados da empresa.",
+        "Revise informações técnicas e documentos antes de concluir ou publicar.",
+      ],
+    }))
+  );
+  await db.execute(drzSql`INSERT INTO platform_commercial_updates
+    (release_code,title,summary,feature_codes_json,manuals_created,manuals_updated,status)
+    VALUES (${PLATFORM_RELEASE.code},${PLATFORM_RELEASE.title},${PLATFORM_RELEASE.summary},${JSON.stringify(PLATFORM_FEATURE_MANIFEST.map(item => item.code))},${manuals.created},${manuals.updated},'disponivel')
+    ON DUPLICATE KEY UPDATE title=VALUES(title),summary=VALUES(summary),feature_codes_json=VALUES(feature_codes_json),
+      manuals_created=GREATEST(manuals_created,VALUES(manuals_created)),manuals_updated=VALUES(manuals_updated)`);
 }
 
 async function ensureCommercialTables() {
@@ -248,6 +300,16 @@ async function ensureCommercialTables() {
   await ensureColumn(db, "commercial_feature_catalog", "module_name", "VARCHAR(180) NULL");
   await ensureColumn(db, "commercial_feature_catalog", "limitations_text", "TEXT NULL");
   await ensureColumn(db, "commercial_feature_catalog", "is_addon_eligible", "TINYINT(1) NOT NULL DEFAULT 0");
+  await ensureColumn(db, "commercial_feature_catalog", "manifest_version", "VARCHAR(40) NULL");
+  await ensureColumn(db, "commercial_feature_catalog", "problem_text", "MEDIUMTEXT NULL");
+  await ensureColumn(db, "commercial_feature_catalog", "objective_text", "MEDIUMTEXT NULL");
+  await ensureColumn(db, "commercial_feature_catalog", "benefits_json", "LONGTEXT NULL");
+  await ensureColumn(db, "commercial_feature_catalog", "resources_json", "LONGTEXT NULL");
+  await ensureColumn(db, "commercial_feature_catalog", "audience_json", "LONGTEXT NULL");
+  await ensureColumn(db, "commercial_feature_catalog", "flow_json", "LONGTEXT NULL");
+  await ensureColumn(db, "commercial_feature_catalog", "integrations_json", "LONGTEXT NULL");
+  await ensureColumn(db, "commercial_feature_catalog", "indicators_json", "LONGTEXT NULL");
+  await ensureColumn(db, "commercial_feature_catalog", "screenshot_url", "VARCHAR(1200) NULL");
   await ensureColumn(db, "commercial_plan_features", "access_level", "VARCHAR(30) NOT NULL DEFAULT 'included'");
   await ensureColumn(db, "commercial_plan_features", "limitations_text", "TEXT NULL");
   await ensureColumn(db, "commercial_plan_catalog", "storage_gb", "DECIMAL(12,2) NULL");
@@ -288,6 +350,44 @@ async function ensureCommercialTables() {
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_receivable_v2_scope (owner_type, owner_id, status, due_date)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await db.execute(drzSql`CREATE TABLE IF NOT EXISTS platform_commercial_updates (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    release_code VARCHAR(120) NOT NULL UNIQUE,
+    title VARCHAR(255) NOT NULL,
+    summary MEDIUMTEXT,
+    feature_codes_json LONGTEXT NOT NULL,
+    manuals_created INT NOT NULL DEFAULT 0,
+    manuals_updated INT NOT NULL DEFAULT 0,
+    status VARCHAR(30) NOT NULL DEFAULT 'disponivel',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await db.execute(drzSql`CREATE TABLE IF NOT EXISTS platform_commercial_update_publications (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    update_id INT NOT NULL,
+    white_label_partner_id INT NOT NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'publicado',
+    features_published INT NOT NULL DEFAULT 0,
+    plans_updated INT NOT NULL DEFAULT 0,
+    result_json LONGTEXT,
+    published_by INT NOT NULL,
+    published_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_update_partner (update_id,white_label_partner_id),
+    INDEX idx_update_publication_partner (white_label_partner_id,published_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await db.execute(drzSql`CREATE TABLE IF NOT EXISTS commercial_portfolio_runs (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    owner_type VARCHAR(20) NOT NULL,
+    owner_id INT NOT NULL DEFAULT 0,
+    title VARCHAR(255) NOT NULL,
+    mode VARCHAR(30) NOT NULL,
+    pillar_codes_json LONGTEXT,
+    feature_codes_json LONGTEXT,
+    generated_by INT NOT NULL,
+    pdf_url VARCHAR(700),
+    generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_portfolio_runs (owner_type,owner_id,generated_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
 
   for (const col of [
     "commercial_owner_type VARCHAR(20) NOT NULL DEFAULT 'global'",
@@ -325,6 +425,7 @@ async function ensureCommercialTables() {
   try { await db.execute(drzSql`ALTER TABLE commercial_proposals MODIFY status VARCHAR(60) NOT NULL DEFAULT 'novo_lead'`); } catch {}
   try { await db.execute(drzSql`CREATE INDEX idx_proposal_commercial_owner ON commercial_proposals(commercial_owner_type, commercial_owner_id, status, updated_at)`); } catch {}
   await db.execute(drzSql`UPDATE commercial_proposals SET commercial_owner_type='white_label', commercial_owner_id=white_label_partner_id WHERE white_label_partner_id IS NOT NULL AND white_label_partner_id>0 AND (commercial_owner_type='global' OR commercial_owner_id=0)`);
+  await synchronizePlatformManifest(db);
   tablesReady = true;
 }
 
@@ -365,8 +466,12 @@ async function seedScopeUnlocked(scope: CommercialScope) {
       VALUES (${scope.ownerType},${scope.ownerId},${label},${min},${max},${i + 1})
       ON DUPLICATE KEY UPDATE label=VALUES(label)`);
   }
-  for (let i = 0; i < DEFAULT_FEATURES.length; i++) {
-    const [category, code, name, description] = DEFAULT_FEATURES[i];
+  const manifestCodes = new Set(PLATFORM_FEATURE_MANIFEST.map(item => item.code));
+  const featuresToSeed = scope.ownerType === "global"
+    ? DEFAULT_FEATURES
+    : DEFAULT_FEATURES.filter(item => !manifestCodes.has(String(item[1])));
+  for (let i = 0; i < featuresToSeed.length; i++) {
+    const [category, code, name, description] = featuresToSeed[i];
     await db.execute(drzSql`INSERT INTO commercial_feature_catalog
       (owner_type, owner_id, category, code, name, description, pillar_code, module_name, sort_order)
       VALUES (${scope.ownerType}, ${scope.ownerId}, ${category}, ${code}, ${name}, ${description}, ${FEATURE_PILLAR[code] || "strategic_differentials"}, ${category}, ${i + 1})
@@ -450,6 +555,19 @@ async function seedScopeUnlocked(scope: CommercialScope) {
   for (const plan of rowsOf(fullPlansResult))
     for (const feature of rowsOf(activeFeaturesResult))
       await db.execute(drzSql`INSERT IGNORE INTO commercial_plan_features (plan_id,feature_id) VALUES (${Number(plan.id)},${Number(feature.id)})`);
+  if (scope.ownerType === "global") {
+    for (const manifestFeature of PLATFORM_FEATURE_MANIFEST) {
+      if (!manifestFeature.planNames.length) continue;
+      const featureResult: any = await db.execute(drzSql`SELECT id FROM commercial_feature_catalog WHERE owner_type='global' AND owner_id=0 AND code=${manifestFeature.code} LIMIT 1`);
+      const featureId = Number(rowsOf(featureResult)[0]?.id || 0);
+      if (!featureId) continue;
+      for (const planName of manifestFeature.planNames) {
+        const plansResult: any = await db.execute(drzSql`SELECT id FROM commercial_plan_catalog WHERE owner_type='global' AND owner_id=0 AND name=${planName} AND is_active=1`);
+        for (const plan of rowsOf(plansResult))
+          await db.execute(drzSql`INSERT IGNORE INTO commercial_plan_features (plan_id,feature_id,access_level) VALUES (${Number(plan.id)},${featureId},'included')`);
+      }
+    }
+  }
 }
 
 async function seedScope(scope: CommercialScope) {
@@ -624,6 +742,131 @@ async function createTechnicalAnnexPdf(scope: CommercialScope, proposalId: numbe
   const puppeteer=(await import("puppeteer")).default;const outDir=path.join(process.cwd(),"uploads","proposals");fs.mkdirSync(outDir,{recursive:true});const filename=`anexo_tecnico_${scope.ownerType}_${scope.ownerId}_${proposalId}_v${Number(proposal.proposal_version||1)}_${Date.now()}.pdf`;const outPath=path.join(outDir,filename);const browser=await puppeteer.launch({headless:true,executablePath:process.env.PUPPETEER_EXECUTABLE_PATH||undefined,args:["--no-sandbox","--disable-setuid-sandbox","--disable-dev-shm-usage"]});try{const page=await browser.newPage();await page.setContent(html,{waitUntil:"load",timeout:30000});await page.pdf({path:outPath,format:"A4",printBackground:true});}finally{await browser.close();}const url=`/uploads/proposals/${filename}`;await db.execute(drzSql`UPDATE commercial_proposals SET technical_annex_url=${url} WHERE id=${proposalId} AND commercial_owner_type=${scope.ownerType} AND commercial_owner_id=${scope.ownerId}`);return url;
 }
 
+function jsonArray(value: any): any[] {
+  try {
+    const parsed = JSON.parse(value || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+async function createCommercialPortfolioPdf(
+  scope: CommercialScope,
+  actorId: number,
+  input: {
+    mode: "complete" | "custom";
+    title: string;
+    pillarCodes: string[];
+    featureCodes: string[];
+    presentationText?: string;
+    consultantName?: string;
+    consultantContact?: string;
+  }
+) {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+  const brandResult: any = await db.execute(drzSql`SELECT * FROM commercial_brand_settings WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} LIMIT 1`);
+  const pillarResult: any = await db.execute(drzSql`SELECT * FROM commercial_pillars WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} AND is_active=1 ORDER BY sort_order,id`);
+  const featureResult: any = scope.ownerType === "white_label"
+    ? await db.execute(drzSql`SELECT DISTINCT f.* FROM commercial_feature_catalog f
+        JOIN commercial_plan_features pf ON pf.feature_id=f.id
+        JOIN commercial_plan_catalog p ON p.id=pf.plan_id AND p.owner_type=f.owner_type AND p.owner_id=f.owner_id AND p.is_active=1
+        WHERE f.owner_type=${scope.ownerType} AND f.owner_id=${scope.ownerId} AND f.is_active=1
+        ORDER BY f.sort_order,f.name`)
+    : await db.execute(drzSql`SELECT * FROM commercial_feature_catalog WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} AND is_active=1 ORDER BY sort_order,name`);
+  const brand = rowsOf(brandResult)[0] || {};
+  const allPillars = rowsOf(pillarResult);
+  const allFeatures = rowsOf(featureResult);
+  const selectedFeatures = allFeatures.filter((feature: any) => {
+    if (input.mode === "complete") return true;
+    return input.featureCodes.includes(String(feature.code)) || input.pillarCodes.includes(String(feature.pillar_code));
+  });
+  if (!selectedFeatures.length)
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Selecione ao menos uma funcionalidade disponível neste ambiente." });
+  const selectedPillarCodes = new Set(selectedFeatures.map((feature: any) => String(feature.pillar_code || "strategic_differentials")));
+  const pillars = allPillars.filter((pillar: any) => selectedPillarCodes.has(String(pillar.code)));
+  const primary = /^#[0-9a-f]{6}$/i.test(brand.primary_color || "") ? brand.primary_color : "#0E2C46";
+  const secondary = /^#[0-9a-f]{6}$/i.test(brand.secondary_color || "") ? brand.secondary_color : "#0096A6";
+  const logo = await logoDataUri(brand.logo_url);
+  const integrationNames = [...new Set(selectedFeatures.flatMap((feature: any) => jsonArray(feature.integrations_json).map(String)))].slice(0, 14);
+  const featurePages = selectedFeatures.map((feature: any, index: number) => {
+    const benefits = jsonArray(feature.benefits_json);
+    const resources = jsonArray(feature.resources_json);
+    const flow = jsonArray(feature.flow_json);
+    const indicators = jsonArray(feature.indicators_json);
+    const screenshot = feature.screenshot_url ? `<img class="screenshot" src="${esc(feature.screenshot_url)}" alt="Tela ${esc(feature.name)}">` : `<div class="visual"><span>${String(index + 1).padStart(2, "0")}</span><strong>${esc(feature.module_name || feature.category)}</strong><small>Fluxo integrado, rastreável e orientado por dados</small></div>`;
+    return `<section class="feature-page page-break"><div class="kicker">${esc(feature.category)} · ${String(index + 1).padStart(2, "0")}</div><h2>${esc(feature.name)}</h2><p class="lead">${esc(feature.description)}</p><div class="hero-grid">${screenshot}<div><h3>O desafio</h3><p>${esc(feature.problem_text || "Processos fragmentados, controles paralelos e baixa rastreabilidade.")}</p><h3>A resposta da plataforma</h3><p>${esc(feature.objective_text || feature.description)}</p></div></div><div class="two-cols"><div><h3>Benefícios para a operação</h3><ul>${benefits.map(item => `<li>${esc(item)}</li>`).join("")}</ul></div><div><h3>Recursos principais</h3><ul>${resources.map(item => `<li>${esc(item)}</li>`).join("")}</ul></div></div>${flow.length ? `<div class="flow">${flow.map((item, flowIndex) => `<span>${flowIndex ? "→ " : ""}${esc(item)}</span>`).join("")}</div>` : ""}${indicators.length ? `<div class="indicator-row">${indicators.slice(0, 4).map(item => `<div><b>${esc(item)}</b><small>Indicador disponível</small></div>`).join("")}</div>` : ""}</section>`;
+  }).join("");
+  const pillarPage = `<section class="page-break"><div class="kicker">Visão do ecossistema</div><h2>Pilares selecionados</h2><p class="lead">Uma apresentação alinhada à necessidade da reunião, sem perder a percepção de integração da plataforma.</p><div class="pillar-grid">${pillars.map((pillar: any) => `<div><span>${esc(pillar.category || "Pilar")}</span><b>${esc(pillar.name)}</b><small>${selectedFeatures.filter((feature: any) => String(feature.pillar_code) === String(pillar.code)).length} funcionalidade(s)</small></div>`).join("")}</div><h2>Integração que transforma dados em gestão</h2><div class="ecosystem">${integrationNames.map((name, index) => `<span>${index ? "→ " : ""}${esc(name)}</span>`).join("")}</div><p class="callout">A plataforma conecta prevenção, operação, evidências, saúde ocupacional e indicadores. Cada registro alimenta o próximo processo e reduz a dependência de planilhas, e-mails e controles paralelos.</p></section>`;
+  const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
+    @page{size:A4;margin:16mm}*{box-sizing:border-box}body{margin:0;color:#183044;font-family:Arial,sans-serif;font-size:10pt;line-height:1.5}.cover{height:265mm;margin:-16mm;background:${primary};color:white;padding:25mm 20mm;display:flex;flex-direction:column;justify-content:space-between;page-break-after:always}.cover img{max-width:220px;max-height:75px;object-fit:contain;object-position:left}.cover h1{font-size:35pt;line-height:1.05;margin:12mm 0 7mm}.cover .sub{font-size:15pt;max-width:150mm;color:#e7f4f5}.cover .line{height:5px;background:${secondary};width:32mm;margin-bottom:8mm}.cover small{color:#c9d9df}.kicker{text-transform:uppercase;color:${secondary};font-weight:700;font-size:8.5pt;letter-spacing:1px}.page-break{page-break-before:always}h2{font-size:25pt;line-height:1.1;color:${primary};margin:4mm 0 5mm}h3{font-size:12pt;color:${primary};margin:4mm 0 2mm}.lead{font-size:13pt;color:#526b7b;margin-bottom:8mm}.hero-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:7mm;align-items:stretch}.visual{min-height:76mm;background:${primary};color:white;padding:9mm;display:flex;flex-direction:column;justify-content:flex-end}.visual span{font-size:34pt;color:${secondary};font-weight:800}.visual strong{font-size:18pt}.visual small{margin-top:3mm;color:#d7e5e9}.screenshot{width:100%;height:76mm;object-fit:cover;object-position:top;border:1px solid #d4e0e5}.two-cols{display:grid;grid-template-columns:1fr 1fr;gap:8mm;margin-top:8mm}.two-cols>div{border-top:4px solid ${secondary};padding-top:3mm}ul{padding-left:5mm;margin:2mm 0}li{margin:1.5mm 0}.flow,.ecosystem{display:flex;flex-wrap:wrap;gap:2mm;margin-top:8mm;background:#edf6f7;padding:5mm;color:${primary};font-weight:700}.indicator-row{display:grid;grid-template-columns:repeat(4,1fr);gap:2mm;margin-top:7mm}.indicator-row div{border:1px solid #d7e2e7;padding:3mm;min-height:18mm}.indicator-row b{display:block;font-size:8.5pt}.indicator-row small{color:#6b7f8d;font-size:7.5pt}.pillar-grid{display:grid;grid-template-columns:1fr 1fr;gap:3mm}.pillar-grid div{border-left:5px solid ${secondary};background:#f2f6f8;padding:5mm}.pillar-grid span,.pillar-grid small{display:block;color:#6b7f8d;font-size:8pt}.pillar-grid b{display:block;color:${primary};font-size:12pt;margin:1mm 0}.callout{margin-top:10mm;background:${primary};color:white;padding:8mm;font-size:13pt}.footer{margin-top:12mm;border-top:1px solid #d7e2e7;padding-top:4mm;color:#6b7f8d;font-size:8.5pt}
+  </style></head><body><div class="cover"><div>${logo ? `<img src="${logo}">` : `<strong style="font-size:22pt">${esc(brand.brand_name || "Plataforma")}</strong>`}</div><div><div class="line"></div><div class="kicker" style="color:${secondary}">Portfólio comercial</div><h1>${esc(input.title)}</h1><div class="sub">${esc(input.presentationText || "Tecnologia, prevenção e inteligência conectadas em uma única plataforma.")}</div></div><small>Base comercial ${esc(PLATFORM_RELEASE.code)} · ${selectedFeatures.length} funcionalidades · ${new Date().toLocaleDateString("pt-BR")}</small></div>${pillarPage}${featurePages}<section class="page-break"><div class="kicker">Próximo passo</div><h2>Vamos transformar a operação?</h2><p class="lead">Estruturamos a implantação conforme o cenário, o porte e as prioridades da organização, preservando segurança, rastreabilidade e evolução contínua.</p><div class="callout"><b>${esc(input.consultantName || brand.contact_name || brand.brand_name || "Contato comercial")}</b><br>${esc(input.consultantContact || brand.contact_email || "")}${brand.contact_phone ? ` · ${esc(brand.contact_phone)}` : ""}<br>${esc(brand.website || "")}</div><div class="footer">Portfólio gerado pela base viva de funcionalidades da plataforma. O escopo contratual é definido na proposta comercial.</div></section></body></html>`;
+  const puppeteer = (await import("puppeteer")).default;
+  const outDir = path.join(process.cwd(), "uploads", "portfolios");
+  fs.mkdirSync(outDir, { recursive: true });
+  const filename = `portfolio_${scope.ownerType}_${scope.ownerId}_${Date.now()}.pdf`;
+  const outPath = path.join(outDir, filename);
+  const browser = await puppeteer.launch({ headless: true, executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined, args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"] });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: "load", timeout: 45000 });
+    await page.pdf({ path: outPath, format: "A4", printBackground: true });
+  } finally {
+    await browser.close();
+  }
+  const url = `/uploads/portfolios/${filename}`;
+  await db.execute(drzSql`INSERT INTO commercial_portfolio_runs
+    (owner_type,owner_id,title,mode,pillar_codes_json,feature_codes_json,generated_by,pdf_url)
+    VALUES (${scope.ownerType},${scope.ownerId},${input.title},${input.mode},${JSON.stringify(input.pillarCodes)},${JSON.stringify(selectedFeatures.map((feature: any) => feature.code))},${actorId},${url})`);
+  return { url, featureCount: selectedFeatures.length, pillarCount: pillars.length };
+}
+
+async function publishCommercialUpdateToPartner(db: any, updateId: number, partnerId: number, actorId: number, requestedCodes: string[]) {
+  const partnerResult: any = await db.execute(drzSql`SELECT id,brand_name,legal_name FROM white_label_partners WHERE id=${partnerId} LIMIT 1`);
+  const partner = rowsOf(partnerResult)[0];
+  if (!partner) throw new TRPCError({ code: "NOT_FOUND", message: `White Label ${partnerId} não encontrado.` });
+  const updateResult: any = await db.execute(drzSql`SELECT * FROM platform_commercial_updates WHERE id=${updateId} LIMIT 1`);
+  const update = rowsOf(updateResult)[0];
+  if (!update) throw new TRPCError({ code: "NOT_FOUND", message: "Pacote de atualização não encontrado." });
+  const allowedCodes = new Set(jsonArray(update.feature_codes_json).map(String));
+  const codes = requestedCodes.length ? requestedCodes.filter(code => allowedCodes.has(code)) : [...allowedCodes];
+  let featuresPublished = 0;
+  let plansUpdated = 0;
+  for (const code of codes) {
+    const masterResult: any = await db.execute(drzSql`SELECT * FROM commercial_feature_catalog WHERE owner_type='global' AND owner_id=0 AND code=${code} LIMIT 1`);
+    const feature = rowsOf(masterResult)[0];
+    if (!feature) continue;
+    await db.execute(drzSql`INSERT INTO commercial_feature_catalog
+      (owner_type,owner_id,category,code,name,description,pillar_code,subtitle,module_name,limitations_text,is_addon_eligible,is_active,sort_order,
+       manifest_version,problem_text,objective_text,benefits_json,resources_json,audience_json,flow_json,integrations_json,indicators_json,screenshot_url)
+      VALUES ('white_label',${partnerId},${feature.category},${feature.code},${feature.name},${feature.description},${feature.pillar_code},${feature.subtitle},${feature.module_name},${feature.limitations_text},${Number(feature.is_addon_eligible || 0)},1,${Number(feature.sort_order || 0)},
+       ${feature.manifest_version},${feature.problem_text},${feature.objective_text},${feature.benefits_json},${feature.resources_json},${feature.audience_json},${feature.flow_json},${feature.integrations_json},${feature.indicators_json},${feature.screenshot_url})
+      ON DUPLICATE KEY UPDATE category=VALUES(category),name=VALUES(name),description=VALUES(description),pillar_code=VALUES(pillar_code),
+       module_name=VALUES(module_name),manifest_version=VALUES(manifest_version),problem_text=VALUES(problem_text),objective_text=VALUES(objective_text),
+       benefits_json=VALUES(benefits_json),resources_json=VALUES(resources_json),audience_json=VALUES(audience_json),flow_json=VALUES(flow_json),
+       integrations_json=VALUES(integrations_json),indicators_json=VALUES(indicators_json),screenshot_url=VALUES(screenshot_url)`);
+    const localFeatureResult: any = await db.execute(drzSql`SELECT id FROM commercial_feature_catalog WHERE owner_type='white_label' AND owner_id=${partnerId} AND code=${code} LIMIT 1`);
+    const localFeatureId = Number(rowsOf(localFeatureResult)[0]?.id || 0);
+    if (!localFeatureId) continue;
+    featuresPublished++;
+    const manifestFeature = PLATFORM_FEATURE_MANIFEST.find(item => item.code === code);
+    for (const planName of manifestFeature?.planNames || []) {
+      const localPlans: any = await db.execute(drzSql`SELECT id FROM commercial_plan_catalog WHERE owner_type='white_label' AND owner_id=${partnerId} AND name=${planName} AND is_active=1`);
+      for (const plan of rowsOf(localPlans)) {
+        const inserted: any = await db.execute(drzSql`INSERT IGNORE INTO commercial_plan_features (plan_id,feature_id,access_level) VALUES (${Number(plan.id)},${localFeatureId},'included')`);
+        plansUpdated += Number((inserted as any)[0]?.affectedRows || 0);
+      }
+    }
+  }
+  const result = { partnerId, partnerName: partner.brand_name || partner.legal_name, featuresPublished, plansUpdated, codes };
+  await db.execute(drzSql`INSERT INTO platform_commercial_update_publications
+    (update_id,white_label_partner_id,status,features_published,plans_updated,result_json,published_by)
+    VALUES (${updateId},${partnerId},'publicado',${featuresPublished},${plansUpdated},${JSON.stringify(result)},${actorId})
+    ON DUPLICATE KEY UPDATE status='publicado',features_published=VALUES(features_published),plans_updated=VALUES(plans_updated),result_json=VALUES(result_json),published_by=VALUES(published_by),published_at=NOW()`);
+  return result;
+}
+
 export const commercialRouter = router({
   context: commercialProcedure.query(async ({ ctx }) => {
     const scope = (ctx as any).commercialScope as CommercialScope;
@@ -633,6 +876,50 @@ export const commercialRouter = router({
     const finance: any = await db.execute(drzSql`SELECT COALESCE(SUM(CASE WHEN status='recebido' THEN amount ELSE 0 END),0) AS received, COALESCE(SUM(CASE WHEN status IN ('pendente','atrasado') THEN amount ELSE 0 END),0) AS pending FROM commercial_receivables_v2 WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId}`);
     return { scope, brand: rowsOf(brand)[0], metrics: rowsOf(metrics)[0], finance: rowsOf(finance)[0] };
   }),
+  platformUpdates: commercialProcedure.query(async ({ ctx }) => {
+    const scope = (ctx as any).commercialScope as CommercialScope;
+    if (scope.ownerType !== "global") return { updates: [], partners: [], isGlobal: false };
+    const db = await getDb();
+    if (!db) return { updates: [], partners: [], isGlobal: true };
+    const updates: any = await db.execute(drzSql`SELECT u.*,
+      (SELECT COUNT(*) FROM platform_commercial_update_publications p WHERE p.update_id=u.id AND p.status='publicado') published_partners
+      FROM platform_commercial_updates u ORDER BY u.created_at DESC,u.id DESC`);
+    const partners: any = await db.execute(drzSql`SELECT id,COALESCE(brand_name,legal_name) name,status,
+      (SELECT COUNT(*) FROM platform_commercial_update_publications p WHERE p.white_label_partner_id=white_label_partners.id AND p.status='publicado') published_updates
+      FROM white_label_partners WHERE status IN ('active','ativo','trial') ORDER BY COALESCE(brand_name,legal_name)`);
+    return { updates: rowsOf(updates), partners: rowsOf(partners), isGlobal: true };
+  }),
+  publishPlatformUpdate: commercialProcedure.input(z.object({
+    updateId: z.number().int().positive(),
+    partnerIds: z.array(z.number().int().positive()).min(1).max(500),
+    featureCodes: z.array(z.string().min(2).max(100)).max(200).default([]),
+  })).mutation(async ({ ctx, input }) => {
+    const scope = (ctx as any).commercialScope as CommercialScope;
+    if (scope.ownerType !== "global") throw new TRPCError({ code: "FORBIDDEN", message: "Publicação disponível somente ao SuperAdmin Global." });
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+    const results = [];
+    for (const partnerId of [...new Set(input.partnerIds)])
+      results.push(await publishCommercialUpdateToPartner(db, input.updateId, partnerId, Number(ctx.user.id), input.featureCodes));
+    return { ok: true, results };
+  }),
+  portfolioCatalog: commercialProcedure.query(async ({ ctx }) => {
+    const scope = (ctx as any).commercialScope as CommercialScope;
+    const db = await getDb();
+    if (!db) return { pillars: [], features: [], runs: [] };
+    const features: any = scope.ownerType === "white_label"
+      ? await db.execute(drzSql`SELECT DISTINCT f.* FROM commercial_feature_catalog f JOIN commercial_plan_features pf ON pf.feature_id=f.id JOIN commercial_plan_catalog p ON p.id=pf.plan_id AND p.owner_type=f.owner_type AND p.owner_id=f.owner_id AND p.is_active=1 WHERE f.owner_type=${scope.ownerType} AND f.owner_id=${scope.ownerId} AND f.is_active=1 ORDER BY f.sort_order,f.name`)
+      : await db.execute(drzSql`SELECT * FROM commercial_feature_catalog WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} AND is_active=1 ORDER BY sort_order,name`);
+    const pillars: any = await db.execute(drzSql`SELECT * FROM commercial_pillars WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} AND is_active=1 ORDER BY sort_order,id`);
+    const runs: any = await db.execute(drzSql`SELECT * FROM commercial_portfolio_runs WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} ORDER BY generated_at DESC,id DESC LIMIT 30`);
+    return { pillars: rowsOf(pillars), features: rowsOf(features), runs: rowsOf(runs), releaseCode: PLATFORM_RELEASE.code };
+  }),
+  generatePortfolio: commercialProcedure.input(z.object({
+    mode: z.enum(["complete", "custom"]), title: z.string().min(3).max(255),
+    pillarCodes: z.array(z.string().max(100)).max(50).default([]),
+    featureCodes: z.array(z.string().max(100)).max(300).default([]),
+    presentationText: z.string().max(20000).optional(), consultantName: z.string().max(180).optional(), consultantContact: z.string().max(255).optional(),
+  })).mutation(async ({ ctx, input }) => createCommercialPortfolioPdf((ctx as any).commercialScope, Number(ctx.user.id), input)),
   saveSettings: commercialProcedure.input(z.object({ brandName: z.string().min(2), legalName: z.string().optional(), logoUrl: z.string().optional(), primaryColor: z.string(), secondaryColor: z.string(), presentationText: z.string().optional(), objectiveText: z.string().optional(), contactName: z.string().optional(), contactEmail: z.string().optional(), contactPhone: z.string().optional(), website: z.string().optional(), commercialTerms: z.string().optional(), nextStepsText: z.string().optional() })).mutation(async ({ ctx, input }) => {
     const s = (ctx as any).commercialScope as CommercialScope; const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
     await db.execute(drzSql`UPDATE commercial_brand_settings SET brand_name=${input.brandName}, legal_name=${input.legalName || null}, logo_url=${input.logoUrl || null}, primary_color=${input.primaryColor}, secondary_color=${input.secondaryColor}, presentation_text=${input.presentationText || null}, objective_text=${input.objectiveText || null}, contact_name=${input.contactName || null}, contact_email=${input.contactEmail || null}, contact_phone=${input.contactPhone || null}, website=${input.website || null}, commercial_terms=${input.commercialTerms || null}, next_steps_text=${input.nextStepsText || null}, updated_by=${ctx.user.id} WHERE owner_type=${s.ownerType} AND owner_id=${s.ownerId}`);
@@ -659,10 +946,11 @@ export const commercialRouter = router({
     return{ok:true};
   }),
   listFeatures: commercialProcedure.query(async ({ ctx }) => { const s = (ctx as any).commercialScope as CommercialScope; const db = await getDb(); if (!db) return []; const r: any = await db.execute(drzSql`SELECT f.*,p.name pillar_name,p.sort_order pillar_sort FROM commercial_feature_catalog f LEFT JOIN commercial_pillars p ON p.owner_type=f.owner_type AND p.owner_id=f.owner_id AND p.code=f.pillar_code WHERE f.owner_type=${s.ownerType} AND f.owner_id=${s.ownerId} ORDER BY COALESCE(p.sort_order,999),f.category,f.sort_order,f.name`); return rowsOf(r); }),
-  upsertFeature: commercialProcedure.input(z.object({ id: z.number().int().positive().optional(), category: z.string().min(2), code: z.string().min(2), name: z.string().min(2), description: z.string().optional(), pillarCode:z.string().max(100).optional(), moduleName:z.string().max(180).optional(), limitationsText:z.string().max(5000).optional(), isAddonEligible:z.boolean().default(false), isActive: z.boolean().default(true), sortOrder: z.number().int().default(0) })).mutation(async ({ ctx, input }) => {
+  upsertFeature: commercialProcedure.input(z.object({ id: z.number().int().positive().optional(), category: z.string().min(2), code: z.string().min(2), name: z.string().min(2), description: z.string().optional(), pillarCode:z.string().max(100).optional(), moduleName:z.string().max(180).optional(), limitationsText:z.string().max(5000).optional(), problemText:z.string().max(20000).optional(), objectiveText:z.string().max(20000).optional(), benefits:z.array(z.string().max(1000)).max(30).default([]), resources:z.array(z.string().max(1000)).max(50).default([]), audience:z.array(z.string().max(200)).max(30).default([]), flow:z.array(z.string().max(500)).max(30).default([]), integrations:z.array(z.string().max(300)).max(50).default([]), indicators:z.array(z.string().max(300)).max(50).default([]), screenshotUrl:z.string().max(1200).optional(), isAddonEligible:z.boolean().default(false), isActive: z.boolean().default(true), sortOrder: z.number().int().default(0) })).mutation(async ({ ctx, input }) => {
     const s = (ctx as any).commercialScope as CommercialScope; const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-    if (input.id) await db.execute(drzSql`UPDATE commercial_feature_catalog SET category=${input.category}, code=${input.code}, name=${input.name}, description=${input.description || null},pillar_code=${input.pillarCode||null},module_name=${input.moduleName||null},limitations_text=${input.limitationsText||null},is_addon_eligible=${input.isAddonEligible?1:0}, is_active=${input.isActive ? 1 : 0}, sort_order=${input.sortOrder} WHERE id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId}`);
-    else await db.execute(drzSql`INSERT INTO commercial_feature_catalog (owner_type, owner_id, category, code, name, description,pillar_code,module_name,limitations_text,is_addon_eligible,is_active, sort_order) VALUES (${s.ownerType}, ${s.ownerId}, ${input.category}, ${input.code}, ${input.name}, ${input.description || null},${input.pillarCode||null},${input.moduleName||null},${input.limitationsText||null},${input.isAddonEligible?1:0},${input.isActive ? 1 : 0}, ${input.sortOrder})`);
+    const metadata = [JSON.stringify(input.benefits),JSON.stringify(input.resources),JSON.stringify(input.audience),JSON.stringify(input.flow),JSON.stringify(input.integrations),JSON.stringify(input.indicators)];
+    if (input.id) await db.execute(drzSql`UPDATE commercial_feature_catalog SET category=${input.category}, code=${input.code}, name=${input.name}, description=${input.description || null},pillar_code=${input.pillarCode||null},module_name=${input.moduleName||null},limitations_text=${input.limitationsText||null},problem_text=${input.problemText||null},objective_text=${input.objectiveText||null},benefits_json=${metadata[0]},resources_json=${metadata[1]},audience_json=${metadata[2]},flow_json=${metadata[3]},integrations_json=${metadata[4]},indicators_json=${metadata[5]},screenshot_url=${input.screenshotUrl||null},is_addon_eligible=${input.isAddonEligible?1:0}, is_active=${input.isActive ? 1 : 0}, sort_order=${input.sortOrder} WHERE id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId}`);
+    else await db.execute(drzSql`INSERT INTO commercial_feature_catalog (owner_type, owner_id, category, code, name, description,pillar_code,module_name,limitations_text,problem_text,objective_text,benefits_json,resources_json,audience_json,flow_json,integrations_json,indicators_json,screenshot_url,is_addon_eligible,is_active, sort_order) VALUES (${s.ownerType}, ${s.ownerId}, ${input.category}, ${input.code}, ${input.name}, ${input.description || null},${input.pillarCode||null},${input.moduleName||null},${input.limitationsText||null},${input.problemText||null},${input.objectiveText||null},${metadata[0]},${metadata[1]},${metadata[2]},${metadata[3]},${metadata[4]},${metadata[5]},${input.screenshotUrl||null},${input.isAddonEligible?1:0},${input.isActive ? 1 : 0}, ${input.sortOrder})`);
     return { ok: true };
   }),
   listPlans: commercialProcedure.query(async ({ ctx }) => { const s = (ctx as any).commercialScope as CommercialScope; const db = await getDb(); if (!db) return []; const r: any = await db.execute(drzSql`SELECT p.*, GROUP_CONCAT(pf.feature_id) AS feature_ids FROM commercial_plan_catalog p LEFT JOIN commercial_plan_features pf ON pf.plan_id=p.id WHERE p.owner_type=${s.ownerType} AND p.owner_id=${s.ownerId} AND p.is_active=1 GROUP BY p.id ORDER BY p.sort_order, p.id`); return rowsOf(r).map((x) => ({ ...x, featureIds: String(x.feature_ids || "").split(",").filter(Boolean).map(Number) })); }),
@@ -718,7 +1006,12 @@ export const commercialRouter = router({
     const p=rowsOf(r)[0]; if(!p)throw new TRPCError({code:"NOT_FOUND"}); if(!p.email)throw new TRPCError({code:"BAD_REQUEST",message:"Informe o e-mail do responsável antes de enviar."});
     const pdfUrl=p.pdf_url || await createProposalPdf(s,input.id);const annexUrl=p.technical_annex_url || await createTechnicalAnnexPdf(s,input.id);const link=`${getEmailLinkBaseUrl()}${pdfUrl}`;const annexLink=`${getEmailLinkBaseUrl()}${annexUrl}`;
     const sent=await sendEmail({to:p.email,toName:p.responsavel||undefined,subject:`Proposta comercial - ${p.brand_name}`,html:`<p>Olá, ${esc(p.responsavel||"tudo bem")}.</p><p>${esc(input.message||"Preparamos uma proposta comercial personalizada para sua organização.")}</p><p><a href="${esc(link)}">Visualizar proposta comercial</a><br><a href="${esc(annexLink)}">Visualizar Anexo Técnico - Catálogo de Funcionalidades</a></p><p>Atenciosamente,<br><b>${esc(p.brand_name)}</b></p>`});
-    if(!sent.ok)throw new TRPCError({code:"INTERNAL_SERVER_ERROR",message:sent.error||"Falha no envio."}); await db.execute(drzSql`UPDATE commercial_proposals SET status='proposta_enviada', pdf_url=${pdfUrl} WHERE id=${input.id}`); return{ok:true,preview:sent.preview,url:pdfUrl};
+    if(!sent.ok)throw new TRPCError({code:"INTERNAL_SERVER_ERROR",message:sent.error||"Falha no envio."});
+    await db.execute(drzSql`UPDATE commercial_proposals SET status='proposta_enviada',proposal_sent_date=CURDATE(),pdf_url=${pdfUrl} WHERE id=${input.id}`);
+    await db.execute(drzSql`INSERT INTO commercial_proposal_activities
+      (owner_type,owner_id,proposal_id,contact_type,old_status,new_status,description,created_by)
+      VALUES (${s.ownerType},${s.ownerId},${input.id},'email',${String(p.status || "")},'proposta_enviada',${`Proposta ${p.proposal_number || `#${p.id}`} enviada para ${p.email}${sent.preview ? " em modo de teste" : ""}.`},${Number(ctx.user.id)})`);
+    return{ok:true,preview:sent.preview,url:pdfUrl};
   }),
   approveProposal: commercialProcedure.input(z.object({ id: z.number().int().positive(), createFinancialSchedule: z.boolean().default(true) })).mutation(async ({ ctx, input }) => {
     const s = (ctx as any).commercialScope as CommercialScope; const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); const r: any = await db.execute(drzSql.raw(`SELECT p.*, pl.name AS plan_name FROM commercial_proposals p LEFT JOIN commercial_plan_catalog pl ON pl.id=p.commercial_plan_id WHERE p.id=${input.id} AND ${scopeSql(s, "p")} LIMIT 1`)); const p = rowsOf(r)[0]; if (!p) throw new TRPCError({ code: "NOT_FOUND" });

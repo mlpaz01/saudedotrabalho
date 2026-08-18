@@ -387,6 +387,82 @@ export const occupationalProgramsRouter = router({
       return rowsOf(result);
     }),
 
+  updatePcdDocument: protectedProcedure
+    .input(z.object({
+      id: z.number().int().positive(),
+      documentType: z.string().min(2).max(100),
+      documentDate: z.string().nullable().optional(),
+      professionalName: z.string().max(255).optional(),
+      professionalRegistration: z.string().max(120).optional(),
+      documentStatus: z.enum(["pendente", "aprovado", "nao_validado"]),
+      notes: z.string().max(100000).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      requireManager(ctx);
+      await ensureOccupationalProgramTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const currentResult: any = await db.execute(
+        drzSql`SELECT d.*,p.collaborator_id FROM occupational_pcd_documents d JOIN occupational_pcd_cases p ON p.id=d.case_id AND p.company_id=d.company_id WHERE d.id=${input.id} AND d.company_id=${companyId} LIMIT 1`
+      );
+      const current = rowsOf(currentResult)[0];
+      if (!current) throw new TRPCError({ code: "NOT_FOUND" });
+      await db.execute(drzSql`UPDATE occupational_pcd_documents SET
+        document_type=${input.documentType},document_date=${input.documentDate || null},professional_name=${input.professionalName || null},
+        professional_registration=${input.professionalRegistration || null},document_status=${input.documentStatus},notes=${input.notes || null}
+        WHERE id=${input.id} AND company_id=${companyId}`);
+      await audit(db,ctx,"pcd_document_updated","pcd_document",input.id,Number(current.collaborator_id),current,input);
+      return { ok: true };
+    }),
+
+  listPcdAudit: protectedProcedure
+    .input(z.object({ caseId: z.number().int().positive() }))
+    .query(async ({ ctx, input }) => {
+      requireManager(ctx);
+      await ensureOccupationalProgramTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) return [];
+      const result: any = await db.execute(
+        drzSql`SELECT a.id,a.action,a.before_json,a.after_json,a.created_at,u.name actor_name
+          FROM occupational_program_audit_log a
+          LEFT JOIN users u ON u.id=a.actor_user_id
+          WHERE a.company_id=${companyId} AND (
+            (a.entity_type='pcd_case' AND a.entity_id=${input.caseId}) OR
+            (a.entity_type='pcd_document' AND a.entity_id IN (
+              SELECT d.id FROM occupational_pcd_documents d WHERE d.company_id=${companyId} AND d.case_id=${input.caseId}
+            ))
+          )
+          ORDER BY a.created_at DESC,a.id DESC`
+      );
+      return rowsOf(result);
+    }),
+
+  programReports: protectedProcedure.query(async ({ ctx }) => {
+    requireManager(ctx);
+    await ensureOccupationalProgramTables();
+    const db = await getDb();
+    const companyId = companyOf(ctx);
+    if (!db) return null;
+    const results: any[] = await Promise.all([
+      db.execute(drzSql`SELECT status label,COUNT(*) total FROM occupational_pcd_cases WHERE company_id=${companyId} GROUP BY status ORDER BY total DESC`),
+      db.execute(drzSql`SELECT COALESCE(NULLIF(disability_type,''),'Não informado') label,COUNT(*) total FROM occupational_pcd_cases WHERE company_id=${companyId} GROUP BY label ORDER BY total DESC`),
+      db.execute(drzSql`SELECT COALESCE(b.name,'Sem filial') label,COUNT(*) total FROM occupational_pcd_cases p JOIN users u ON u.id=p.collaborator_id AND u.company_id=p.company_id LEFT JOIN branches b ON b.id=u.branch_id WHERE p.company_id=${companyId} GROUP BY label ORDER BY total DESC`),
+      db.execute(drzSql`SELECT COALESCE(s.name,'Sem setor') label,COUNT(*) total FROM occupational_pcd_cases p JOIN users u ON u.id=p.collaborator_id AND u.company_id=p.company_id LEFT JOIN sectors s ON s.id=u.sector_id WHERE p.company_id=${companyId} GROUP BY label ORDER BY total DESC`),
+      db.execute(drzSql`SELECT COALESCE(NULLIF(u.position,''),'Sem cargo') label,COUNT(*) total FROM occupational_pcd_cases p JOIN users u ON u.id=p.collaborator_id AND u.company_id=p.company_id WHERE p.company_id=${companyId} GROUP BY label ORDER BY total DESC LIMIT 30`),
+      db.execute(drzSql`SELECT status label,COUNT(*) total FROM occupational_pca_cases WHERE company_id=${companyId} GROUP BY status ORDER BY total DESC`),
+      db.execute(drzSql`SELECT COALESCE(b.name,'Sem filial') label,COUNT(*) total FROM occupational_pca_cases p JOIN users u ON u.id=p.collaborator_id AND u.company_id=p.company_id LEFT JOIN branches b ON b.id=u.branch_id WHERE p.company_id=${companyId} GROUP BY label ORDER BY total DESC`),
+      db.execute(drzSql`SELECT COALESCE(s.name,'Sem setor') label,COUNT(*) total FROM occupational_pca_cases p JOIN users u ON u.id=p.collaborator_id AND u.company_id=p.company_id LEFT JOIN sectors s ON s.id=u.sector_id WHERE p.company_id=${companyId} GROUP BY label ORDER BY total DESC`),
+      db.execute(drzSql`SELECT COALESCE(g.name,'Sem GSE') label,COUNT(*) total FROM occupational_pca_cases p LEFT JOIN occupational_gse_master g ON g.id=p.gse_id AND g.company_id=p.company_id WHERE p.company_id=${companyId} GROUP BY label ORDER BY total DESC`),
+    ]);
+    const data = results.map(result => rowsOf(result));
+    return {
+      pcd: { byStatus: data[0], byDisability: data[1], byBranch: data[2], bySector: data[3], byPosition: data[4] },
+      pca: { byStatus: data[5], byBranch: data[6], bySector: data[7], byGse: data[8] },
+    };
+  }),
+
   syncPcaCandidates: protectedProcedure.mutation(async ({ ctx }) => {
     requireManager(ctx);
     await ensureOccupationalProgramTables();

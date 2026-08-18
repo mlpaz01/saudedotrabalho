@@ -5,17 +5,19 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
 import {
-  Accessibility,
   Activity,
+  Download,
+  History,
   FileUp,
-  Ear,
   Loader2,
+  Pencil,
   Plus,
   RefreshCw,
   Save,
   Search,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useSearch } from "wouter";
 import { toast } from "sonner";
 
 const pcdStatusLabels: Record<string, string> = {
@@ -57,9 +59,18 @@ const emptyPcd = {
   nextReviewDate: "",
 };
 
-export default function AdminOccupationalPrograms() {
+export default function AdminOccupationalPrograms({
+  mode = "pcd",
+}: {
+  mode?: "pcd" | "pca";
+}) {
   const api = (trpc as any).useUtils();
-  const [tab, setTab] = useState<"pcd" | "pca">("pcd");
+  const tab = mode;
+  const locationSearch = useSearch();
+  const contextualCollaboratorId = Number(
+    new URLSearchParams(locationSearch).get("collaboratorId") || 0
+  );
+  const [contextApplied, setContextApplied] = useState(false);
   const [search, setSearch] = useState("");
   const [pcdForm, setPcdForm] = useState<any>(emptyPcd);
   const [selectedPca, setSelectedPca] = useState<any>(null);
@@ -72,9 +83,14 @@ export default function AdminOccupationalPrograms() {
   });
   const pcdQ = (trpc as any).occupationalPrograms.listPcdCases.useQuery();
   const pcaQ = (trpc as any).occupationalPrograms.listPcaCases.useQuery();
+  const reportsQ = (trpc as any).occupationalPrograms.programReports.useQuery();
   const documentsQ = (
     trpc as any
   ).occupationalPrograms.listPcdDocuments.useQuery(
+    { caseId: Number(pcdForm.id || 0) },
+    { enabled: Boolean(pcdForm.id) }
+  );
+  const auditQ = (trpc as any).occupationalPrograms.listPcdAudit.useQuery(
     { caseId: Number(pcdForm.id || 0) },
     { enabled: Boolean(pcdForm.id) }
   );
@@ -84,6 +100,7 @@ export default function AdminOccupationalPrograms() {
       api.occupationalPrograms.dashboard.invalidate(),
       api.occupationalPrograms.listPcdCases.invalidate(),
       api.occupationalPrograms.listPcaCases.invalidate(),
+      api.occupationalPrograms.programReports.invalidate(),
     ]);
   };
 
@@ -171,6 +188,16 @@ export default function AdminOccupationalPrograms() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
+  useEffect(() => {
+    if (tab !== "pcd" || contextApplied || !contextualCollaboratorId || pcdQ.isLoading) return;
+    const existing = pcdCases.find(
+      row => Number(row.collaborator_id) === contextualCollaboratorId
+    );
+    if (existing) startEditPcd(existing);
+    else setPcdForm((current: any) => ({ ...current, collaboratorId: contextualCollaboratorId }));
+    setContextApplied(true);
+  }, [contextApplied, contextualCollaboratorId, pcdCases, pcdQ.isLoading, tab]);
+
   const handleFile = (file?: File) => {
     if (!file || !pcdForm.id) return;
     const reader = new FileReader();
@@ -223,10 +250,14 @@ export default function AdminOccupationalPrograms() {
         <header className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h1 className="text-2xl font-semibold text-slate-900">
-              Programas Ocupacionais
+              {tab === "pcd"
+                ? "Gestão de PCD"
+                : "Programa de Conservação Auditiva"}
             </h1>
             <p className="mt-1 text-sm text-slate-500">
-              Validação documental de PCD e acompanhamento operacional do PCA.
+              {tab === "pcd"
+                ? "Análise documental, validação, cota, dossiê e indicadores de pessoas com deficiência."
+                : "Triagem audiométrica, convocações, encaminhamentos e acompanhamento do PCA."}
             </p>
           </div>
           <Button variant="outline" onClick={refresh} className="gap-2">
@@ -235,12 +266,20 @@ export default function AdminOccupationalPrograms() {
         </header>
 
         <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          {[
-            ["PCD declarados", dashboard?.pcd?.declared ?? 0],
-            ["PCD validados", dashboard?.pcd?.validated ?? 0],
-            ["Casos PCA em aberto", dashboard?.pca?.openCases ?? 0],
-            ["Expostos a ruído", dashboard?.pca?.exposedWorkers ?? 0],
-          ].map(([label, value]) => (
+          {(tab === "pcd"
+            ? [
+                ["PCD declarados", dashboard?.pcd?.declared ?? 0],
+                ["PCD validados", dashboard?.pcd?.validated ?? 0],
+                ["Análises pendentes", dashboard?.pcd?.pending ?? 0],
+                ["Lacuna estimada da cota", dashboard?.pcd?.estimatedGap ?? 0],
+              ]
+            : [
+                ["Casos PCA", dashboard?.pca?.total ?? 0],
+                ["Casos em aberto", dashboard?.pca?.openCases ?? 0],
+                ["Repetições pendentes", dashboard?.pca?.repeats ?? 0],
+                ["Expostos a ruído", dashboard?.pca?.exposedWorkers ?? 0],
+              ]
+          ).map(([label, value]) => (
             <div key={String(label)} className="rounded-md border bg-white p-4">
               <div className="text-xs font-medium uppercase text-slate-500">
                 {label}
@@ -251,21 +290,6 @@ export default function AdminOccupationalPrograms() {
             </div>
           ))}
         </section>
-
-        <div className="flex gap-1 border-b">
-          <button
-            className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium ${tab === "pcd" ? "border-cyan-700 text-cyan-800" : "border-transparent text-slate-500"}`}
-            onClick={() => setTab("pcd")}
-          >
-            <Accessibility size={17} /> Gestão de PCD
-          </button>
-          <button
-            className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium ${tab === "pca" ? "border-cyan-700 text-cyan-800" : "border-transparent text-slate-500"}`}
-            onClick={() => setTab("pca")}
-          >
-            <Ear size={17} /> PCA
-          </button>
-        </div>
 
         {tab === "pcd" ? (
           <div className="grid gap-5 xl:grid-cols-[420px_minmax(0,1fr)]">
@@ -463,18 +487,37 @@ export default function AdminOccupationalPrograms() {
                   </label>
                   <div className="mt-3 space-y-2">
                     {((documentsQ.data || []) as any[]).map(row => (
-                      <div
+                      <PcdDocumentRow
                         key={row.id}
-                        className="rounded border px-3 py-2 text-xs"
-                      >
-                        <div className="font-medium text-slate-700">
-                          {row.file_name}
-                        </div>
-                        <div className="text-slate-500">
-                          {row.document_status} · {row.uploaded_by_name}
-                        </div>
-                      </div>
+                        row={row}
+                        onSaved={async () => {
+                          await Promise.all([documentsQ.refetch(), auditQ.refetch(), refresh()]);
+                        }}
+                      />
                     ))}
+                  </div>
+                  <div className="mt-4 border-t pt-4">
+                    <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-800">
+                      <History size={15} /> Histórico da avaliação
+                    </div>
+                    <div className="max-h-48 space-y-2 overflow-y-auto">
+                      {((auditQ.data || []) as any[]).map(row => (
+                        <div key={row.id} className="border-l-2 border-slate-300 pl-3 text-xs">
+                          <div className="font-medium text-slate-700">
+                            {row.action === "pcd_case_created"
+                              ? "Avaliação criada"
+                              : "Avaliação atualizada"}
+                          </div>
+                          <div className="text-slate-500">
+                            {row.actor_name || "Usuário da plataforma"} ·{" "}
+                            {new Date(row.created_at).toLocaleString("pt-BR")}
+                          </div>
+                          <div className="mt-1 text-slate-600">
+                            {auditChangeSummary(row)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 </div>
               )}
@@ -497,6 +540,7 @@ export default function AdminOccupationalPrograms() {
                       <th className="p-3">Deficiência</th>
                       <th className="p-3">Documentos</th>
                       <th className="p-3">Status</th>
+                      <th className="p-3 text-right">Ação</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -529,6 +573,19 @@ export default function AdminOccupationalPrograms() {
                           >
                             {pcdStatusLabels[row.status] || row.status}
                           </span>
+                        </td>
+                        <td className="p-3 text-right">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="gap-1"
+                            onClick={event => {
+                              event.stopPropagation();
+                              startEditPcd(row);
+                            }}
+                          >
+                            <Pencil size={14} /> Editar
+                          </Button>
                         </td>
                       </tr>
                     ))}
@@ -806,7 +863,153 @@ export default function AdminOccupationalPrograms() {
             </div>
           </div>
         )}
+
+        <ProgramReportSection mode={tab} data={(reportsQ.data as any)?.[tab]} />
       </div>
     </AppLayout>
+  );
+}
+
+function auditChangeSummary(row: any) {
+  try {
+    const before = row.before_json ? JSON.parse(row.before_json) : null;
+    const after = row.after_json ? JSON.parse(row.after_json) : null;
+    if (!before) return row.action.includes("document") ? "Documento adicionado à avaliação." : "Registro inicial criado.";
+    const changes: string[] = [];
+    const pairs = [
+      ["status", "Status"],
+      ["documentStatus", "Situação do documento"],
+      ["disabilityType", "Tipo de deficiência"],
+      ["quotaEligible", "Cota"],
+      ["nextReviewDate", "Próxima revisão"],
+    ];
+    for (const [key, label] of pairs) {
+      const previous = before[key] ?? before[String(key).replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`)];
+      const current = after?.[key];
+      if (current !== undefined && String(previous ?? "") !== String(current ?? ""))
+        changes.push(`${label}: ${String(previous ?? "não informado").replace(/_/g, " ")} → ${String(current ?? "não informado").replace(/_/g, " ")}`);
+    }
+    return changes.length ? changes.join(" · ") : "Conteúdo e observações atualizados.";
+  } catch {
+    return "Alteração registrada com rastreabilidade.";
+  }
+}
+
+function PcdDocumentRow({ row, onSaved }: { row: any; onSaved: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState({
+    documentType: row.document_type || "Laudo ou documento comprobatório",
+    documentDate: row.document_date ? String(row.document_date).slice(0, 10) : "",
+    professionalName: row.professional_name || "",
+    professionalRegistration: row.professional_registration || "",
+    documentStatus: row.document_status || "pendente",
+    notes: row.notes || "",
+  });
+  const update = (trpc as any).occupationalPrograms.updatePcdDocument.useMutation({
+    onSuccess: () => {
+      toast.success("Documento atualizado com rastreabilidade.");
+      setEditing(false);
+      onSaved();
+    },
+    onError: (error: any) => toast.error(error.message),
+  });
+  if (!editing) return (
+    <div className="rounded border px-3 py-2 text-xs">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <div className="font-medium text-slate-700">{row.file_name}</div>
+          <div className="text-slate-500">{String(row.document_status).replace(/_/g, " ")} · {row.uploaded_by_name}</div>
+          {row.notes && <div className="mt-1 text-slate-600">{row.notes}</div>}
+        </div>
+        <Button size="sm" variant="ghost" className="h-7 gap-1 px-2 text-xs" onClick={() => setEditing(true)}>
+          <Pencil size={12} /> Editar
+        </Button>
+      </div>
+    </div>
+  );
+  return (
+    <div className="space-y-2 rounded border bg-slate-50 p-3 text-xs">
+      <Input value={form.documentType} onChange={event => setForm({...form, documentType:event.target.value})} placeholder="Tipo de documento" />
+      <div className="grid grid-cols-2 gap-2">
+        <Input type="date" value={form.documentDate} onChange={event => setForm({...form, documentDate:event.target.value})} />
+        <select className="rounded-md border bg-white px-2" value={form.documentStatus} onChange={event => setForm({...form, documentStatus:event.target.value})}>
+          <option value="pendente">Pendente</option><option value="aprovado">Aprovado</option><option value="nao_validado">Não validado</option>
+        </select>
+      </div>
+      <Input value={form.professionalName} onChange={event => setForm({...form, professionalName:event.target.value})} placeholder="Profissional responsável" />
+      <Input value={form.professionalRegistration} onChange={event => setForm({...form, professionalRegistration:event.target.value})} placeholder="Registro profissional" />
+      <Textarea value={form.notes} onChange={event => setForm({...form, notes:event.target.value})} placeholder="Observações sobre a análise documental" />
+      <div className="flex justify-end gap-2">
+        <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>Cancelar</Button>
+        <Button size="sm" disabled={update.isPending || !form.documentType.trim()} onClick={() => update.mutate({id:Number(row.id),...form,documentDate:form.documentDate||null})}>Salvar documento</Button>
+      </div>
+    </div>
+  );
+}
+
+function ProgramReportSection({ mode, data }: { mode: "pcd" | "pca"; data: any }) {
+  const groups = mode === "pcd"
+    ? [
+        ["Situação da avaliação", data?.byStatus || []],
+        ["Tipo de deficiência", data?.byDisability || []],
+        ["Distribuição por filial", data?.byBranch || []],
+        ["Distribuição por setor", data?.bySector || []],
+        ["Distribuição por cargo", data?.byPosition || []],
+      ]
+    : [
+        ["Situação do acompanhamento", data?.byStatus || []],
+        ["Distribuição por filial", data?.byBranch || []],
+        ["Distribuição por setor", data?.bySector || []],
+        ["Distribuição por GSE", data?.byGse || []],
+      ];
+
+  const exportCsv = () => {
+    const rows = [["Indicador", "Categoria", "Quantidade"]];
+    groups.forEach(([title, values]: any) =>
+      values.forEach((row: any) => rows.push([title, row.label, String(row.total)]))
+    );
+    const csv = rows
+      .map(row => row.map(value => `"${String(value ?? "").replace(/"/g, '""')}"`).join(";"))
+      .join("\r\n");
+    const url = URL.createObjectURL(new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `relatorio_${mode}_${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <section className="border-t pt-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold text-slate-900">
+            Indicadores e relatório {mode === "pcd" ? "de PCD" : "do PCA"}
+          </h2>
+          <p className="text-sm text-slate-500">
+            Consolidação própria do programa, sem misturar as duas metodologias.
+          </p>
+        </div>
+        <Button variant="outline" className="gap-2" onClick={exportCsv}>
+          <Download size={15} /> Exportar relatório
+        </Button>
+      </div>
+      <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {groups.map(([title, values]: any) => (
+          <div key={title} className="border bg-white">
+            <h3 className="border-b px-4 py-3 text-sm font-semibold">{title}</h3>
+            <div className="divide-y">
+              {values.map((row: any) => (
+                <div key={`${title}-${row.label}`} className="flex justify-between gap-3 px-4 py-2 text-sm">
+                  <span className="text-slate-600">{String(row.label || "Não informado").replace(/_/g, " ")}</span>
+                  <b>{row.total}</b>
+                </div>
+              ))}
+              {!values.length && <p className="px-4 py-5 text-sm text-slate-500">Sem dados consolidados.</p>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }

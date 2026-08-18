@@ -783,6 +783,10 @@ async function ensureTables() {
   tablesReady = true;
 }
 
+export async function ensureMedicalTables() {
+  await ensureTables();
+}
+
 async function audit(
   db: any,
   ctx: any,
@@ -2997,6 +3001,15 @@ export const medicalRouter = router({
           drzSql`SELECT id,CONCAT('CAT - ',COALESCE(accident_type,'acidente/incidente')) title,event_at created_at,status,esocial_status FROM occupational_cat_records WHERE company_id=${companyId} AND collaborator_id=${input.collaboratorId} ORDER BY event_at DESC LIMIT 200`
         )
         .catch(() => [[]]);
+      const pcdCase: any = await db
+        .execute(
+          drzSql`SELECT p.id,p.declared_type,p.disability_type,p.status,p.quota_eligible,p.reviewed_at,p.next_review_date,
+            (SELECT COUNT(*) FROM occupational_pcd_documents d WHERE d.company_id=p.company_id AND d.case_id=p.id) documents_count
+            FROM occupational_pcd_cases p
+            WHERE p.company_id=${companyId} AND p.collaborator_id=${input.collaboratorId}
+            LIMIT 1`
+        )
+        .catch(() => [[]]);
       const progress: any = await db
         .execute(
           drzSql`SELECT COUNT(*) total,SUM(isCompleted=1) completed,SUM(isCompleted=0) pending FROM user_progress WHERE userId=${input.collaboratorId}`
@@ -3029,6 +3042,7 @@ export const medicalRouter = router({
       const orderRows = rowsOf(examOrders);
       const asoRows = rowsOf(asos);
       const catRows = rowsOf(cats);
+      const pcd = rowsOf(pcdCase)[0] || null;
       const pendingLeaves = leaveRows.filter(row =>
         ["pendente", "em_analise", "retorno_pendente"].includes(
           String(row.status || "")
@@ -3058,6 +3072,17 @@ export const medicalRouter = router({
           count: leaveRows.length,
           priority: pendingLeaves ? 2 : 7,
           status: pendingLeaves ? "attention" : "normal",
+        },
+        {
+          key: "pcd",
+          label: "Gestão de PCD",
+          description: pcd?.status === "validado"
+            ? "Caracterização validada e integrada ao dossiê"
+            : "Avaliação documental e situação da caracterização",
+          href: `/admin/gestao-pcd?collaboratorId=${input.collaboratorId}`,
+          count: pcd ? Number(pcd.documents_count || 0) : 0,
+          priority: pcd && pcd.status !== "validado" ? 3 : 10,
+          status: pcd && pcd.status !== "validado" ? "attention" : "normal",
         },
         {
           key: "epi",
@@ -3137,6 +3162,8 @@ export const medicalRouter = router({
           examOrders: orderRows.length,
           asos: asoRows.length,
           cats: catRows.length,
+          pcdValidated: pcd?.status === "validado" ? 1 : 0,
+          pcdDocuments: Number(pcd?.documents_count || 0),
         },
         shortcuts,
         integrations: {
@@ -3148,6 +3175,7 @@ export const medicalRouter = router({
           examOrders: orderRows,
           asos: asoRows,
           cats: catRows,
+          pcd,
         },
       };
     }),

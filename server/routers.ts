@@ -22522,7 +22522,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
       .query(async ({ ctx, input }) => {
         const cid = Number((ctx.user as any).companyId) || 0;
         const role = (ctx.user as any).role;
-        const isGlobal = role === "admin_global";
+        const isGlobal = ["admin_global", "super_admin"].includes(role);
         const db = await getDb();
         if (!db)
           return {
@@ -23616,6 +23616,115 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           : "";
         const companyFilter = isGlobal ? "" : `AND u.company_id = ${cid}`;
 
+        const platformMetrics = new Set([
+          "pcd_count", "pcd_validated_count", "pcd_pending_documents",
+          "pca_cases", "pca_repeats", "pca_referrals",
+          "aso_count", "exam_result_count", "anamnesis_count",
+          "pcmso_count", "gse_workers",
+        ]);
+        if (platformMetrics.has(metric)) {
+          if (metric.startsWith("pcd_") || metric.startsWith("pca_")) {
+            const { ensureOccupationalProgramTables } = await import("./_core/occupationalProgramsRouter");
+            await ensureOccupationalProgramTables();
+          } else if (metric === "pcmso_count") {
+            const { ensureMedicalTables } = await import("./_core/medicalRouter");
+            await ensureMedicalTables();
+          } else {
+            const { ensureOccupationalTables } = await import("./_core/occupationalLifecycleRouter");
+            await ensureOccupationalTables();
+          }
+
+          let fromSql = "";
+          let valueSql = "COUNT(*)";
+          let dateColumn = "x.created_at";
+          let statusColumn = "x.status";
+          let hasUsers = true;
+          let hasGse = false;
+          let extraWhere = "";
+
+          if (metric.startsWith("pcd_")) {
+            fromSql = "FROM occupational_pcd_cases x JOIN users u ON u.id=x.collaborator_id AND u.company_id=x.company_id";
+            if (metric === "pcd_validated_count") valueSql = "COUNT(CASE WHEN x.status='validado' THEN 1 END)";
+            if (metric === "pcd_pending_documents") valueSql = "COUNT(DISTINCT CASE WHEN x.status IN ('pendente','em_analise','necessita_complementacao') OR NOT EXISTS (SELECT 1 FROM occupational_pcd_documents d WHERE d.company_id=x.company_id AND d.case_id=x.id AND d.document_status='aprovado') THEN x.id END)";
+          } else if (metric.startsWith("pca_")) {
+            fromSql = "FROM occupational_pca_cases x JOIN users u ON u.id=x.collaborator_id AND u.company_id=x.company_id LEFT JOIN occupational_gse_master g ON g.id=x.gse_id AND g.company_id=x.company_id";
+            hasGse = true;
+            dateColumn = "x.detected_at";
+            if (metric === "pca_repeats") valueSql = "COUNT(CASE WHEN x.repeat_exam_required=1 THEN 1 END)";
+            if (metric === "pca_referrals") valueSql = "COUNT(CASE WHEN x.ent_referral_required=1 THEN 1 END)";
+          } else if (metric === "aso_count") {
+            fromSql = "FROM occupational_asos x JOIN users u ON u.id=x.collaborator_id AND u.company_id=x.company_id LEFT JOIN occupational_gse_master g ON g.id=x.gse_id AND g.company_id=x.company_id";
+            hasGse = true;
+            dateColumn = "x.issued_at";
+          } else if (metric === "exam_result_count") {
+            fromSql = "FROM occupational_exam_results x JOIN users u ON u.id=x.collaborator_id AND u.company_id=x.company_id LEFT JOIN occupational_gse_worker_history h ON h.company_id=x.company_id AND h.collaborator_id=x.collaborator_id AND h.is_current=1 LEFT JOIN occupational_gse_master g ON g.id=h.gse_id AND g.company_id=h.company_id";
+            hasGse = true;
+            dateColumn = "x.performed_at";
+            statusColumn = "x.classification";
+          } else if (metric === "anamnesis_count") {
+            fromSql = "FROM occupational_anamneses x JOIN users u ON u.id=x.collaborator_id AND u.company_id=x.company_id LEFT JOIN occupational_gse_worker_history h ON h.company_id=x.company_id AND h.collaborator_id=x.collaborator_id AND h.is_current=1 LEFT JOIN occupational_gse_master g ON g.id=h.gse_id AND g.company_id=h.company_id";
+            hasGse = true;
+          } else if (metric === "gse_workers") {
+            fromSql = "FROM occupational_gse_worker_history x JOIN users u ON u.id=x.collaborator_id AND u.company_id=x.company_id JOIN occupational_gse_master g ON g.id=x.gse_id AND g.company_id=x.company_id";
+            hasGse = true;
+            dateColumn = "x.valid_from";
+            statusColumn = "x.is_current";
+            valueSql = "COUNT(DISTINCT x.collaborator_id)";
+            extraWhere = "AND x.is_current=1";
+          } else {
+            fromSql = "FROM pcmso_programs_v2 x";
+            hasUsers = false;
+          }
+
+          let platformDimSelect = "";
+          let platformDimJoin = "";
+          let platformDimGroup = "";
+          let platformDimOrder = "ORDER BY value DESC";
+          if (dimension === "branch" && hasUsers) {
+            platformDimSelect = 'b.id AS dim_id, COALESCE(b.name,"Sem filial") AS dim_name';
+            platformDimJoin = "LEFT JOIN branches b ON b.id=u.branch_id";
+            platformDimGroup = "GROUP BY b.id,b.name";
+          } else if (dimension === "sector" && hasUsers) {
+            platformDimSelect = 's.id AS dim_id, COALESCE(s.name,"Sem setor") AS dim_name';
+            platformDimJoin = "LEFT JOIN sectors s ON s.id=u.sector_id";
+            platformDimGroup = "GROUP BY s.id,s.name";
+          } else if (dimension === "role" && hasUsers) {
+            platformDimSelect = 'COALESCE(NULLIF(u.position,""),"Sem cargo") AS dim_id, COALESCE(NULLIF(u.position,""),"Sem cargo") AS dim_name';
+            platformDimGroup = "GROUP BY dim_id";
+          } else if (dimension === "gse" && hasGse) {
+            platformDimSelect = 'g.id AS dim_id, COALESCE(g.name,"Sem GSE") AS dim_name';
+            platformDimGroup = "GROUP BY g.id,g.name";
+          } else if (dimension === "disability_type" && metric.startsWith("pcd_")) {
+            platformDimSelect = 'COALESCE(NULLIF(x.disability_type,""),"Não informado") AS dim_id, COALESCE(NULLIF(x.disability_type,""),"Não informado") AS dim_name';
+            platformDimGroup = "GROUP BY dim_id";
+          } else if (dimension === "status") {
+            platformDimSelect = `${statusColumn} AS dim_id, REPLACE(CAST(${statusColumn} AS CHAR),'_',' ') AS dim_name`;
+            platformDimGroup = "GROUP BY dim_id";
+          } else {
+            platformDimSelect = `DATE_FORMAT(${dateColumn},"%Y-%m") AS dim_id, DATE_FORMAT(${dateColumn},"%Y-%m") AS dim_name`;
+            platformDimGroup = "GROUP BY dim_id";
+            platformDimOrder = "ORDER BY dim_id ASC";
+          }
+
+          const scopedWhere = hasUsers
+            ? `${companyFilter} ${branchFilter} ${sectorFilter}`
+            : (isGlobal ? "" : `AND x.company_id=${cid}`);
+          const platformQuery = `SELECT ${platformDimSelect}, ${valueSql} AS value ${fromSql} ${platformDimJoin} WHERE 1=1 ${scopedWhere} ${extraWhere} ${platformDimGroup} ${platformDimOrder} LIMIT 50`;
+          const platformResult: any = await db.execute(drzSql.raw(platformQuery));
+          const platformRows: any[] = (platformResult[0] ?? platformResult) as any[];
+          const data = (Array.isArray(platformRows) ? platformRows : []).map((row: any) => ({
+            key: String(row.dim_id ?? ""),
+            name: String(row.dim_name ?? "Não informado"),
+            value: Number(row.value ?? 0),
+          }));
+          await db.execute(drzSql`UPDATE saved_analyses SET last_run_at=NOW() WHERE id=${input.id}`).catch(() => undefined);
+          return {
+            config: { id:Number(cfg.id),name:String(cfg.name),description:cfg.description??"",metric,dimension,filters,chartType:String(cfg.chart_type),isShared:Boolean(cfg.is_shared) },
+            data,
+            generatedAt: new Date().toISOString(),
+          };
+        }
+
         let dimSelect = "";
         let dimJoin = "";
         let dimGroup = "";
@@ -23634,8 +23743,8 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           dimOrder = "ORDER BY value DESC";
         } else if (dimension === "role") {
           dimSelect =
-            'u.role AS dim_id, COALESCE(u.role, "Sem cargo") AS dim_name';
-          dimGroup = "GROUP BY u.role";
+            'u.position AS dim_id, COALESCE(NULLIF(u.position, ""), "Sem cargo") AS dim_name';
+          dimGroup = "GROUP BY u.position";
           dimOrder = "ORDER BY value DESC";
         } else if (dimension === "module") {
           dimSelect = "m.id AS dim_id, m.title AS dim_name";

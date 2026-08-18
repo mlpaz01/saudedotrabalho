@@ -11,7 +11,7 @@ import {
   Link2, Layers, RotateCcw, Activity, Search, LineChart, Signature, FileText,
   LifeBuoy, Headphones, HeartHandshake, BarChart3, ListChecks, BookMarked,
   Megaphone, Briefcase, Trophy, Printer, Pencil, Upload, HardHat, ClipboardCheck,
-  MessageSquareText, Accessibility,
+  MessageSquareText, Accessibility, Ear,
 Syringe,} from "lucide-react";
 import { useEffect, useState } from "react";
 import { trpc } from "@/lib/trpc";
@@ -152,7 +152,8 @@ const adminSections: NavSection[] = [
     section: "Saude Ocupacional",
     items: [
       { label: "Operacao Ocupacional", href: "/admin/saude-ocupacional", roles: ["sesmt", "admin", "company_admin", "admin_global", "super_admin"], icon: <ClipboardCheck size={16} /> },
-      { label: "Programas PCD / PCA", href: "/admin/programas-ocupacionais", roles: ["rh", "sesmt", "medico", "admin", "company_admin", "admin_global", "super_admin"], icon: <Accessibility size={16} /> },
+      { label: "Gestao de PCD", href: "/admin/gestao-pcd", roles: ["rh", "sesmt", "medico", "admin", "company_admin", "admin_global", "super_admin"], icon: <Accessibility size={16} /> },
+      { label: "PCA", href: "/admin/pca", roles: ["sesmt", "medico", "admin", "company_admin", "admin_global", "super_admin"], icon: <Ear size={16} /> },
       { label: "Eventos eSocial", href: "/admin/esocial", roles: ["sesmt", "admin", "company_admin", "admin_global", "super_admin"], icon: <FileCheck size={16} /> },
       { label: "Atestados e Afastamentos", href: "/admin/atestados-afastamentos", roles: ["admin", "rh", "sesmt", "company_admin", "admin_global", "super_admin", "chefia",], icon: <Stethoscope size={16} /> ,
        },
@@ -228,9 +229,14 @@ const medicalNav: NavSection[] = [
         icon: <ClipboardCheck size={16} />,
       },
       {
-        label: "Programas PCD / PCA",
-        href: "/admin/programas-ocupacionais",
+        label: "Gestao de PCD",
+        href: "/admin/gestao-pcd",
         icon: <Accessibility size={16} />,
+      },
+      {
+        label: "PCA",
+        href: "/admin/pca",
+        icon: <Ear size={16} />,
       },
       {
         label: "Manual do Usuario",

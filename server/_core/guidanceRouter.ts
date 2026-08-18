@@ -161,6 +161,56 @@ export async function loadCustomKnowledgeArticles(includeInactive = false) {
   return rowsOf(result).map(mapRow);
 }
 
+export async function publishAutomaticKnowledgeArticles(
+  articles: Array<{
+    slug: string;
+    title: string;
+    summary: string;
+    module: string;
+    route: string;
+    roles: string[];
+    keywords: string[];
+    whatIs: string;
+    purpose: string;
+    accessPath: string;
+    steps: string[];
+    cautions: string[];
+  }>,
+  actorId = 1
+) {
+  await ensureTable();
+  const db = await getDb();
+  if (!db) return { created: 0, updated: 0 };
+  let created = 0;
+  let updated = 0;
+  for (const article of articles) {
+    const current: any = await db.execute(
+      drzSql`SELECT id FROM knowledge_custom_articles_v2 WHERE slug=${article.slug} LIMIT 1`
+    );
+    const roles = JSON.stringify(article.roles);
+    const keywords = JSON.stringify(article.keywords);
+    const steps = JSON.stringify(article.steps);
+    const cautions = JSON.stringify(article.cautions);
+    const sourceName = "Manifesto oficial da plataforma";
+    if (rowsOf(current).length) {
+      await db.execute(drzSql`UPDATE knowledge_custom_articles_v2 SET
+        title=${article.title},summary=${article.summary},module_name=${article.module},route_path=${article.route},
+        roles_json=${roles},keywords_json=${keywords},what_is=${article.whatIs},purpose=${article.purpose},
+        access_path=${article.accessPath},steps_json=${steps},cautions_json=${cautions},is_active=1,
+        workflow_status='publicado',audit_status='estrutura_ok',audit_notes='Publicado automaticamente a partir do manifesto versionado.',
+        source_name=${sourceName},source_published_flag='automatico',updated_by=${actorId},reviewed_by=${actorId},reviewed_at=NOW()
+        WHERE slug=${article.slug}`);
+      updated++;
+    } else {
+      await db.execute(drzSql`INSERT INTO knowledge_custom_articles_v2
+        (slug,title,summary,module_name,route_path,roles_json,keywords_json,what_is,purpose,access_path,steps_json,cautions_json,faq_json,problems_json,screenshots_json,video_url,is_active,sort_order,workflow_status,audit_status,audit_notes,source_name,source_published_flag,created_by,updated_by,reviewed_by,reviewed_at)
+        VALUES (${article.slug},${article.title},${article.summary},${article.module},${article.route},${roles},${keywords},${article.whatIs},${article.purpose},${article.accessPath},${steps},${cautions},'[]','[]','[]',NULL,1,0,'publicado','estrutura_ok','Publicado automaticamente a partir do manifesto versionado.',${sourceName},'automatico',${actorId},${actorId},${actorId},NOW())`);
+      created++;
+    }
+  }
+  return { created, updated };
+}
+
 const inputSchema = z.object({
   id: z.number().int().positive().optional(),
   slug: z

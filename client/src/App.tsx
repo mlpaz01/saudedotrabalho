@@ -353,7 +353,9 @@ function Router() {
       <Route path="/admin/sst-dashboard" component={() => (<ProtectedRoute component={AdminSSTDashboard} adminOnly />)} />
       <Route path="/admin/documentos-tecnicos" component={() => (<ProtectedRoute component={TechnicalDocuments} adminOnly />)} />
       <Route path="/admin/relatorio-analitico-pcmso" component={() => (<ProtectedRoute component={AdminPcmsoAnalyticalReports} adminOnly />)} />
-      <Route path="/admin/programas-ocupacionais" component={() => (<OccupationalProgramsRoute component={AdminOccupationalPrograms} />)} />
+      <Route path="/admin/gestao-pcd" component={() => (<OccupationalProgramsRoute component={() => <AdminOccupationalPrograms mode="pcd" />} />)} />
+      <Route path="/admin/pca" component={() => (<OccupationalProgramsRoute component={() => <AdminOccupationalPrograms mode="pca" />} />)} />
+      <Route path="/admin/programas-ocupacionais" component={() => (<OccupationalProgramsRoute component={() => <AdminOccupationalPrograms mode="pcd" />} />)} />
       <Route path="/admin/vacinacao" component={() => (<ProtectedRoute component={AdminVaccination} adminOnly />)} />
       <Route path="/admin/acoes-vinculadas" component={() => (<ProtectedRoute component={AdminAcoesVinculadas} adminOnly />)} />
       <Route path="/admin/analise-risco" component={() => (<ProtectedRoute component={AdminRiskAssessments} adminOnly />)} />

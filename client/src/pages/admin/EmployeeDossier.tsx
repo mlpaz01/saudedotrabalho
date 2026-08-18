@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useLocation } from "wouter";
 import {
   Activity,
+  Accessibility,
   AlertTriangle,
   ArrowLeft,
   Download,
@@ -184,6 +185,7 @@ export default function EmployeeDossier({ id }: { id: number }) {
     courses: <GraduationCap size={18} />,
     vaccination: <Syringe size={18} />,
     occupational: <HeartPulse size={18} />,
+    pcd: <Accessibility size={18} />,
     technical: <FileText size={18} />,
     documents: <FolderOpen size={18} />,
   };
@@ -217,6 +219,31 @@ export default function EmployeeDossier({ id }: { id: number }) {
             <Plus size={16} /> Adicionar documento
           </Button>
         </header>
+
+        {integrations?.pcd && (
+          <section className={`border-l-4 p-4 ${integrations.pcd.status === "validado" ? "border-emerald-600 bg-emerald-50" : "border-amber-500 bg-amber-50"}`}>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2 font-semibold text-slate-950">
+                  <Accessibility size={18} /> Caracterização PCD
+                </div>
+                <p className="mt-1 text-sm text-slate-700">
+                  {integrations.pcd.disability_type || "Tipo em análise"} ·{" "}
+                  {String(integrations.pcd.status || "pendente").replace(/_/g, " ")}
+                  {integrations.pcd.reviewed_at
+                    ? ` · Validada/revisada em ${dateText(integrations.pcd.reviewed_at)}`
+                    : ""}
+                </p>
+                <p className="mt-1 text-xs text-slate-600">
+                  {integrations.pcd.documents_count || 0} documento(s) comprobatório(s) vinculado(s), mantidos no módulo de origem.
+                </p>
+              </div>
+              <Badge variant="outline" className="rounded-sm bg-white">
+                {integrations.pcd.status === "validado" ? "PCD validado" : "Avaliação em andamento"}
+              </Badge>
+            </div>
+          </section>
+        )}
 
         <section className="border bg-white">
           <header className="border-b px-4 py-3">
