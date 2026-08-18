@@ -11,7 +11,7 @@ import {
   Link2, Layers, RotateCcw, Activity, Search, LineChart, Signature, FileText,
   LifeBuoy, Headphones, HeartHandshake, BarChart3, ListChecks, BookMarked,
   Megaphone, Briefcase, Trophy, Printer, Pencil, Upload, HardHat, ClipboardCheck,
-  MessageSquareText,
+  MessageSquareText, Accessibility,
 Syringe,} from "lucide-react";
 import { useEffect, useState } from "react";
 import { trpc } from "@/lib/trpc";
@@ -140,6 +140,7 @@ const adminSections: NavSection[] = [
       { label: "Dashboard PGR", href: "/admin/pgr/executivo", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <BarChart3 size={16} />, feature: "pgr" ,},
       { label: "Auditoria PGR", href: "/admin/pgr/auditoria", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <ShieldCheck size={16} />, feature: "pgr" ,},
       { label: "Documentos Tecnicos", href: "/admin/documentos-tecnicos", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <FileSearch size={16} />, feature: "pgr" ,},
+      { label: "Relatorio Analitico PCMSO", href: "/admin/relatorio-analitico-pcmso", roles: ["sesmt", "admin", "company_admin", "admin_global", "super_admin"], icon: <FileCheck2 size={16} /> ,},
       { label: "Revisoes PGR", href: "/admin/pgr-revisoes", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <RotateCcw size={16} />, feature: "risk_assessment" ,},
       { label: "Arquivos SST", href: "/admin/arquivos", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <FolderOpen size={16} /> ,},
       { label: "Responsaveis Tecnicos", href: "/admin/responsaveis-tecnicos", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <Signature size={16} /> ,},
@@ -151,6 +152,7 @@ const adminSections: NavSection[] = [
     section: "Saude Ocupacional",
     items: [
       { label: "Operacao Ocupacional", href: "/admin/saude-ocupacional", roles: ["sesmt", "admin", "company_admin", "admin_global", "super_admin"], icon: <ClipboardCheck size={16} /> },
+      { label: "Programas PCD / PCA", href: "/admin/programas-ocupacionais", roles: ["rh", "sesmt", "medico", "admin", "company_admin", "admin_global", "super_admin"], icon: <Accessibility size={16} /> },
       { label: "Eventos eSocial", href: "/admin/esocial", roles: ["sesmt", "admin", "company_admin", "admin_global", "super_admin"], icon: <FileCheck size={16} /> },
       { label: "Atestados e Afastamentos", href: "/admin/atestados-afastamentos", roles: ["admin", "rh", "sesmt", "company_admin", "admin_global", "super_admin", "chefia",], icon: <Stethoscope size={16} /> ,
        },
@@ -224,6 +226,11 @@ const medicalNav: NavSection[] = [
         label: "Exames e ASO",
         href: "/admin/saude-ocupacional",
         icon: <ClipboardCheck size={16} />,
+      },
+      {
+        label: "Programas PCD / PCA",
+        href: "/admin/programas-ocupacionais",
+        icon: <Accessibility size={16} />,
       },
       {
         label: "Manual do Usuario",

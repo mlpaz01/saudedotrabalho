@@ -13,6 +13,7 @@ import {
   suggestMedicalResponse,
 } from "./pcmsoIntelligence";
 import { protectedProcedure, router } from "./trpc";
+import { ensureOccupationalProgramTables } from "./occupationalProgramsRouter";
 import {
   ensureClinicalConsultationExam,
   ensureOccupationalTables,
@@ -688,6 +689,12 @@ async function ensureTables() {
   );
   await ensureColumn(
     db,
+    "pcmso_analytical_reports_v2",
+    "pdf_private_path",
+    "VARCHAR(600) NULL"
+  );
+  await ensureColumn(
+    db,
     "pcmso_risk_monitoring_v2",
     "possible_aggravations",
     "MEDIUMTEXT NULL"
@@ -880,21 +887,44 @@ function privateImageDataUri(filePath: unknown) {
   return `data:${mime};base64,${fs.readFileSync(target).toString("base64")}`;
 }
 
-function buildPcmsoPdfHtml(input: {
+export function removePcmsoSuggestedExamsSection(value: unknown) {
+  return removeRichTextHeadingSection(
+    value,
+    /^(?:20(?:\.5)?\.?\s*)?exames ocupacionais sugeridos$/i
+  );
+}
+
+export function removePcmsoAnalyticalReportSection(value: unknown) {
+  return removeRichTextHeadingSection(
+    value,
+    /^(?:\d+(?:\.\d+)*\.?\s*)?relat[oó]rio anal[ií]tico(?: anual)?(?: do pcmso)?$/i
+  );
+}
+
+function removeRichTextHeadingSection(value: unknown, titlePattern: RegExp) {
+  const html = String(value || "");
+  const headingPattern = /<h([1-6])\b[^>]*>[\s\S]*?<\/h\1>/gi;
+  const headings = [...html.matchAll(headingPattern)];
+  const targetIndex = headings.findIndex(match => {
+    const plain = richTextToPlainText(match[0]).replace(/\s+/g, " ").trim();
+    return titlePattern.test(plain);
+  });
+  if (targetIndex < 0) return html;
+  const start = headings[targetIndex].index ?? 0;
+  const end = headings[targetIndex + 1]?.index ?? html.length;
+  return html.slice(0, start) + html.slice(end);
+}
+
+export function buildPcmsoPdfHtml(input: {
   program: any;
   monitoring: any[];
   annexes: any[];
-  analyticalReport?: any;
 }) {
-  const { program, monitoring, annexes, analyticalReport } = input;
+  const { program, monitoring, annexes } = input;
   const signatureImage = privateImageDataUri(
     program.doctor_signature_private_path
   );
   const stampImage = privateImageDataUri(program.doctor_stamp_private_path);
-  let chapters: any[] = [];
-  try {
-    chapters = JSON.parse(program.chapters_json || "[]");
-  } catch {}
   const groups = new Map<string, any[]>();
   monitoring.forEach(row => {
     const key = row.gse_name || "GSE não identificado";
@@ -928,79 +958,73 @@ function buildPcmsoPdfHtml(input: {
       return `<h3>${esc([rows[0]?.master_gse_code, gse].filter(Boolean).join(" - "))} · População atual: ${esc(rows[0]?.population_count || 0)} trabalhador(es)</h3><table><thead><tr><th>Risco ocupacional</th><th>Possíveis agravos</th><th colspan="3">Exames e avaliações definidos</th></tr></thead><tbody>${body}</tbody></table>`;
     })
     .join("");
-  const legacySummary = [
-    "Apresentação",
-    "Objetivo",
-    "Campo de aplicação",
-    "Base normativa",
-    "Diretrizes",
-    "Responsabilidades",
-    "Metodologia",
-    "Integração PGR/PCMSO",
-    "Caracterização dos GSEs",
-    "Planejamento médico e exames",
-    "Critérios de interpretação e conduta",
-    "Vigilância da saúde",
-    "Imunização",
-    "Relatório analítico",
-    "Conclusão",
-    "Responsabilidade técnica",
-    "Anexos",
+  const summaryItems = [
+    "Conteúdo técnico padronizado pelo SuperAdmin",
+    "Detalhamento dos GSEs e integração com o PGR",
+    "Continuação do conteúdo técnico oficial",
+    "Anexos associados",
   ];
-  const examTypes = [
-    "Admissional",
-    "Periódico",
-    "Retorno ao trabalho",
-    "Mudança de risco ocupacional",
-    "Demissional",
-  ];
-  const customChapters = chapters.filter(
-    chapter =>
-      !/^conclus[aã]o$/i.test(richTextToPlainText(chapter?.title || "").trim())
-  );
-  const templateDriven = Boolean(Number(program.template_driven));
-  const summaryItems = templateDriven
-    ? [
-        "Conteúdo técnico padronizado (itens 1 a 14)",
-        ...customChapters.map(chapter => richTextToPlainText(chapter.title)),
-        "15. Detalhamento dos GSEs e integração com o PGR",
-        "16. Conclusão",
-        "Anexos associados",
-      ]
-    : legacySummary;
   const pgrReference = `<div class="notice"><b>PGR de referência:</b> ${esc(program.pgr_title || "Não informado")}<br><b>Responsável técnico do PGR:</b> ${esc(program.pgr_responsible_name || "Não informado")} ${program.pgr_responsible_registration ? `· ${esc(program.pgr_responsible_registration)}` : ""}</div>`;
+  const officialIntroduction = sanitizeRichText(
+    removePcmsoAnalyticalReportSection(
+      removePcmsoSuggestedExamsSection(program.introduction)
+    )
+  );
+  const officialContinuation = sanitizeRichText(
+    removePcmsoAnalyticalReportSection(
+      removePcmsoSuggestedExamsSection(program.conclusion)
+    )
+  );
   const templateBody = `
-    <section class="document-content technical-template">${sanitizeRichText(program.introduction || "")}</section>
-    ${customChapters.map(chapter => `<h2>${esc(richTextToPlainText(chapter.title))}</h2><div class="document-content">${sanitizeRichText(chapter.content)}</div>`).join("")}
+    <section class="document-content technical-template">${officialIntroduction}</section>
     <h2>15. Detalhamento dos GSEs e integração com o PGR</h2>${pgrReference}${matrix || "<p>Nenhum risco importado.</p>"}
-    <h2>16. Conclusão</h2><div class="document-content">${sanitizeRichText(program.conclusion || "O programa deverá ser acompanhado continuamente e revisto quando houver alterações relevantes no PGR, nos processos, nos riscos ou no perfil de saúde consolidado dos trabalhadores.")}</div>`;
-  const legacyBody = `
-    <h2>1. Apresentação</h2><div class="document-content">${sanitizeRichText(program.introduction || "O PCMSO estabelece o acompanhamento médico ocupacional integrado aos riscos identificados no PGR.")}</div>
-    <h2>2. Objetivo</h2><div class="document-content">${sanitizeRichText(program.objective || "Proteger e preservar a saúde dos trabalhadores em relação aos riscos ocupacionais.")}</div>
-    <h2>3. Campo de aplicação</h2><div class="document-content">${sanitizeRichText(program.field_of_application || `Aplica-se à população trabalhadora vinculada aos ${groups.size} GSE(s) mestres desta organização, conectados ao PGR e ao PCMSO vigentes.`)}</div>
-    <h2>4. Base normativa</h2><p>NR-07 - Programa de Controle Médico de Saúde Ocupacional, NR-01 - Gerenciamento de Riscos Ocupacionais e demais referências legais e técnicas aplicáveis ao escopo.</p>
-    <h2>5. Diretrizes do PCMSO</h2><div class="document-content">${sanitizeRichText(program.guidelines || "Rastrear e detectar precocemente agravos relacionados ao trabalho, definir ações de vigilância, subsidiar medidas preventivas e manter documentação médica ocupacional sob confidencialidade.")}</div>
-    <h2>6. Responsabilidades</h2><p><b>Organização:</b> garantir elaboração e implementação do programa, custear os procedimentos e fornecer informações atualizadas do PGR.<br><b>Médico responsável:</b> definir critérios médicos, validar o planejamento, analisar resultados consolidados e assinar o programa.<br><b>SESMT:</b> manter o PGR e apoiar os controles operacionais.</p>
-    <h2>7. Metodologia de elaboração</h2><div class="document-content">${sanitizeRichText(program.methodology || "Os GSEs mestres e sua população foram relacionados ao PGR. Os riscos ocupacionais foram submetidos à análise médica para definição dos controles e periodicidades.")}</div>
-    <h2>8. Integração entre PGR e PCMSO</h2>${pgrReference}
-    <h2>9. Caracterização dos GSEs e planejamento médico</h2>${matrix || "<p>Nenhum risco importado.</p>"}
-    <h2>10. Exames médicos ocupacionais</h2><ol>${examTypes.map(item => `<li>${item}</li>`).join("")}</ol>
-    <h2>11. Critérios de interpretação e conduta</h2><div class="document-content">${sanitizeRichText(program.conduct_criteria || "Os achados devem ser interpretados pelo médico considerando história ocupacional, exposição, resultados anteriores e condições individuais.")}</div>
-    <h2>12. Vigilância ativa e passiva</h2><div class="document-content">${sanitizeRichText(program.surveillance_methodology || "A vigilância considera atendimentos, queixas, atestados, exames ocupacionais e análise epidemiológica.")}</div>
-    <h2>13. Atividades críticas</h2><div class="document-content">${sanitizeRichText(program.critical_activities || "A aptidão para atividades críticas deve ser avaliada individualmente pelo médico.")}</div>
-    <h2>14. Imunização</h2><div class="document-content">${sanitizeRichText(program.immunization_methodology || "Quando aplicável, o histórico de imunização integra a vigilância ocupacional.")}</div>
-    <h2>15. Relatório analítico</h2>${analyticalReport ? `<div class="document-content">${sanitizeRichText(analyticalReport.narrative)}</div><div class="document-content">${sanitizeRichText(analyticalReport.recommendations)}</div>` : "<p>Componente anual em elaboração.</p>"}
-    ${customChapters.map((chapter, index) => `<h2>${16 + index}. ${esc(richTextToPlainText(chapter.title))}</h2><div class="document-content">${sanitizeRichText(chapter.content)}</div>`).join("")}
-    <h2>Conclusão</h2><div class="document-content">${sanitizeRichText(program.conclusion || "O programa deverá ser acompanhado continuamente e revisto quando houver alterações relevantes.")}</div>`;
+    ${officialContinuation ? `<section class="document-content technical-template">${officialContinuation}</section>` : ""}`;
   return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
   @page{size:A4;margin:18mm 15mm}body{font-family:Arial,sans-serif;color:#172b3a;font-size:10pt;line-height:1.45}h1{font-size:25pt;color:#0e2c46}h2{margin-top:9mm;color:#0e2c46;border-bottom:2px solid #0096a6;padding-bottom:2mm}h3{margin-top:6mm;color:#0e2c46}table{width:100%;border-collapse:collapse;font-size:7.7pt;margin:3mm 0 6mm}th,td{border:1px solid #d7e1e8;padding:2mm;vertical-align:top}th{background:#0e2c46;color:#fff}.cover{height:240mm;display:flex;flex-direction:column;justify-content:center;text-align:center;page-break-after:always}.meta{color:#607486}.signature{margin-top:18mm;text-align:center}.signature img{display:block;max-width:70mm;max-height:24mm;object-fit:contain;margin:0 auto 2mm}.signature-line{border-top:1px solid #172b3a;width:80mm;margin:0 auto 2mm}.notice{border-left:3px solid #eab308;padding:3mm;background:#fffbeb;font-size:8.5pt}.toc{columns:2}.page-break{page-break-before:always}p{white-space:pre-wrap}.document-content ul,.document-content ol{padding-left:7mm}.document-content li{margin:1.2mm 0}.document-content li>p{margin:0}.document-content img{max-width:100%;height:auto}</style></head><body>
   <section class="cover"><h1>${esc(program.title)}</h1><h2>${esc(program.company_name)}</h2><p>CNPJ: ${esc(program.cnpj || "-")}<br>Vigência: ${esc(program.valid_from || "-")} a ${esc(program.valid_until || "-")}</p><p class="meta">Programa de Controle Médico de Saúde Ocupacional</p></section>
   <h2>Controle do documento</h2><table><tbody><tr><td><b>Versão</b></td><td>${esc(program.current_version || 1)}</td><td><b>Situação</b></td><td>${esc(program.status)}</td></tr><tr><td><b>PGR de referência</b></td><td>${esc(program.pgr_title || "-")}</td><td><b>Sincronização</b></td><td>${esc(program.pgr_synced_at || "-")}</td></tr></tbody></table>
   <h2>Identificação da organização</h2><p><b>Empresa:</b> ${esc(program.company_name)}<br><b>CNPJ:</b> ${esc(program.cnpj || "-")}<br><b>Endereço:</b> ${esc(program.address || "-")}<br><b>Médico responsável:</b> ${esc(program.doctor_name || "-")} · ${esc(program.doctor_crm || "-")}</p>
   <h2>Sumário</h2><ol class="toc">${summaryItems.map(item => `<li>${esc(item)}</li>`).join("")}</ol>
-  ${templateDriven ? templateBody : legacyBody}
+  ${templateBody}
   <h2>Anexos associados</h2><ol>${annexes.map(item => `<li>Anexo ${item.annex_number}: ${esc(item.title || item.file_name)}</li>`).join("") || "<li>Nenhum anexo associado.</li>"}</ol>
   <div class="signature">${signatureImage ? `<img src="${signatureImage}" alt="Assinatura do médico responsável">` : ""}${stampImage ? `<img src="${stampImage}" alt="Carimbo do médico responsável">` : ""}<div class="signature-line"></div><b>${esc(program.doctor_name || "Médico responsável")}</b><br>${esc(program.doctor_crm || "CRM não informado")}<br>Registro de autoria e integridade: ${esc(program.signature_hash || "documento ainda não confirmado")}</div>
+  </body></html>`;
+}
+
+function buildAnalyticalReportPdfHtml(input: {
+  report: any;
+  company: any;
+}) {
+  const { report, company } = input;
+  let metrics: any = {};
+  try {
+    metrics = JSON.parse(report.metrics_json || "{}");
+  } catch {}
+  const metric = (value: unknown) => Number(value || 0).toLocaleString("pt-BR");
+  const rows = [
+    ["Trabalhadores abrangidos", metric(metrics.exams?.workers)],
+    ["GSEs abrangidos", metric(metrics.exams?.gses)],
+    ["Procedimentos previstos", metric(metrics.exams?.plannedAssignments)],
+    ["Resultados registrados", metric(metrics.exams?.performed)],
+    ["Requisições pendentes", metric(metrics.orders?.pending)],
+    ["ASOs emitidos", metric(metrics.asos?.total)],
+    ["Atendimentos médicos", metric(metrics.followups?.encounters)],
+    ["Encaminhamentos", metric(metrics.followups?.referrals)],
+    ["Afastamentos", metric(metrics.leaves?.total)],
+    ["Dias de afastamento", metric(metrics.leaves?.days_lost)],
+  ];
+  const examKinds = Array.isArray(metrics.examKinds) ? metrics.examKinds : [];
+  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
+  @page{size:A4;margin:18mm 16mm}body{font-family:Arial,sans-serif;color:#172b3a;font-size:10pt;line-height:1.5}h1{font-size:23pt;color:#0e2c46;margin:0}h2{font-size:14pt;color:#0e2c46;border-bottom:3px solid #0895a5;padding-bottom:2mm;margin-top:9mm}.header{border-bottom:4px solid #0895a5;padding-bottom:6mm}.meta{color:#607486;margin-top:3mm}.notice{background:#f8fafc;border-left:4px solid #eab308;padding:4mm;margin:6mm 0}table{width:100%;border-collapse:collapse;margin:4mm 0}th{background:#0e2c46;color:#fff;text-align:left}th,td{border:1px solid #d8e2e8;padding:2.5mm}.status{display:inline-block;padding:1.5mm 3mm;background:#e8f5f7;color:#087583;font-weight:700}.footer{margin-top:14mm;border-top:1px solid #d8e2e8;padding-top:4mm;color:#64748b;font-size:8pt}</style></head><body>
+  <div class="header"><h1>Relatório Analítico Anual do PCMSO</h1><p class="meta"><b>${esc(company.name)}</b> · CNPJ ${esc(company.cnpj || "-")}<br>${esc(report.pcmso_title)} · PGR: ${esc(report.pgr_title || "Não informado")}</p></div>
+  <p><span class="status">${esc(String(report.status || "em_revisao").replaceAll("_", " ").toUpperCase())}</span></p>
+  <p><b>Período de referência:</b> ${esc(report.period_start)} a ${esc(report.period_end)}<br><b>Gerado em:</b> ${esc(new Date(report.created_at).toLocaleString("pt-BR"))}</p>
+  <div class="notice">Documento independente e anexo ao PCMSO. A geração operacional consolida os registros disponíveis; interpretações e conclusões médicas dependem de revisão do médico responsável.</div>
+  <h2>Indicadores consolidados</h2><table><tbody>${rows.map(([label, value]) => `<tr><td><b>${esc(label)}</b></td><td>${esc(value)}</td></tr>`).join("")}</tbody></table>
+  <h2>Exames realizados por tipo</h2><table><thead><tr><th>Exame</th><th>Resultados</th></tr></thead><tbody>${examKinds.map((item: any) => `<tr><td>${esc(item.exam_kind || "Não identificado")}</td><td>${esc(metric(item.total))}</td></tr>`).join("") || '<tr><td colspan="2">Nenhum resultado registrado no período.</td></tr>'}</tbody></table>
+  <h2>Análise consolidada</h2><div>${sanitizeRichText(report.narrative || "")}</div>
+  <h2>Recomendações</h2><div>${sanitizeRichText(report.recommendations || "")}</div>
+  <div class="footer">Relatório ${esc(report.id)} · Rastreabilidade preservada pela Plataforma Saúde do Trabalho.</div>
   </body></html>`;
 }
 
@@ -1732,6 +1756,17 @@ export const medicalRouter = router({
       );
       const program = rowsOf(programResult)[0];
       if (!program) throw new TRPCError({ code: "NOT_FOUND" });
+      const officialDefaults = await loadDocumentDefaults(
+        db,
+        companyId,
+        "pcmso"
+      );
+      program.introduction =
+        officialDefaults?.texto_introducao || program.introduction;
+      program.conclusion =
+        officialDefaults?.texto_conclusao || program.conclusion;
+      program.template_driven = 1;
+      program.chapters_json = "[]";
       const monitoringResult: any = await db.execute(
         drzSql`SELECT * FROM pcmso_risk_monitoring_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId} AND is_primary=1 ORDER BY gse_name,risk_name`
       );
@@ -1924,7 +1959,7 @@ export const medicalRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      requireDoctor(ctx);
+      requirePcmsoRead(ctx);
       await ensureTables();
       const db = await getDb();
       const companyId = companyOf(ctx);
@@ -1935,9 +1970,10 @@ export const medicalRouter = router({
           message: "A data final deve ser igual ou posterior à data inicial.",
         });
       const own: any = await db.execute(
-        drzSql`SELECT id,title FROM pcmso_programs_v2 WHERE id=${input.pcmsoId} AND company_id=${companyId} LIMIT 1`
+        drzSql`SELECT p.id,p.title,p.pgr_id,g.title pgr_title FROM pcmso_programs_v2 p LEFT JOIN pgr_documents g ON g.id=p.pgr_id AND g.company_id=p.company_id WHERE p.id=${input.pcmsoId} AND p.company_id=${companyId} LIMIT 1`
       );
-      if (!rowsOf(own).length) throw new TRPCError({ code: "NOT_FOUND" });
+      const program = rowsOf(own)[0];
+      if (!program) throw new TRPCError({ code: "NOT_FOUND" });
       const populationResult: any = await db.execute(
         drzSql`SELECT
           COUNT(DISTINCT h.collaborator_id) workers,
@@ -1988,6 +2024,18 @@ export const medicalRouter = router({
       const monitoringResult: any = await db.execute(
         drzSql`SELECT COUNT(*) total,SUM(NOT EXISTS (SELECT 1 FROM pcmso_risk_monitoring_v2 item WHERE item.company_id=source.company_id AND item.pcmso_id=source.pcmso_id AND (item.id=source.id OR item.source_monitoring_id=source.id) AND item.monitoring_kind<>'nao_definido')) pending FROM pcmso_risk_monitoring_v2 source WHERE source.company_id=${companyId} AND source.pcmso_id=${input.pcmsoId} AND source.is_primary=1`
       );
+      const ordersResult: any = await db.execute(
+        drzSql`SELECT COUNT(*) total,SUM(status IN ('emitida','enviada','agendada','em_atendimento','resultado_pendente')) pending,COUNT(DISTINCT collaborator_id) workers FROM occupational_exam_orders WHERE company_id=${companyId} AND pcmso_id=${input.pcmsoId} AND issue_date BETWEEN ${input.periodStart} AND ${input.periodEnd}`
+      );
+      const asosResult: any = await db.execute(
+        drzSql`SELECT COUNT(*) total,COUNT(DISTINCT collaborator_id) workers,SUM(status NOT IN ('emitido','assinado','concluido')) pending FROM occupational_asos WHERE company_id=${companyId} AND pcmso_id=${input.pcmsoId} AND DATE(issued_at) BETWEEN ${input.periodStart} AND ${input.periodEnd}`
+      );
+      const leavesResult: any = await db.execute(
+        drzSql`SELECT COUNT(*) total,COUNT(DISTINCT collaborator_id) workers,SUM(total_days) days_lost,SUM(total_hours) hours_lost FROM occupational_leave_cases WHERE company_id=${companyId} AND start_date<=${input.periodEnd} AND end_date>=${input.periodStart}`
+      );
+      const followupsResult: any = await db.execute(
+        drzSql`SELECT (SELECT COUNT(*) FROM medical_encounters_v2 WHERE company_id=${companyId} AND DATE(encounter_at) BETWEEN ${input.periodStart} AND ${input.periodEnd}) encounters,(SELECT COUNT(*) FROM medical_referrals_v2 WHERE company_id=${companyId} AND referral_date BETWEEN ${input.periodStart} AND ${input.periodEnd}) referrals`
+      );
       const population = rowsOf(populationResult)[0] || {};
       const current = rowsOf(currentResults)[0] || {};
       const legacy = rowsOf(legacyResults)[0] || {};
@@ -2009,11 +2057,21 @@ export const medicalRouter = router({
             : Number(legacy.workers || 0),
         },
         examKinds: rowsOf(kindsResult),
+        program: {
+          pcmsoId: Number(program.id),
+          pcmsoTitle: program.title,
+          pgrId: Number(program.pgr_id || 0) || null,
+          pgrTitle: program.pgr_title || null,
+        },
         encounters: rowsOf(encountersResult)[0] || {},
         certificates: rowsOf(certificatesResult)[0] || {},
         monitoring: rowsOf(monitoringResult)[0] || {},
+        orders: rowsOf(ordersResult)[0] || {},
+        asos: rowsOf(asosResult)[0] || {},
+        leaves: rowsOf(leavesResult)[0] || {},
+        followups: rowsOf(followupsResult)[0] || {},
       };
-      const narrative = `No período de ${input.periodStart} a ${input.periodEnd}, o PCMSO previa ${Number(metrics.exams.plannedAssignments || 0)} procedimento(s) ocupacional(is), de ${Number(metrics.exams.examTypes || 0)} tipo(s), para ${Number(metrics.exams.workers || 0)} trabalhador(es) vinculados a ${Number(metrics.exams.gses || 0)} GSE(s). Foram registrados ${Number(metrics.exams.performed || 0)} resultado(s), ${Number(metrics.encounters.total || 0)} atendimento(s) e ${Number(metrics.certificates.total || 0)} atestado(s). Foram contabilizados ${Number(metrics.certificates.days_lost || 0)} dia(s) e ${Number(metrics.certificates.hours_lost || 0)} hora(s) de afastamento. Os dados devem ser interpretados pelo médico responsável em conjunto com o PGR, o perfil epidemiológico e a qualidade dos registros disponíveis.`;
+      const narrative = `No período de ${input.periodStart} a ${input.periodEnd}, o PCMSO previa ${Number(metrics.exams.plannedAssignments || 0)} procedimento(s) ocupacional(is), de ${Number(metrics.exams.examTypes || 0)} tipo(s), para ${Number(metrics.exams.workers || 0)} trabalhador(es) vinculados a ${Number(metrics.exams.gses || 0)} GSE(s). Foram registrados ${Number(metrics.exams.performed || 0)} resultado(s), ${Number(metrics.asos.total || 0)} ASO(s), ${Number(metrics.followups.encounters || 0)} atendimento(s), ${Number(metrics.followups.referrals || 0)} encaminhamento(s) e ${Number(metrics.leaves.total || 0)} afastamento(s). Existem ${Number(metrics.orders.pending || 0)} requisição(ões) ainda sem conclusão no período. Os dados devem ser interpretados pelo médico responsável em conjunto com o PGR, o perfil epidemiológico e a qualidade dos registros disponíveis.`;
       const recommendations = Number(metrics.monitoring.pending || 0)
         ? `Revisar ${Number(metrics.monitoring.pending)} risco(s) ainda sem decisão médica e avaliar tendências antes da apresentação ao SESMT/CIPA.`
         : "Manter o acompanhamento periódico, comparar a evolução com o período anterior e comunicar ao PGR alterações relevantes identificadas na análise médica consolidada.";
@@ -2075,7 +2133,7 @@ export const medicalRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      requireDoctor(ctx);
+      requirePcmsoRead(ctx);
       await ensureTables();
       const db = await getDb();
       const companyId = companyOf(ctx);
@@ -2099,6 +2157,89 @@ export const medicalRouter = router({
         { pcmsoId: Number(report.pcmso_id), reason: input.reason }
       );
       return { ok: true };
+    }),
+
+  analyticalReportWorkspace: protectedProcedure.query(async ({ ctx }) => {
+    requirePcmsoRead(ctx);
+    await ensureTables();
+    const db = await getDb();
+    const companyId = companyOf(ctx);
+    if (!db) return { programs: [], reports: [] };
+    const [programsResult, reportsResult] = await Promise.all([
+      db.execute(
+        drzSql`SELECT p.id,p.title,p.status,p.valid_from,p.valid_until,g.title pgr_title FROM pcmso_programs_v2 p LEFT JOIN pgr_documents g ON g.id=p.pgr_id AND g.company_id=p.company_id WHERE p.company_id=${companyId} ORDER BY FIELD(p.status,'vigente','em_revisao','rascunho','arquivado'),p.updated_at DESC,p.id DESC`
+      ),
+      db.execute(
+        drzSql`SELECT r.id,r.pcmso_id,r.period_start,r.period_end,r.metrics_json,r.narrative,r.recommendations,r.status,r.pdf_private_path,r.reviewed_at,r.created_at,r.discarded_at,r.discard_reason,p.title pcmso_title,g.title pgr_title,creator.name created_by_name,reviewer.name reviewed_by_name FROM pcmso_analytical_reports_v2 r JOIN pcmso_programs_v2 p ON p.id=r.pcmso_id AND p.company_id=r.company_id LEFT JOIN pgr_documents g ON g.id=p.pgr_id AND g.company_id=p.company_id LEFT JOIN users creator ON creator.id=r.created_by LEFT JOIN users reviewer ON reviewer.id=r.reviewed_by WHERE r.company_id=${companyId} ORDER BY r.period_end DESC,r.id DESC`
+      ),
+    ]);
+    return {
+      programs: rowsOf(programsResult),
+      reports: rowsOf(reportsResult).map((row: any) => ({
+        ...row,
+        metrics: (() => {
+          try {
+            return JSON.parse(row.metrics_json || "{}");
+          } catch {
+            return {};
+          }
+        })(),
+      })),
+    };
+  }),
+
+  generateAnalyticalReportPdf: protectedProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ ctx, input }) => {
+      requirePcmsoRead(ctx);
+      await ensureTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const result: any = await db.execute(
+        drzSql`SELECT r.*,p.title pcmso_title,g.title pgr_title,c.name company_name,c.cnpj FROM pcmso_analytical_reports_v2 r JOIN pcmso_programs_v2 p ON p.id=r.pcmso_id AND p.company_id=r.company_id JOIN companies c ON c.id=r.company_id LEFT JOIN pgr_documents g ON g.id=p.pgr_id AND g.company_id=p.company_id WHERE r.id=${input.id} AND r.company_id=${companyId} AND r.status<>'descartado' LIMIT 1`
+      );
+      const report = rowsOf(result)[0];
+      if (!report) throw new TRPCError({ code: "NOT_FOUND" });
+      const html = buildAnalyticalReportPdfHtml({
+        report,
+        company: { name: report.company_name, cnpj: report.cnpj },
+      });
+      const puppeteer = (await import("puppeteer")).default;
+      const browser = await puppeteer.launch({
+        headless: true,
+        args: ["--no-sandbox"],
+      });
+      const page = await browser.newPage();
+      await page.setContent(html, { waitUntil: "load" });
+      const pdf = await page.pdf({ format: "A4", printBackground: true });
+      await browser.close();
+      const dir = path.join(
+        privateRoot(companyId),
+        `pcmso_${Number(report.pcmso_id)}`,
+        "relatorios_analiticos"
+      );
+      fs.mkdirSync(dir, { recursive: true });
+      const target = path.join(
+        dir,
+        `relatorio_analitico_${input.id}_${Date.now()}.pdf`
+      );
+      fs.writeFileSync(target, pdf);
+      await db.execute(
+        drzSql`UPDATE pcmso_analytical_reports_v2 SET pdf_private_path=${target} WHERE id=${input.id} AND company_id=${companyId}`
+      );
+      await audit(
+        db,
+        ctx,
+        "pcmso_analytical_report_pdf_generated",
+        "pcmso_report",
+        input.id
+      );
+      return {
+        fileName: `Relatorio_Analitico_PCMSO_${input.id}.pdf`,
+        mimeType: "application/pdf",
+        dataBase64: `data:application/pdf;base64,${Buffer.from(pdf).toString("base64")}`,
+      };
     }),
 
   requestPgrReview: protectedProcedure
@@ -2279,14 +2420,22 @@ export const medicalRouter = router({
       );
       const program = rowsOf(programResult)[0];
       if (!program) throw new TRPCError({ code: "NOT_FOUND" });
+      const officialDefaults = await loadDocumentDefaults(
+        db,
+        companyId,
+        "pcmso"
+      );
+      program.introduction =
+        officialDefaults?.texto_introducao || program.introduction;
+      program.conclusion =
+        officialDefaults?.texto_conclusao || program.conclusion;
+      program.template_driven = 1;
+      program.chapters_json = "[]";
       const monitoringResult: any = await db.execute(
         drzSql`SELECT m.*,e.name exam_name,(SELECT COUNT(*) FROM occupational_gse_worker_history h WHERE h.company_id=m.company_id AND h.gse_id=m.master_gse_id AND h.is_current=1) population_count FROM pcmso_risk_monitoring_v2 m LEFT JOIN pcmso_exam_catalog_v2 e ON e.id=m.exam_id WHERE m.pcmso_id=${input.id} AND m.company_id=${companyId} ORDER BY m.gse_name,m.risk_name`
       );
       const annexesResult: any = await db.execute(
         drzSql`SELECT annex_number,title,file_name FROM pcmso_attachments_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId} ORDER BY annex_number,sort_order,id`
-      );
-      const analyticalResult: any = await db.execute(
-        drzSql`SELECT * FROM pcmso_analytical_reports_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId} AND status='aprovado' ORDER BY period_end DESC,id DESC LIMIT 1`
       );
       const monitoring = rowsOf(monitoringResult);
       const annexes = rowsOf(annexesResult);
@@ -2308,7 +2457,6 @@ export const medicalRouter = router({
         program,
         monitoring,
         annexes,
-        analyticalReport: rowsOf(analyticalResult)[0],
       });
       const puppeteer = (await import("puppeteer")).default;
       const browser = await puppeteer.launch({
@@ -2346,6 +2494,7 @@ export const medicalRouter = router({
     .query(async ({ ctx, input }) => {
       requireDoctor(ctx);
       await ensureTables();
+      await ensureOccupationalProgramTables();
       const db = await getDb();
       const companyId = companyOf(ctx);
       if (!db) return null;
@@ -2353,7 +2502,7 @@ export const medicalRouter = router({
         drzSql`SELECT u.id,u.name,u.cpf,u.position,u.employment_status,b.name branch_name,s.name sector_name FROM users u LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id WHERE u.id=${input.collaboratorId} AND u.company_id=${companyId} LIMIT 1`
       );
       if (!rowsOf(patient).length) throw new TRPCError({ code: "NOT_FOUND" });
-      const [encounters, referrals, certificates, medications, vaccines] =
+      const [encounters, referrals, certificates, medications, vaccines, pcd] =
         await Promise.all([
           db.execute(
             drzSql`SELECT * FROM medical_encounters_v2 WHERE company_id=${companyId} AND collaborator_id=${input.collaboratorId} ORDER BY encounter_at DESC,id DESC`
@@ -2369,6 +2518,9 @@ export const medicalRouter = router({
           ),
           db.execute(
             drzSql`SELECT r.*,v.name vaccine_name FROM medical_vaccination_records_v2 r JOIN medical_vaccines_v2 v ON v.id=r.vaccine_id WHERE r.company_id=${companyId} AND r.collaborator_id=${input.collaboratorId} ORDER BY vaccination_date DESC,id DESC`
+          ),
+          db.execute(
+            drzSql`SELECT disability_type,status,validation_conclusion,complementary_assessment,quota_eligible,reviewed_at,next_review_date FROM occupational_pcd_cases WHERE company_id=${companyId} AND collaborator_id=${input.collaboratorId} AND status='validado' LIMIT 1`
           ),
         ]);
       await audit(
@@ -2386,6 +2538,7 @@ export const medicalRouter = router({
         certificates: rowsOf(certificates),
         medications: rowsOf(medications),
         vaccinations: rowsOf(vaccines),
+        validatedDisability: rowsOf(pcd)[0] || null,
       };
     }),
 

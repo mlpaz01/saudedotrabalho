@@ -99,6 +99,8 @@ import AdminEPCEPI from "@/pages/admin/AdminEPCEPI";
 import AdminPGRRevision from "@/pages/admin/AdminPGRRevision";
 import AdminSSTDashboard from "@/pages/admin/AdminSSTDashboard";
 import TechnicalDocuments from "@/pages/admin/TechnicalDocuments";
+import AdminPcmsoAnalyticalReports from "@/pages/admin/AdminPcmsoAnalyticalReports";
+import AdminOccupationalPrograms from "@/pages/admin/AdminOccupationalPrograms";
 import AdminVaccination from "@/pages/admin/AdminVaccination";
 import AdminAcoesVinculadas from "@/pages/admin/AdminAcoesVinculadas";
 import AdminRiskAssessments from "@/pages/admin/AdminRiskAssessments";
@@ -200,6 +202,14 @@ function OccupationalRoute({ component: Component }: { component: React.Componen
   if (loading) return (<div className="min-h-screen brand-gradient flex items-center justify-center"><div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" /></div>);
   if (!user) return <Redirect to="/login" />;
   if (!["medico", "sesmt", "admin", "company_admin", "admin_global", "super_admin"].includes(user.role)) return <Redirect to="/inicio" />;
+  return <Component />;
+}
+
+function OccupationalProgramsRoute({ component: Component }: { component: React.ComponentType }) {
+  const { user, loading } = useAuth();
+  if (loading) return (<div className="min-h-screen brand-gradient flex items-center justify-center"><div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" /></div>);
+  if (!user) return <Redirect to="/login" />;
+  if (!["rh", "medico", "sesmt", "admin", "company_admin", "admin_global", "super_admin"].includes(user.role)) return <Redirect to="/inicio" />;
   return <Component />;
 }
 
@@ -342,6 +352,8 @@ function Router() {
       <Route path="/admin/pgr-revisoes" component={() => (<ProtectedRoute component={AdminPGRRevision} adminOnly />)} />
       <Route path="/admin/sst-dashboard" component={() => (<ProtectedRoute component={AdminSSTDashboard} adminOnly />)} />
       <Route path="/admin/documentos-tecnicos" component={() => (<ProtectedRoute component={TechnicalDocuments} adminOnly />)} />
+      <Route path="/admin/relatorio-analitico-pcmso" component={() => (<ProtectedRoute component={AdminPcmsoAnalyticalReports} adminOnly />)} />
+      <Route path="/admin/programas-ocupacionais" component={() => (<OccupationalProgramsRoute component={AdminOccupationalPrograms} />)} />
       <Route path="/admin/vacinacao" component={() => (<ProtectedRoute component={AdminVaccination} adminOnly />)} />
       <Route path="/admin/acoes-vinculadas" component={() => (<ProtectedRoute component={AdminAcoesVinculadas} adminOnly />)} />
       <Route path="/admin/analise-risco" component={() => (<ProtectedRoute component={AdminRiskAssessments} adminOnly />)} />

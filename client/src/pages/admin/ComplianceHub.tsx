@@ -3,6 +3,7 @@ import AppLayout from "@/components/AppLayout";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
+import { Link } from "wouter";
 import {
   ShieldCheck,
   AlertTriangle,
@@ -28,6 +29,7 @@ import {
   ScrollText,
   GraduationCap,
   Stethoscope,
+  Activity,
 } from "lucide-react";
 
 type TabId =
@@ -39,6 +41,8 @@ type TabId =
   | "maturidade"
   | "primeiros_socorros"
   | "epi_epc"
+  | "analytical_report"
+  | "occupational_programs"
   | "occupational_docs"
   | "occupational_lifecycle";
 
@@ -192,18 +196,25 @@ function FirstAidCompliancePanel() {
             por filial/setor.
           </p>
         </div>
-        <Button
-          onClick={() => pdfMut.mutate()}
-          disabled={pdfMut.isPending}
-          className="gap-2"
-        >
-          {pdfMut.isPending ? (
-            <Loader2 size={14} className="animate-spin" />
-          ) : (
-            <Printer size={14} />
-          )}{" "}
-          Gerar PDF
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Link href="/admin/primeiros-socorros">
+            <Button variant="outline" className="gap-2">
+              <ExternalLink size={14} /> Abrir módulo
+            </Button>
+          </Link>
+          <Button
+            onClick={() => pdfMut.mutate()}
+            disabled={pdfMut.isPending}
+            className="gap-2"
+          >
+            {pdfMut.isPending ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <Printer size={14} />
+            )}{" "}
+            Gerar PDF
+          </Button>
+        </div>
       </div>
       {reportQ.isLoading ? (
         <div className="flex justify-center py-8">
@@ -277,6 +288,85 @@ function FirstAidCompliancePanel() {
   );
 }
 
+function AnalyticalReportCompliancePanel() {
+  const workspaceQ = (trpc as any).medical.analyticalReportWorkspace.useQuery();
+  const reports = ((workspaceQ.data as any)?.reports || []) as any[];
+  const validReports = reports.filter(row => row.status !== "descartado");
+  const latest = validReports[0];
+  return (
+    <div className="space-y-4">
+      <div className="rounded-md border bg-white p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold">Relatório Analítico Anual do PCMSO</h2>
+            <p className="mt-1 max-w-3xl text-sm text-slate-500">
+              Obrigação controlada separadamente do corpo principal do PCMSO, com período,
+              versão, responsável e documento rastreável.
+            </p>
+          </div>
+          <Link href="/admin/relatorio-analitico-pcmso">
+            <Button className="gap-2"><ExternalLink size={15} /> Abrir gestão</Button>
+          </Link>
+        </div>
+      </div>
+      <div className="grid gap-3 md:grid-cols-3">
+        <div className="rounded-md border bg-white p-4">
+          <div className="text-xs font-medium uppercase text-slate-500">Relatórios válidos</div>
+          <div className="mt-2 text-2xl font-semibold">{validReports.length}</div>
+        </div>
+        <div className="rounded-md border bg-white p-4">
+          <div className="text-xs font-medium uppercase text-slate-500">Último período</div>
+          <div className="mt-2 text-sm font-semibold">
+            {latest ? `${String(latest.period_start).slice(0, 10)} a ${String(latest.period_end).slice(0, 10)}` : "Não gerado"}
+          </div>
+        </div>
+        <div className="rounded-md border bg-white p-4">
+          <div className="text-xs font-medium uppercase text-slate-500">Situação</div>
+          <div className={`mt-2 text-sm font-semibold ${latest?.pdf_private_path ? "text-emerald-700" : "text-amber-700"}`}>
+            {latest?.pdf_private_path ? "Documento arquivado" : latest ? "PDF pendente" : "Relatório pendente"}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function OccupationalProgramsCompliancePanel() {
+  const dashboardQ = (trpc as any).occupationalPrograms.dashboard.useQuery();
+  const data = dashboardQ.data as any;
+  return (
+    <div className="space-y-4">
+      <div className="rounded-md border bg-white p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold">Programas PCD e PCA</h2>
+            <p className="mt-1 max-w-3xl text-sm text-slate-500">
+              Evidências de validação documental de PCD e acompanhamento do Programa de
+              Conservação Auditiva, sem diagnóstico automático.
+            </p>
+          </div>
+          <Link href="/admin/programas-ocupacionais">
+            <Button className="gap-2"><ExternalLink size={15} /> Abrir programas</Button>
+          </Link>
+        </div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {[
+          ["PCD declarados", data?.pcd?.declared ?? 0],
+          ["PCD validados", data?.pcd?.validated ?? 0],
+          ["PCD pendentes", data?.pcd?.pending ?? 0],
+          ["PCA em acompanhamento", data?.pca?.openCases ?? 0],
+        ].map(([label, value]) => (
+          <div key={String(label)} className="rounded-md border bg-white p-4">
+            <div className="text-xs font-medium uppercase text-slate-500">{label}</div>
+            <div className="mt-2 text-2xl font-semibold">{String(value)}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function EpiEpcCompliancePanel() {
   const reportQ = (trpc as any).epiEpc.report.useQuery();
   const pdfMut = (trpc as any).epiEpc.generateReportPdf.useMutation({
@@ -307,18 +397,25 @@ function EpiEpcCompliancePanel() {
             assinaturas, estoque e pendências.
           </p>
         </div>
-        <Button
-          onClick={() => pdfMut.mutate()}
-          disabled={pdfMut.isPending}
-          className="gap-2"
-        >
-          {pdfMut.isPending ? (
-            <Loader2 size={14} className="animate-spin" />
-          ) : (
-            <Printer size={14} />
-          )}{" "}
-          Gerar PDF
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Link href="/admin/gestao-epi-epc">
+            <Button variant="outline" className="gap-2">
+              <ExternalLink size={14} /> Abrir módulo
+            </Button>
+          </Link>
+          <Button
+            onClick={() => pdfMut.mutate()}
+            disabled={pdfMut.isPending}
+            className="gap-2"
+          >
+            {pdfMut.isPending ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <Printer size={14} />
+            )}{" "}
+            Gerar PDF
+          </Button>
+        </div>
       </div>
       {reportQ.isLoading ? (
         <div className="flex justify-center py-8">
@@ -873,6 +970,8 @@ export default function ComplianceHub() {
     { id: "evidencias", label: "Evidências", icon: FileSearch },
     { id: "primeiros_socorros", label: "Primeiros Socorros", icon: FileText },
     { id: "epi_epc", label: "EPI / EPC", icon: ShieldAlert },
+    { id: "analytical_report", label: "Relatório Analítico", icon: FileCheck2 },
+    { id: "occupational_programs", label: "PCD / PCA", icon: Activity },
     {
       id: "occupational_lifecycle",
       label: "Saúde Ocupacional",
@@ -1460,6 +1559,10 @@ export default function ComplianceHub() {
         {tab === "primeiros_socorros" && <FirstAidCompliancePanel />}
 
         {tab === "epi_epc" && <EpiEpcCompliancePanel />}
+
+        {tab === "analytical_report" && <AnalyticalReportCompliancePanel />}
+
+        {tab === "occupational_programs" && <OccupationalProgramsCompliancePanel />}
 
         {tab === "occupational_docs" && (
           <OccupationalDocumentsCompliancePanel />

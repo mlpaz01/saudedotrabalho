@@ -29,6 +29,7 @@ import { clinicPortalRouter } from "./_core/clinicPortalRouter";
 import { occupationalPppRouter } from "./_core/occupationalPppRouter";
 import { ddsRouter } from "./_core/ddsRouter";
 import { esocialRouter } from "./_core/esocialRouter";
+import { occupationalProgramsRouter } from "./_core/occupationalProgramsRouter";
 
 import { medicalRouter } from "./_core/medicalRouter";
 import { technicalDocumentsRouter } from "./_core/technicalDocumentsRouter";
@@ -4554,6 +4555,7 @@ export const appRouter = router({
   occupationalPpp: occupationalPppRouter,
   dds: ddsRouter,
   esocial: esocialRouter,
+  occupationalPrograms: occupationalProgramsRouter,
   medical: medicalRouter,
   technicalDocuments: technicalDocumentsRouter,
   ehs: ehsRouter,
@@ -20293,9 +20295,9 @@ Return only the JSON content object (no wrapper). Format per type:
             masterGseId
               ? db.execute(
                   drzSql.raw(`SELECT cargo FROM (
-                  SELECT DISTINCT position_name cargo FROM occupational_gse_scope WHERE company_id=${Number(row.company_id)} AND gse_id=${masterGseId} AND NULLIF(TRIM(position_name),'') IS NOT NULL
+                  SELECT DISTINCT CONVERT(position_name USING utf8mb4) COLLATE utf8mb4_unicode_ci cargo FROM occupational_gse_scope WHERE company_id=${Number(row.company_id)} AND gse_id=${masterGseId} AND NULLIF(TRIM(position_name),'') IS NOT NULL
                   UNION
-                  SELECT DISTINCT u.position cargo FROM occupational_gse_worker_history h JOIN users u ON u.id=h.collaborator_id AND u.company_id=h.company_id WHERE h.company_id=${Number(row.company_id)} AND h.gse_id=${masterGseId} AND h.is_current=1 AND NULLIF(TRIM(u.position),'') IS NOT NULL
+                  SELECT DISTINCT CONVERT(u.position USING utf8mb4) COLLATE utf8mb4_unicode_ci cargo FROM occupational_gse_worker_history h JOIN users u ON u.id=h.collaborator_id AND u.company_id=h.company_id WHERE h.company_id=${Number(row.company_id)} AND h.gse_id=${masterGseId} AND h.is_current=1 AND NULLIF(TRIM(u.position),'') IS NOT NULL
                 ) master_cargos ORDER BY cargo`)
                 )
               : db.execute(
@@ -20836,9 +20838,9 @@ Return only the JSON content object (no wrapper). Format per type:
             masterGseId
               ? db.execute(
                   drzSql.raw(`SELECT cargo FROM (
-                    SELECT DISTINCT position_name cargo FROM occupational_gse_scope WHERE company_id=${Number(cid)} AND gse_id=${masterGseId} AND NULLIF(TRIM(position_name),'') IS NOT NULL
+                    SELECT DISTINCT CONVERT(position_name USING utf8mb4) COLLATE utf8mb4_unicode_ci cargo FROM occupational_gse_scope WHERE company_id=${Number(cid)} AND gse_id=${masterGseId} AND NULLIF(TRIM(position_name),'') IS NOT NULL
                     UNION
-                    SELECT DISTINCT u.position cargo FROM occupational_gse_worker_history h JOIN users u ON u.id=h.collaborator_id AND u.company_id=h.company_id WHERE h.company_id=${Number(cid)} AND h.gse_id=${masterGseId} AND h.is_current=1 AND NULLIF(TRIM(u.position),'') IS NOT NULL
+                    SELECT DISTINCT CONVERT(u.position USING utf8mb4) COLLATE utf8mb4_unicode_ci cargo FROM occupational_gse_worker_history h JOIN users u ON u.id=h.collaborator_id AND u.company_id=h.company_id WHERE h.company_id=${Number(cid)} AND h.gse_id=${masterGseId} AND h.is_current=1 AND NULLIF(TRIM(u.position),'') IS NOT NULL
                   ) master_cargos ORDER BY cargo`)
                 )
               : db.execute(
@@ -21643,9 +21645,9 @@ Return only the JSON content object (no wrapper). Format per type:
           const cR: any = masterGseId
             ? await db.execute(
                 drzSql.raw(`SELECT cargo FROM (
-                SELECT DISTINCT position_name cargo FROM occupational_gse_scope WHERE company_id=${Number(cid)} AND gse_id=${masterGseId} AND NULLIF(TRIM(position_name),'') IS NOT NULL
+                SELECT DISTINCT CONVERT(position_name USING utf8mb4) COLLATE utf8mb4_unicode_ci cargo FROM occupational_gse_scope WHERE company_id=${Number(cid)} AND gse_id=${masterGseId} AND NULLIF(TRIM(position_name),'') IS NOT NULL
                 UNION
-                SELECT DISTINCT u.position cargo FROM occupational_gse_worker_history h JOIN users u ON u.id=h.collaborator_id AND u.company_id=h.company_id WHERE h.company_id=${Number(cid)} AND h.gse_id=${masterGseId} AND h.is_current=1 AND NULLIF(TRIM(u.position),'') IS NOT NULL
+                SELECT DISTINCT CONVERT(u.position USING utf8mb4) COLLATE utf8mb4_unicode_ci cargo FROM occupational_gse_worker_history h JOIN users u ON u.id=h.collaborator_id AND u.company_id=h.company_id WHERE h.company_id=${Number(cid)} AND h.gse_id=${masterGseId} AND h.is_current=1 AND NULLIF(TRIM(u.position),'') IS NOT NULL
               ) master_cargos ORDER BY cargo`)
               )
             : await db.execute(
