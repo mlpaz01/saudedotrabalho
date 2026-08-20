@@ -20,6 +20,7 @@ import {
 } from "./occupationalLifecycleRouter";
 import { loadDocumentDefaults } from "./documentDefaults";
 import { richTextToPlainText, sanitizeRichText } from "./richText";
+import { ensurePgrVersioningTables } from "./pgrVersioning";
 
 let tablesReady = false;
 
@@ -67,6 +68,29 @@ function requireDoctor(ctx: any) {
       message: "Acesso clínico restrito ao perfil Médico.",
     });
   }
+}
+
+async function assertPcmsoEditable(
+  db: any,
+  companyId: number,
+  pcmsoId: number
+) {
+  const result: any = await db.execute(
+    drzSql`SELECT id,status,is_current_version FROM pcmso_programs_v2 WHERE id=${pcmsoId} AND company_id=${companyId} LIMIT 1`
+  );
+  const program = rowsOf(result)[0];
+  if (!program) throw new TRPCError({ code: "NOT_FOUND" });
+  if (
+    Number(program.is_current_version) !== 1 ||
+    ["vigente", "arquivado"].includes(String(program.status))
+  ) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Este PCMSO está publicado ou integra o histórico. Crie uma revisão antes de alterar seu conteúdo técnico.",
+    });
+  }
+  return program;
 }
 
 function requireExamCatalogManager(ctx: any) {
@@ -669,6 +693,26 @@ async function ensureTables() {
   await ensureColumn(db, "pcmso_programs_v2", "archived_at", "DATETIME NULL");
   await ensureColumn(db, "pcmso_programs_v2", "saved_at", "DATETIME NULL");
   await ensureColumn(db, "pcmso_programs_v2", "saved_by", "INT NULL");
+  await ensureColumn(db, "pcmso_programs_v2", "revision_root_id", "INT NULL");
+  await ensureColumn(db, "pcmso_programs_v2", "revision_parent_id", "INT NULL");
+  await ensureColumn(
+    db,
+    "pcmso_programs_v2",
+    "revision_number",
+    "INT NOT NULL DEFAULT 0"
+  );
+  await ensureColumn(
+    db,
+    "pcmso_programs_v2",
+    "is_current_version",
+    "TINYINT(1) NOT NULL DEFAULT 1"
+  );
+  await ensureColumn(
+    db,
+    "pcmso_programs_v2",
+    "revision_reason",
+    "VARCHAR(500) NULL"
+  );
   await ensureColumn(
     db,
     "pcmso_analytical_reports_v2",
@@ -780,6 +824,9 @@ async function ensureTables() {
     );
   }
 
+  await db.execute(
+    drzSql`UPDATE pcmso_programs_v2 SET revision_root_id=id WHERE revision_root_id IS NULL`
+  );
   tablesReady = true;
 }
 
@@ -1150,8 +1197,12 @@ export const medicalRouter = router({
     const db = await getDb();
     const companyId = companyOf(ctx);
     if (!db) return [];
+    await ensurePgrVersioningTables(db);
     const result: any = await db.execute(
-      drzSql`SELECT id,title,status,branch_id,updated_at FROM pgr_documents WHERE company_id=${companyId} ORDER BY updated_at DESC,id DESC LIMIT 200`
+      drzSql`SELECT id,title,status,branch_id,updated_at,exercise_year,revision_number,revision_root_id
+        FROM pgr_documents
+        WHERE company_id=${companyId} AND is_current_version=1
+        ORDER BY exercise_year DESC,revision_number DESC,updated_at DESC,id DESC LIMIT 200`
     );
     return rowsOf(result);
   }),
@@ -1181,6 +1232,172 @@ export const medicalRouter = router({
     return rowsOf(result);
   }),
 
+  listPgrRevisionAlerts: protectedProcedure.query(async ({ ctx }) => {
+    requireDoctor(ctx);
+    await ensureTables();
+    const db = await getDb();
+    const companyId = companyOf(ctx);
+    if (!db) return [];
+    await ensurePgrVersioningTables(db);
+    const result: any = await db.execute(drzSql`SELECT a.id,a.status,a.notes,a.changes_json,a.created_at,
+        a.pcmso_id,p.title pcmso_title,p.revision_number pcmso_revision_number,
+        a.previous_pgr_id,oldp.title previous_pgr_title,oldp.revision_number previous_pgr_revision,
+        a.new_pgr_id,newp.title new_pgr_title,newp.revision_number new_pgr_revision,newp.revision_reason
+      FROM pcmso_pgr_revision_alerts a
+      JOIN pcmso_programs_v2 p ON p.id=a.pcmso_id AND p.company_id=a.company_id
+      JOIN pgr_documents oldp ON oldp.id=a.previous_pgr_id
+      JOIN pgr_documents newp ON newp.id=a.new_pgr_id
+      WHERE a.company_id=${companyId} AND a.status='pendente'
+      ORDER BY a.created_at DESC,a.id DESC`);
+    return rowsOf(result).map((row: any) => ({
+      ...row,
+      changes: (() => {
+        try {
+          return JSON.parse(row.changes_json || "{}");
+        } catch {
+          return {};
+        }
+      })(),
+    }));
+  }),
+
+  resolvePgrRevisionAlert: protectedProcedure
+    .input(
+      z.object({
+        id: z.number().int().positive(),
+        notes: z.string().trim().min(5).max(4000),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      requireDoctor(ctx);
+      await ensureTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      await ensurePgrVersioningTables(db);
+      const result: any = await db.execute(
+        drzSql`UPDATE pcmso_pgr_revision_alerts
+          SET status='sem_alteracao',notes=${input.notes},analyzed_at=NOW(),analyzed_by=${Number(ctx.user.id)}
+          WHERE id=${input.id} AND company_id=${companyId} AND status='pendente'`
+      );
+      if (!Number((result as any)[0]?.affectedRows || 0))
+        throw new TRPCError({ code: "NOT_FOUND" });
+      await audit(
+        db,
+        ctx,
+        "pgr_revision_reviewed_without_pcmso_change",
+        "pcmso_pgr_revision_alert",
+        input.id,
+        null,
+        { notes: input.notes }
+      );
+      return { ok: true };
+    }),
+
+  createPcmsoRevisionFromPgrAlert: protectedProcedure
+    .input(
+      z.object({
+        id: z.number().int().positive(),
+        reason: z.string().trim().min(5).max(500),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      requireDoctor(ctx);
+      await ensureTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      await ensurePgrVersioningTables(db);
+
+      return db.transaction(async (tx: any) => {
+        const alertResult: any = await tx.execute(drzSql`SELECT
+            a.id alert_id,a.pcmso_id,a.previous_pgr_id,a.new_pgr_id,
+            p.revision_root_id,p.doctor_name
+          FROM pcmso_pgr_revision_alerts a
+          JOIN pcmso_programs_v2 p ON p.id=a.pcmso_id AND p.company_id=a.company_id
+          WHERE a.id=${input.id} AND a.company_id=${companyId} AND a.status='pendente'
+          LIMIT 1 FOR UPDATE`);
+        const source = rowsOf(alertResult)[0];
+        if (!source) throw new TRPCError({ code: "NOT_FOUND" });
+        const rootId = Number(source.revision_root_id || source.pcmso_id);
+        const revisionResult: any = await tx.execute(
+          drzSql`SELECT COALESCE(MAX(revision_number),0) max_revision FROM pcmso_programs_v2 WHERE company_id=${companyId} AND revision_root_id=${rootId}`
+        );
+        const revisionNumber =
+          Number(rowsOf(revisionResult)[0]?.max_revision || 0) + 1;
+        const label = String(revisionNumber).padStart(2, "0");
+        const inserted: any = await tx.execute(drzSql`INSERT INTO pcmso_programs_v2
+          (company_id,pgr_id,title,status,valid_from,valid_until,introduction,objective,methodology,conclusion,
+           template_driven,chapters_json,header_text,footer_text,doctor_user_id,doctor_name,doctor_crm,
+           doctor_signature_private_path,doctor_stamp_private_path,doctor_request_signature_private_path,
+           doctor_request_stamp_private_path,created_by,saved_at,saved_by,integration_score,ai_audit_score,
+           pending_count,review_required,revision_root_id,revision_parent_id,revision_number,is_current_version,revision_reason)
+          SELECT company_id,${Number(source.new_pgr_id)},CONCAT(title,' - Revisão ${label}'),'em_revisao',valid_from,valid_until,
+           introduction,objective,methodology,conclusion,template_driven,chapters_json,header_text,footer_text,
+           ${Number(ctx.user.id)},${String(ctx.user.name || source.doctor_name || "Médico responsável")},doctor_crm,
+           doctor_signature_private_path,doctor_stamp_private_path,doctor_request_signature_private_path,
+           doctor_request_stamp_private_path,${Number(ctx.user.id)},NOW(),${Number(ctx.user.id)},0,0,0,1,
+           ${rootId},id,${revisionNumber},1,${input.reason}
+          FROM pcmso_programs_v2 WHERE id=${Number(source.pcmso_id)} AND company_id=${companyId}`);
+        const newPcmsoId = Number((inserted as any)[0]?.insertId || 0);
+        if (!newPcmsoId)
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Não foi possível criar a revisão do PCMSO.",
+          });
+        await tx.execute(drzSql`UPDATE pcmso_programs_v2
+          SET is_current_version=CASE WHEN id=${newPcmsoId} THEN 1 ELSE 0 END
+          WHERE company_id=${companyId} AND revision_root_id=${rootId}`);
+
+        const risksResult: any = await tx.execute(drzSql`SELECT g.id gse_id,COALESCE(m.id,g.master_gse_id) master_gse_id,
+            m.code master_gse_code,COALESCE(m.name,g.nome) gse_name,r.id risk_id,r.agente risk_name,r.tipo risk_type,
+            r.risco_final risk_classification,CONCAT_WS('\n',d.metodologia,d.resultado_medicao,d.criterio_ia,d.justificativa_ia) technical_detail
+          FROM pgr_gse g
+          LEFT JOIN occupational_gse_master m ON m.id=g.master_gse_id AND m.company_id=${companyId}
+          JOIN pgr_gse_riscos r ON r.gse_id=g.id
+          LEFT JOIN pgr_gse_riscos_detalhe d ON d.risco_id=r.id
+          WHERE g.pgr_id=${Number(source.new_pgr_id)} ORDER BY g.id,r.id`);
+        let imported = 0;
+        for (const risk of rowsOf(risksResult)) {
+          const suggestion = suggestMedicalResponse(risk);
+          await tx.execute(drzSql`INSERT INTO pcmso_risk_monitoring_v2
+            (company_id,pcmso_id,pgr_id,pgr_gse_id,pgr_risk_id,master_gse_id,master_gse_code,gse_name,risk_name,
+             risk_type,risk_classification,technical_detail,monitoring_kind,possible_aggravations,suggested_monitoring_kind,
+             suggested_monitoring_name,suggested_periodicity,ai_rationale,suggestion_status,ai_generated_at,is_primary)
+            VALUES (${companyId},${newPcmsoId},${Number(source.new_pgr_id)},${risk.gse_id},${risk.risk_id},
+             ${risk.master_gse_id || null},${risk.master_gse_code || null},${risk.gse_name},${risk.risk_name},
+             ${risk.risk_type || null},${risk.risk_classification || null},${risk.technical_detail || null},'nao_definido',
+             ${suggestion.possibleAggravations},${suggestion.monitoringKind},${suggestion.monitoringName},
+             ${suggestion.periodicity},${suggestion.rationale},'revisar',NOW(),1)`);
+          imported += 1;
+        }
+        await tx.execute(drzSql`UPDATE pcmso_programs_v2 p
+          JOIN pgr_documents g ON g.id=${Number(source.new_pgr_id)}
+          SET p.pgr_synced_at=NOW(),p.pgr_source_updated_at=g.updated_at,p.integration_score=${imported ? 100 : 0},
+              p.pending_count=${imported},p.review_required=0
+          WHERE p.id=${newPcmsoId} AND p.company_id=${companyId}`);
+        await tx.execute(drzSql`UPDATE pcmso_pgr_revision_alerts
+          SET status='revisao_criada',notes=${input.reason},analyzed_at=NOW(),analyzed_by=${Number(ctx.user.id)}
+          WHERE id=${input.id} AND company_id=${companyId}`);
+        await audit(
+          tx,
+          ctx,
+          "pcmso_revision_created_from_pgr_revision",
+          "pcmso",
+          newPcmsoId,
+          null,
+          {
+            sourcePcmsoId: Number(source.pcmso_id),
+            previousPgrId: Number(source.previous_pgr_id),
+            newPgrId: Number(source.new_pgr_id),
+            revisionNumber,
+            importedRisks: imported,
+          }
+        );
+        return { ok: true, id: newPcmsoId, revisionNumber, imported };
+      });
+    }),
+
   getProgram: protectedProcedure
     .input(z.object({ id: z.number().int().positive() }))
     .query(async ({ ctx, input }) => {
@@ -1189,6 +1406,7 @@ export const medicalRouter = router({
       const db = await getDb();
       const companyId = companyOf(ctx);
       if (!db) return null;
+      await ensurePgrVersioningTables(db);
       const program: any = await db.execute(
         drzSql`SELECT p.*,g.title pgr_title,g.updated_at pgr_updated_at FROM pcmso_programs_v2 p LEFT JOIN pgr_documents g ON g.id=p.pgr_id WHERE p.id=${input.id} AND p.company_id=${companyId} LIMIT 1`
       );
@@ -1296,6 +1514,20 @@ export const medicalRouter = router({
       const db = await getDb();
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      await ensurePgrVersioningTables(db);
+      if (input.pgrId) {
+        const pgrResult: any = await db.execute(
+          drzSql`SELECT id,is_current_version FROM pgr_documents WHERE id=${input.pgrId} AND company_id=${companyId} LIMIT 1`
+        );
+        const selectedPgr = rowsOf(pgrResult)[0];
+        if (!selectedPgr) throw new TRPCError({ code: "NOT_FOUND" });
+        if (Number(selectedPgr.is_current_version) !== 1)
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Selecione o PGR vigente. Versões anteriores permanecem apenas para consulta histórica.",
+          });
+      }
       const profile: any = await db.execute(
         drzSql`SELECT u.name,p.crm,p.crm_state,p.signature_private_path,p.stamp_private_path,p.authorize_signature_use,p.authorize_pcmso_signature,p.authorize_exam_request_signature FROM users u LEFT JOIN medical_professional_profiles p ON p.user_id=u.id WHERE u.id=${Number(ctx.user.id)} LIMIT 1`
       );
@@ -1344,9 +1576,21 @@ export const medicalRouter = router({
       let id = input.id || 0;
       if (id) {
         const own: any = await db.execute(
-          drzSql`SELECT id,status FROM pcmso_programs_v2 WHERE id=${id} AND company_id=${companyId} LIMIT 1`
+          drzSql`SELECT id,status,is_current_version FROM pcmso_programs_v2 WHERE id=${id} AND company_id=${companyId} LIMIT 1`
         );
-        if (!rowsOf(own).length) throw new TRPCError({ code: "NOT_FOUND" });
+        const current = rowsOf(own)[0];
+        if (!current) throw new TRPCError({ code: "NOT_FOUND" });
+        if (Number(current.is_current_version) !== 1)
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "Esta é uma versão histórica do PCMSO e não pode ser alterada.",
+          });
+        if (["vigente", "arquivado"].includes(String(current.status)))
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "O PCMSO vigente não pode ser alterado retroativamente. Crie uma revisão para registrar mudanças.",
+          });
         await db.execute(
           drzSql`UPDATE pcmso_programs_v2 SET pgr_id=${input.pgrId || null},title=${title},status=${safeStatus},valid_from=${input.validFrom || null},valid_until=${input.validUntil || null},introduction=${introduction},objective=${objective},methodology=${methodology},conclusion=${conclusion},template_driven=${input.useStandardTemplate ? 1 : 0},chapters_json=${JSON.stringify(chapters)},header_text=${input.headerText || null},footer_text=${input.footerText || null},doctor_user_id=${Number(ctx.user.id)},doctor_name=${doctor.name},doctor_crm=${`${doctor.crm}/${doctor.crm_state}`},doctor_signature_private_path=${allowPcmsoSignature ? doctor.signature_private_path || null : null},doctor_stamp_private_path=${allowPcmsoSignature ? doctor.stamp_private_path || null : null},doctor_request_signature_private_path=${allowRequestSignature ? doctor.signature_private_path || null : null},doctor_request_stamp_private_path=${allowRequestSignature ? doctor.stamp_private_path || null : null},saved_at=NOW(),saved_by=${Number(ctx.user.id)} WHERE id=${id} AND company_id=${companyId}`
         );
@@ -1361,6 +1605,9 @@ export const medicalRouter = router({
         await db.execute(
           drzSql`UPDATE pcmso_programs_v2 SET saved_at=NOW(),saved_by=${Number(ctx.user.id)} WHERE id=${id} AND company_id=${companyId}`
         );
+        await db.execute(
+          drzSql`UPDATE pcmso_programs_v2 SET revision_root_id=id WHERE id=${id} AND revision_root_id IS NULL`
+        );
         await audit(db, ctx, "pcmso_created", "pcmso", id);
       }
       return { ok: true, id, title };
@@ -1374,17 +1621,8 @@ export const medicalRouter = router({
       const db = await getDb();
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      const own: any = await db.execute(
-        drzSql`SELECT id,status FROM pcmso_programs_v2 WHERE id=${input.id} AND company_id=${companyId} LIMIT 1`
-      );
-      const program = rowsOf(own)[0];
-      if (!program) throw new TRPCError({ code: "NOT_FOUND" });
-      if (program.status === "arquivado")
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message:
-            "O PCMSO arquivado deve ser reaberto antes de novas alterações.",
-        });
+      await ensurePgrVersioningTables(db);
+      const program = await assertPcmsoEditable(db, companyId, input.id);
       const nextStatus =
         program.status === "rascunho" ? "em_revisao" : program.status;
       await db.execute(
@@ -1410,14 +1648,22 @@ export const medicalRouter = router({
       const db = await getDb();
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      await ensurePgrVersioningTables(db);
+      await assertPcmsoEditable(db, companyId, input.pcmsoId);
       const pcmso: any = await db.execute(
         drzSql`SELECT id FROM pcmso_programs_v2 WHERE id=${input.pcmsoId} AND company_id=${companyId} LIMIT 1`
       );
       const pgr: any = await db.execute(
-        drzSql`SELECT id,title,inventario FROM pgr_documents WHERE id=${input.pgrId} AND company_id=${companyId} LIMIT 1`
+        drzSql`SELECT id,title,inventario,is_current_version FROM pgr_documents WHERE id=${input.pgrId} AND company_id=${companyId} LIMIT 1`
       );
       if (!rowsOf(pcmso).length || !rowsOf(pgr).length)
         throw new TRPCError({ code: "NOT_FOUND" });
+      if (Number(rowsOf(pgr)[0]?.is_current_version) !== 1)
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Somente o PGR vigente pode ser importado. A versão vinculada a um PCMSO já emitido permanece preservada.",
+        });
 
       const sourceRows: any[] = [];
       const normalized: any =
@@ -1603,6 +1849,11 @@ export const medicalRouter = router({
       );
       const requested = rowsOf(requestedResult)[0];
       if (!requested) throw new TRPCError({ code: "NOT_FOUND" });
+      await assertPcmsoEditable(
+        db,
+        companyId,
+        Number(requested.pcmso_id)
+      );
 
       let source = requested;
       if (!Number(requested.is_primary) && requested.source_monitoring_id) {
@@ -1722,6 +1973,7 @@ export const medicalRouter = router({
       );
       const row = rowsOf(result)[0];
       if (!row) throw new TRPCError({ code: "NOT_FOUND" });
+      await assertPcmsoEditable(db, companyId, Number(row.pcmso_id));
       if (Number(row.is_primary)) {
         await db.execute(
           drzSql`UPDATE pcmso_risk_monitoring_v2 SET monitoring_kind='nao_definido',exam_id=NULL,monitoring_name=NULL,periodicity=NULL,applicability=NULL,observations=NULL,suggestion_status='revisar',decision_by=${Number(ctx.user.id)},decision_at=NOW() WHERE id=${input.id} AND company_id=${companyId}`
@@ -1755,6 +2007,7 @@ export const medicalRouter = router({
       const db = await getDb();
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      await assertPcmsoEditable(db, companyId, input.id);
       const programResult: any = await db.execute(
         drzSql`SELECT p.*,c.name company_name,g.title pgr_title FROM pcmso_programs_v2 p JOIN companies c ON c.id=p.company_id LEFT JOIN pgr_documents g ON g.id=p.pgr_id WHERE p.id=${input.id} AND p.company_id=${companyId} LIMIT 1`
       );
@@ -1885,6 +2138,7 @@ export const medicalRouter = router({
       const db = await getDb();
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      await assertPcmsoEditable(db, companyId, input.id);
       const programResult: any = await db.execute(
         drzSql`SELECT p.*,c.address company_address FROM pcmso_programs_v2 p JOIN companies c ON c.id=p.company_id WHERE p.id=${input.id} AND p.company_id=${companyId} LIMIT 1`
       );
@@ -2112,6 +2366,12 @@ export const medicalRouter = router({
       const db = await getDb();
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const reportResult: any = await db.execute(
+        drzSql`SELECT pcmso_id FROM pcmso_analytical_reports_v2 WHERE id=${input.id} AND company_id=${companyId} AND status<>'descartado' LIMIT 1`
+      );
+      const report = rowsOf(reportResult)[0];
+      if (!report) throw new TRPCError({ code: "NOT_FOUND" });
+      await assertPcmsoEditable(db, companyId, Number(report.pcmso_id));
       await db.execute(
         drzSql`UPDATE pcmso_analytical_reports_v2 SET narrative=${input.narrative},recommendations=${input.recommendations},status=${input.status},reviewed_by=${Number(ctx.user.id)},reviewed_at=NOW() WHERE id=${input.id} AND company_id=${companyId} AND status<>'descartado'`
       );
@@ -2147,6 +2407,7 @@ export const medicalRouter = router({
       );
       const report = rowsOf(own)[0];
       if (!report) throw new TRPCError({ code: "NOT_FOUND" });
+      await assertPcmsoEditable(db, companyId, Number(report.pcmso_id));
       if (report.status === "descartado") return { ok: true };
       await db.execute(
         drzSql`UPDATE pcmso_analytical_reports_v2 SET status='descartado',discarded_at=NOW(),discarded_by=${Number(ctx.user.id)},discard_reason=${input.reason} WHERE id=${input.id} AND company_id=${companyId}`
@@ -2301,6 +2562,7 @@ export const medicalRouter = router({
       const db = await getDb();
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      await assertPcmsoEditable(db, companyId, input.id);
       const programResult: any = await db.execute(
         drzSql`SELECT * FROM pcmso_programs_v2 WHERE id=${input.id} AND company_id=${companyId} LIMIT 1`
       );
@@ -2352,6 +2614,16 @@ export const medicalRouter = router({
       const db = await getDb();
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const currentResult: any = await db.execute(
+        drzSql`SELECT id,is_current_version FROM pcmso_programs_v2 WHERE id=${input.id} AND company_id=${companyId} LIMIT 1`
+      );
+      const current = rowsOf(currentResult)[0];
+      if (!current) throw new TRPCError({ code: "NOT_FOUND" });
+      if (Number(current.is_current_version) !== 1)
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Uma versão histórica do PCMSO não pode ser arquivada novamente.",
+        });
       await db.execute(
         drzSql`UPDATE pcmso_programs_v2 SET status='arquivado',archived_at=NOW() WHERE id=${input.id} AND company_id=${companyId}`
       );
@@ -2390,6 +2662,7 @@ export const medicalRouter = router({
       const db = await getDb();
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      await assertPcmsoEditable(db, companyId, input.pcmsoId);
       const own: any = await db.execute(
         drzSql`SELECT id FROM pcmso_programs_v2 WHERE id=${input.pcmsoId} AND company_id=${companyId} LIMIT 1`
       );
@@ -2502,11 +2775,21 @@ export const medicalRouter = router({
       const db = await getDb();
       const companyId = companyOf(ctx);
       if (!db) return null;
+      await ensurePgrVersioningTables(db);
       const patient: any = await db.execute(
         drzSql`SELECT u.id,u.name,u.cpf,u.position,u.employment_status,b.name branch_name,s.name sector_name FROM users u LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id WHERE u.id=${input.collaboratorId} AND u.company_id=${companyId} LIMIT 1`
       );
       if (!rowsOf(patient).length) throw new TRPCError({ code: "NOT_FOUND" });
-      const [encounters, referrals, certificates, medications, vaccines, pcd] =
+      const [
+        encounters,
+        referrals,
+        certificates,
+        medications,
+        vaccines,
+        pcd,
+        currentOccupation,
+        gseHistory,
+      ] =
         await Promise.all([
           db.execute(
             drzSql`SELECT * FROM medical_encounters_v2 WHERE company_id=${companyId} AND collaborator_id=${input.collaboratorId} ORDER BY encounter_at DESC,id DESC`
@@ -2526,6 +2809,22 @@ export const medicalRouter = router({
           db.execute(
             drzSql`SELECT disability_type,status,validation_conclusion,complementary_assessment,quota_eligible,reviewed_at,next_review_date FROM occupational_pcd_cases WHERE company_id=${companyId} AND collaborator_id=${input.collaboratorId} AND status='validado' LIMIT 1`
           ),
+          db.execute(drzSql`SELECT g.code gse_code,g.name gse_name,h.valid_from,
+              p.id pgr_id,p.title pgr_title,p.exercise_year,p.revision_number,
+              GROUP_CONCAT(DISTINCT r.agente ORDER BY r.agente SEPARATOR ', ') risks
+            FROM occupational_gse_worker_history h
+            JOIN occupational_gse_master g ON g.id=h.gse_id AND g.company_id=h.company_id
+            LEFT JOIN occupational_gse_pgr_links l ON l.gse_id=h.gse_id AND l.company_id=h.company_id
+            LEFT JOIN pgr_documents p ON p.id=l.pgr_id AND p.company_id=h.company_id AND p.is_current_version=1
+            LEFT JOIN pgr_gse_riscos r ON r.gse_id=l.pgr_gse_id
+            WHERE h.company_id=${companyId} AND h.collaborator_id=${input.collaboratorId} AND h.is_current=1
+            GROUP BY g.code,g.name,h.valid_from,p.id,p.title,p.exercise_year,p.revision_number
+            ORDER BY p.exercise_year DESC,p.revision_number DESC LIMIT 1`),
+          db.execute(drzSql`SELECT h.id,h.valid_from,h.valid_until,h.reason,h.is_current,g.code gse_code,g.name gse_name
+            FROM occupational_gse_worker_history h
+            JOIN occupational_gse_master g ON g.id=h.gse_id AND g.company_id=h.company_id
+            WHERE h.company_id=${companyId} AND h.collaborator_id=${input.collaboratorId}
+            ORDER BY h.valid_from DESC`),
         ]);
       await audit(
         db,
@@ -2543,6 +2842,8 @@ export const medicalRouter = router({
         medications: rowsOf(medications),
         vaccinations: rowsOf(vaccines),
         validatedDisability: rowsOf(pcd)[0] || null,
+        currentOccupation: rowsOf(currentOccupation)[0] || null,
+        gseHistory: rowsOf(gseHistory),
       };
     }),
 
@@ -2954,6 +3255,7 @@ export const medicalRouter = router({
       const db = await getDb();
       const companyId = companyOf(ctx);
       if (!db) return null;
+      await ensurePgrVersioningTables(db);
       const patient: any = await db.execute(
         drzSql`SELECT u.id,u.name,u.cpf,u.position,u.employment_status,b.name branch_name,s.name sector_name FROM users u LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id WHERE u.id=${input.collaboratorId} AND u.company_id=${companyId} LIMIT 1`
       );
@@ -2985,6 +3287,38 @@ export const medicalRouter = router({
         .execute(
           drzSql`SELECT h.id,g.code title,h.valid_from created_at,h.valid_until,h.reason,h.origin,h.is_current FROM occupational_gse_worker_history h JOIN occupational_gse_master g ON g.id=h.gse_id WHERE h.company_id=${companyId} AND h.collaborator_id=${input.collaboratorId} ORDER BY h.valid_from DESC`
         )
+        .catch(() => [[]]);
+      const currentOccupationalContext: any = await db
+        .execute(drzSql`SELECT g.id gse_id,g.code gse_code,g.name gse_name,h.valid_from,
+            p.id pgr_id,p.title pgr_title,p.exercise_year,p.revision_number,
+            r.id risk_id,r.tipo risk_type,r.agente risk_name,r.risco_final risk_level
+          FROM occupational_gse_worker_history h
+          JOIN occupational_gse_master g ON g.id=h.gse_id AND g.company_id=h.company_id
+          LEFT JOIN occupational_gse_pgr_links l ON l.gse_id=h.gse_id AND l.company_id=h.company_id
+          LEFT JOIN pgr_documents p ON p.id=l.pgr_id AND p.company_id=h.company_id AND p.is_current_version=1
+          LEFT JOIN pgr_gse_riscos r ON r.gse_id=l.pgr_gse_id
+          WHERE h.company_id=${companyId} AND h.collaborator_id=${input.collaboratorId} AND h.is_current=1
+            AND (p.id IS NULL OR p.id=(SELECT p2.id FROM occupational_gse_pgr_links l2
+              JOIN pgr_documents p2 ON p2.id=l2.pgr_id AND p2.company_id=l2.company_id AND p2.is_current_version=1
+              WHERE l2.company_id=h.company_id AND l2.gse_id=h.gse_id
+              ORDER BY p2.exercise_year DESC,p2.revision_number DESC,p2.updated_at DESC LIMIT 1))
+          ORDER BY r.tipo,r.agente`)
+        .catch(() => [[]]);
+      const occupationalRiskHistory: any = await db
+        .execute(drzSql`SELECT h.id,CONCAT(COALESCE(p.exercise_year,YEAR(h.valid_from)),' · ',g.code,' - ',g.name) title,
+            h.valid_from created_at,h.valid_until,
+            CONCAT('PGR: ',COALESCE(p.title,'não vinculado'),' · Riscos: ',COALESCE(GROUP_CONCAT(DISTINCT r.agente ORDER BY r.agente SEPARATOR ', '),'não registrados')) reference,
+            CASE WHEN h.is_current=1 THEN 'vigente' ELSE 'encerrado' END status
+          FROM occupational_gse_worker_history h
+          JOIN occupational_gse_master g ON g.id=h.gse_id AND g.company_id=h.company_id
+          LEFT JOIN occupational_gse_pgr_links l ON l.gse_id=h.gse_id AND l.company_id=h.company_id
+          LEFT JOIN pgr_documents p ON p.id=l.pgr_id AND p.company_id=h.company_id AND p.is_current_version=1
+            AND (p.vigencia_inicio IS NULL OR p.vigencia_inicio<=COALESCE(h.valid_until,CURDATE()))
+            AND (p.vigencia_fim IS NULL OR p.vigencia_fim>=DATE(h.valid_from))
+          LEFT JOIN pgr_gse_riscos r ON r.gse_id=l.pgr_gse_id
+          WHERE h.company_id=${companyId} AND h.collaborator_id=${input.collaboratorId}
+          GROUP BY h.id,g.code,g.name,h.valid_from,h.valid_until,h.is_current,p.id,p.title,p.exercise_year
+          ORDER BY h.valid_from DESC,p.exercise_year DESC`)
         .catch(() => [[]]);
       const examOrders: any = await db
         .execute(
@@ -3039,6 +3373,31 @@ export const medicalRouter = router({
       const leaveRows = rowsOf(leaves);
       const vaccinationRows = rowsOf(vaccinations);
       const gseRows = rowsOf(gseHistory);
+      const currentContextRows = rowsOf(currentOccupationalContext);
+      const currentContext = currentContextRows.length
+        ? {
+            gseId: Number(currentContextRows[0].gse_id),
+            gseCode: currentContextRows[0].gse_code,
+            gseName: currentContextRows[0].gse_name,
+            validFrom: currentContextRows[0].valid_from,
+            pgrId: currentContextRows[0].pgr_id
+              ? Number(currentContextRows[0].pgr_id)
+              : null,
+            pgrTitle: currentContextRows[0].pgr_title || null,
+            exerciseYear: currentContextRows[0].exercise_year || null,
+            revisionNumber: Number(
+              currentContextRows[0].revision_number || 0
+            ),
+            risks: currentContextRows
+              .filter((row: any) => row.risk_id)
+              .map((row: any) => ({
+                id: Number(row.risk_id),
+                type: row.risk_type,
+                name: row.risk_name,
+                level: row.risk_level,
+              })),
+          }
+        : null;
       const orderRows = rowsOf(examOrders);
       const asoRows = rowsOf(asos);
       const catRows = rowsOf(cats);
@@ -3172,6 +3531,8 @@ export const medicalRouter = router({
           leaves: rowsOf(leaves),
           vaccinations: rowsOf(vaccinations),
           gseHistory: gseRows,
+          currentOccupationalContext: currentContext,
+          occupationalRiskHistory: rowsOf(occupationalRiskHistory),
           examOrders: orderRows,
           asos: asoRows,
           cats: catRows,

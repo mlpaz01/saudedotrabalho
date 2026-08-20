@@ -340,6 +340,24 @@ export async function ensureOccupationalTables() {
     INDEX idx_occ_gse_worker_current (company_id, collaborator_id, is_current),
     INDEX idx_occ_gse_history (company_id, gse_id, valid_from)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await ensureColumn(
+    db,
+    "occupational_gse_scope",
+    "position_name",
+    "VARCHAR(180) NULL"
+  );
+  await ensureColumn(
+    db,
+    "occupational_gse_worker_history",
+    "collaborator_id",
+    "INT NULL"
+  );
+  await ensureColumn(
+    db,
+    "occupational_gse_worker_history",
+    "is_current",
+    "TINYINT(1) NOT NULL DEFAULT 1"
+  );
 
   await db.execute(drzSql`CREATE TABLE IF NOT EXISTS occupational_gse_pgr_links (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -1813,6 +1831,7 @@ export const occupationalLifecycleRouter = router({
           position: z.string().max(180).optional(),
           query: z.string().max(180).optional(),
           onlyWithoutGse: z.boolean().optional(),
+          gseStatus: z.enum(["without", "current", "all"]).optional(),
         })
         .optional()
     )
@@ -1844,7 +1863,10 @@ export const occupationalLifecycleRouter = router({
             .includes(input.position.toLowerCase())
         )
           return false;
-        if (input?.onlyWithoutGse && row.gse_id) return false;
+        const gseStatus = input?.gseStatus ||
+          (input?.onlyWithoutGse ? "without" : "all");
+        if (gseStatus === "without" && row.gse_id) return false;
+        if (gseStatus === "current" && !row.gse_id) return false;
         if (
           query &&
           ![row.name, row.cpf, row.employee_registration, row.position].some(

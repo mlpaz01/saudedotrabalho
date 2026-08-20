@@ -9,6 +9,7 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { sql } from "drizzle-orm";
+import { getPublicPdfRoot, getUploadRoot } from "./runtimePaths";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -39,8 +40,11 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   registerStorageProxy(app);
-  app.use("/uploads", express.static("/var/www/saudedotrabalho/uploads"));
-app.use("/pdfs", express.static("/var/www/saudedotrabalho/public/pdfs"));
+  app.use("/uploads", express.static(getUploadRoot()));
+  // PDFs e anexos operacionais usam /api/uploads para atravessar o proxy do
+  // ambiente sem depender de aliases antigos de /uploads no nginx.
+  app.use("/api/uploads", express.static(getUploadRoot()));
+  app.use("/pdfs", express.static(getPublicPdfRoot()));
   registerOAuthRoutes(app);
 
   // Public certificate verification (no auth)

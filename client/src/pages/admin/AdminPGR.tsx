@@ -15,7 +15,7 @@ import {
 import { toast } from "sonner";
 import {
   FileText, Plus, Loader2, Building2, Download, Trash2, ArrowLeft, Save, ShieldCheck,
-  ListPlus, X, Info, CheckCircle2, Clock, Send, History, Paperclip, ExternalLink, FolderOpen, Sparkles,
+  ListPlus, X, Info, CheckCircle2, Clock, Send, History, Paperclip, ExternalLink, FolderOpen, Sparkles, GitBranch, AlertTriangle,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -139,6 +139,23 @@ export default function AdminPGR() {
     onSuccess: () => { toast.success("PGR removido"); listQ.refetch(); },
     onError: (e: any) => toast.error(e?.message ?? "Erro"),
   });
+  const [revisionSource, setRevisionSource] = useState<any | null>(null);
+  const [revisionReason, setRevisionReason] = useState("");
+  const [revisionNotes, setRevisionNotes] = useState("");
+  const createRevisionMut = trpc.pgr.createRevision.useMutation({
+    onSuccess: async (result: any) => {
+      toast.success(
+        `Revisão ${String(result.revisionNumber).padStart(2, "0")} criada sem alterar o documento anterior.`
+      );
+      setRevisionSource(null);
+      setRevisionReason("");
+      setRevisionNotes("");
+      await listQ.refetch();
+      openEditor(Number(result.id));
+    },
+    onError: (error: any) =>
+      toast.error(error?.message ?? "Não foi possível criar a revisão."),
+  });
   const [historyOpen, setHistoryOpen] = useState(false);
   const [dashTab, setDashTab] = useState<"lista"|"painel">("lista");
   const [matrixOpen, setMatrixOpen] = useState(false);
@@ -232,6 +249,18 @@ export default function AdminPGR() {
   const currentPGRStatus = (editId !== "new" && editId !== null)
     ? (pgrs.find((p: any) => p.id === editId) as any)?.status ?? "rascunho"
     : "rascunho";
+  const currentPgrListItem =
+    typeof editId === "number"
+      ? (pgrs.find((p: any) => Number(p.id) === editId) as any)
+      : null;
+  const isHistoricalVersion =
+    Number(doc.is_current_version ?? currentPgrListItem?.isCurrentVersion ?? 1) !== 1;
+  const isPublishedVersion = currentPGRStatus === "publicado";
+  const isReadOnlyVersion = isHistoricalVersion || isPublishedVersion;
+  const conflictsQ = trpc.pgr.checkExerciseConflicts.useQuery(
+    { pgrId: typeof editId === "number" ? editId : 0 },
+    { enabled: typeof editId === "number" }
+  );
   function pgrStatusBadge(s: string) {
     const map: Record<string, { label: string; cls: string }> = {
       rascunho: { label: "Rascunho", cls: "bg-slate-100 text-slate-600 border-slate-200" },
@@ -279,6 +308,14 @@ export default function AdminPGR() {
   }
 
   function save() {
+    if (isReadOnlyVersion) {
+      toast.error(
+        isHistoricalVersion
+          ? "Versões históricas são somente leitura."
+          : "Crie uma revisão para alterar um PGR publicado."
+      );
+      return;
+    }
     if (!doc.razao_social?.trim()) { toast.error("Informe a Razão Social"); return; }
     upsert.mutate({
       id: editId === "new" ? undefined : (editId as number),
@@ -355,6 +392,51 @@ export default function AdminPGR() {
   }
 
   // ── LIST VIEW ──────────────────────────────────────────────────────────────
+  const revisionDialog = (
+    <Dialog open={Boolean(revisionSource)} onOpenChange={open => !open && setRevisionSource(null)}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Criar revisão do PGR</DialogTitle>
+          <DialogDescription>
+            O sistema criará uma nova versão completa. O PGR atual e o PCMSO que o utilizou permanecerão inalterados no histórico.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4 py-2">
+          <div className="border bg-slate-50 p-3 text-sm">
+            <b>{revisionSource?.title || revisionSource?.razaoSocial || "PGR"}</b>
+            <div className="mt-1 text-xs text-slate-500">
+              {Number(revisionSource?.revisionNumber || 0) === 0
+                ? "Emissão original"
+                : `Revisão ${String(revisionSource?.revisionNumber).padStart(2, "0")}`}
+            </div>
+          </div>
+          <div>
+            <Label>Motivo da revisão</Label>
+            <Input className="mt-1" value={revisionReason} onChange={event => setRevisionReason(event.target.value)} placeholder="Ex.: inclusão de novo agente químico" />
+          </div>
+          <div>
+            <Label>Resumo das alterações previstas</Label>
+            <Textarea className="mt-1" rows={4} value={revisionNotes} onChange={event => setRevisionNotes(event.target.value)} placeholder="Riscos, EPI/EPC, controles, ações ou evidências que serão revisados." />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setRevisionSource(null)}>Cancelar</Button>
+          <Button
+            disabled={createRevisionMut.isPending || revisionReason.trim().length < 5}
+            onClick={() => createRevisionMut.mutate({
+              id: Number(revisionSource.id),
+              reason: revisionReason.trim(),
+              changes: { notes: revisionNotes.trim() || undefined },
+            })}
+          >
+            {createRevisionMut.isPending ? <Loader2 size={14} className="mr-2 animate-spin" /> : <GitBranch size={14} className="mr-2" />}
+            Criar revisão
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+
   if (editId == null) {
     return (
       <AppLayout>
@@ -430,7 +512,19 @@ export default function AdminPGR() {
                 <div key={p.id} className="bg-white border rounded-xl p-4 flex items-center gap-3">
                   <FileText className="text-primary shrink-0" />
                   <div className="flex-1 min-w-0">
-                    <div className="font-semibold text-foreground truncate">{p.razaoSocial || p.title}</div>
+                     <div className="flex flex-wrap items-center gap-2">
+                       <div className="font-semibold text-foreground truncate">{p.razaoSocial || p.title}</div>
+                       {Number(p.isCurrentVersion) === 1 ? (
+                         <Badge className="bg-emerald-100 text-emerald-800 border-emerald-200">PGR vigente</Badge>
+                       ) : (
+                         <Badge variant="outline">Histórico</Badge>
+                       )}
+                       <Badge variant="outline">
+                         {Number(p.revisionNumber || 0) === 0
+                           ? "Original"
+                           : `Revisão ${String(p.revisionNumber).padStart(2, "0")}`}
+                       </Badge>
+                     </div>
                     <div className="text-xs text-muted-foreground">
                       {p.status === "gerado" ? "PDF gerado" : "Rascunho"}
                       {p.vigenciaInicio ? ` · Vigencia ${new Date(p.vigenciaInicio).toLocaleDateString("pt-BR")}` : ""}
@@ -442,10 +536,17 @@ export default function AdminPGR() {
                       <Button size="sm" variant="outline" className="gap-1"><Download size={14} /> PDF</Button>
                     </a>
                   )}
-                  <Button size="sm" variant="outline" onClick={() => openEditor(p.id)}>Editar</Button>
-                  <Button size="sm" variant="ghost" onClick={() => { if (confirm("Remover este PGR?")) delMut.mutate({ id: p.id }); }}>
-                    <Trash2 size={14} className="text-rose-600" />
-                  </Button>
+                   <Button size="sm" variant="outline" onClick={() => openEditor(p.id)}>Editar</Button>
+                   {Number(p.isCurrentVersion) === 1 && (
+                     <Button size="sm" variant="outline" onClick={() => { setRevisionSource(p); setRevisionReason(""); setRevisionNotes(""); }}>
+                       <GitBranch size={14} className="mr-1" /> Criar revisão
+                     </Button>
+                   )}
+                   {p.status !== "publicado" && Number(p.revisionNumber || 0) === 0 && (
+                     <Button size="sm" variant="ghost" onClick={() => { if (confirm("Remover este rascunho de PGR?")) delMut.mutate({ id: p.id }); }}>
+                       <Trash2 size={14} className="text-rose-600" />
+                     </Button>
+                   )}
                 </div>
               ))}
             </div>
@@ -515,8 +616,9 @@ export default function AdminPGR() {
                 </Button>
               </DialogFooter>
             </DialogContent>
-          </Dialog>
-        </div>
+           </Dialog>
+           {revisionDialog}
+         </div>
       </AppLayout>
     );
   }
@@ -545,14 +647,24 @@ export default function AdminPGR() {
               <ShieldCheck className="text-primary" /> {editId === "new" ? "Novo PGR" : "Editar PGR"}
             </h1>
             <p className="text-sm text-muted-foreground mt-1">Preencha os dados do cliente. O texto normativo é inserido automaticamente.</p>
-            <div className="mt-2 flex items-center gap-2 flex-wrap">
+             <div className="mt-2 flex items-center gap-2 flex-wrap">
               <Badge className={doc.branch_id ? "bg-blue-100 text-blue-700 border-blue-200" : "bg-emerald-100 text-emerald-700 border-emerald-200"}>
                 Escopo: {doc.branch_id ? `Filial — ${doc.branch_name ?? doc.branch_id}` : "Consolidado (todas as filiais)"}
-              </Badge>
+               </Badge>
+               {isHistoricalVersion ? (
+                 <Badge variant="outline">Versão histórica · somente leitura</Badge>
+               ) : (
+                 <Badge className="bg-emerald-100 text-emerald-800 border-emerald-200">PGR vigente</Badge>
+               )}
+               <Badge variant="outline">
+                 {Number(doc.revision_number || 0) === 0
+                   ? "Emissão original"
+                   : `Revisão ${String(doc.revision_number).padStart(2, "0")}`}
+               </Badge>
             </div>
           </div>
           <div className="flex gap-2">
-            <Button variant="outline" onClick={save} disabled={upsert.isPending} className="gap-2">
+            <Button variant="outline" onClick={save} disabled={upsert.isPending || isReadOnlyVersion} className="gap-2">
               {upsert.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Salvar
             </Button>
             <Button onClick={() => { if (editId === "new") { toast.error("Salve o PGR antes de gerar o PDF."); return; } genMut.mutate({ id: editId as number }); }}
@@ -560,25 +672,30 @@ export default function AdminPGR() {
               {genMut.isPending ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />} Gerar PDF
             </Button>
             {editId !== "new" && <Button variant="outline" size="sm" className="gap-1" onClick={() => setHistoryOpen(true)}><History size={14}/>Histórico</Button>}
-            {editId !== "new" && currentPGRStatus === "rascunho" && (
+            {editId !== "new" && !isReadOnlyVersion && currentPGRStatus === "rascunho" && (
               <Button variant="outline" size="sm" className="gap-1 border-yellow-300 text-yellow-700"
                 onClick={() => updateStatusM.mutate({ id: editId as number, status: "em_revisao" })}>
                 <Send size={14}/>Enviar p/ revisão
               </Button>
             )}
-            {editId !== "new" && currentPGRStatus === "em_revisao" && (
+            {editId !== "new" && !isReadOnlyVersion && currentPGRStatus === "em_revisao" && (
               <Button variant="outline" size="sm" className="gap-1 border-blue-300 text-blue-700"
                 onClick={() => updateStatusM.mutate({ id: editId as number, status: "aprovado" })}>
                 <CheckCircle2 size={14}/>Aprovar
               </Button>
             )}
-            {editId !== "new" && currentPGRStatus === "aprovado" && (
+            {editId !== "new" && !isReadOnlyVersion && currentPGRStatus === "aprovado" && (
               <Button variant="outline" size="sm" className="gap-1 border-green-300 text-green-700"
                 onClick={() => updateStatusM.mutate({ id: editId as number, status: "publicado" })}>
                 <CheckCircle2 size={14}/>Publicar
               </Button>
             )}
             {editId !== "new" && pgrStatusBadge(currentPGRStatus)}
+            {editId !== "new" && !isHistoricalVersion && (
+              <Button variant="outline" size="sm" className="gap-1" onClick={() => { setRevisionSource(currentPgrListItem || doc); setRevisionReason(""); setRevisionNotes(""); }}>
+                <GitBranch size={14} /> Criar revisão
+              </Button>
+            )}
           </div>
         </div>
 
@@ -588,6 +705,38 @@ export default function AdminPGR() {
             <a href={pdfUrl} target="_blank" rel="noopener noreferrer">
               <Button size="sm" className="gap-2"><Download size={14} /> Abrir PDF</Button>
             </a>
+          </div>
+        )}
+
+        {(conflictsQ.data as any[])?.length > 0 && (
+          <div className="border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
+            <div className="flex items-start gap-2">
+              <AlertTriangle size={18} className="mt-0.5 shrink-0" />
+              <div>
+                <b>Já existe outro PGR vigente para GSE deste exercício.</b>
+                <p className="mt-1 text-xs">Prefira acessar o documento existente ou criar uma revisão para evitar duplicidade.</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {(conflictsQ.data as any[]).slice(0, 4).map(row => (
+                    <div className="flex gap-1" key={`${row.id}-${row.gseCode}`}>
+                      <Button size="sm" variant="outline" onClick={() => openEditor(Number(row.id))}>
+                        {row.gseCode} · Abrir {row.title}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setRevisionSource(row);
+                          setRevisionReason("");
+                          setRevisionNotes("");
+                        }}
+                      >
+                        <GitBranch size={14} className="mr-1" /> Criar revisão
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
@@ -614,7 +763,7 @@ export default function AdminPGR() {
 
         {/* Gestão de GSE (Sprint 1 PGR Inteligente) — só faz sentido após salvar o PGR. */}
         {typeof editId === "number" && (
-          <AdminPGRGseManager pgrId={editId as number} companyId={companyId} />
+          <AdminPGRGseManager pgrId={editId as number} companyId={companyId} readOnly={isReadOnlyVersion} />
         )}
 
         {/* Identificação Contratada */}
@@ -906,6 +1055,7 @@ export default function AdminPGR() {
           </div>
         </DialogContent>
       </Dialog>
+      {revisionDialog}
     </AppLayout>
   );
 }

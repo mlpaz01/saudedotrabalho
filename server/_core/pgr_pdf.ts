@@ -10,8 +10,9 @@ import puppeteer from "puppeteer";
 import path from "path";
 import fs from "fs/promises";
 import { metodologiaPsicossocialHtml } from "@shared/const";
+import { getUploadRoot } from "./runtimePaths";
 
-const UPLOAD_DIR = "/var/www/saudedotrabalho/uploads/pgr_pdfs";
+const UPLOAD_DIR = path.join(getUploadRoot(), "pgr_pdfs");
 
 const PRIMARY = "#1e3a5f";
 const ACCENT = "#0ea5e9";
@@ -1125,7 +1126,7 @@ ${renderUserText(d.textoConclusao)}
   </body></html>`;
 
   await renderPDF(html, outPath);
-  return `/uploads/pgr_pdfs/pgr_${d.id}.pdf`;
+  return `/api/uploads/pgr_pdfs/pgr_${d.id}.pdf`;
 }
 
 /**
@@ -1294,13 +1295,27 @@ function safeAscii(s: string): string {
 }
 
 function resolveLocalPath(fileUrl: string): string {
-  if (fileUrl.startsWith("/")) return path.join("/var/www/saudedotrabalho", fileUrl);
+  const fromApplicationPath = (pathname: string) => {
+    const relative = pathname
+      .replace(/^\/api\/uploads\/?/, "")
+      .replace(/^\/uploads\/?/, "");
+    return path.join(getUploadRoot(), relative);
+  };
+  if (fileUrl.startsWith("/api/uploads/") || fileUrl.startsWith("/uploads/")) {
+    return fromApplicationPath(fileUrl);
+  }
   if (/^https?:\/\//.test(fileUrl)) {
     // URLs externas não suportadas — tenta extrair pathname assumindo mesma origem
     try {
       const u = new URL(fileUrl);
-      return path.join("/var/www/saudedotrabalho", u.pathname);
+      if (
+        u.pathname.startsWith("/api/uploads/") ||
+        u.pathname.startsWith("/uploads/")
+      ) {
+        return fromApplicationPath(u.pathname);
+      }
+      return fileUrl;
     } catch { return fileUrl; }
   }
-  return path.join("/var/www/saudedotrabalho", fileUrl);
+  return path.join(getUploadRoot(), fileUrl);
 }

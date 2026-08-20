@@ -1255,6 +1255,12 @@ export default function ComplianceHub() {
                       maturityQ.data.details.planOverdue}
                     /{maturityQ.data.details.planCount}
                   </div>
+                  <div>
+                    <span className="text-slate-400">
+                      Revisões PGR aguardando análise médica:
+                    </span>{" "}
+                    {maturityQ.data.details.pcmsoPgrRevisionPending || 0}
+                  </div>
                 </div>
               </>
             )}

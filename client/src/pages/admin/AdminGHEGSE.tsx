@@ -83,7 +83,7 @@ export default function AdminGHEGSE() {
   const [query, setQuery] = useState("");
   const [branchId, setBranchId] = useState(0);
   const [sectorId, setSectorId] = useState(0);
-  const [onlyWithout, setOnlyWithout] = useState(false);
+  const [gseStatus, setGseStatus] = useState<"without" | "current" | "all">("without");
   const [selectedWorkers, setSelectedWorkers] = useState<number[]>([]);
 
   const dashboardQ = trpc.occupationalLifecycle.dashboard.useQuery();
@@ -97,7 +97,7 @@ export default function AdminGHEGSE() {
     branchId: branchId || undefined,
     sectorId: sectorId || undefined,
     query: query || undefined,
-    onlyWithoutGse: onlyWithout || undefined,
+    gseStatus,
   });
   const alertsQ = trpc.occupationalLifecycle.listMovementAlerts.useQuery();
 
@@ -398,8 +398,8 @@ export default function AdminGHEGSE() {
           setBranchId={setBranchId}
           sectorId={sectorId}
           setSectorId={setSectorId}
-          onlyWithout={onlyWithout}
-          setOnlyWithout={setOnlyWithout}
+          gseStatus={gseStatus}
+          setGseStatus={setGseStatus}
           busy={assign.isPending}
           confirm={(reason: string, origin: "manual" | "importacao" | "api" | "totvs" | "validacao_sesmt") => selectedId && assign.mutate({ gseId: selectedId, collaboratorIds: selectedWorkers, reason, origin })}
         />
@@ -462,7 +462,13 @@ function AssignDialog(props: any) {
           <select className="h-10 border bg-white px-3 text-sm" value={props.sectorId} onChange={(event: any) => props.setSectorId(Number(event.target.value))}><option value={0}>Todos os setores</option>{(props.structure?.sectors || []).filter((row: any) => !props.branchId || Number(row.branch_id) === props.branchId).map((row: any) => <option key={row.id} value={row.id}>{row.name}</option>)}</select>
         </div>
         <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
-          <label className="flex items-center gap-2"><input type="checkbox" checked={props.onlyWithout} onChange={(event: any) => props.setOnlyWithout(event.target.checked)} /> Mostrar somente trabalhadores sem GSE</label>
+          <label className="flex items-center gap-2 font-semibold text-slate-700">Situação do vínculo
+            <select className="h-9 border bg-white px-3 text-sm font-normal" value={props.gseStatus} onChange={(event: any) => props.setGseStatus(event.target.value)}>
+              <option value="without">Sem GSE vigente</option>
+              <option value="current">Com GSE vigente</option>
+              <option value="all">Todos</option>
+            </select>
+          </label>
           <div className="flex gap-2"><Button size="sm" variant="outline" onClick={props.selectAll}>Selecionar encontrados</Button><Button size="sm" variant="ghost" onClick={props.clear}>Limpar</Button></div>
         </div>
         <div className="max-h-[370px] overflow-auto border">

@@ -381,6 +381,70 @@ export default function EmployeeDossier({ id }: { id: number }) {
           </div>
         </section>
 
+        {integrations.currentOccupationalContext ? (
+          <section className="border border-teal-300 bg-teal-50">
+            <header className="border-b border-teal-200 px-4 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h2 className="font-semibold text-teal-950">
+                    Situação ocupacional atual
+                  </h2>
+                  <p className="mt-1 text-xs text-teal-800">
+                    Base vigente utilizada nos fluxos atuais de PCMSO, exames e
+                    requisições.
+                  </p>
+                </div>
+                <Badge className="rounded-sm bg-emerald-100 text-emerald-800">
+                  GSE vigente
+                </Badge>
+              </div>
+            </header>
+            <div className="grid gap-4 p-4 md:grid-cols-[280px_1fr]">
+              <div className="text-sm">
+                <b className="block text-teal-950">
+                  {integrations.currentOccupationalContext.gseCode} -{" "}
+                  {integrations.currentOccupationalContext.gseName}
+                </b>
+                <span className="mt-1 block text-xs text-teal-800">
+                  {integrations.currentOccupationalContext.pgrTitle ||
+                    "PGR vigente ainda não vinculado"}
+                  {integrations.currentOccupationalContext.exerciseYear
+                    ? ` · exercício ${integrations.currentOccupationalContext.exerciseYear}`
+                    : ""}
+                  {Number(
+                    integrations.currentOccupationalContext.revisionNumber || 0
+                  )
+                    ? ` · revisão ${String(integrations.currentOccupationalContext.revisionNumber).padStart(2, "0")}`
+                    : ""}
+                </span>
+              </div>
+              <div>
+                <div className="text-xs font-semibold uppercase text-teal-900">
+                  Riscos atuais
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {integrations.currentOccupationalContext.risks.map(
+                    (risk: any) => (
+                      <Badge
+                        key={risk.id}
+                        variant="outline"
+                        className="rounded-sm border-teal-300 bg-white text-teal-950"
+                      >
+                        {risk.name} · {risk.level || "classificação pendente"}
+                      </Badge>
+                    )
+                  )}
+                  {!integrations.currentOccupationalContext.risks.length ? (
+                    <span className="text-sm text-teal-800">
+                      Nenhum risco vigente registrado neste PGR.
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
         <div className="grid gap-4 lg:grid-cols-2">
           <SourceList
             title="Certificados e treinamentos"
@@ -406,6 +470,11 @@ export default function EmployeeDossier({ id }: { id: number }) {
             title="Histórico de GSE"
             rows={integrations.gseHistory || []}
             empty="Nenhuma atribuição de GSE registrada."
+          />
+          <SourceList
+            title="Histórico de riscos por PGR"
+            rows={integrations.occupationalRiskHistory || []}
+            empty="Nenhum risco histórico relacionado aos vínculos de GSE."
           />
           <SourceList
             title="Requisições de exames"

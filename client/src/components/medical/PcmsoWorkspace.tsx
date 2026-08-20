@@ -163,6 +163,13 @@ export default function PcmsoWorkspace({
     "andamento" | "rascunho" | "arquivado" | "todos"
   >("andamento");
   const program = data?.program;
+  const historical = Boolean(
+    program && Number(program.is_current_version) !== 1
+  );
+  const locked = Boolean(
+    program &&
+      (historical || ["vigente", "arquivado"].includes(String(program.status)))
+  );
   const monitoring = (data?.monitoring || []) as any[];
   const groups = useMemo(() => {
     const risks = new Map<string, any[]>();
@@ -199,9 +206,21 @@ export default function PcmsoWorkspace({
   const visiblePrograms = programs.filter(row => {
     if (programStatus === "todos") return true;
     if (programStatus === "andamento")
-      return ["vigente", "em_revisao"].includes(row.status);
+      return (
+        Number(row.is_current_version) === 1 &&
+        ["rascunho", "vigente", "em_revisao"].includes(row.status)
+      );
     return row.status === programStatus;
   });
+
+  useEffect(() => {
+    const linked = Number(program?.pgr_id || 0);
+    if (linked && pgrs.some(row => Number(row.id) === linked)) {
+      setPgrId(linked);
+      return;
+    }
+    if (!pgrId && pgrs.length) setPgrId(Number(pgrs[0].id));
+  }, [program?.id, program?.pgr_id, pgrs, pgrId]);
 
   return (
     <div className="space-y-4">
@@ -235,7 +254,8 @@ export default function PcmsoWorkspace({
                   row =>
                     value === "todos" ||
                     (value === "andamento"
-                      ? ["vigente", "em_revisao"].includes(row.status)
+                      ? Number(row.is_current_version) === 1 &&
+                        ["vigente", "em_revisao"].includes(row.status)
                       : row.status === value)
                 ).length
               }
@@ -257,7 +277,13 @@ export default function PcmsoWorkspace({
             >
               <b className="block line-clamp-2">{row.title}</b>
               <span className="mt-1 block text-xs text-slate-500">
-                {statusLabel(row.status)} · versão {row.current_version || 0}
+                {statusLabel(row.status)} ·{" "}
+                {Number(row.revision_number || 0)
+                  ? `revisão ${String(row.revision_number).padStart(2, "0")}`
+                  : "emissão original"}
+                {Number(row.is_current_version) === 1
+                  ? " · atual"
+                  : " · histórico"}
               </span>
             </button>
           ))}
@@ -271,6 +297,19 @@ export default function PcmsoWorkspace({
 
       {program ? (
         <>
+          {locked ? (
+            <div className="flex gap-3 border border-slate-300 bg-slate-50 p-4 text-sm text-slate-800">
+              <Archive className="mt-0.5 shrink-0" size={18} />
+              <div>
+                <b>Documento preservado em modo de consulta.</b>
+                <p className="mt-1">
+                  PCMSOs vigentes e versões históricas não são alterados
+                  retroativamente. Use o fluxo de revisão quando houver mudança
+                  do PGR.
+                </p>
+              </div>
+            </div>
+          ) : null}
           {Number(program.review_required) ? (
             <div className="flex gap-3 border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
               <AlertTriangle className="mt-0.5 shrink-0" size={18} />
@@ -289,13 +328,23 @@ export default function PcmsoWorkspace({
             description={`Vigência: ${program.valid_from || "-"} a ${program.valid_until || "-"} · Responsável: ${program.doctor_name || "não definido"} ${program.doctor_crm || ""}`}
             action={
               <div className="flex flex-wrap gap-2">
-                <Button size="sm" variant="outline" onClick={onEdit}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={onEdit}
+                  disabled={locked}
+                >
                   Editar conteúdo
                 </Button>
-                <Button size="sm" disabled={busy} onClick={onSave}>
+                <Button size="sm" disabled={busy || locked} onClick={onSave}>
                   <Save className="mr-1" size={14} /> Salvar PCMSO
                 </Button>
-                <Button size="sm" variant="outline" onClick={onAnnex}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={onAnnex}
+                  disabled={locked}
+                >
                   Anexar documento
                 </Button>
                 <Button size="sm" disabled={busy} onClick={onPdf}>
@@ -341,13 +390,17 @@ export default function PcmsoWorkspace({
                   <option value={0}>Selecione o PGR de referência</option>
                   {pgrs.map(row => (
                     <option value={row.id} key={row.id}>
-                      {row.title} · {statusLabel(row.status)}
+                      PGR vigente · {row.title}
+                      {row.exercise_year ? ` · ${row.exercise_year}` : ""}
+                      {Number(row.revision_number || 0)
+                        ? ` · revisão ${String(row.revision_number).padStart(2, "0")}`
+                        : ""}
                     </option>
                   ))}
                 </select>
                 <Button
                   variant="outline"
-                  disabled={!pgrId || busy}
+                  disabled={!pgrId || busy || locked}
                   onClick={() => onImport(pgrId)}
                 >
                   <RefreshCw className="mr-1" size={14} /> Importar ou atualizar
@@ -407,7 +460,7 @@ export default function PcmsoWorkspace({
               <div className="flex flex-wrap gap-2">
                 <Button
                   variant="outline"
-                  disabled={busy}
+                  disabled={busy || locked}
                   onClick={onGenerateAi}
                 >
                   <Sparkles className="mr-1" size={14} /> Elaborar com IA
@@ -468,6 +521,7 @@ export default function PcmsoWorkspace({
                         exams={exams}
                         save={onDecision}
                         remove={onDeleteMonitoring}
+                        readOnly={locked}
                       />
                     ))}
                   </div>
@@ -650,13 +704,13 @@ export default function PcmsoWorkspace({
             description="Anexos, versões, assinatura eletrônica e arquivamento preservam a rastreabilidade do programa."
             action={
               <div className="flex flex-wrap gap-2">
-                {program.status !== "vigente" ? (
+                {!locked && program.status !== "vigente" ? (
                   <Button disabled={busy} onClick={onSign}>
                     <ShieldCheck className="mr-1" size={14} /> Assinar e
                     publicar
                   </Button>
                 ) : null}
-                {program.status !== "arquivado" ? (
+                {!historical && program.status !== "arquivado" ? (
                   <Button disabled={busy} variant="outline" onClick={onArchive}>
                     <Archive className="mr-1" size={14} /> Arquivar
                   </Button>
@@ -728,11 +782,13 @@ function RiskMonitoringRow({
   exams,
   save,
   remove,
+  readOnly = false,
 }: {
   risk: { source: any; rows: any[]; items: any[] };
   exams: any[];
   save: (payload: any) => void;
   remove: (id: number) => void;
+  readOnly?: boolean;
 }) {
   const { source, items } = risk;
   const [aggravations, setAggravations] = useState(
@@ -869,6 +925,7 @@ function RiskMonitoringRow({
             value={aggravations}
             onChange={event => setAggravations(event.target.value)}
             placeholder="Registre os possíveis agravos considerados pelo médico."
+            disabled={readOnly}
           />
         </label>
         {suggestionAvailable ? (
@@ -882,12 +939,13 @@ function RiskMonitoringRow({
             </p>
             <p className="mt-1 text-sky-800">{source.ai_rationale}</p>
             <div className="mt-3 flex flex-wrap gap-2">
-              <Button size="sm" onClick={useSuggestion}>
+              <Button size="sm" onClick={useSuggestion} disabled={readOnly}>
                 Usar na inclusão
               </Button>
               <Button
                 size="sm"
                 variant="outline"
+                disabled={readOnly}
                 onClick={() =>
                   save({
                     id: Number(source.id),
@@ -915,7 +973,7 @@ function RiskMonitoringRow({
                 : "Nenhum procedimento definido"}
             </p>
           </div>
-          <Button size="sm" onClick={openNew}>
+          <Button size="sm" onClick={openNew} disabled={readOnly}>
             <Plus className="mr-1" size={14} /> Adicionar exame/avaliação
           </Button>
         </div>
@@ -952,6 +1010,7 @@ function RiskMonitoringRow({
                   size="icon"
                   title="Editar exame/avaliação"
                   variant="ghost"
+                  disabled={readOnly}
                   onClick={() => openEdit(item)}
                 >
                   <Pencil size={15} />
@@ -962,6 +1021,7 @@ function RiskMonitoringRow({
                   size="icon"
                   title="Excluir exame/avaliação"
                   variant="ghost"
+                  disabled={readOnly}
                   onClick={() => {
                     if (
                       window.confirm(

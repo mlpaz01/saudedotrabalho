@@ -151,6 +151,7 @@ export default function MedicalCenter() {
   const collaboratorsQ = trpc.medical.listCollaborators.useQuery();
   const programsQ = trpc.medical.listPrograms.useQuery();
   const pgrsQ = trpc.medical.listPgrs.useQuery();
+  const pgrRevisionAlertsQ = trpc.medical.listPgrRevisionAlerts.useQuery();
   const pcmsoDefaultsQ = trpc.medical.getPcmsoDefaultText.useQuery();
   const examsQ = trpc.medical.listExams.useQuery();
   const vaccinesQ = trpc.medical.listVaccines.useQuery();
@@ -410,6 +411,29 @@ export default function MedicalCenter() {
     },
     onError: error => toast.error(error.message),
   });
+  const resolvePgrRevisionAlert =
+    trpc.medical.resolvePgrRevisionAlert.useMutation({
+      onSuccess: () => {
+        pgrRevisionAlertsQ.refetch();
+        toast.success(
+          "Análise registrada sem alteração retroativa do PCMSO emitido."
+        );
+      },
+      onError: error => toast.error(error.message),
+    });
+  const createPcmsoRevisionFromAlert =
+    trpc.medical.createPcmsoRevisionFromPgrAlert.useMutation({
+      onSuccess: result => {
+        pgrRevisionAlertsQ.refetch();
+        programsQ.refetch();
+        setSelectedProgramId(Number(result.id));
+        setTab("pcmso");
+        toast.success(
+          `Revisão ${String(result.revisionNumber).padStart(2, "0")} do PCMSO criada com ${result.imported} risco(s) do PGR vigente.`
+        );
+      },
+      onError: error => toast.error(error.message),
+    });
 
   async function downloadPrivate(
     kind: "pcmso_annex" | "pcmso_version",
@@ -481,6 +505,86 @@ export default function MedicalCenter() {
             );
           })}
         </div>
+
+        {((pgrRevisionAlertsQ.data || []) as any[]).length ? (
+          <section className="border border-amber-300 bg-amber-50">
+            <div className="border-b border-amber-200 px-4 py-3">
+              <div className="flex items-center gap-2 font-semibold text-amber-950">
+                <AlertTriangle size={17} /> PGR revisado: análise médica
+                necessária
+              </div>
+              <p className="mt-1 text-xs text-amber-900">
+                O PCMSO emitido permanece intacto. Avalie o impacto e registre
+                uma decisão para cada revisão do PGR.
+              </p>
+            </div>
+            <div className="divide-y divide-amber-200">
+              {((pgrRevisionAlertsQ.data || []) as any[]).map(alert => (
+                <div
+                  key={alert.id}
+                  className="grid gap-3 px-4 py-3 lg:grid-cols-[1fr_auto]"
+                >
+                  <div className="text-sm text-amber-950">
+                    <b>{alert.pcmso_title}</b>
+                    <p className="mt-1">
+                      PGR de referência: revisão {alert.previous_pgr_revision || 0}
+                      {" → "}revisão {alert.new_pgr_revision || 0}.
+                    </p>
+                    <p className="mt-1 text-xs">
+                      Motivo: {alert.revision_reason || "revisão técnica do PGR"}
+                    </p>
+                    {alert.changes?.notes ? (
+                      <p className="mt-1 text-xs">
+                        Alterações informadas: {alert.changes.notes}
+                      </p>
+                    ) : null}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={
+                        resolvePgrRevisionAlert.isPending ||
+                        createPcmsoRevisionFromAlert.isPending
+                      }
+                      onClick={() => {
+                        const notes = window.prompt(
+                          "Registre a justificativa médica para manter o PCMSO sem alteração."
+                        );
+                        if (notes && notes.trim().length >= 5)
+                          resolvePgrRevisionAlert.mutate({
+                            id: Number(alert.id),
+                            notes: notes.trim(),
+                          });
+                      }}
+                    >
+                      Marcar sem alteração
+                    </Button>
+                    <Button
+                      size="sm"
+                      disabled={
+                        resolvePgrRevisionAlert.isPending ||
+                        createPcmsoRevisionFromAlert.isPending
+                      }
+                      onClick={() => {
+                        const reason = window.prompt(
+                          "Informe o motivo da revisão do PCMSO."
+                        );
+                        if (reason && reason.trim().length >= 5)
+                          createPcmsoRevisionFromAlert.mutate({
+                            id: Number(alert.id),
+                            reason: reason.trim(),
+                          });
+                      }}
+                    >
+                      Criar revisão do PCMSO
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
 
         {tab === "dashboard" && (
           <Dashboard
@@ -1261,6 +1365,15 @@ function PatientWorkspace({
       title: x.vaccine_name,
       detail: `Dose ${x.dose_number}`,
     })),
+    ...(data?.gseHistory || []).map((x: any) => ({
+      ...x,
+      kind: "Vínculo ocupacional",
+      date: x.valid_from,
+      title: `${x.gse_code} - ${x.gse_name}`,
+      detail: x.is_current
+        ? "GSE atual"
+        : `Vínculo encerrado${x.valid_until ? ` em ${new Date(x.valid_until).toLocaleDateString("pt-BR")}` : ""}`,
+    })),
   ].sort(
     (a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime()
   );
@@ -1300,6 +1413,34 @@ function PatientWorkspace({
           ))}
         </div>
       </Panel>
+      {data?.currentOccupation ? (
+        <Panel
+          title="Exposição ocupacional vigente"
+          subtitle="O histórico anterior permanece visível na linha do tempo, mas não alimenta automaticamente exames atuais."
+        >
+          <div className="grid gap-3 md:grid-cols-[260px_1fr]">
+            <div>
+              <b className="text-teal-900">
+                {data.currentOccupation.gse_code} -{" "}
+                {data.currentOccupation.gse_name}
+              </b>
+              <p className="mt-1 text-xs text-slate-500">
+                {data.currentOccupation.pgr_title ||
+                  "PGR vigente ainda não vinculado"}
+              </p>
+            </div>
+            <div>
+              <span className="text-xs font-semibold uppercase text-slate-600">
+                Riscos atuais
+              </span>
+              <p className="mt-1 text-sm text-slate-800">
+                {data.currentOccupation.risks ||
+                  "Nenhum risco vigente registrado."}
+              </p>
+            </div>
+          </div>
+        </Panel>
+      ) : null}
       <Panel
         title="Linha do tempo médico-ocupacional"
         subtitle="Eventos em ordem cronológica; conteúdo clínico permanece nesta área restrita."

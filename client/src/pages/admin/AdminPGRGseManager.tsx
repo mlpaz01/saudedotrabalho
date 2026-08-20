@@ -42,6 +42,7 @@ import {
   FileText,
   CheckCircle2,
   AlertCircle,
+  RotateCcw,
 } from "lucide-react";
 
 // Sub-componente: gerenciador de Grupos Similares de Exposição (GSE) — Sprint 1
@@ -128,9 +129,11 @@ function inferRiskType(text: string, fallback = "fisico") {
 export default function AdminPGRGseManager({
   pgrId,
   companyId,
+  readOnly = false,
 }: {
   pgrId: number;
   companyId: number | null;
+  readOnly?: boolean;
 }) {
   const [, setLocation] = useLocation();
   const listQ = trpc.pgr.gse.list.useQuery({ pgrId }, { enabled: pgrId > 0 });
@@ -227,10 +230,12 @@ export default function AdminPGRGseManager({
                 size="sm"
                 variant="outline"
                 onClick={() => setEditingId(g.id)}
+                disabled={readOnly}
+                title={readOnly ? "Versões históricas e publicadas são somente leitura" : "Editar riscos e controles deste PGR"}
               >
                 <Pencil size={13} />
               </Button>
-              {!g.masterGseId && (
+              {!readOnly && !g.masterGseId && (
                 <Button
                   size="sm"
                   variant="ghost"
@@ -278,6 +283,7 @@ export default function AdminPGRGseManager({
       {editingId != null && (
         <GseEditorDialog
           gseId={editingId}
+          pgrId={pgrId}
           companyId={companyId}
           onClose={() => setEditingId(null)}
           onSaved={() => {
@@ -292,11 +298,13 @@ export default function AdminPGRGseManager({
 // ─── Dialog de edição completa do GSE (8 abas internas) ────────────────────
 function GseEditorDialog({
   gseId,
+  pgrId,
   companyId,
   onClose,
   onSaved,
 }: {
   gseId: number;
+  pgrId: number;
   companyId: number | null;
   onClose: () => void;
   onSaved: () => void;
@@ -307,6 +315,23 @@ function GseEditorDialog({
   );
   const data: any = detailQ.data ?? {};
   const isMasterLinked = Boolean(data?.gse?.masterGseId);
+  const reusableQ = trpc.pgr.gse.findReusableConfiguration.useQuery(
+    { pgrId, gseId },
+    { enabled: gseId > 0 && isMasterLinked }
+  );
+  const recoverMut = trpc.pgr.gse.recoverConfiguration.useMutation({
+    onSuccess: async () => {
+      toast.success(
+        "Configuração anterior recuperada como nova versão. Revise antes de salvar."
+      );
+      await detailQ.refetch();
+      await reusableQ.refetch();
+      onSaved();
+      setTab("riscos");
+    },
+    onError: (error: any) =>
+      toast.error(error?.message ?? "Não foi possível recuperar a configuração."),
+  });
 
   // Estados locais (espelham o que está no servidor — salvamos via set*)
   const [tab, setTab] = useState<TabId>("cargos");
@@ -658,7 +683,7 @@ function GseEditorDialog({
               }}
               disabled={aiMut.isPending}
               className="gap-1 border-purple-300 text-purple-700 hover:bg-purple-50 shrink-0 w-full sm:w-auto"
-              title="Usa GROQ/Llama 3.3 para sugerir riscos, EPC, EPI, ações 5W2H e treinamentos NR com base no nome/cargos/setores do GSE. Os itens são adicionados (não apagam o que já existe). Revise antes de salvar."
+              title="Usa IA para sugerir riscos, EPC, EPI, ações 5W2H e treinamentos NR com base no nome, cargos e setores do GSE. Os itens são adicionados sem apagar o que já existe. Revise antes de salvar."
             >
               {aiMut.isPending ? (
                 <Loader2 size={14} className="animate-spin" />
@@ -678,6 +703,32 @@ function GseEditorDialog({
           <>
             {/* Cabeçalho (meta do GSE) */}
             <div className="border-b bg-white px-4 sm:px-6 py-3 space-y-2 shrink-0">
+              {reusableQ.data && riscos.length === 0 && (
+                <div className="flex flex-col gap-3 border border-blue-200 bg-blue-50 p-3 text-sm text-blue-950 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <b>Configuração técnica disponível no histórico</b>
+                    <p className="mt-1 text-xs text-blue-800">
+                      {(reusableQ.data as any).pgrTitle} · {(reusableQ.data as any).riskCount} risco(s). A recuperação cria uma cópia editável neste PGR e mantém o anterior intacto.
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={recoverMut.isPending}
+                    onClick={() => {
+                      if (!confirm("Recuperar riscos, EPI/EPC, medidas, ações, evidências e treinamentos do PGR anterior?")) return;
+                      recoverMut.mutate({
+                        pgrId,
+                        gseId,
+                        sourcePgrGseId: Number((reusableQ.data as any).sourcePgrGseId),
+                      });
+                    }}
+                  >
+                    {recoverMut.isPending ? <Loader2 size={14} className="mr-2 animate-spin" /> : <RotateCcw size={14} className="mr-2" />}
+                    Recuperar configuração anterior
+                  </Button>
+                </div>
+              )}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
                   <Label className="text-xs">Nome *</Label>

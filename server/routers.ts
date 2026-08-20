@@ -40,6 +40,55 @@ import {
 } from "./_core/richText";
 
 import { systemRouter } from "./_core/systemRouter";
+import {
+  clonePgrAsRevision,
+  createPgrRevisionAlerts,
+  ensurePgrVersioningTables,
+  findReusableGseConfiguration,
+  initializePgrVersion,
+  recoverGseConfiguration,
+} from "./_core/pgrVersioning";
+import { getUploadRoot } from "./_core/runtimePaths";
+
+const PGR_GROQ_MODEL =
+  process.env.GROQ_PGR_MODEL ||
+  process.env.GROQ_MODEL ||
+  "openai/gpt-oss-120b";
+
+async function assertPgrTechnicalContextEditable(
+  db: any,
+  companyId: number,
+  reference: { pgrId?: number; gseId?: number; riskId?: number }
+) {
+  await ensurePgrVersioningTables(db);
+  let result: any;
+  if (reference.pgrId) {
+    result = await db.execute(
+      drzSql`SELECT company_id,status,is_current_version FROM pgr_documents WHERE id=${reference.pgrId} LIMIT 1`
+    );
+  } else if (reference.gseId) {
+    result = await db.execute(drzSql`SELECT p.company_id,p.status,p.is_current_version
+      FROM pgr_gse g JOIN pgr_documents p ON p.id=g.pgr_id WHERE g.id=${reference.gseId} LIMIT 1`);
+  } else {
+    result = await db.execute(drzSql`SELECT p.company_id,p.status,p.is_current_version
+      FROM pgr_gse_riscos r JOIN pgr_gse g ON g.id=r.gse_id
+      JOIN pgr_documents p ON p.id=g.pgr_id WHERE r.id=${reference.riskId || 0} LIMIT 1`);
+  }
+  const document = (result as any)[0]?.[0];
+  if (!document) throw new TRPCError({ code: "NOT_FOUND" });
+  if (Number(document.company_id) !== Number(companyId))
+    throw new TRPCError({ code: "FORBIDDEN" });
+  if (
+    Number(document.is_current_version) !== 1 ||
+    String(document.status) === "publicado"
+  ) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Esta versão do PGR é histórica ou já foi publicada. Crie uma revisão antes de alterar riscos, controles ou evidências.",
+    });
+  }
+}
 
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 
@@ -12504,6 +12553,18 @@ export const appRouter = router({
         }
       } catch (_) {}
 
+      let pcmsoPgrRevisionPending = 0;
+      try {
+        await ensurePgrVersioningTables(db);
+        const [[pendingRow]] = (await execP(
+          db,
+          `SELECT COUNT(*) total FROM pcmso_pgr_revision_alerts WHERE company_id=? AND status='pendente'`,
+          [cid]
+        )) as any;
+        pcmsoPgrRevisionPending = Number(pendingRow?.total || 0);
+      } catch (_) {}
+      const pgrPcmsoIntegrationScore = pcmsoPgrRevisionPending ? 40 : 100;
+
       const axes = [
         { key: "pesquisas", label: "Pesquisas", score: pesquisasScore },
         {
@@ -12529,6 +12590,11 @@ export const appRouter = router({
           label: "Gestão de EPI / EPC",
           score: epiEpcMaturityScore,
         },
+        {
+          key: "pgrPcmso",
+          label: "Integração PGR / PCMSO",
+          score: pgrPcmsoIntegrationScore,
+        },
       ];
       const conformidadeGeral = Math.round(
         axes.reduce((a, x) => a + x.score, 0) / axes.length
@@ -12546,6 +12612,7 @@ export const appRouter = router({
           planModsTotal,
           planCount,
           planOverdue,
+          pcmsoPgrRevisionPending,
         },
         generatedAt: new Date().toISOString(),
       };
@@ -18179,10 +18246,14 @@ Return only the JSON content object (no wrapper). Format per type:
           : (ctx.user as any).companyId;
         const db = await getDb();
         if (!db || !cid) return [] as any[];
+        await ensurePgrVersioningTables(db);
         const r: any = await db.execute(drzSql`
           SELECT p.id, p.title, p.razao_social AS razaoSocial, p.status, p.pdf_url AS pdfUrl,
                  p.vigencia_inicio AS vigenciaInicio, p.vigencia_fim AS vigenciaFim, p.updated_at AS updatedAt,
-                 p.branch_id AS branchId, b.name AS branchName
+                 p.branch_id AS branchId, b.name AS branchName,
+                 p.exercise_year AS exerciseYear, p.revision_number AS revisionNumber,
+                 p.revision_root_id AS revisionRootId, p.revision_parent_id AS revisionParentId,
+                 p.is_current_version AS isCurrentVersion, p.revision_reason AS revisionReason
           FROM pgr_documents p
           LEFT JOIN branches b ON b.id = p.branch_id
           WHERE p.company_id=${cid} ORDER BY p.updated_at DESC`);
@@ -18203,6 +18274,7 @@ Return only the JSON content object (no wrapper). Format per type:
         const isGlobal = role === "admin_global" || role === "super_admin";
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensurePgrVersioningTables(db);
 
         if (input.id) {
           const r: any = await db.execute(drzSql`
@@ -18385,6 +18457,7 @@ Return only the JSON content object (no wrapper). Format per type:
             code: "INTERNAL_SERVER_ERROR",
             message: "Falha ao criar PGR.",
           });
+        await initializePgrVersion(db, newId, new Date().getFullYear());
         return { ok: true, id: newId };
       }),
 
@@ -18529,6 +18602,7 @@ Return only the JSON content object (no wrapper). Format per type:
         const isGlobal = role === "admin_global" || role === "super_admin";
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensurePgrVersioningTables(db);
         const uid = (ctx.user as any).id;
         let textoIntroducao: string | undefined;
         let textoConclusao: string | undefined;
@@ -18562,12 +18636,24 @@ Return only the JSON content object (no wrapper). Format per type:
 
         if (input.id) {
           const cr: any = await db.execute(
-            drzSql`SELECT company_id FROM pgr_documents WHERE id=${input.id} LIMIT 1`
+            drzSql`SELECT company_id,status,is_current_version FROM pgr_documents WHERE id=${input.id} LIMIT 1`
           );
           const row = (cr as any)[0]?.[0];
           if (!row) throw new TRPCError({ code: "NOT_FOUND" });
           if (!isGlobal && row.company_id !== (ctx.user as any).companyId)
             throw new TRPCError({ code: "FORBIDDEN" });
+          if (Number(row.is_current_version) !== 1)
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "Esta é uma versão histórica e não pode ser alterada. Abra o PGR vigente ou crie uma revisão.",
+            });
+          if (String(row.status) === "publicado")
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "PGR publicado não pode ser sobrescrito. Crie uma revisão para registrar as alterações.",
+            });
           await db.execute(drzSql`
             UPDATE pgr_documents SET
               branch_id=${input.branchId ?? null},
@@ -18594,6 +18680,11 @@ Return only the JSON content object (no wrapper). Format per type:
               caracterizacao_setores=${carac}, cronograma_preventivo=${cron},
               hierarquia_controle=${hier}, nao_conformidades=${nc}, treinamentos_nr=${trein}
             WHERE id=${input.id}`);
+          await initializePgrVersion(
+            db,
+            input.id,
+            vi ? new Date(vi).getFullYear() : null
+          );
           return { id: input.id };
         }
 
@@ -18625,6 +18716,11 @@ Return only the JSON content object (no wrapper). Format per type:
             ${input.logoUrl ?? null}, ${ghe}, ${revs}, ${inv}, ${gse}, ${epc}, ${epi}, ${psy}, ${input.notasTecnicas ?? null}, ${textoIntroducao ?? null}, ${textoConclusao ?? null}, ${input.sumarioCustom ?? null}, ${carac}, ${cron}, ${hier}, ${nc}, ${trein}, ${uid}
           )`);
         const newId = Number((ins as any)[0]?.insertId ?? 0);
+        await initializePgrVersion(
+          db,
+          newId,
+          vi ? new Date(vi).getFullYear() : null
+        );
         return { id: newId };
       }),
 
@@ -18857,13 +18953,20 @@ Return only the JSON content object (no wrapper). Format per type:
         const isGlobal = role === "admin_global" || role === "super_admin";
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensurePgrVersioningTables(db);
         const cr: any = await db.execute(
-          drzSql`SELECT company_id FROM pgr_documents WHERE id=${input.id} LIMIT 1`
+          drzSql`SELECT company_id,status,revision_root_id,revision_number FROM pgr_documents WHERE id=${input.id} LIMIT 1`
         );
         const row = (cr as any)[0]?.[0];
         if (!row) throw new TRPCError({ code: "NOT_FOUND" });
         if (!isGlobal && row.company_id !== (ctx.user as any).companyId)
           throw new TRPCError({ code: "FORBIDDEN" });
+        if (String(row.status) === "publicado" || Number(row.revision_number) > 0)
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Documentos publicados e revisões não podem ser apagados. O histórico deve permanecer disponível para auditoria.",
+          });
         await db.execute(
           drzSql`DELETE FROM pgr_documents WHERE id=${input.id}`
         );
@@ -19245,10 +19348,22 @@ Return only the JSON content object (no wrapper). Format per type:
           (ctx.user as any).name ?? (ctx.user as any).email ?? "—";
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensurePgrVersioningTables(db);
         const check: any = await db.execute(
-          drzSql`SELECT id FROM pgr_documents WHERE id=${input.id} AND company_id=${cid} LIMIT 1`
+          drzSql`SELECT id,status,is_current_version FROM pgr_documents WHERE id=${input.id} AND company_id=${cid} LIMIT 1`
         );
-        if (!(check as any)[0]?.[0]) throw new TRPCError({ code: "FORBIDDEN" });
+        const document = (check as any)[0]?.[0];
+        if (!document) throw new TRPCError({ code: "FORBIDDEN" });
+        if (Number(document.is_current_version) !== 1)
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "Versões históricas não podem mudar de situação.",
+          });
+        if (String(document.status) === "publicado")
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "O PGR publicado é imutável. Crie uma revisão.",
+          });
         const isApproved =
           input.status === "aprovado" || input.status === "publicado";
         if (input.revisionNumber) {
@@ -19263,7 +19378,10 @@ Return only the JSON content object (no wrapper). Format per type:
         await db.execute(drzSql`INSERT INTO pgr_revision_history
           (pgr_id, revision_number, action, performed_by_user_id, performed_by_name, notes)
           VALUES (${input.id}, ${input.revisionNumber ?? null}, ${input.status},
-                  ${uid}, ${userName}, ${input.notes ?? null})`);
+                   ${uid}, ${userName}, ${input.notes ?? null})`);
+        if (input.status === "publicado") {
+          await createPgrRevisionAlerts(db, Number(cid), input.id);
+        }
         return { ok: true };
       }),
 
@@ -19296,6 +19414,142 @@ Return only the JSON content object (no wrapper). Format per type:
           notes: r.notes ? String(r.notes) : null,
           createdAt: r.created_at ? new Date(r.created_at).toISOString() : null,
         }));
+      }),
+
+    listVersionFamily: adminOrRhProcedure
+      .input(z.object({ id: z.number().int().positive() }))
+      .query(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) return [];
+        await ensurePgrVersioningTables(db);
+        const role = String((ctx.user as any).role || "");
+        const isGlobal = role === "admin_global" || role === "super_admin";
+        const ownerResult: any = await db.execute(
+          drzSql`SELECT company_id,revision_root_id FROM pgr_documents WHERE id=${input.id} LIMIT 1`
+        );
+        const owner = (ownerResult as any)[0]?.[0];
+        if (!owner) throw new TRPCError({ code: "NOT_FOUND" });
+        if (
+          !isGlobal &&
+          Number(owner.company_id) !== Number((ctx.user as any).companyId)
+        )
+          throw new TRPCError({ code: "FORBIDDEN" });
+        const familyResult: any = await db.execute(drzSql`
+          SELECT id,title,status,pdf_url AS pdfUrl,exercise_year AS exerciseYear,
+                 revision_number AS revisionNumber,revision_reason AS revisionReason,
+                 revision_summary_json AS revisionSummaryJson,is_current_version AS isCurrentVersion,
+                 revision_parent_id AS revisionParentId,created_at AS createdAt,updated_at AS updatedAt
+          FROM pgr_documents
+          WHERE company_id=${Number(owner.company_id)}
+            AND revision_root_id=${Number(owner.revision_root_id || input.id)}
+          ORDER BY revision_number DESC,id DESC`);
+        return ((familyResult as any)[0] ?? []).map((row: any) => ({
+          ...row,
+          revisionNumber: Number(row.revisionNumber || 0),
+          isCurrentVersion: Number(row.isCurrentVersion) === 1,
+          changes: (() => {
+            try {
+              return JSON.parse(row.revisionSummaryJson || "{}");
+            } catch {
+              return {};
+            }
+          })(),
+        }));
+      }),
+
+    createRevision: adminOrRhProcedure
+      .input(
+        z.object({
+          id: z.number().int().positive(),
+          reason: z.string().trim().min(5).max(500),
+          changes: z
+            .object({
+              risksIncluded: z.array(z.string()).max(100).optional(),
+              risksChanged: z.array(z.string()).max(100).optional(),
+              risksRemoved: z.array(z.string()).max(100).optional(),
+              epiEpcChanged: z.boolean().optional(),
+              controlsChanged: z.boolean().optional(),
+              actionPlanChanged: z.boolean().optional(),
+              evidenceChanged: z.boolean().optional(),
+              notes: z.string().max(4000).optional(),
+            })
+            .optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensureOccupationalTables();
+        await ensurePgrVersioningTables(db);
+        const role = String((ctx.user as any).role || "");
+        const isGlobal = role === "admin_global" || role === "super_admin";
+        const ownerResult: any = await db.execute(
+          drzSql`SELECT company_id,is_current_version FROM pgr_documents WHERE id=${input.id} LIMIT 1`
+        );
+        const owner = (ownerResult as any)[0]?.[0];
+        if (!owner) throw new TRPCError({ code: "NOT_FOUND" });
+        if (
+          !isGlobal &&
+          Number(owner.company_id) !== Number((ctx.user as any).companyId)
+        )
+          throw new TRPCError({ code: "FORBIDDEN" });
+        if (Number(owner.is_current_version) !== 1)
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "Crie a revisão a partir do PGR vigente.",
+          });
+        try {
+          return await clonePgrAsRevision({
+            db,
+            sourcePgrId: input.id,
+            companyId: Number(owner.company_id),
+            userId: Number((ctx.user as any).id),
+            reason: input.reason,
+            changes: input.changes || {},
+          });
+        } catch (error: any) {
+          console.error("[pgr.createRevision]", error);
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message:
+              error?.message || "Não foi possível criar a revisão do PGR.",
+          });
+        }
+      }),
+
+    checkExerciseConflicts: adminOrRhProcedure
+      .input(z.object({ pgrId: z.number().int().positive() }))
+      .query(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) return [];
+        await ensureOccupationalTables();
+        await ensurePgrVersioningTables(db);
+        const role = String((ctx.user as any).role || "");
+        const isGlobal = role === "admin_global" || role === "super_admin";
+        const currentResult: any = await db.execute(
+          drzSql`SELECT company_id FROM pgr_documents WHERE id=${input.pgrId} LIMIT 1`
+        );
+        const current = (currentResult as any)[0]?.[0];
+        if (!current) return [];
+        if (
+          !isGlobal &&
+          Number(current.company_id) !== Number((ctx.user as any).companyId)
+        )
+          throw new TRPCError({ code: "FORBIDDEN" });
+        const result: any = await db.execute(drzSql`
+          SELECT DISTINCT other.id,other.title,other.status,other.exercise_year AS exerciseYear,
+                 other.revision_number AS revisionNumber,mg.code AS gseCode,mg.name AS gseName
+          FROM pgr_documents current_doc
+          JOIN occupational_gse_pgr_links current_link ON current_link.pgr_id=current_doc.id
+          JOIN occupational_gse_master mg ON mg.id=current_link.gse_id
+          JOIN occupational_gse_pgr_links other_link ON other_link.gse_id=current_link.gse_id AND other_link.pgr_id<>current_doc.id
+          JOIN pgr_documents other ON other.id=other_link.pgr_id AND other.company_id=current_doc.company_id
+          WHERE current_doc.id=${input.pgrId}
+            AND other.exercise_year=current_doc.exercise_year
+            AND other.is_current_version=1
+            AND COALESCE(other.revision_root_id,other.id)<>COALESCE(current_doc.revision_root_id,current_doc.id)
+          ORDER BY other.updated_at DESC`);
+        return (result as any)[0] ?? [];
       }),
 
     /** PGR management dashboard: KPIs, risk distribution, pending actions, expired EPIs */
@@ -19341,7 +19595,7 @@ Return only the JSON content object (no wrapper). Format per type:
         if (!GROQ_API_KEY)
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
-            message: "GROQ_API_KEY not set",
+            message: "A geração automática está temporariamente indisponível.",
           });
 
         let systemPrompt =
@@ -19374,7 +19628,7 @@ Return only the JSON content object (no wrapper). Format per type:
               Authorization: `Bearer ${GROQ_API_KEY}`,
             },
             body: JSON.stringify({
-              model: "llama-3.3-70b-versatile",
+              model: PGR_GROQ_MODEL,
               messages: [
                 { role: "system", content: systemPrompt },
                 { role: "user", content: userPrompt },
@@ -19387,9 +19641,13 @@ Return only the JSON content object (no wrapper). Format per type:
 
         if (!response.ok) {
           const err = await response.text().catch(() => "");
+          console.error(
+            `[pgr.ai] provider=groq model=${PGR_GROQ_MODEL} status=${response.status} body=${err.slice(0, 500)}`
+          );
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
-            message: `Groq error: ${err.slice(0, 200)}`,
+            message:
+              "Não foi possível gerar o texto automaticamente. Tente novamente.",
           });
         }
         const data = await response.json();
@@ -20213,6 +20471,7 @@ Return only the JSON content object (no wrapper). Format per type:
     generatePDF: adminOrRhProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
+        await ensureOccupationalTables();
         const role = (ctx.user as any).role;
         const isGlobal = role === "admin_global" || role === "super_admin";
         const db = await getDb();
@@ -20586,7 +20845,11 @@ Return only the JSON content object (no wrapper). Format per type:
           if (attList.length > 0) {
             const { appendPdfAttachments } = await import("./_core/pgr_pdf");
             const pathmod = await import("path");
-            const diskPath = pathmod.join("/var/www/saudedotrabalho", url);
+            const diskPath = pathmod.join(
+              getUploadRoot(),
+              "pgr_pdfs",
+              pathmod.basename(url)
+            );
             attachmentInfo = await appendPdfAttachments(
               diskPath,
               attList.map(r => ({
@@ -20605,7 +20868,7 @@ Return only the JSON content object (no wrapper). Format per type:
         }
 
         await db.execute(
-          drzSql`UPDATE pgr_documents SET pdf_url=${url}, status='gerado' WHERE id=${row.id}`
+          drzSql`UPDATE pgr_documents SET pdf_url=${url}, updated_at=NOW() WHERE id=${row.id}`
         );
         return {
           ok: true,
@@ -20904,6 +21167,70 @@ Return only the JSON content object (no wrapper). Format per type:
           };
         }),
 
+      findReusableConfiguration: adminOrRhProcedure
+        .input(
+          z.object({
+            pgrId: z.number().int().positive(),
+            gseId: z.number().int().positive(),
+          })
+        )
+        .query(async ({ ctx, input }) => {
+          const db = await getDb();
+          if (!db) return null;
+          const companyId = Number((ctx.user as any).companyId || 0);
+          const source = await findReusableGseConfiguration(
+            db,
+            companyId,
+            input.pgrId,
+            input.gseId
+          );
+          if (!source) return null;
+          return {
+            sourcePgrGseId: Number(source.id),
+            sourcePgrId: Number(source.source_pgr_id),
+            pgrTitle: String(source.pgr_title || "PGR anterior"),
+            exerciseYear: Number(source.exercise_year || 0) || null,
+            revisionNumber: Number(source.revision_number || 0),
+            riskCount: Number(source.risk_count || 0),
+          };
+        }),
+
+      recoverConfiguration: adminOrRhProcedure
+        .input(
+          z.object({
+            pgrId: z.number().int().positive(),
+            gseId: z.number().int().positive(),
+            sourcePgrGseId: z.number().int().positive(),
+          })
+        )
+        .mutation(async ({ ctx, input }) => {
+          const db = await getDb();
+          if (!db)
+            throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          await assertPgrTechnicalContextEditable(
+            db,
+            Number((ctx.user as any).companyId),
+            { pgrId: input.pgrId }
+          );
+          try {
+            return await recoverGseConfiguration({
+              db,
+              companyId: Number((ctx.user as any).companyId),
+              userId: Number((ctx.user as any).id),
+              targetPgrId: input.pgrId,
+              targetPgrGseId: input.gseId,
+              sourcePgrGseId: input.sourcePgrGseId,
+            });
+          } catch (error: any) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                error?.message ||
+                "Não foi possível recuperar a configuração anterior.",
+            });
+          }
+        }),
+
       create: adminOrRhProcedure
         .input(
           z.object({
@@ -20940,6 +21267,9 @@ Return only the JSON content object (no wrapper). Format per type:
           const cid = (ctx.user as any).companyId;
           const db = await getDb();
           if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          await assertPgrTechnicalContextEditable(db, Number(cid), {
+            gseId: input.id,
+          });
           const r: any = await db.execute(drzSql`
             SELECT p.company_id,g.master_gse_id,mg.name master_name,mg.description master_description
             FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
@@ -20970,6 +21300,9 @@ Return only the JSON content object (no wrapper). Format per type:
           const cid = (ctx.user as any).companyId;
           const db = await getDb();
           if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          await assertPgrTechnicalContextEditable(db, Number(cid), {
+            gseId: input.id,
+          });
           const r: any = await db.execute(drzSql`
             SELECT p.company_id,g.master_gse_id FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
             WHERE g.id=${input.id} LIMIT 1`);
@@ -21002,6 +21335,9 @@ Return only the JSON content object (no wrapper). Format per type:
           const cid = (ctx.user as any).companyId;
           const db = await getDb();
           if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          await assertPgrTechnicalContextEditable(db, Number(cid), {
+            gseId: input.gseId,
+          });
           const r: any = await db.execute(drzSql`
             SELECT p.company_id,g.master_gse_id FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
             WHERE g.id=${input.gseId} LIMIT 1`);
@@ -21036,6 +21372,9 @@ Return only the JSON content object (no wrapper). Format per type:
           const cid = (ctx.user as any).companyId;
           const db = await getDb();
           if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          await assertPgrTechnicalContextEditable(db, Number(cid), {
+            gseId: input.gseId,
+          });
           const r: any = await db.execute(drzSql`
             SELECT p.company_id,g.master_gse_id FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
             WHERE g.id=${input.gseId} LIMIT 1`);
@@ -21109,6 +21448,9 @@ Return only the JSON content object (no wrapper). Format per type:
           const cid = (ctx.user as any).companyId;
           const db = await getDb();
           if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          await assertPgrTechnicalContextEditable(db, Number(cid), {
+            gseId: input.gseId,
+          });
           const r: any = await db.execute(drzSql`
             SELECT p.company_id FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
             WHERE g.id=${input.gseId} LIMIT 1`);
@@ -21173,6 +21515,9 @@ Return only the JSON content object (no wrapper). Format per type:
           const cid = (ctx.user as any).companyId;
           const db = await getDb();
           if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          await assertPgrTechnicalContextEditable(db, Number(cid), {
+            gseId: input.gseId,
+          });
           const r: any = await db.execute(drzSql`
             SELECT p.company_id FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
             WHERE g.id=${input.gseId} LIMIT 1`);
@@ -21210,6 +21555,9 @@ Return only the JSON content object (no wrapper). Format per type:
           const cid = (ctx.user as any).companyId;
           const db = await getDb();
           if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          await assertPgrTechnicalContextEditable(db, Number(cid), {
+            gseId: input.gseId,
+          });
           const r: any = await db.execute(drzSql`
             SELECT p.company_id FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
             WHERE g.id=${input.gseId} LIMIT 1`);
@@ -21255,6 +21603,9 @@ Return only the JSON content object (no wrapper). Format per type:
           const cid = (ctx.user as any).companyId;
           const db = await getDb();
           if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          await assertPgrTechnicalContextEditable(db, Number(cid), {
+            gseId: input.gseId,
+          });
           const r: any = await db.execute(drzSql`
             SELECT p.company_id FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
             WHERE g.id=${input.gseId} LIMIT 1`);
@@ -21305,6 +21656,9 @@ Return only the JSON content object (no wrapper). Format per type:
           const uid = (ctx.user as any).id ?? (ctx.user as any).userId ?? null;
           const db = await getDb();
           if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          await assertPgrTechnicalContextEditable(db, Number(cid), {
+            gseId: input.gseId,
+          });
           const r: any = await db.execute(drzSql`
             SELECT p.company_id FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
             WHERE g.id=${input.gseId} LIMIT 1`);
@@ -21345,6 +21699,9 @@ Return only the JSON content object (no wrapper). Format per type:
           const cid = (ctx.user as any).companyId;
           const db = await getDb();
           if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          await assertPgrTechnicalContextEditable(db, Number(cid), {
+            gseId: input.gseId,
+          });
           const r: any = await db.execute(drzSql`
             SELECT p.company_id FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
             WHERE g.id=${input.gseId} LIMIT 1`);
@@ -21624,6 +21981,9 @@ Return only the JSON content object (no wrapper). Format per type:
           const cid = (ctx.user as any).companyId;
           const db = await getDb();
           if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          await assertPgrTechnicalContextEditable(db, Number(cid), {
+            gseId: input.gseId,
+          });
 
           // Carrega GSE + cargos + setores + dados do PGR pai pra contexto
           const gR: any = await db.execute(drzSql`
@@ -21674,7 +22034,7 @@ Return only the JSON content object (no wrapper). Format per type:
           if (!GROQ_API_KEY)
             throw new TRPCError({
               code: "INTERNAL_SERVER_ERROR",
-              message: "GROQ_API_KEY not set",
+              message: "A geração automática está temporariamente indisponível.",
             });
 
           const systemPrompt = `Você é um especialista sênior em Segurança e Saúde no Trabalho (SST), redator técnico de PGR conforme NR-01 / Portaria MTP 1.419/2024. Você responde SEMPRE em JSON válido (sem markdown, sem texto fora do JSON) seguindo EXATAMENTE este schema:
@@ -21737,7 +22097,7 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
                   Authorization: `Bearer ${GROQ_API_KEY}`,
                 },
                 body: JSON.stringify({
-                  model: "llama-3.3-70b-versatile",
+                  model: PGR_GROQ_MODEL,
                   messages: [
                     { role: "system", content: systemPrompt },
                     {
@@ -21762,12 +22122,16 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
             parsed = JSON.parse(raw);
           } catch (err: any) {
             aiError = err?.message || String(err);
+            console.error(
+              `[pgr.gse.ai] model=${PGR_GROQ_MODEL} gse=${input.gseId} error=${String(aiError || "").slice(0, 500)}`
+            );
           }
 
           if (!parsed) {
             throw new TRPCError({
               code: "INTERNAL_SERVER_ERROR",
-              message: `IA falhou: ${aiError ?? "?"}`,
+              message:
+                "Não foi possível gerar os riscos automaticamente. Tente novamente.",
             });
           }
 
@@ -22028,6 +22392,9 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
           const cid = (ctx.user as any).companyId;
           const db = await getDb();
           if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          await assertPgrTechnicalContextEditable(db, Number(cid), {
+            riskId: input.riscoId,
+          });
           // Guard: risco pertence a essa empresa
           const [[owner]]: any = await execP(
             db,
@@ -22186,7 +22553,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
                 Authorization: `Bearer ${GROQ_API_KEY}`,
               },
               body: JSON.stringify({
-                model: "llama-3.3-70b-versatile",
+                model: PGR_GROQ_MODEL,
                 messages: [
                   { role: "system", content: systemPrompt },
                   { role: "user", content: userPrompt },
@@ -22197,11 +22564,17 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
               }),
             }
           );
-          if (!resp.ok)
+          if (!resp.ok) {
+            const providerError = await resp.text().catch(() => "");
+            console.error(
+              `[pgr.risk-detail.ai] model=${PGR_GROQ_MODEL} risk=${input.riscoId} status=${resp.status} body=${providerError.slice(0, 500)}`
+            );
             throw new TRPCError({
               code: "INTERNAL_SERVER_ERROR",
-              message: `Groq ${resp.status}`,
+              message:
+                "Não foi possível gerar o detalhamento técnico automaticamente. Tente novamente.",
             });
+          }
           const data = await resp.json();
           const parsed = JSON.parse(
             String(data?.choices?.[0]?.message?.content ?? "{}")
@@ -22225,6 +22598,9 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           const db = await getDb();
           if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
           const cid = (ctx.user as any).companyId;
+          await assertPgrTechnicalContextEditable(db, Number(cid), {
+            riskId: input.riscoId,
+          });
           const [[owner]]: any = await execP(
             db,
             `SELECT p.company_id FROM pgr_gse g JOIN pgr_documents p ON p.id=g.pgr_id WHERE g.id=?`,
@@ -22234,7 +22610,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
             throw new TRPCError({ code: "FORBIDDEN" });
           const fs = await import("fs/promises");
           const path = await import("path");
-          const dir = "/var/www/saudedotrabalho/uploads/pgr_laudos";
+          const dir = path.join(getUploadRoot(), "pgr_laudos");
           await fs.mkdir(dir, { recursive: true });
           const b64 = input.fileBase64.includes(",")
             ? input.fileBase64.split(",", 2)[1]
@@ -22243,7 +22619,7 @@ Retorne o detalhamento técnico completo (JSON conforme schema).`;
           const safeName = input.fileName.replace(/[^\w.\-]/g, "_");
           const fname = `${Date.now()}_${safeName}`;
           await fs.writeFile(path.join(dir, fname), buf);
-          const fileUrl = `/uploads/pgr_laudos/${fname}`;
+          const fileUrl = `/api/uploads/pgr_laudos/${fname}`;
           await execP(
             db,
             `INSERT INTO pgr_gse_evidencias (gse_id, tipo, titulo, descricao, file_url, gse_risco_id, uploaded_by_user_id) VALUES (?,?,?,?,?,?,?)`,
