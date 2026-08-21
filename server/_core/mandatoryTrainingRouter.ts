@@ -292,7 +292,8 @@ export const mandatoryTrainingRouter = router({
     await ensureTables(db);
     const isGlobal = ["admin_global", "super_admin"].includes(roleOf(ctx));
     const companiesResult: any = isGlobal
-      ? await db.execute(drzSql`SELECT id,name,cnpj FROM companies WHERE is_active=1 ORDER BY name`)
+      ? await db.execute(drzSql`SELECT id,name,cnpj FROM companies
+          WHERE is_active=1 AND NULLIF(TRIM(name),'') IS NOT NULL ORDER BY name`)
       : [[]];
     const companies = isGlobal ? rowsOf(companiesResult) : [];
     const selectedCompanyId = Number(input?.companyId || ctx.user?.companyId || 0);
