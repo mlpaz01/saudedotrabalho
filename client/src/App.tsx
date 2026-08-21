@@ -112,6 +112,8 @@ import AdminFiles from "@/pages/admin/AdminFiles";
 import AdminNRTraining from "@/pages/admin/AdminNRTraining";
 import MedicalCenter from "@/pages/MedicalCenter";
 import OccupationalOperations from "@/pages/OccupationalOperations";
+import TechnicalUpdates from "@/pages/TechnicalUpdates";
+import MandatoryTraining from "@/pages/MandatoryTraining";
 import AdminPpp from "@/pages/admin/AdminPpp";
 import MyVaccines from "@/pages/MyVaccines";
 import MyOccupationalDocuments from "@/pages/MyOccupationalDocuments";
@@ -249,6 +251,7 @@ function RoleAwareDashboard() {
   if (user.role === "intermediador") return <Redirect to="/intermediador" />;
   if (user.role === "medico") return <Redirect to="/medico"/>;
   if (user.role === "clinica") return <Redirect to="/clinica"/>;
+  if (user.role === "treinamento") return <Redirect to="/treinamentos-obrigatorios"/>;
   if (isManagerRole(user.role)) return <ManagerDashboard />;
   return <Redirect to="/inicio" />;
 }
@@ -282,6 +285,8 @@ function Router() {
         <Route
           path="/meus-atestados" component={() => <ProtectedRoute component={OccupationalHealth} />} />
       <Route path="/documentos-ocupacionais" component={() => <ProtectedRoute component={MyOccupationalDocuments} />} />
+      <Route path="/treinamentos-obrigatorios" component={() => <ProtectedRoute component={MandatoryTraining} />} />
+      <Route path="/admin/treinamentos-obrigatorios" component={() => <ProtectedRoute component={MandatoryTraining} adminOnly />} />
       <Route path="/clinica" component={() => <ClinicRoute component={ClinicPortal} />} />
       <Route path="/admin/qualificacoes" component={() => (<ProtectedRoute component={AdminQualifications} adminOnly />)} />
       <Route path="/area-de-descompressao" component={() => <ProtectedRoute component={Decompression} />} />
@@ -371,6 +376,7 @@ function Router() {
       <Route path="/admin/pcmso" component={() => <MedicalRoute component={MedicalCenter} />}
         />
       <Route path="/admin/saude-ocupacional" component={() => <OccupationalRoute component={OccupationalOperations} />} />
+      <Route path="/admin/atualizacoes-tecnicas" component={() => <OccupationalRoute component={TechnicalUpdates} />} />
       <Route path="/admin/esocial" component={() => <OccupationalRoute component={ESocialCenter} />} />
       <Route path="/admin/ppp" component={() => <ProtectedRoute component={AdminPpp} adminOnly />} />
         <Route

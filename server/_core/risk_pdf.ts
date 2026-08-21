@@ -6,8 +6,9 @@ import puppeteer from "puppeteer";
 import path from "path";
 import fs from "fs/promises";
 import { metodologiaPsicossocialHtml } from "@shared/const";
+import { getUploadRoot } from "./runtimePaths";
 
-const UPLOAD_DIR = "/var/www/saudedotrabalho/uploads/risk_pdfs";
+const UPLOAD_DIR = path.join(getUploadRoot(), "risk_pdfs");
 
 function esc(s: unknown): string {
   if (s == null) return "";

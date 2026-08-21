@@ -258,6 +258,7 @@ export default function EmployeeDossier({ id }: { id: number }) {
           <div className="grid gap-px bg-slate-200 sm:grid-cols-3 lg:grid-cols-6">
             {[
               ["Cursos concluídos", summary?.completedCourses || 0],
+              ["Treinamentos pendentes", summary?.pendingMandatoryTrainings || 0],
               ["Certificados", summary?.certificates || 0],
               ["Entregas EPI/EPC", summary?.epiDeliveries || 0],
               ["Atestados/afastamentos", summary?.leaves || 0],
@@ -447,7 +448,12 @@ export default function EmployeeDossier({ id }: { id: number }) {
 
         <div className="grid gap-4 lg:grid-cols-2">
           <SourceList
-            title="Certificados e treinamentos"
+            title="Treinamentos obrigatórios"
+            rows={integrations.mandatoryTrainings || []}
+            empty="Nenhum treinamento obrigatório atribuído."
+          />
+          <SourceList
+            title="Certificados emitidos"
             rows={integrations.certificates || []}
             empty="Nenhum certificado emitido."
           />

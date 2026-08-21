@@ -48,6 +48,7 @@ const FEATURE_PILLAR: Record<string, string> = {
   ocr: "technology", survey_editor: "technology", integrations: "integrations", reports: "reports",
   pcd_management: "occupational_health", pca: "occupational_health", clinic_portal: "integrations",
   custom_analytics: "business_intelligence", commercial_portfolio: "strategic_differentials",
+  mandatory_training: "learning",
 };
 
 const DEFAULT_ADDONS = [
@@ -100,6 +101,7 @@ const DEFAULT_FEATURES = [
   ["Conteúdo e Aprendizagem", "certificates", "Certificados", "Emissão automática e validação"],
   ["Conteúdo e Aprendizagem", "preventive", "Saúde Preventiva", "Campanhas e biblioteca preventiva"],
   ["Conteúdo e Aprendizagem", "ai_studio", "Estúdio de Conteúdo com IA", "Cursos e pesquisas estruturados com apoio de inteligência artificial"],
+  ["Conteúdo e Aprendizagem", "mandatory_training", "Treinamentos Obrigatórios", "Centro corporativo de capacitações, prazos, certificados, reciclagens e pendências"],
   ["Tecnologia e Operações", "ai", "Inteligência Artificial", "Assistentes para conteúdo, análises e documentos"],
   ["Tecnologia e Operações", "ocr", "OCR", "Leitura assistida de questionários e documentos"],
   ["Tecnologia e Operações", "survey_editor", "Editor Livre", "Criação de questionários personalizados"],

@@ -4,6 +4,7 @@ const IMPORTABLE_USER_ROLES = [
   "chefia",
   "sesmt",
   "medico",
+  "treinamento",
   "rh",
   "admin",
 ] as const;
@@ -13,6 +14,7 @@ const IMPORT_ROLE_PRIORITY: Record<string, number> = {
   chefia: 2,
   sesmt: 3,
   medico: 4,
+  treinamento: 4,
   rh: 5,
   admin: 6,
 };
@@ -57,6 +59,10 @@ function mapRole(value: unknown): string {
     "medico do trabalho": "medico",
     "medica do trabalho": "medico",
     "medicina do trabalho": "medico",
+    treinamento: "treinamento",
+    treinamentos: "treinamento",
+    "gestao de treinamentos": "treinamento",
+    "responsavel por treinamentos": "treinamento",
     rh: "rh",
     "recursos humanos": "rh",
     "perfil rh": "rh",

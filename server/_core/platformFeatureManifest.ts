@@ -21,13 +21,50 @@ export type PlatformFeatureManifestItem = {
 };
 
 export const PLATFORM_RELEASE = {
-  code: "2026.08.18-commercial-ecosystem",
-  title: "Ecossistema comercial, documentação viva e programas ocupacionais",
+  code: "2026.08.21-pgr-training-ecosystem",
+  title: "Gestão documental do PGR e treinamentos corporativos obrigatórios",
   summary:
-    "Centraliza a evolução do produto, publica manuais automaticamente e prepara catálogo, planos e portfólio para distribuição seletiva aos White Labels.",
+    "Evolui revisões do PGR, comunicação SESMT x Médico e cria o centro corporativo de treinamentos, certificados, prazos e reciclagens.",
 };
 
 export const PLATFORM_FEATURE_MANIFEST: PlatformFeatureManifestItem[] = [
+  {
+    code: "mandatory_training",
+    version: "1.0.0",
+    name: "Treinamentos Obrigatórios",
+    category: "Conteúdo e Aprendizagem",
+    pillarCode: "learning",
+    moduleName: "Treinamentos Obrigatórios",
+    description:
+      "Centro corporativo para transformar cursos do Studio em capacitações obrigatórias com público, prazo, certificado, validade e reciclagem.",
+    problem:
+      "Cursos legais e corporativos são controlados em planilhas, sem cobrança escalonada, vínculo organizacional ou visão da chefia.",
+    objective:
+      "Direcionar cada capacitação ao público correto e acompanhar todo o ciclo até a conclusão, o certificado e a próxima reciclagem.",
+    benefits: [
+      "Atribui cursos por empresa, filial, setor, cargo, GSE ou colaborador.",
+      "Centraliza prazos, pendências, vencimentos e certificados.",
+      "Notifica por canal interno, e-mail e WhatsApp quando disponível.",
+      "Integra o histórico de capacitação ao dossiê do colaborador.",
+    ],
+    resources: [
+      "Cursos produzidos no Studio",
+      "Público-alvo segmentado",
+      "Prazos e reciclagens",
+      "Gestão da equipe",
+      "Certificados",
+      "Relatórios e comunicações",
+      "Perfil responsável por Treinamentos",
+    ],
+    audience: ["Treinamento", "RH", "SESMT", "Chefia", "Colaboradores"],
+    flow: ["Studio", "Curso", "Público-alvo", "Prazo", "Comunicação", "Conclusão", "Certificado", "Reciclagem"],
+    integrations: ["Studio", "Cursos", "Certificados", "Colaboradores", "GSE", "Dossiê", "Comunicações"],
+    indicators: ["Atribuídos", "Concluídos", "Pendentes", "Vencidos", "Próximos do vencimento"],
+    roles: ["treinamento", "rh", "sesmt", "chefia", "admin", "company_admin", "admin_global", "super_admin", "user"],
+    route: "/treinamentos-obrigatorios",
+    keywords: ["treinamento obrigatório", "curso", "reciclagem", "certificado", "prazo", "pendente", "lms"],
+    planNames: ["Business", "Enterprise"],
+  },
   {
     code: "pcd_management",
     version: "2.0.0",

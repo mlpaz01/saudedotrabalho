@@ -96,6 +96,15 @@ export async function ensurePgrVersioningTables(db: any) {
         UNIQUE KEY uq_pcmso_pgr_revision_alert (pcmso_id,new_pgr_id),
         INDEX idx_pcmso_pgr_revision_pending (company_id,status,created_at)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+      await ensureColumn(db, "pcmso_pgr_revision_alerts", "result_pcmso_id", "INT NULL");
+      await ensureColumn(db, "pcmso_pgr_revision_alerts", "medical_response_json", "LONGTEXT NULL");
+      await ensureColumn(db, "pcmso_pgr_revision_alerts", "sent_for_medical_at", "DATETIME NULL");
+      await ensureColumn(db, "pcmso_pgr_revision_alerts", "sent_for_medical_by", "INT NULL");
+      await ensureColumn(db, "pcmso_pgr_revision_alerts", "medical_completed_at", "DATETIME NULL");
+      await ensureColumn(db, "pcmso_pgr_revision_alerts", "medical_completed_by", "INT NULL");
+      await ensureColumn(db, "pcmso_pgr_revision_alerts", "sesmt_acknowledged_at", "DATETIME NULL");
+      await ensureColumn(db, "pcmso_pgr_revision_alerts", "sesmt_acknowledged_by", "INT NULL");
+      await ensureColumn(db, "pcmso_pgr_revision_alerts", "updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP");
 
       await db.execute(drzSql`UPDATE pgr_documents
         SET revision_root_id=id
@@ -288,7 +297,7 @@ export async function createPgrRevisionAlerts(
   newPgrId: number
 ) {
   await ensurePgrVersioningTables(db);
-  const documentResult: any = await db.execute(drzSql`SELECT revision_summary_json
+  const documentResult: any = await db.execute(drzSql`SELECT revision_summary_json,revision_parent_id
     FROM pgr_documents
     WHERE id=${newPgrId} AND company_id=${companyId} AND is_current_version=1 AND status='publicado'
     LIMIT 1`);
@@ -296,26 +305,112 @@ export async function createPgrRevisionAlerts(
   if (!document) return { created: 0 };
 
   try {
-    const inserted: any = await db.execute(drzSql`INSERT IGNORE INTO pcmso_pgr_revision_alerts
-      (company_id,pcmso_id,previous_pgr_id,new_pgr_id,status,changes_json)
-      SELECT ${companyId},pc.id,pc.pgr_id,${newPgrId},'pendente',${document.revision_summary_json || "{}"}
-      FROM pgr_documents newp
-      JOIN pgr_documents previousp
-        ON previousp.company_id=newp.company_id
-       AND previousp.revision_root_id=newp.revision_root_id
-       AND previousp.id<>newp.id
-      JOIN pcmso_programs_v2 pc
-        ON pc.company_id=newp.company_id
-       AND pc.pgr_id=previousp.id
-      WHERE newp.id=${newPgrId}
-        AND newp.company_id=${companyId}
-        AND pc.is_current_version=1
+    const pcmsoResult: any = await db.execute(drzSql`SELECT pc.id,pc.pgr_id
+      FROM pcmso_programs_v2 pc
+      JOIN pgr_documents previousp ON previousp.id=pc.pgr_id AND previousp.company_id=pc.company_id
+      JOIN pgr_documents newp ON newp.id=${newPgrId} AND newp.company_id=pc.company_id
+        AND COALESCE(newp.revision_root_id,newp.id)=COALESCE(previousp.revision_root_id,previousp.id)
+      WHERE pc.company_id=${companyId} AND pc.is_current_version=1
         AND pc.status NOT IN ('arquivado','cancelado')`);
-    return { created: Number((inserted as any)[0]?.affectedRows || 0) };
+    let created = 0;
+    for (const pcmso of rowsOf(pcmsoResult)) {
+      const impact = await buildPgrRevisionImpact(
+        db,
+        companyId,
+        Number(pcmso.pgr_id || document.revision_parent_id),
+        newPgrId
+      );
+      let declaredChanges: any = {};
+      try { declaredChanges = JSON.parse(document.revision_summary_json || "{}"); } catch {}
+      const inserted: any = await db.execute(drzSql`INSERT IGNORE INTO pcmso_pgr_revision_alerts
+        (company_id,pcmso_id,previous_pgr_id,new_pgr_id,status,changes_json,sent_for_medical_at)
+        VALUES (${companyId},${Number(pcmso.id)},${Number(pcmso.pgr_id)},${newPgrId},'aguardando_medico',
+          ${JSON.stringify({ ...impact, declaredChanges })},NOW())`);
+      created += Number((inserted as any)[0]?.affectedRows || 0);
+    }
+    return { created };
   } catch (error) {
     console.warn("[pgr.versioning] alerta PCMSO não criado", error);
     return { created: 0 };
   }
+}
+
+export async function buildPgrRevisionImpact(
+  db: any,
+  companyId: number,
+  previousPgrId: number,
+  newPgrId: number
+) {
+  const loadRisks = async (pgrId: number) => {
+    const result: any = await db.execute(drzSql`SELECT g.id pgr_gse_id,g.master_gse_id,g.nome gse_name,
+        r.id risk_id,r.tipo risk_type,r.agente risk_name,r.fonte_geradora,r.possivel_dano,
+        r.tipo_exposicao,r.severidade,r.probabilidade,r.risco_final,r.notes,
+        CONCAT_WS('\n',d.metodologia,d.resultado_medicao,d.criterio_ia,d.justificativa_ia) technical_detail
+      FROM pgr_gse g JOIN pgr_documents p ON p.id=g.pgr_id AND p.company_id=${companyId}
+      JOIN pgr_gse_riscos r ON r.gse_id=g.id
+      LEFT JOIN pgr_gse_riscos_detalhe d ON d.risco_id=r.id
+      WHERE g.pgr_id=${pgrId} ORDER BY g.id,r.id`);
+    return rowsOf(result);
+  };
+  const canonical = (value: unknown) => String(value || "").trim().toLocaleLowerCase("pt-BR").replace(/\s+/g, " ");
+  const key = (row: any) => [
+    Number(row.master_gse_id || 0) || canonical(row.gse_name),
+    canonical(row.risk_type),
+    canonical(row.risk_name),
+  ].join("|");
+  const fingerprint = (row: any) => [
+    row.fonte_geradora,row.possivel_dano,row.tipo_exposicao,row.severidade,row.probabilidade,
+    row.risco_final,row.notes,row.technical_detail,
+  ].map(canonical).join("|");
+  const [previous, current] = await Promise.all([loadRisks(previousPgrId), loadRisks(newPgrId)]);
+  const previousMap = new Map(previous.map(row => [key(row), row]));
+  const currentMap = new Map(current.map(row => [key(row), row]));
+  const added = current.filter(row => !previousMap.has(key(row)));
+  const removed = previous.filter(row => !currentMap.has(key(row)));
+  const modified = current.filter(row => {
+    const old = previousMap.get(key(row));
+    return old && fingerprint(old) !== fingerprint(row);
+  });
+  const affectedMasterGseIds = [...new Set([...added, ...removed, ...modified]
+    .map(row => Number(row.master_gse_id || 0)).filter(Boolean))];
+  let workers: any[] = [];
+  if (affectedMasterGseIds.length) {
+    const workerResult: any = await db.execute(drzSql.raw(`SELECT DISTINCT u.id,u.name,u.cpf,u.position,
+        h.gse_id,m.code gse_code,m.name gse_name,b.name branch_name,s.name sector_name
+      FROM occupational_gse_worker_history h
+      JOIN users u ON u.id=h.collaborator_id AND u.company_id=h.company_id
+      LEFT JOIN occupational_gse_master m ON m.id=h.gse_id AND m.company_id=h.company_id
+      LEFT JOIN branches b ON b.id=u.branch_id
+      LEFT JOIN sectors s ON s.id=u.sector_id
+      WHERE h.company_id=${Number(companyId)} AND h.is_current=1 AND h.gse_id IN (${affectedMasterGseIds.join(",")})
+      ORDER BY u.name`));
+    workers = rowsOf(workerResult).map(row => ({
+      id: Number(row.id), name: row.name, cpf: row.cpf, position: row.position,
+      gseId: Number(row.gse_id), gseCode: row.gse_code, gseName: row.gse_name,
+      branchName: row.branch_name, sectorName: row.sector_name,
+    }));
+  }
+  const compact = (row: any) => ({
+    pgrGseId: Number(row.pgr_gse_id), masterGseId: row.master_gse_id ? Number(row.master_gse_id) : null,
+    gseName: row.gse_name, riskId: Number(row.risk_id), riskName: row.risk_name,
+    riskType: row.risk_type, classification: row.risco_final,
+  });
+  return {
+    previousPgrId,
+    newPgrId,
+    addedRisks: added.map(compact),
+    removedRisks: removed.map(compact),
+    modifiedRisks: modified.map(compact),
+    affectedGseIds: affectedMasterGseIds,
+    affectedWorkers: workers,
+    summary: {
+      added: added.length,
+      removed: removed.length,
+      modified: modified.length,
+      affectedGses: affectedMasterGseIds.length,
+      affectedWorkers: workers.length,
+    },
+  };
 }
 
 export async function findReusableGseConfiguration(

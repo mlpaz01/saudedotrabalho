@@ -110,7 +110,12 @@ function zonaDecisao(nr: number): { zona: string; tratamento: string; color: str
 }
 
 export type GheRow = { funcao: string; descricao?: string | null; num?: number | string | null };
-export type RevisaoRow = { revisao: string; motivo: string; data?: string | null };
+export type RevisaoRow = {
+  revisao: string;
+  motivo: string;
+  data?: string | null;
+  responsavel?: string | null;
+};
 export type InventarioRow = {
   fator: string;
   tipoRisco?: string | null;
@@ -141,6 +146,14 @@ export type InventarioRow = {
 
 export type PgrData = {
   id: number;
+  documentNumber?: number | null;
+  revisionRootId?: number | null;
+  revisionParentId?: number | null;
+  revisionNumber?: number | null;
+  revisionReason?: string | null;
+  rootIssuedAt?: string | null;
+  parentTitle?: string | null;
+  revisionResponsible?: string | null;
   title?: string | null;
   razaoSocial?: string | null;
   nomeFantasia?: string | null;
@@ -632,12 +645,23 @@ function regimeEGhe(d: PgrData): string {
 }
 
 function revisaoTable(d: PgrData): string {
-  const revs = (d.revisoes && d.revisoes.length) ? d.revisoes : [{ revisao: "00", motivo: "Emissão inicial", data: d.vigenciaInicio ?? null }];
-  const rows = revs.map((r) => `<tr><td style="text-align:center">${esc(r.revisao)}</td><td>${esc(r.motivo)}</td><td style="text-align:center">${fmtDate(r.data)}</td></tr>`).join("");
+  const rootId = Number(d.revisionRootId || d.documentNumber || d.id);
+  const revs = (d.revisoes && d.revisoes.length)
+    ? d.revisoes
+    : [{ revisao: "00", motivo: `Emissão inicial do PGR nº ${rootId}`, data: d.rootIssuedAt ?? d.vigenciaInicio ?? null }];
+  const rows = revs.map((r) => `<tr><td style="text-align:center">${esc(r.revisao)}</td><td>${esc(r.motivo)}</td><td style="text-align:center">${fmtDate(r.data)}</td><td>${esc(r.responsavel || "—")}</td></tr>`).join("");
+  const revisionNumber = Number(d.revisionNumber || 0);
+  const notice = revisionNumber > 0
+    ? `<div class="strip" style="margin-top:4mm">
+        <div class="t">Revisão ${String(revisionNumber).padStart(2, "0")} do PGR nº ${rootId}</div>
+        <div class="s">Este documento constitui revisão do PGR nº ${rootId}, originalmente emitido em ${fmtDate(d.rootIssuedAt)}.${d.revisionReason ? ` Motivo: ${esc(d.revisionReason)}.` : ""}</div>
+      </div>`
+    : `<div class="strip" style="margin-top:4mm"><div class="t">Documento matricial original · PGR nº ${rootId}</div><div class="s">Emissão inicial que origina e preserva toda a cadeia de revisões.</div></div>`;
   return `
   <h2>Histórico de Revisões</h2>
+  ${notice}
   <table>
-    <tr><th style="width:14%">Revisão</th><th>Motivo da Revisão</th><th style="width:22%">Data</th></tr>
+    <tr><th style="width:12%">Revisão</th><th>Motivo da Revisão</th><th style="width:18%">Data</th><th style="width:24%">Responsável</th></tr>
     ${rows}
   </table>`;
 }
@@ -846,7 +870,6 @@ function gseGroupsSection(d: PgrData): string {
 
     return `
     <h3>GSE ${String(idx + 1).padStart(2, "0")} — ${esc(g.nome)}
-      ${g.aiSuggested ? `<span style="font-size:7pt;background:#ede9fe;color:#6d28d9;padding:1px 4px;border-radius:3px;margin-left:6px">IA</span>` : ""}
       ${g.migratedFromLegacy ? `<span style="font-size:7pt;background:#fef3c7;color:#92400e;padding:1px 4px;border-radius:3px;margin-left:6px">migrado</span>` : ""}
     </h3>
     ${g.descricao ? `<p>${esc(g.descricao)}</p>` : ""}
@@ -874,7 +897,7 @@ function gseGroupsSection(d: PgrData): string {
         const laudos = (d.laudos ?? []).map((l: any) => `<li>${esc(l.titulo || "Laudo")}${l.fileUrl ? ` — <a href="${esc(l.fileUrl)}">arquivo</a>` : ""}</li>`).join("");
         return `
         <div style="margin:4mm 0;padding:3mm;border-left:3px solid #3b82f6;background:#f8fafc">
-          <p style="margin:0 0 2mm 0;font-weight:600">${esc(r.agente)} — ${esc(tipoLabel[r.tipo] || r.tipo)}${d.aiGenerated ? ` <span style="font-size:7pt;background:#ede9fe;color:#6d28d9;padding:1px 4px;border-radius:3px">preenchido por IA</span>` : ""}</p>
+          <p style="margin:0 0 2mm 0;font-weight:600">${esc(r.agente)} — ${esc(tipoLabel[r.tipo] || r.tipo)}</p>
           <table style="font-size:8.5pt;width:100%">
             ${dl("Intensidade / faixa", d.intensidade)}
             ${dl("Concentração", d.concentracao)}
@@ -892,7 +915,7 @@ function gseGroupsSection(d: PgrData): string {
             ${dl("Laboratório responsável", d.laboratorio)}
             ${dl("Instrumento", d.instrumento)}
             ${dl("Metodologia", d.metodologia)}
-            ${dl("Critério técnico da IA", d.criterioIa)}
+            ${dl("Critério técnico adotado", d.criterioIa)}
             ${dl("Justificativa da classificação", d.justificativaIa)}
             ${dl("Hierarquia de medidas de controle", d.hierarquiaControles)}
             ${dl("Periodicidade de reavaliação", d.periodicidadeReavaliacao)}
@@ -1052,6 +1075,11 @@ export async function generatePGRPDF(d: PgrData): Promise<string> {
     ? `${esc(d.respTecnicoNome)}${d.respTecnicoRegistro ? ` — ${esc(d.respTecnicoRegistro)}` : ""}`
     : "Responsável Técnico (a definir)";
   const empresaNome = esc(d.razaoSocial || d.nomeFantasia || "Empresa");
+  const rootId = Number(d.revisionRootId || d.documentNumber || d.id);
+  const revisionNumber = Number(d.revisionNumber || 0);
+  const versionLabel = revisionNumber > 0
+    ? `Revisão ${String(revisionNumber).padStart(2, "0")} do PGR nº ${rootId}`
+    : `Documento matricial original · PGR nº ${rootId}`;
   const logoTag = d.logoUrl ? `<img class="logo" src="${esc(d.logoUrl)}" alt="logo">` : `<div class="kicker">SAÚDE DO TRABALHO • CONSULTORIA</div>`;
 
   const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
@@ -1062,6 +1090,8 @@ export async function generatePGRPDF(d: PgrData): Promise<string> {
     ${logoTag}
     <div class="title">PGR</div>
     <div class="kicker" style="letter-spacing:2px;margin-bottom:12mm">Programa de Gerenciamento de Riscos — NR-01</div>
+    <div class="sub" style="font-weight:700;color:${PRIMARY};margin-bottom:5mm">${esc(d.title || "Programa de Gerenciamento de Riscos")}</div>
+    <div class="sub" style="font-weight:700;color:${revisionNumber > 0 ? "#b45309" : PRIMARY}">${esc(versionLabel)}</div>
     <div class="company">${empresaNome}</div>
     ${d.endereco ? `<div class="sub">${multiline(d.endereco)}</div>` : ""}
     ${d.obra ? `<div class="sub"><b>Obra:</b> ${multiline(d.obra)}</div>` : ""}
@@ -1133,14 +1163,14 @@ ${renderUserText(d.textoConclusao)}
  * Sprint 1.7-B item 2 — Concatena os anexos (PDFs e imagens) ao final do PGR.
  *
  * Lê o PDF base do disco, adiciona uma página-capa "ANEXOS", e concatena cada
- * arquivo anexado: PDFs são copiados página-por-página, imagens são embed em
- * uma nova página A4. Falhas de leitura/parse de um anexo individual NÃO derrubam
- * o PGR — só pula o arquivo problemático.
+ * arquivo anexado: PDFs são copiados página-por-página e imagens são incorporadas
+ * em uma nova página A4. No modo estrito, qualquer falha impede a publicação de
+ * um PGR incompleto; fora dele, o retorno informa quais anexos foram ignorados.
  *
  * @param pdfDiskPath caminho absoluto do PGR base em disco
  * @param attachments lista vinda da BD (pgr_attachments) com fileUrl + mimeType + titulo
  */
-/** Categorias oficiais — viram "Anexo 1..8" no PDF, na ordem abaixo.
+/** Categorias oficiais — viram anexos numerados no PDF, na ordem abaixo.
  * Bruno round 3: adicionado LGPD e Lei 14.457 (totalizando 7).
  * P18 GRANDE: adicionado Relatório da CIPA (totalizando 8). */
 const ANEXOS_OFICIAIS_ORDEM = [
@@ -1157,17 +1187,17 @@ const ANEXOS_OFICIAIS_ORDEM = [
 
 export async function appendPdfAttachments(
   pdfDiskPath: string,
-  attachments: Array<{ fileUrl: string | null; mimeType: string | null; titulo: string; tipo?: string }>
-): Promise<{ appended: number; skipped: number }> {
+  attachments: Array<{ fileUrl: string | null; mimeType: string | null; titulo: string; tipo?: string }>,
+  options: { strict?: boolean } = {}
+): Promise<{ appended: number; skipped: number; pagesAppended: number; errors: string[] }> {
   const valid = attachments.filter(a => !!a.fileUrl);
-  if (valid.length === 0) return { appended: 0, skipped: 0 };
+  if (valid.length === 0) return { appended: 0, skipped: 0, pagesAppended: 0, errors: [] };
 
   let PDFLib: any;
   try {
     PDFLib = await import("pdf-lib");
   } catch {
-    console.warn("[pgr_pdf] pdf-lib não instalado; anexos não serão concatenados.");
-    return { appended: 0, skipped: valid.length };
+    throw new Error("O componente de incorporação de anexos não está disponível.");
   }
   const { PDFDocument, StandardFonts, rgb, PageSizes } = PDFLib;
 
@@ -1176,7 +1206,7 @@ export async function appendPdfAttachments(
   const font = await base.embedFont(StandardFonts.Helvetica);
   const fontBold = await base.embedFont(StandardFonts.HelveticaBold);
 
-  // Separa complementares (LTCAT/PCA/etc) dos 5 oficiais (Anexo 1..5)
+  // Separa complementares (LTCAT/PCA/etc) dos anexos oficiais.
   const complementares = valid.filter(a => !ANEXOS_OFICIAIS_ORDEM.includes(a.tipo ?? ""));
   const oficiaisPorTipo = new Map<string, typeof valid>();
   ANEXOS_OFICIAIS_ORDEM.forEach(t => oficiaisPorTipo.set(t, []));
@@ -1214,7 +1244,7 @@ export async function appendPdfAttachments(
       const src = await PDFDocument.load(buf, { ignoreEncryption: true });
       const pages = await base.copyPages(src, src.getPageIndices());
       for (const p of pages) base.addPage(p);
-      return true;
+      return pages.length;
     } else if (mime.includes("png") || mime.includes("jpg") || mime.includes("jpeg") || /\.(png|jpe?g)$/i.test(localPath)) {
       const img = (mime.includes("png") || /\.png$/i.test(localPath))
         ? await base.embedPng(buf) : await base.embedJpg(buf);
@@ -1225,28 +1255,30 @@ export async function appendPdfAttachments(
       const w = img.width * scale, h = img.height * scale;
       page.drawText(safeAscii(a.titulo).slice(0, 90), { x: margin, y: H - margin, size: 10, font: fontBold, color: rgb(0.118, 0.227, 0.373) });
       page.drawImage(img, { x: (W - w) / 2, y: (H - h) / 2 - 10, width: w, height: h });
-      return true;
+      return 1;
     }
-    return false;
+    return 0;
   }
 
-  let appended = 0, skipped = 0;
+  let appended = 0, skipped = 0, pagesAppended = 0;
+  const errors: string[] = [];
 
   // 1) Anexos do PGR (complementares: LTCAT, PCA, PPR, APR, etc.)
   if (complementares.length > 0) {
     makeCoverPage("Anexos do PGR", `${complementares.length} documento(s) complementares`, complementares.map(c => `${c.titulo} (${c.tipo ?? "Outro"})`));
     for (const a of complementares) {
       try {
-        const ok = await inlineFile(a);
-        if (ok) appended++; else skipped++;
+        const pages = await inlineFile(a);
+        if (pages > 0) { appended++; pagesAppended += pages; } else { skipped++; errors.push(`${a.titulo}: formato não suportado`); }
       } catch (err: any) {
         console.warn(`[pgr_pdf] complementar "${a.titulo}" falhou:`, err?.message ?? err);
         skipped++;
+        errors.push(`${a.titulo}: ${err?.message || "arquivo não pôde ser lido"}`);
       }
     }
   }
 
-  // 2) Anexos oficiais — Anexo 1..5
+  // 2) Anexos oficiais numerados.
   for (let i = 0; i < ANEXOS_OFICIAIS_ORDEM.length; i++) {
     const tipo = ANEXOS_OFICIAIS_ORDEM[i];
     const items = oficiaisPorTipo.get(tipo) ?? [];
@@ -1255,18 +1287,23 @@ export async function appendPdfAttachments(
     makeCoverPage(`Anexo ${i + 1}`, `${tipo} - ${items.length} documento(s)`, items.map(it => it.titulo));
     for (const a of items) {
       try {
-        const ok = await inlineFile(a);
-        if (ok) appended++; else skipped++;
+        const pages = await inlineFile(a);
+        if (pages > 0) { appended++; pagesAppended += pages; } else { skipped++; errors.push(`${a.titulo}: formato não suportado`); }
       } catch (err: any) {
         console.warn(`[pgr_pdf] anexo "${a.titulo}" falhou:`, err?.message ?? err);
         skipped++;
+        errors.push(`${a.titulo}: ${err?.message || "arquivo não pôde ser lido"}`);
       }
     }
   }
 
+  if (options.strict && errors.length > 0) {
+    throw new Error(`Não foi possível incorporar integralmente ${errors.length} anexo(s): ${errors.join("; ")}`);
+  }
+
   const out = await base.save();
   await fs.writeFile(pdfDiskPath, out);
-  return { appended, skipped };
+  return { appended, skipped, pagesAppended, errors };
 }
 
 // pdf-lib WinAnsi não suporta vários caracteres unicode (acentos exóticos, emojis).

@@ -41,6 +41,7 @@ interface NavSection {
 const employeeNav: NavItem[] = [
   { label: "Inicio", href: "/inicio", icon: <Home size={16} /> },
   { label: "Meus Cursos", href: "/cursos", icon: <BookOpen size={16} />, feature: "courses" ,},
+  { label: "Treinamentos Obrigatorios", href: "/treinamentos-obrigatorios", icon: <GraduationCap size={16} /> },
   { label: "Qualificacoes e Habilitacoes", href: "/qualificacoes", icon: <IdCard size={16} /> ,},
   { label: "Nocoes de Primeiros Socorros", href: "/primeiros-socorros", icon: <HeartHandshake size={16} /> ,},
   { label: "Meu EPI/EPC", href: "/meu-epi-epc", icon: <HardHat size={16} /> },
@@ -84,6 +85,7 @@ const adminSections: NavSection[] = [
     section: "Conteudo",
     items: [
       { label: "Cursos", href: "/admin/cursos", notRoles: ["chefia", "sesmt", "psicologo"], icon: <BookOpen size={16} />, feature: "courses", dotCount: 3 ,},
+      { label: "Treinamentos Obrigatorios", href: "/admin/treinamentos-obrigatorios", roles: ["treinamento", "chefia", "admin", "rh", "sesmt", "company_admin", "admin_global", "super_admin"], icon: <GraduationCap size={16} /> },
       { label: "Pesquisas", href: "/admin/pesquisas", notRoles: ["chefia", "sesmt", "psicologo"], icon: <ClipboardList size={16} />, feature: "surveys" ,},
       // VÍDEO V1 — item dedicado pro RH achar o upload de questionários impressos
       { label: "Upload de Questionários", href: "/admin/pesquisas/upload-impresso", notRoles: ["chefia", "sesmt", "psicologo"], icon: <Upload size={16} />, feature: "surveys" ,},
@@ -152,6 +154,7 @@ const adminSections: NavSection[] = [
     section: "Saude Ocupacional",
     items: [
       { label: "Operacao Ocupacional", href: "/admin/saude-ocupacional", roles: ["sesmt", "admin", "company_admin", "admin_global", "super_admin"], icon: <ClipboardCheck size={16} /> },
+      { label: "Atualizacoes SESMT x Medico", href: "/admin/atualizacoes-tecnicas", roles: ["sesmt", "admin", "company_admin", "admin_global", "super_admin"], icon: <MessageSquareText size={16} /> },
       { label: "Gestao de PCD", href: "/admin/gestao-pcd", roles: ["rh", "sesmt", "medico", "admin", "company_admin", "admin_global", "super_admin"], icon: <Accessibility size={16} /> },
       { label: "PCA", href: "/admin/pca", roles: ["sesmt", "medico", "admin", "company_admin", "admin_global", "super_admin"], icon: <Ear size={16} /> },
       { label: "Eventos eSocial", href: "/admin/esocial", roles: ["sesmt", "admin", "company_admin", "admin_global", "super_admin"], icon: <FileCheck size={16} /> },
@@ -262,6 +265,18 @@ const clinicNav: NavSection[] = [
         href: "/manual",
         icon: <BookMarked size={16} />,
       },
+      { label: "Suporte", href: "/suporte", icon: <LifeBuoy size={16} /> },
+    ],
+  },
+];
+
+const trainingNav: NavSection[] = [
+  {
+    section: "Treinamentos",
+    items: [
+      { label: "Treinamentos Obrigatorios", href: "/treinamentos-obrigatorios", icon: <GraduationCap size={16} /> },
+      { label: "Cursos do Studio", href: "/cursos", icon: <BookOpen size={16} /> },
+      { label: "Manual do Usuario", href: "/manual", icon: <BookMarked size={16} /> },
       { label: "Suporte", href: "/suporte", icon: <LifeBuoy size={16} /> },
     ],
   },
@@ -742,6 +757,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const isWhiteLabelNetworkAdmin = user?.role === "company_admin";
   const isMedical = user?.role === "medico";
   const isClinic = user?.role === "clinica";
+  const isTraining = user?.role === "treinamento";
   const isAdmin =
     isSuperAdmin ||
     user?.role === "admin" ||
@@ -774,8 +790,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   const filteredEmployeeNav: NavItem[] = employeeNav.filter(navAllowed);
   // B3 — Programa de Acolhimento: visible only when eligible (non-managers).
-  const elig = trpc.scheduling.myEligibility.useQuery(undefined, { enabled: !!user && !isClinic ,});
-  const isManagerForAcolhimento = user && ["admin","rh","admin_global","company_admin","super_admin","psicologo","chefia",].includes(String((user as any)?.role));
+  const elig = trpc.scheduling.myEligibility.useQuery(undefined, { enabled: !!user && !isClinic && !isTraining ,});
+  const isManagerForAcolhimento = user && ["admin","rh","admin_global","company_admin","super_admin","psicologo","chefia","treinamento",].includes(String((user as any)?.role));
   if (!isManagerForAcolhimento && elig.data?.eligible) {
     filteredEmployeeNav.push({ label: "Agendar Acolhimento", href: "/acolhimento", icon: <HeartHandshake size={16} /> ,});
   }
@@ -786,6 +802,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   // P14 #5 — Intermediador tem área comercial própria, isolada do restante do admin.
   const isIntermediador = user?.role === "intermediador";
   const homeHref = isIntermediador ? "/intermediador"
+    : isTraining ? "/treinamentos-obrigatorios"
     : isMedical
       ? "/medico"
       : isClinic
@@ -842,7 +859,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           </div>
 
           <nav className="sdt-nav">
-            {isMedical ? (
+            {isTraining ? (
+              <>
+                {trainingNav.map(sec => (
+                  <div key={sec.section}>
+                    <div className="sdt-sl">{sec.section.toUpperCase()}</div>
+                    {sec.items.map(item => renderNavItem(item))}
+                  </div>
+                ))}
+              </>
+            ) : isMedical ? (
               <>
                 {medicalNav.map(sec => (
                   <div key={sec.section}>

@@ -495,6 +495,8 @@ export async function getCertificate(userId: number, moduleId: number) {
 
     .where(and(eq(certificates.userId, userId), eq(certificates.moduleId, moduleId)))
 
+    .orderBy(desc(certificates.issuedAt))
+
     .limit(1);
 
   return result[0];

@@ -17,4 +17,11 @@ describe("resolveImportedRoles", () => {
   it("não transforma texto desconhecido em perfil administrativo", () => {
     expect(resolveImportedRoles("Operador de máquinas", true)).toEqual({ primary: "user", roles: ["user"] });
   });
+
+  it("reconhece o perfil independente de responsável por treinamentos", () => {
+    expect(resolveImportedRoles("Responsável por Treinamentos", true)).toEqual({
+      primary: "treinamento",
+      roles: ["treinamento"],
+    });
+  });
 });

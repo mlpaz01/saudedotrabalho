@@ -30,6 +30,7 @@ const allStaff = [
   "super_admin",
   "psicologo",
   "medico",
+  "treinamento",
 ];
 const management = [
   "chefia",
@@ -42,6 +43,7 @@ const management = [
   "super_admin",
   "psicologo",
   "medico",
+  "treinamento",
 ];
 const adminHealth = [
   "sesmt",

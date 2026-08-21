@@ -803,6 +803,30 @@ async function ensureTables() {
     "source_monitoring_id",
     "INT NULL"
   );
+  await ensureColumn(
+    db,
+    "pcmso_risk_monitoring_v2",
+    "change_classification",
+    "VARCHAR(20) NOT NULL DEFAULT 'new'"
+  );
+  await ensureColumn(
+    db,
+    "pcmso_risk_monitoring_v2",
+    "previous_monitoring_id",
+    "INT NULL"
+  );
+  await ensureColumn(
+    db,
+    "pcmso_risk_monitoring_v2",
+    "catalog_periodicity",
+    "VARCHAR(120) NULL"
+  );
+  await ensureColumn(
+    db,
+    "pcmso_risk_monitoring_v2",
+    "periodicity_source",
+    "VARCHAR(30) NULL"
+  );
   const legacyMonitoringIndex: any = await db.execute(
     drzSql`SELECT 1 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='pcmso_risk_monitoring_v2' AND INDEX_NAME='uq_pcmso_risk_source' LIMIT 1`
   );
@@ -1199,10 +1223,11 @@ export const medicalRouter = router({
     if (!db) return [];
     await ensurePgrVersioningTables(db);
     const result: any = await db.execute(
-      drzSql`SELECT id,title,status,branch_id,updated_at,exercise_year,revision_number,revision_root_id
+      drzSql`SELECT id,title,status,branch_id,updated_at,exercise_year,revision_number,revision_root_id,
+          revision_parent_id,revision_reason,is_current_version,version_created_at
         FROM pgr_documents
-        WHERE company_id=${companyId} AND is_current_version=1
-        ORDER BY exercise_year DESC,revision_number DESC,updated_at DESC,id DESC LIMIT 200`
+        WHERE company_id=${companyId}
+        ORDER BY exercise_year DESC,COALESCE(revision_root_id,id) DESC,revision_number DESC,updated_at DESC,id DESC LIMIT 300`
     );
     return rowsOf(result);
   }),
@@ -1239,7 +1264,8 @@ export const medicalRouter = router({
     const companyId = companyOf(ctx);
     if (!db) return [];
     await ensurePgrVersioningTables(db);
-    const result: any = await db.execute(drzSql`SELECT a.id,a.status,a.notes,a.changes_json,a.created_at,
+    const result: any = await db.execute(drzSql`SELECT a.id,a.status,a.notes,a.changes_json,a.medical_response_json,a.created_at,
+        a.result_pcmso_id,a.sent_for_medical_at,a.medical_completed_at,a.sesmt_acknowledged_at,
         a.pcmso_id,p.title pcmso_title,p.revision_number pcmso_revision_number,
         a.previous_pgr_id,oldp.title previous_pgr_title,oldp.revision_number previous_pgr_revision,
         a.new_pgr_id,newp.title new_pgr_title,newp.revision_number new_pgr_revision,newp.revision_reason
@@ -1247,7 +1273,7 @@ export const medicalRouter = router({
       JOIN pcmso_programs_v2 p ON p.id=a.pcmso_id AND p.company_id=a.company_id
       JOIN pgr_documents oldp ON oldp.id=a.previous_pgr_id
       JOIN pgr_documents newp ON newp.id=a.new_pgr_id
-      WHERE a.company_id=${companyId} AND a.status='pendente'
+      WHERE a.company_id=${companyId} AND a.status IN ('pendente','aguardando_medico','em_analise_medica','aguardando_sesmt')
       ORDER BY a.created_at DESC,a.id DESC`);
     return rowsOf(result).map((row: any) => ({
       ...row,
@@ -1257,6 +1283,9 @@ export const medicalRouter = router({
         } catch {
           return {};
         }
+      })(),
+      medicalResponse: (() => {
+        try { return JSON.parse(row.medical_response_json || "{}"); } catch { return {}; }
       })(),
     }));
   }),
@@ -1278,7 +1307,7 @@ export const medicalRouter = router({
       const result: any = await db.execute(
         drzSql`UPDATE pcmso_pgr_revision_alerts
           SET status='sem_alteracao',notes=${input.notes},analyzed_at=NOW(),analyzed_by=${Number(ctx.user.id)}
-          WHERE id=${input.id} AND company_id=${companyId} AND status='pendente'`
+          WHERE id=${input.id} AND company_id=${companyId} AND status IN ('pendente','aguardando_medico','em_analise_medica')`
       );
       if (!Number((result as any)[0]?.affectedRows || 0))
         throw new TRPCError({ code: "NOT_FOUND" });
@@ -1315,7 +1344,7 @@ export const medicalRouter = router({
             p.revision_root_id,p.doctor_name
           FROM pcmso_pgr_revision_alerts a
           JOIN pcmso_programs_v2 p ON p.id=a.pcmso_id AND p.company_id=a.company_id
-          WHERE a.id=${input.id} AND a.company_id=${companyId} AND a.status='pendente'
+          WHERE a.id=${input.id} AND a.company_id=${companyId} AND a.status IN ('pendente','aguardando_medico','em_analise_medica')
           LIMIT 1 FOR UPDATE`);
         const source = rowsOf(alertResult)[0];
         if (!source) throw new TRPCError({ code: "NOT_FOUND" });
@@ -1357,27 +1386,80 @@ export const medicalRouter = router({
           JOIN pgr_gse_riscos r ON r.gse_id=g.id
           LEFT JOIN pgr_gse_riscos_detalhe d ON d.risco_id=r.id
           WHERE g.pgr_id=${Number(source.new_pgr_id)} ORDER BY g.id,r.id`);
-        let imported = 0;
+        const previousMonitoringResult: any = await tx.execute(drzSql`SELECT *
+          FROM pcmso_risk_monitoring_v2
+          WHERE company_id=${companyId} AND pcmso_id=${Number(source.pcmso_id)}
+          ORDER BY is_primary DESC,id ASC`);
+        const previousMonitoring = rowsOf(previousMonitoringResult);
+        const canonical = (value: unknown) => String(value || "").trim().toLocaleLowerCase("pt-BR").replace(/\s+/g, " ");
+        const riskKey = (value: any) => [
+          Number(value.master_gse_id || 0) || canonical(value.master_gse_code || value.gse_name),
+          canonical(value.risk_type),
+          canonical(value.risk_name),
+        ].join("|");
+        const previousPrimaryByKey = new Map<string, any>();
+        const previousChildrenBySource = new Map<number, any[]>();
+        for (const previous of previousMonitoring) {
+          if (Number(previous.is_primary)) previousPrimaryByKey.set(riskKey(previous), previous);
+          else if (previous.source_monitoring_id) {
+            const parentId = Number(previous.source_monitoring_id);
+            previousChildrenBySource.set(parentId, [...(previousChildrenBySource.get(parentId) || []), previous]);
+          }
+        }
+
+        let imported = 0, reused = 0, modified = 0, added = 0;
         for (const risk of rowsOf(risksResult)) {
           const suggestion = suggestMedicalResponse(risk);
-          await tx.execute(drzSql`INSERT INTO pcmso_risk_monitoring_v2
+          const previous = previousPrimaryByKey.get(riskKey(risk));
+          const unchanged = Boolean(previous) &&
+            canonical(previous.risk_classification) === canonical(risk.risk_classification) &&
+            canonical(previous.technical_detail) === canonical(risk.technical_detail);
+          const changeClassification = previous ? (unchanged ? "unchanged" : "modified") : "new";
+          const primaryInsert: any = await tx.execute(drzSql`INSERT INTO pcmso_risk_monitoring_v2
             (company_id,pcmso_id,pgr_id,pgr_gse_id,pgr_risk_id,master_gse_id,master_gse_code,gse_name,risk_name,
              risk_type,risk_classification,technical_detail,monitoring_kind,possible_aggravations,suggested_monitoring_kind,
-             suggested_monitoring_name,suggested_periodicity,ai_rationale,suggestion_status,ai_generated_at,is_primary)
+             suggested_monitoring_name,suggested_periodicity,ai_rationale,suggestion_status,ai_generated_at,is_primary,
+             exam_id,monitoring_name,periodicity,catalog_periodicity,periodicity_source,applicability,observations,
+             decision_by,decision_at,change_classification,previous_monitoring_id)
             VALUES (${companyId},${newPcmsoId},${Number(source.new_pgr_id)},${risk.gse_id},${risk.risk_id},
              ${risk.master_gse_id || null},${risk.master_gse_code || null},${risk.gse_name},${risk.risk_name},
-             ${risk.risk_type || null},${risk.risk_classification || null},${risk.technical_detail || null},'nao_definido',
-             ${suggestion.possibleAggravations},${suggestion.monitoringKind},${suggestion.monitoringName},
-             ${suggestion.periodicity},${suggestion.rationale},'revisar',NOW(),1)`);
+             ${risk.risk_type || null},${risk.risk_classification || null},${risk.technical_detail || null},${previous?.monitoring_kind || "nao_definido"},
+             ${previous?.possible_aggravations || suggestion.possibleAggravations},${suggestion.monitoringKind},${suggestion.monitoringName},
+             ${suggestion.periodicity},${suggestion.rationale},${previous && unchanged ? previous.suggestion_status || "editada" : "revisar"},NOW(),1,
+             ${previous?.exam_id || null},${previous?.monitoring_name || null},${previous?.periodicity || null},
+             ${previous?.catalog_periodicity || null},${previous?.periodicity_source || null},${previous?.applicability || null},
+             ${previous?.observations || null},${previous?.decision_by || null},${previous?.decision_at || null},
+             ${changeClassification},${previous?.id || null})`);
+          const newPrimaryId = Number((primaryInsert as any)[0]?.insertId || 0);
+          if (previous && newPrimaryId) {
+            for (const child of previousChildrenBySource.get(Number(previous.id)) || []) {
+              await tx.execute(drzSql`INSERT INTO pcmso_risk_monitoring_v2
+                (company_id,pcmso_id,pgr_id,pgr_gse_id,pgr_risk_id,master_gse_id,master_gse_code,gse_name,risk_name,
+                 risk_type,risk_classification,technical_detail,monitoring_kind,exam_id,monitoring_name,periodicity,
+                 catalog_periodicity,periodicity_source,applicability,observations,possible_aggravations,ai_rationale,
+                 suggestion_status,is_primary,source_monitoring_id,decision_by,decision_at,change_classification,previous_monitoring_id)
+                VALUES (${companyId},${newPcmsoId},${Number(source.new_pgr_id)},${risk.gse_id},${risk.risk_id},
+                 ${risk.master_gse_id || null},${risk.master_gse_code || null},${risk.gse_name},${risk.risk_name},
+                 ${risk.risk_type || null},${risk.risk_classification || null},${risk.technical_detail || null},
+                 ${child.monitoring_kind},${child.exam_id || null},${child.monitoring_name || null},${child.periodicity || null},
+                 ${child.catalog_periodicity || null},${child.periodicity_source || null},${child.applicability || null},
+                 ${child.observations || null},${child.possible_aggravations || null},${child.ai_rationale || null},
+                 ${unchanged ? child.suggestion_status || "editada" : "revisar"},NULL,${newPrimaryId},${child.decision_by || null},
+                 ${child.decision_at || null},${changeClassification},${Number(child.id)})`);
+            }
+          }
+          if (!previous) added += 1;
+          else if (unchanged) reused += 1;
+          else modified += 1;
           imported += 1;
         }
         await tx.execute(drzSql`UPDATE pcmso_programs_v2 p
           JOIN pgr_documents g ON g.id=${Number(source.new_pgr_id)}
           SET p.pgr_synced_at=NOW(),p.pgr_source_updated_at=g.updated_at,p.integration_score=${imported ? 100 : 0},
-              p.pending_count=${imported},p.review_required=0
+              p.pending_count=${added + modified},p.review_required=0
           WHERE p.id=${newPcmsoId} AND p.company_id=${companyId}`);
         await tx.execute(drzSql`UPDATE pcmso_pgr_revision_alerts
-          SET status='revisao_criada',notes=${input.reason},analyzed_at=NOW(),analyzed_by=${Number(ctx.user.id)}
+          SET status='em_analise_medica',result_pcmso_id=${newPcmsoId},notes=${input.reason},analyzed_at=NOW(),analyzed_by=${Number(ctx.user.id)}
           WHERE id=${input.id} AND company_id=${companyId}`);
         await audit(
           tx,
@@ -1392,10 +1474,89 @@ export const medicalRouter = router({
             newPgrId: Number(source.new_pgr_id),
             revisionNumber,
             importedRisks: imported,
+            reusedRisks: reused,
+            modifiedRisks: modified,
+            newRisks: added,
           }
         );
-        return { ok: true, id: newPcmsoId, revisionNumber, imported };
+        return { ok: true, id: newPcmsoId, revisionNumber, imported, reused, modified, added };
       });
+    }),
+
+  completePgrRevisionMedicalReview: protectedProcedure
+    .input(z.object({ id: z.number().int().positive(), notes: z.string().trim().max(4000).optional() }))
+    .mutation(async ({ ctx, input }) => {
+      requireDoctor(ctx);
+      await ensureTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const alertResult: any = await db.execute(drzSql`SELECT a.*,p.title pcmso_title
+        FROM pcmso_pgr_revision_alerts a
+        JOIN pcmso_programs_v2 p ON p.id=a.result_pcmso_id AND p.company_id=a.company_id
+        WHERE a.id=${input.id} AND a.company_id=${companyId} AND a.status='em_analise_medica' LIMIT 1`);
+      const alert = rowsOf(alertResult)[0];
+      if (!alert) throw new TRPCError({ code: "NOT_FOUND", message: "Atualização técnica não encontrada ou já concluída." });
+      const pendingResult: any = await db.execute(drzSql`SELECT COUNT(*) pending
+        FROM pcmso_risk_monitoring_v2 source
+        WHERE source.company_id=${companyId} AND source.pcmso_id=${Number(alert.result_pcmso_id)}
+          AND source.is_primary=1 AND source.change_classification IN ('new','modified')
+          AND NOT EXISTS (SELECT 1 FROM pcmso_risk_monitoring_v2 item
+            WHERE item.company_id=source.company_id AND item.pcmso_id=source.pcmso_id
+              AND (item.id=source.id OR item.source_monitoring_id=source.id)
+              AND item.monitoring_kind<>'nao_definido')`);
+      const pending = Number(rowsOf(pendingResult)[0]?.pending || 0);
+      if (pending > 0) throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: `Ainda existem ${pending} risco(s) novo(s) ou alterado(s) sem definição médica.`,
+      });
+
+      const examResult: any = await db.execute(drzSql`SELECT source.master_gse_id,source.master_gse_code,source.gse_name,
+          source.risk_name,source.change_classification,item.exam_id,COALESCE(e.name,item.monitoring_name) exam_name,
+          item.monitoring_kind,item.periodicity,item.catalog_periodicity,item.periodicity_source
+        FROM pcmso_risk_monitoring_v2 source
+        JOIN pcmso_risk_monitoring_v2 item ON item.company_id=source.company_id AND item.pcmso_id=source.pcmso_id
+          AND (item.id=source.id OR item.source_monitoring_id=source.id) AND item.monitoring_kind<>'nao_definido'
+        LEFT JOIN pcmso_exam_catalog_v2 e ON e.id=item.exam_id AND e.company_id=item.company_id
+        WHERE source.company_id=${companyId} AND source.pcmso_id=${Number(alert.result_pcmso_id)}
+          AND source.is_primary=1 AND source.change_classification IN ('new','modified')
+        ORDER BY source.gse_name,source.risk_name,exam_name`);
+      const exams = rowsOf(examResult);
+      const gseIds = [...new Set(exams.map(row => Number(row.master_gse_id || 0)).filter(Boolean))];
+      let workers: any[] = [];
+      if (gseIds.length) {
+        const workerResult: any = await db.execute(drzSql.raw(`SELECT DISTINCT u.id,u.name,u.cpf,u.position,
+            h.gse_id,m.code gse_code,m.name gse_name,b.name branch_name,s.name sector_name
+          FROM occupational_gse_worker_history h
+          JOIN users u ON u.id=h.collaborator_id AND u.company_id=h.company_id
+          LEFT JOIN occupational_gse_master m ON m.id=h.gse_id AND m.company_id=h.company_id
+          LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id
+          WHERE h.company_id=${Number(companyId)} AND h.is_current=1 AND h.gse_id IN (${gseIds.join(",")}) ORDER BY u.name`));
+        workers = rowsOf(workerResult).map(row => ({
+          id: Number(row.id),name: row.name,cpf: row.cpf,position: row.position,gseId: Number(row.gse_id),
+          gseCode: row.gse_code,gseName: row.gse_name,branchName: row.branch_name,sectorName: row.sector_name,
+        }));
+      }
+      const response = {
+        pcmsoId: Number(alert.result_pcmso_id),
+        pcmsoTitle: alert.pcmso_title,
+        completedAt: new Date().toISOString(),
+        completedBy: { id: Number(ctx.user.id), name: ctx.user.name || ctx.user.email },
+        notes: input.notes || null,
+        exams: exams.map(row => ({
+          masterGseId: row.master_gse_id ? Number(row.master_gse_id) : null,masterGseCode: row.master_gse_code,
+          gseName: row.gse_name,riskName: row.risk_name,changeClassification: row.change_classification,
+          examId: row.exam_id ? Number(row.exam_id) : null,examName: row.exam_name,monitoringKind: row.monitoring_kind,
+          periodicity: row.periodicity,catalogPeriodicity: row.catalog_periodicity,periodicitySource: row.periodicity_source,
+        })),
+        workers,
+        summary: { exams: exams.length, workers: workers.length, gses: gseIds.length },
+      };
+      await db.execute(drzSql`UPDATE pcmso_pgr_revision_alerts SET status='aguardando_sesmt',
+        medical_response_json=${JSON.stringify(response)},medical_completed_at=NOW(),medical_completed_by=${Number(ctx.user.id)},
+        notes=COALESCE(${input.notes || null},notes) WHERE id=${input.id} AND company_id=${companyId}`);
+      await audit(db,ctx,"pgr_revision_medical_review_completed","pcmso_pgr_revision_alert",input.id,null,response.summary);
+      return { ok: true, ...response.summary };
     }),
 
   getProgram: protectedProcedure
@@ -1517,16 +1678,10 @@ export const medicalRouter = router({
       await ensurePgrVersioningTables(db);
       if (input.pgrId) {
         const pgrResult: any = await db.execute(
-          drzSql`SELECT id,is_current_version FROM pgr_documents WHERE id=${input.pgrId} AND company_id=${companyId} LIMIT 1`
+          drzSql`SELECT id,is_current_version,revision_number,revision_root_id FROM pgr_documents WHERE id=${input.pgrId} AND company_id=${companyId} LIMIT 1`
         );
         const selectedPgr = rowsOf(pgrResult)[0];
         if (!selectedPgr) throw new TRPCError({ code: "NOT_FOUND" });
-        if (Number(selectedPgr.is_current_version) !== 1)
-          throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message:
-              "Selecione o PGR vigente. Versões anteriores permanecem apenas para consulta histórica.",
-          });
       }
       const profile: any = await db.execute(
         drzSql`SELECT u.name,p.crm,p.crm_state,p.signature_private_path,p.stamp_private_path,p.authorize_signature_use,p.authorize_pcmso_signature,p.authorize_exam_request_signature FROM users u LEFT JOIN medical_professional_profiles p ON p.user_id=u.id WHERE u.id=${Number(ctx.user.id)} LIMIT 1`
@@ -1654,16 +1809,10 @@ export const medicalRouter = router({
         drzSql`SELECT id FROM pcmso_programs_v2 WHERE id=${input.pcmsoId} AND company_id=${companyId} LIMIT 1`
       );
       const pgr: any = await db.execute(
-        drzSql`SELECT id,title,inventario,is_current_version FROM pgr_documents WHERE id=${input.pgrId} AND company_id=${companyId} LIMIT 1`
+        drzSql`SELECT id,title,inventario,is_current_version,revision_number,revision_root_id FROM pgr_documents WHERE id=${input.pgrId} AND company_id=${companyId} LIMIT 1`
       );
       if (!rowsOf(pcmso).length || !rowsOf(pgr).length)
         throw new TRPCError({ code: "NOT_FOUND" });
-      if (Number(rowsOf(pgr)[0]?.is_current_version) !== 1)
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message:
-            "Somente o PGR vigente pode ser importado. A versão vinculada a um PCMSO já emitido permanece preservada.",
-        });
 
       const sourceRows: any[] = [];
       const normalized: any =
@@ -1866,6 +2015,8 @@ export const medicalRouter = router({
       let examId = input.examId || null;
       let monitoringName = input.monitoringName || null;
       let periodicity = input.periodicity || null;
+      let catalogPeriodicity: string | null = null;
+      let periodicitySource: "catalog" | "medical_override" | null = null;
       if (input.monitoringKind === "avaliacao_clinica") {
         examId =
           examId ||
@@ -1896,7 +2047,11 @@ export const medicalRouter = router({
               "O exame selecionado não pertence ao Catálogo Mestre ativo desta empresa.",
           });
         monitoringName = exam.name;
-        periodicity = periodicity || exam.default_periodicity || null;
+        catalogPeriodicity = exam.default_periodicity || null;
+        periodicity = periodicity || catalogPeriodicity;
+        periodicitySource = periodicity && catalogPeriodicity && periodicity !== catalogPeriodicity
+          ? "medical_override"
+          : "catalog";
       }
       if (["nao_definido", "nao_aplicavel"].includes(input.monitoringKind)) {
         examId = null;
@@ -1931,11 +2086,11 @@ export const medicalRouter = router({
       let savedId = Number(input.id || 0);
       if (input.id) {
         await db.execute(
-          drzSql`UPDATE pcmso_risk_monitoring_v2 SET monitoring_kind=${input.monitoringKind},exam_id=${examId},monitoring_name=${monitoringName},periodicity=${periodicity},applicability=${input.applicability || null},observations=${input.observations || null},possible_aggravations=COALESCE(${input.possibleAggravations || null},possible_aggravations),ai_rationale=COALESCE(${input.aiRationale || null},ai_rationale),suggestion_status=${input.suggestionStatus},decision_by=${Number(ctx.user.id)},decision_at=NOW() WHERE id=${Number(input.id)} AND company_id=${companyId}`
+          drzSql`UPDATE pcmso_risk_monitoring_v2 SET monitoring_kind=${input.monitoringKind},exam_id=${examId},monitoring_name=${monitoringName},periodicity=${periodicity},catalog_periodicity=${catalogPeriodicity},periodicity_source=${periodicitySource},applicability=${input.applicability || null},observations=${input.observations || null},possible_aggravations=COALESCE(${input.possibleAggravations || null},possible_aggravations),ai_rationale=COALESCE(${input.aiRationale || null},ai_rationale),suggestion_status=${input.suggestionStatus},decision_by=${Number(ctx.user.id)},decision_at=NOW() WHERE id=${Number(input.id)} AND company_id=${companyId}`
         );
       } else {
         const insertResult: any = await db.execute(
-          drzSql`INSERT INTO pcmso_risk_monitoring_v2 (company_id,pcmso_id,pgr_id,pgr_gse_id,pgr_risk_id,master_gse_id,master_gse_code,branch_name,sector_name,gse_name,risk_name,risk_type,risk_classification,technical_detail,monitoring_kind,exam_id,monitoring_name,periodicity,applicability,observations,possible_aggravations,ai_rationale,suggestion_status,is_primary,source_monitoring_id,decision_by,decision_at) VALUES (${companyId},${Number(source.pcmso_id)},${source.pgr_id || null},${source.pgr_gse_id || null},${source.pgr_risk_id || null},${source.master_gse_id || null},${source.master_gse_code || null},${source.branch_name || null},${source.sector_name || null},${source.gse_name || null},${source.risk_name},${source.risk_type || null},${source.risk_classification || null},${source.technical_detail || null},${input.monitoringKind},${examId},${monitoringName},${periodicity},${input.applicability || null},${input.observations || null},${input.possibleAggravations || source.possible_aggravations || null},${input.aiRationale || null},${input.suggestionStatus},NULL,${Number(source.id)},${Number(ctx.user.id)},NOW())`
+          drzSql`INSERT INTO pcmso_risk_monitoring_v2 (company_id,pcmso_id,pgr_id,pgr_gse_id,pgr_risk_id,master_gse_id,master_gse_code,branch_name,sector_name,gse_name,risk_name,risk_type,risk_classification,technical_detail,monitoring_kind,exam_id,monitoring_name,periodicity,catalog_periodicity,periodicity_source,applicability,observations,possible_aggravations,ai_rationale,suggestion_status,is_primary,source_monitoring_id,decision_by,decision_at) VALUES (${companyId},${Number(source.pcmso_id)},${source.pgr_id || null},${source.pgr_gse_id || null},${source.pgr_risk_id || null},${source.master_gse_id || null},${source.master_gse_code || null},${source.branch_name || null},${source.sector_name || null},${source.gse_name || null},${source.risk_name},${source.risk_type || null},${source.risk_classification || null},${source.technical_detail || null},${input.monitoringKind},${examId},${monitoringName},${periodicity},${catalogPeriodicity},${periodicitySource},${input.applicability || null},${input.observations || null},${input.possibleAggravations || source.possible_aggravations || null},${input.aiRationale || null},${input.suggestionStatus},NULL,${Number(source.id)},${Number(ctx.user.id)},NOW())`
         );
         savedId = Number((insertResult as any)[0]?.insertId || 0);
       }
@@ -1955,6 +2110,9 @@ export const medicalRouter = router({
           sourceMonitoringId: Number(source.id),
           monitoringKind: input.monitoringKind,
           examId,
+          catalogPeriodicity,
+          periodicity,
+          periodicitySource,
         }
       );
       return { ok: true, id: savedId, examId, monitoringName, periodicity };
@@ -3268,6 +3426,17 @@ export const medicalRouter = router({
           drzSql`SELECT c.id,m.title,c.certificateCode reference,c.issuedAt created_at FROM certificates c LEFT JOIN modules m ON m.id=c.moduleId WHERE c.userId=${input.collaboratorId} ORDER BY c.issuedAt DESC LIMIT 500`
         )
         .catch(() => [[]]);
+      const mandatoryTrainings: any = await db
+        .execute(
+          drzSql`SELECT a.id,p.name title,a.created_at,a.status,
+            CONCAT('Prazo: ',DATE_FORMAT(a.due_date,'%d/%m/%Y'),
+              CASE WHEN a.valid_until IS NOT NULL THEN CONCAT(' · Validade: ',DATE_FORMAT(a.valid_until,'%d/%m/%Y')) ELSE '' END) reference
+            FROM mandatory_training_assignments a
+            JOIN mandatory_training_programs p ON p.id=a.program_id AND p.company_id=a.company_id
+            WHERE a.company_id=${companyId} AND a.user_id=${input.collaboratorId} AND a.status<>'desativado'
+            ORDER BY FIELD(a.status,'vencido','pendente','em_andamento','concluido'),a.due_date`
+        )
+        .catch(() => [[]]);
       const epi: any = await db
         .execute(
           drzSql`SELECT d.id,a.description title,d.delivery_date created_at,d.signature_status status FROM epi_epc_deliveries d JOIN epi_epc_assets a ON a.id=d.asset_id WHERE d.company_id=${companyId} AND d.collaborator_id=${input.collaboratorId} ORDER BY d.delivery_date DESC LIMIT 500`
@@ -3369,6 +3538,10 @@ export const medicalRouter = router({
       const technicalCount = Number(rowsOf(relatedTechnical)[0]?.total || 0);
       const documentCount = rowsOf(docs).length;
       const certificateCount = rowsOf(certificates).length;
+      const mandatoryTrainingRows = rowsOf(mandatoryTrainings);
+      const pendingMandatoryTrainings = mandatoryTrainingRows.filter((row: any) =>
+        ["pendente", "em_andamento", "vencido"].includes(String(row.status || ""))
+      ).length;
       const epiCount = rowsOf(epi).length;
       const leaveRows = rowsOf(leaves);
       const vaccinationRows = rowsOf(vaccinations);
@@ -3454,12 +3627,12 @@ export const medicalRouter = router({
         },
         {
           key: "courses",
-          label: "Cursos e certificados",
-          description: "Progresso, conclusões e evidências",
-          href: `/admin/usuarios/${input.collaboratorId}/historico`,
-          count: Number(progressRow.pending || 0),
-          priority: Number(progressRow.pending || 0) ? 4 : 9,
-          status: Number(progressRow.pending || 0) ? "attention" : "normal",
+          label: "Treinamentos obrigatórios",
+          description: "Prazos, conclusões, reciclagens e certificados",
+          href: `/admin/treinamentos-obrigatorios?collaboratorId=${input.collaboratorId}`,
+          count: pendingMandatoryTrainings,
+          priority: pendingMandatoryTrainings ? 4 : 9,
+          status: pendingMandatoryTrainings ? "attention" : "normal",
         },
         {
           key: "vaccination",
@@ -3516,6 +3689,8 @@ export const medicalRouter = router({
           upcomingVaccines,
           courses: Number(progressRow.total || 0),
           completedCourses: Number(progressRow.completed || 0),
+          mandatoryTrainings: mandatoryTrainingRows.length,
+          pendingMandatoryTrainings,
           technicalDocuments: technicalCount,
           gseHistory: gseRows.length,
           examOrders: orderRows.length,
@@ -3527,6 +3702,7 @@ export const medicalRouter = router({
         shortcuts,
         integrations: {
           certificates: rowsOf(certificates),
+          mandatoryTrainings: mandatoryTrainingRows,
           epiEpc: rowsOf(epi),
           leaves: rowsOf(leaves),
           vaccinations: rowsOf(vaccinations),

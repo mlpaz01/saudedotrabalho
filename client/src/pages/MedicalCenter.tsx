@@ -429,8 +429,16 @@ export default function MedicalCenter() {
         setSelectedProgramId(Number(result.id));
         setTab("pcmso");
         toast.success(
-          `Revisão ${String(result.revisionNumber).padStart(2, "0")} do PCMSO criada com ${result.imported} risco(s) do PGR vigente.`
+          `Revisão ${String(result.revisionNumber).padStart(2, "0")} criada: ${result.reused || 0} risco(s) já definido(s), ${result.modified || 0} alterado(s) e ${result.added || 0} novo(s).`
         );
+      },
+      onError: error => toast.error(error.message),
+    });
+  const completePgrRevisionMedicalReview =
+    trpc.medical.completePgrRevisionMedicalReview.useMutation({
+      onSuccess: result => {
+        pgrRevisionAlertsQ.refetch();
+        toast.success(`Análise enviada ao SESMT: ${result.exams} exame(s) para ${result.workers} trabalhador(es) impactado(s).`);
       },
       onError: error => toast.error(error.message),
     });
@@ -538,8 +546,29 @@ export default function MedicalCenter() {
                         Alterações informadas: {alert.changes.notes}
                       </p>
                     ) : null}
+                    {alert.changes?.summary ? (
+                      <p className="mt-2 text-xs font-semibold">
+                        {alert.changes.summary.added || 0} novo(s) · {alert.changes.summary.modified || 0} alterado(s) · {alert.changes.summary.removed || 0} excluído(s) · {alert.changes.summary.affectedWorkers || 0} trabalhador(es) afetado(s)
+                      </p>
+                    ) : null}
+                    {alert.status === "aguardando_sesmt" ? (
+                      <p className="mt-2 text-xs font-semibold text-emerald-800">Análise médica concluída e enviada ao SESMT.</p>
+                    ) : null}
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
+                    {alert.status === "em_analise_medica" ? (
+                      <Button
+                        size="sm"
+                        disabled={completePgrRevisionMedicalReview.isPending}
+                        onClick={() => {
+                          const notes = window.prompt("Observação final para o SESMT (opcional).") || "";
+                          completePgrRevisionMedicalReview.mutate({ id: Number(alert.id), notes: notes.trim() || undefined });
+                        }}
+                      >
+                        <Send size={14} className="mr-1" /> Concluir análise e enviar ao SESMT
+                      </Button>
+                    ) : alert.status === "aguardando_sesmt" ? null : (
+                      <>
                     <Button
                       size="sm"
                       variant="outline"
@@ -579,6 +608,8 @@ export default function MedicalCenter() {
                     >
                       Criar revisão do PCMSO
                     </Button>
+                      </>
+                    )}
                   </div>
                 </div>
               ))}
@@ -2298,7 +2329,10 @@ function ProgramDialog({
                 <option value={0}>Definir depois</option>
                 {pgrs.map(row => (
                   <option key={row.id} value={row.id}>
-                    {row.title}
+                    {Number(row.is_current_version) === 1 ? "Vigente" : "Histórico"} · {row.title}
+                    {Number(row.revision_number || 0)
+                      ? ` · revisão ${String(row.revision_number).padStart(2, "0")}`
+                      : " · emissão original"}
                   </option>
                 ))}
               </select>

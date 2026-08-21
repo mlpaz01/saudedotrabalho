@@ -390,11 +390,11 @@ export default function PcmsoWorkspace({
                   <option value={0}>Selecione o PGR de referência</option>
                   {pgrs.map(row => (
                     <option value={row.id} key={row.id}>
-                      PGR vigente · {row.title}
+                      {Number(row.is_current_version) === 1 ? "PGR vigente" : "Histórico"} · {row.title}
                       {row.exercise_year ? ` · ${row.exercise_year}` : ""}
                       {Number(row.revision_number || 0)
                         ? ` · revisão ${String(row.revision_number).padStart(2, "0")}`
-                        : ""}
+                        : " · emissão original"}
                     </option>
                   ))}
                 </select>
@@ -907,6 +907,15 @@ function RiskMonitoringRow({
           <Badge variant="outline" className="rounded-sm">
             {source.risk_classification || "Sem classificação"}
           </Badge>
+          {source.change_classification === "unchanged" ? (
+            <Badge className="rounded-sm border-emerald-200 bg-emerald-100 text-emerald-800">Risco já definido</Badge>
+          ) : source.change_classification === "modified" ? (
+            <Badge className="rounded-sm border-amber-200 bg-amber-100 text-amber-800">Risco alterado · revisar</Badge>
+          ) : (
+            <Badge className="rounded-sm border-rose-200 bg-rose-100 text-rose-800">
+              {items.length ? "Novo risco analisado" : "Novo risco · definição médica pendente"}
+            </Badge>
+          )}
         </div>
         <p className="mt-1 text-xs text-slate-500">
           {source.risk_type || "Tipo não informado"}
@@ -1003,6 +1012,13 @@ function RiskMonitoringRow({
                   {item.periodicity || "Periodicidade definida pelo médico"}
                   {item.observations ? ` · ${item.observations}` : ""}
                 </p>
+                {item.periodicity_source === "medical_override" ? (
+                  <p className="mt-1 text-[11px] font-medium text-amber-700">
+                    Ajustada pelo médico. Catálogo: {item.catalog_periodicity || "não informado"}.
+                  </p>
+                ) : item.catalog_periodicity ? (
+                  <p className="mt-1 text-[11px] text-emerald-700">Periodicidade reutilizada do Catálogo Mestre.</p>
+                ) : null}
               </div>
               <div className="flex gap-1">
                 <Button

@@ -33,6 +33,8 @@ import { occupationalProgramsRouter } from "./_core/occupationalProgramsRouter";
 
 import { medicalRouter } from "./_core/medicalRouter";
 import { technicalDocumentsRouter } from "./_core/technicalDocumentsRouter";
+import { technicalCommunicationRouter } from "./_core/technicalCommunicationRouter";
+import { mandatoryTrainingRouter } from "./_core/mandatoryTrainingRouter";
 import { resolveImportedRoles } from "./_core/importRoles";
 import {
   MAX_DOCUMENT_RICH_TEXT_BYTES,
@@ -4607,6 +4609,8 @@ export const appRouter = router({
   occupationalPrograms: occupationalProgramsRouter,
   medical: medicalRouter,
   technicalDocuments: technicalDocumentsRouter,
+  technicalCommunication: technicalCommunicationRouter,
+  mandatoryTraining: mandatoryTrainingRouter,
   ehs: ehsRouter,
   denuncia: denunciaRouter,
 
@@ -5486,6 +5490,35 @@ export const appRouter = router({
             dedup: `meus_cursos_andamento:${ncursos}`,
           });
 
+        // Alertas internos automaticos em 30, 15, 7 e 1 dia, alem do vencimento.
+        // E-mail e WhatsApp permanecem sujeitos ao disparo confirmado pelo gestor.
+        const mt: any = await db
+          .execute(drzSql`
+            SELECT a.id,a.status,a.due_date,p.name
+            FROM mandatory_training_assignments a
+            JOIN mandatory_training_programs p ON p.id=a.program_id AND p.company_id=a.company_id
+            JOIN mandatory_training_settings s ON s.company_id=a.company_id AND s.is_enabled=1
+            WHERE a.company_id=${cid} AND a.user_id=${uid}
+              AND a.status IN ('pendente','em_andamento','vencido')
+              AND p.status='ativo'
+              AND a.due_date<=DATE_ADD(CURDATE(),INTERVAL 30 DAY)
+            ORDER BY a.due_date,a.id`)
+          .catch(() => [[]]);
+        for (const item of ((mt as any)[0] ?? [])) {
+          const dueAt = new Date(`${String(item.due_date).slice(0, 10)}T12:00:00`);
+          const days = Math.ceil((dueAt.getTime() - Date.now()) / 86400000);
+          const stage = days < 0 ? "vencido" : days <= 1 ? "1_dia" : days <= 7 ? "7_dias" : days <= 15 ? "15_dias" : "30_dias";
+          await upsertNotif({
+            type: "treinamento_obrigatorio",
+            priority: days < 0 || days <= 7 ? "alta" : "media",
+            title: days < 0 ? "Treinamento obrigatorio vencido" : `Treinamento obrigatorio vence em ${Math.max(0, days)} dia(s)`,
+            body: `${item.name} ${days < 0 ? "nao foi concluido dentro do prazo." : "precisa ser concluido dentro do prazo definido."}`,
+            link: "/treinamentos-obrigatorios",
+            icon: "graduation-cap",
+            dedup: `mandatory_training:${Number(item.id)}:${stage}`,
+          });
+        }
+
         // ── Colaborador: pesquisas disponíveis (campanhas ativas, não respondidas)
         const ps: any = await db
           .execute(
@@ -5656,11 +5689,24 @@ export const appRouter = router({
       .input(z.object({ moduleId: z.number() }))
 
       .mutation(async ({ ctx, input }) => {
-        // Check if already exists
-
+        const db = await getDb();
+        const companyId = Number((ctx.user as any).companyId || 0);
+        const mandatoryResult: any = db && companyId
+          ? await db.execute(drzSql`SELECT a.id,a.cycle_number,a.created_at,p.validity_months
+              FROM mandatory_training_assignments a
+              JOIN mandatory_training_programs p ON p.id=a.program_id AND p.company_id=a.company_id
+              WHERE a.company_id=${companyId} AND a.user_id=${Number(ctx.user.id)} AND p.module_id=${input.moduleId}
+                AND a.status<>'desativado' AND p.status='ativo'
+              ORDER BY a.cycle_number DESC,a.id DESC LIMIT 1`).catch(() => [[]])
+          : [[]];
+        const mandatoryAssignment = (mandatoryResult as any)[0]?.[0];
         const existing = await getCertificate(ctx.user.id, input.moduleId);
-
-        if (existing) return existing;
+        const existingIssuedAt = existing?.issuedAt ? new Date(existing.issuedAt).getTime() : 0;
+        const assignmentCreatedAt = mandatoryAssignment?.created_at ? new Date(mandatoryAssignment.created_at).getTime() : 0;
+        const existingBelongsToCycle = !mandatoryAssignment || Number(mandatoryAssignment.cycle_number || 1) === 1 ||
+          Boolean(existingIssuedAt && assignmentCreatedAt && existingIssuedAt >= assignmentCreatedAt);
+        const existingStillValid = !mandatoryAssignment || !existing?.expiresAt || new Date(existing.expiresAt).getTime() >= Date.now();
+        if (existing && existingBelongsToCycle && existingStillValid) return existing;
 
         // Check 100% completion
 
@@ -5733,6 +5779,20 @@ export const appRouter = router({
           url
         );
 
+        if (db && mandatoryAssignment && cert?.id) {
+          const validityMonths = Number(mandatoryAssignment.validity_months || 0);
+          const completedAt = progress.completedAt ?? new Date();
+          const validUntil = validityMonths > 0
+            ? (() => { const date = new Date(completedAt); date.setMonth(date.getMonth() + validityMonths); return date; })()
+            : null;
+          if (validUntil) {
+            await db.execute(drzSql`UPDATE certificates SET expires_at=${validUntil} WHERE id=${Number(cert.id)}`).catch(() => null);
+          }
+          await db.execute(drzSql`UPDATE mandatory_training_assignments SET status='concluido',completed_at=${completedAt},
+            certificate_id=${Number(cert.id)},valid_until=${validUntil ? validUntil.toISOString().slice(0, 10) : null}
+            WHERE id=${Number(mandatoryAssignment.id)} AND company_id=${companyId}`);
+        }
+
         const meta = getReqMeta(ctx);
 
         await logAudit({
@@ -5743,7 +5803,7 @@ export const appRouter = router({
           entityType: "certificate",
           entityId: cert?.id,
 
-          detailsJson: { moduleId: input.moduleId, code },
+          detailsJson: { moduleId: input.moduleId, code, mandatoryTrainingCycle: mandatoryAssignment?.cycle_number || null },
 
           ipAddress: meta.ip,
           userAgent: meta.ua,
@@ -6136,6 +6196,7 @@ export const appRouter = router({
           sesmt: "SESMT",
           medico: "Médico do Trabalho",
           clinica: "Clínica Credenciada",
+          treinamento: "Responsável por Treinamentos",
           cipa: "CIPA",
           admin: "Administrador",
           company_admin: "Admin Empresa",
@@ -6147,6 +6208,8 @@ export const appRouter = router({
           if (!v) return "user";
           if (v.includes("cipa") || v.includes("cipeiro")) return "cipa";
           if (v.includes("sesmt")) return "sesmt";
+          if (v.includes("treinamento") || v.includes("capacitacao") || v.includes("capacitação"))
+            return "treinamento";
           if (
             [
               "chefia",
@@ -6597,7 +6660,7 @@ export const appRouter = router({
           name: z.string().optional(),
           email: z.string().email().optional(),
           role: z
-            .enum(["user", "chefia", "rh", "sesmt", "medico", "cipa", "admin"])
+            .enum(["user", "chefia", "rh", "sesmt", "medico", "treinamento", "cipa", "admin"])
             .optional(),
           cpf: z.string().nullable().optional(),
           employeeRegistration: z.string().max(120).nullable().optional(),
@@ -18461,6 +18524,60 @@ Return only the JSON content object (no wrapper). Format per type:
         return { ok: true, id: newId };
       }),
 
+    renameDocument: adminOrRhProcedure
+      .input(
+        z.object({
+          id: z.number().int().positive(),
+          title: z.string().trim().min(5).max(255),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const role = String((ctx.user as any).role || "");
+        const isGlobal = role === "admin_global" || role === "super_admin";
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensurePgrVersioningTables(db);
+        const result: any = await db.execute(drzSql`SELECT id,company_id,title,
+          COALESCE(revision_root_id,id) revision_root_id,revision_number
+          FROM pgr_documents WHERE id=${input.id} LIMIT 1`);
+        const document = (result as any)[0]?.[0];
+        if (!document) throw new TRPCError({ code: "NOT_FOUND", message: "PGR não encontrado." });
+        if (!isGlobal && Number(document.company_id) !== Number((ctx.user as any).companyId))
+          throw new TRPCError({ code: "FORBIDDEN" });
+        const previousTitle = String(document.title || "");
+        const nextTitle = input.title.trim();
+        if (previousTitle === nextTitle) return { ok: true, id: input.id, unchanged: true };
+
+        await db.transaction(async (tx: any) => {
+          await tx.execute(drzSql`UPDATE pgr_documents SET title=${nextTitle},updated_at=NOW() WHERE id=${input.id}`);
+          await tx.execute(drzSql`INSERT INTO pgr_version_events
+            (company_id,revision_root_id,pgr_id,source_pgr_id,revision_number,event_type,reason,changes_json,performed_by)
+            VALUES (${Number(document.company_id)},${Number(document.revision_root_id)},${input.id},NULL,
+              ${Number(document.revision_number || 0)},'document_title_changed','Nome do PGR alterado',
+              ${JSON.stringify({ previousTitle, nextTitle })},${Number((ctx.user as any).id)})`);
+        });
+        await logAudit({
+          userId: Number((ctx.user as any).id),
+          userEmail: (ctx.user as any).email || null,
+          action: "pgr_title_changed",
+          entityType: "pgr_document",
+          entityId: input.id,
+          detailsJson: {
+            revisionRootId: Number(document.revision_root_id),
+            revisionNumber: Number(document.revision_number || 0),
+            previousTitle,
+            nextTitle,
+          },
+        });
+        return {
+          ok: true,
+          id: input.id,
+          revisionRootId: Number(document.revision_root_id),
+          revisionNumber: Number(document.revision_number || 0),
+          title: nextTitle,
+        };
+      }),
+
     upsert: adminOrRhProcedure
       .input(
         z.object({
@@ -20103,7 +20220,7 @@ Return only the JSON content object (no wrapper). Format per type:
         if (input.fileBase64) {
           const fs = await import("fs/promises");
           const path = await import("path");
-          const outDir = "/var/www/saudedotrabalho/uploads/pgr_attachments";
+          const outDir = path.join(getUploadRoot(), "pgr_attachments");
           await fs.mkdir(outDir, { recursive: true });
           const m = input.fileBase64.match(/^data:([^;]+);base64,(.*)$/);
           const mime = m ? m[1] : mimeType || "application/octet-stream";
@@ -20171,7 +20288,7 @@ Return only the JSON content object (no wrapper). Format per type:
 
         const fs = await import("fs/promises");
         const path = await import("path");
-        const outDir = "/var/www/saudedotrabalho/uploads/pgr_attachments";
+        const outDir = path.join(getUploadRoot(), "pgr_attachments");
         await fs.mkdir(outDir, { recursive: true });
         const outPath = path.join(
           outDir,
@@ -20193,7 +20310,11 @@ Return only the JSON content object (no wrapper). Format per type:
                 data.items,
                 data.sectorGroups
               );
-              await fs.copyFile(`/var/www/saudedotrabalho${srcUrl}`, outPath);
+              const sourcePath = path.join(
+                getUploadRoot(),
+                srcUrl.replace(/^\/api\/uploads\/?/, "").replace(/^\/uploads\/?/, "")
+              );
+              await fs.copyFile(sourcePath, outPath);
             } else {
               const { generateRiskLaudoPDF } = await import("./_core/risk_pdf");
               const data = await loadAssessmentForPDF(db, cycleId, cid);
@@ -20203,7 +20324,11 @@ Return only the JSON content object (no wrapper). Format per type:
                 data.actions,
                 data.sectorGroups
               );
-              await fs.copyFile(`/var/www/saudedotrabalho${srcUrl}`, outPath);
+              const sourcePath = path.join(
+                getUploadRoot(),
+                srcUrl.replace(/^\/api\/uploads\/?/, "").replace(/^\/uploads\/?/, "")
+              );
+              await fs.copyFile(sourcePath, outPath);
             }
             const url = `/uploads/pgr_attachments/oficial_pgr${att.pgr_id}_att${att.id}.pdf`;
             const stat = await fs.stat(outPath);
@@ -20764,9 +20889,38 @@ Return only the JSON content object (no wrapper). Format per type:
           `[pgr.generatePDF] pgr=${input.id} cid=${pgrCompanyId} textos do Padrão: source=${bestSource} intro=${textoIntroAtual.length}c concl=${textoConclAtual.length}c`
         );
 
+        const revisionRootId = Number(row.revision_root_id || row.id);
+        const familyResult: any = await db.execute(drzSql`SELECT p.id,p.title,p.revision_number,
+          p.revision_reason,p.version_created_at,p.created_at,p.vigencia_inicio,u.name responsible_name
+          FROM pgr_documents p
+          LEFT JOIN users u ON u.id=p.created_by_user_id
+          WHERE p.company_id=${Number(row.company_id)} AND COALESCE(p.revision_root_id,p.id)=${revisionRootId}
+          ORDER BY p.revision_number ASC,p.id ASC`);
+        const versionFamily: any[] = (familyResult as any)[0] ?? [];
+        const rootVersion = versionFamily.find(item => Number(item.revision_number || 0) === 0) || versionFamily[0];
+        const revisionHistory = versionFamily.map(item => {
+          const revisionNumber = Number(item.revision_number || 0);
+          return {
+            revisao: String(revisionNumber).padStart(2, "0"),
+            motivo: revisionNumber === 0
+              ? `Emissão inicial do PGR nº ${revisionRootId}`
+              : `Revisão ${String(revisionNumber).padStart(2, "0")} do PGR nº ${revisionRootId}${item.revision_reason ? ` — ${String(item.revision_reason)}` : ""}`,
+            data: item.version_created_at || item.created_at || item.vigencia_inicio || null,
+            responsavel: item.responsible_name || null,
+          };
+        });
+
         const { generatePGRPDF } = await import("./_core/pgr_pdf");
         const url = await generatePGRPDF({
           id: row.id,
+          documentNumber: revisionRootId,
+          revisionRootId,
+          revisionParentId: row.revision_parent_id ? Number(row.revision_parent_id) : null,
+          revisionNumber: Number(row.revision_number || 0),
+          revisionReason: row.revision_reason || null,
+          rootIssuedAt: rootVersion?.version_created_at || rootVersion?.created_at || rootVersion?.vigencia_inicio || null,
+          parentTitle: null,
+          revisionResponsible: versionFamily.find(item => Number(item.id) === Number(row.id))?.responsible_name || null,
           title: row.title,
           razaoSocial: row.razao_social,
           nomeFantasia: row.nome_fantasia,
@@ -20810,7 +20964,7 @@ Return only the JSON content object (no wrapper). Format per type:
             ? new Date(row.approved_at).toISOString()
             : null,
           gheFuncoes: parseJson(row.ghe_funcoes),
-          revisoes: parseJson(row.revisoes),
+          revisoes: revisionHistory,
           inventario: parseJson(row.inventario),
           gseGrupos: parseJson(row.gse_grupos),
           epcItens: parseJson(row.epc_itens),
@@ -20830,19 +20984,24 @@ Return only the JSON content object (no wrapper). Format per type:
         });
 
         // Sprint 1.7-B item 2 — Concatena anexos do PGR (pdf-lib) no final
-        let attachmentInfo: { appended: number; skipped: number } = {
+        let attachmentInfo: { appended: number; skipped: number; pagesAppended: number; errors: string[] } = {
           appended: 0,
           skipped: 0,
+          pagesAppended: 0,
+          errors: [],
         };
         try {
           const attRows: any = await db.execute(drzSql`
             SELECT titulo, tipo, file_url, mime_type
             FROM pgr_attachments
             WHERE pgr_id=${row.id} AND company_id=${row.company_id}
-              AND file_url IS NOT NULL AND file_url <> ''
             ORDER BY tipo ASC, created_at ASC`);
           const attList: any[] = (attRows as any)[0] ?? [];
           if (attList.length > 0) {
+            const missing = attList.filter(item => !String(item.file_url || "").trim());
+            if (missing.length > 0) {
+              throw new Error(`Existem ${missing.length} anexo(s) sem arquivo: ${missing.map(item => item.titulo || item.tipo).join(", ")}`);
+            }
             const { appendPdfAttachments } = await import("./_core/pgr_pdf");
             const pathmod = await import("path");
             const diskPath = pathmod.join(
@@ -20857,14 +21016,16 @@ Return only the JSON content object (no wrapper). Format per type:
                 tipo: r.tipo ? String(r.tipo) : undefined,
                 fileUrl: r.file_url ? String(r.file_url) : null,
                 mimeType: r.mime_type ? String(r.mime_type) : null,
-              }))
+              })),
+              { strict: true }
             );
           }
         } catch (err: any) {
-          console.warn(
-            "[pgr.generatePDF] anexos falharam:",
-            err?.message ?? err
-          );
+          console.error("[pgr.generatePDF] anexos falharam:", err?.message ?? err);
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `O PGR foi preparado, mas os anexos não puderam ser incorporados integralmente. ${err?.message || "Revise os arquivos e tente novamente."}`,
+          });
         }
 
         await db.execute(
@@ -22472,10 +22633,10 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
           const db = await getDb();
           if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
           const rR: any = await db.execute(drzSql`
-            SELECT r.id, r.tipo, r.agente, r.fonte_geradora, r.possivel_dano, r.tipo_exposicao,
-                   r.severidade, r.probabilidade, r.risco_final,
-                   g.nome AS gse_nome, g.num_trabalhadores,
-                   p.company_id, p.razao_social, p.atividade_principal
+            SELECT r.id, r.gse_id, r.tipo, r.agente, r.fonte_geradora, r.possivel_dano, r.tipo_exposicao,
+                   r.severidade, r.probabilidade, r.risco_final, r.notes,
+                   g.nome AS gse_nome, g.descricao AS gse_descricao, g.num_trabalhadores, g.master_gse_id,
+                   p.id AS pgr_id,p.company_id, p.razao_social, p.atividade_principal,p.objeto_contrato,p.obra
             FROM pgr_gse_riscos r JOIN pgr_gse g ON g.id=r.gse_id JOIN pgr_documents p ON p.id=g.pgr_id
             WHERE r.id=${input.riscoId} LIMIT 1`);
           const r = (rR as any)[0]?.[0];
@@ -22483,17 +22644,37 @@ Proponha o pacote técnico completo (riscos, EPC, EPI, ações 5W2H, treinamento
           if (Number(r.company_id) !== Number(cid))
             throw new TRPCError({ code: "FORBIDDEN" });
 
-          const cR: any = await db.execute(drzSql`
-            SELECT cargo FROM pgr_gse_cargos WHERE gse_id=(SELECT gse_id FROM pgr_gse_riscos WHERE id=${input.riscoId})`);
-          const cargos = ((cR as any)[0] ?? [])
+          const [cR, sR, epcR, epiR, actionR, trainingR]: any[] = await Promise.all([
+            db.execute(drzSql`SELECT cargo FROM pgr_gse_cargos WHERE gse_id=${Number(r.gse_id)} ORDER BY cargo`),
+            db.execute(drzSql`SELECT s.name,b.name branch_name FROM pgr_gse_setores ps LEFT JOIN sectors s ON s.id=ps.sector_id LEFT JOIN branches b ON b.id=s.branch_id WHERE ps.gse_id=${Number(r.gse_id)} ORDER BY b.name,s.name`),
+            db.execute(drzSql`SELECT descricao,aplicacao FROM pgr_gse_epc WHERE gse_id=${Number(r.gse_id)} ORDER BY id`),
+            db.execute(drzSql`SELECT descricao,ca,aplicacao FROM pgr_gse_epi WHERE gse_id=${Number(r.gse_id)} ORDER BY id`),
+            db.execute(drzSql`SELECT what,why,how,priority,status FROM pgr_gse_acoes WHERE gse_id=${Number(r.gse_id)} ORDER BY id`),
+            db.execute(drzSql`SELECT nr_code,nome,carga_horaria FROM pgr_gse_treinamentos WHERE gse_id=${Number(r.gse_id)} ORDER BY nr_code`),
+          ]);
+          let cargos = ((cR as any)[0] ?? [])
             .map((x: any) => x.cargo)
             .filter(Boolean);
+          if (cargos.length === 0 && Number(r.master_gse_id || 0) > 0) {
+            const masterCargos: any = await db.execute(drzSql`SELECT DISTINCT COALESCE(NULLIF(TRIM(s.position_name),''),NULLIF(TRIM(u.position),'')) cargo
+              FROM occupational_gse_worker_history h
+              LEFT JOIN users u ON u.id=h.collaborator_id AND u.company_id=h.company_id
+              LEFT JOIN occupational_gse_scope s ON s.gse_id=h.gse_id AND s.company_id=h.company_id
+              WHERE h.company_id=${Number(cid)} AND h.gse_id=${Number(r.master_gse_id)} AND h.is_current=1
+              HAVING cargo IS NOT NULL ORDER BY cargo`);
+            cargos = ((masterCargos as any)[0] ?? []).map((item: any) => item.cargo).filter(Boolean);
+          }
+          const setores = ((sR as any)[0] ?? []).map((item: any) => [item.branch_name, item.name].filter(Boolean).join(" / "));
+          const epcs = ((epcR as any)[0] ?? []).map((item: any) => `${item.descricao}${item.aplicacao ? ` (${item.aplicacao})` : ""}`);
+          const epis = ((epiR as any)[0] ?? []).map((item: any) => `${item.descricao}${item.ca ? `, CA ${item.ca}` : ""}${item.aplicacao ? ` (${item.aplicacao})` : ""}`);
+          const actions = ((actionR as any)[0] ?? []).map((item: any) => `${item.what}${item.how ? ` — ${item.how}` : ""} [${item.status || "pendente"}]`);
+          const trainings = ((trainingR as any)[0] ?? []).map((item: any) => `${item.nr_code || ""} ${item.nome || ""}`.trim());
 
           const GROQ_API_KEY = process.env.GROQ_API_KEY;
           if (!GROQ_API_KEY)
             throw new TRPCError({
               code: "INTERNAL_SERVER_ERROR",
-              message: "GROQ_API_KEY not set",
+              message: "O assistente técnico está temporariamente indisponível. Tente novamente mais tarde.",
             });
 
           const systemPrompt = `Você é higienista ocupacional sênior + engenheiro de segurança do trabalho, especialista em NR-15 (anexos 1-14), NR-09, NHO-01 (ruído), NHO-06 (calor), NHO-07 (iluminância), NHO-08 (vibração), NHO-09 (poeiras minerais), ACGIH TLVs e Portaria MTP 1.419/2024 (NR-01/PGR).
@@ -22530,7 +22711,10 @@ REGRAS DURAS:
           const userPrompt = `Contexto:
 Empresa: ${r.razao_social ?? "—"}${r.atividade_principal ? ` (${r.atividade_principal})` : ""}
 GSE: ${r.gse_nome} — ${r.num_trabalhadores ?? 0} trabalhadores
+Descrição do GSE/atividade: ${r.gse_descricao ?? "(não informada)"}
 Cargos: ${cargos.join(", ") || "(não informado)"}
+Setores/filiais: ${setores.join(", ") || "(não informado)"}
+Objeto/obra do PGR: ${[r.objeto_contrato, r.obra].filter(Boolean).join(" — ") || "(não informado)"}
 
 Risco a detalhar:
 - Tipo: ${r.tipo}
@@ -22541,45 +22725,60 @@ Risco a detalhar:
 - Severidade inicial: ${r.severidade}
 - Probabilidade inicial: ${r.probabilidade}
 - Risco final inicial: ${r.risco_final}
+- Observações técnicas existentes: ${r.notes ?? "(nenhuma)"}
+- EPC já cadastrados: ${epcs.join("; ") || "(nenhum)"}
+- EPI já cadastrados: ${epis.join("; ") || "(nenhum)"}
+- Medidas/ações já cadastradas: ${actions.join("; ") || "(nenhuma)"}
+- Treinamentos já vinculados: ${trainings.join("; ") || "(nenhum)"}
 
 Retorne o detalhamento técnico completo (JSON conforme schema).`;
-
-          const resp = await fetch(
-            "https://api.groq.com/openai/v1/chat/completions",
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${GROQ_API_KEY}`,
-              },
-              body: JSON.stringify({
-                model: PGR_GROQ_MODEL,
-                messages: [
-                  { role: "system", content: systemPrompt },
-                  { role: "user", content: userPrompt },
-                ],
-                temperature: 0.3,
-                max_tokens: 1400,
-                response_format: { type: "json_object" },
-              }),
+          const parseAssistantJson = (value: unknown) => {
+            const raw = String(value || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
+            const start = raw.indexOf("{");
+            const end = raw.lastIndexOf("}");
+            if (start < 0 || end <= start) throw new Error("Resposta sem objeto JSON.");
+            const parsed = JSON.parse(raw.slice(start, end + 1));
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Resposta técnica inválida.");
+            if (!String(parsed.normaReferencia || "").trim() || !String(parsed.hierarquiaControles || "").trim()) {
+              throw new Error("Resposta técnica incompleta.");
             }
-          );
-          if (!resp.ok) {
-            const providerError = await resp.text().catch(() => "");
-            console.error(
-              `[pgr.risk-detail.ai] model=${PGR_GROQ_MODEL} risk=${input.riscoId} status=${resp.status} body=${providerError.slice(0, 500)}`
-            );
-            throw new TRPCError({
-              code: "INTERNAL_SERVER_ERROR",
-              message:
-                "Não foi possível gerar o detalhamento técnico automaticamente. Tente novamente.",
-            });
+            return parsed;
+          };
+
+          let lastError: unknown = null;
+          for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+              const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${GROQ_API_KEY}` },
+                body: JSON.stringify({
+                  model: PGR_GROQ_MODEL,
+                  messages: [
+                    { role: "system", content: systemPrompt },
+                    { role: "user", content: `${userPrompt}${attempt === 2 ? "\nA tentativa anterior retornou JSON inválido. Retorne somente um objeto JSON completo e válido." : ""}` },
+                  ],
+                  temperature: attempt === 1 ? 0.25 : 0.1,
+                  max_tokens: 1800,
+                  response_format: { type: "json_object" },
+                }),
+              });
+              if (!resp.ok) {
+                const providerError = await resp.text().catch(() => "");
+                throw new Error(`HTTP ${resp.status}: ${providerError.slice(0, 500)}`);
+              }
+              const data = await resp.json();
+              const parsed = parseAssistantJson(data?.choices?.[0]?.message?.content);
+              return { ...parsed, aiGenerated: true };
+            } catch (error) {
+              lastError = error;
+              console.error(`[pgr.risk-detail.ai] model=${PGR_GROQ_MODEL} risk=${input.riscoId} attempt=${attempt}`, error);
+            }
           }
-          const data = await resp.json();
-          const parsed = JSON.parse(
-            String(data?.choices?.[0]?.message?.content ?? "{}")
-          );
-          return { ...parsed, aiGenerated: true };
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Não foi possível gerar o detalhamento técnico automaticamente. O conteúdo atual foi preservado; tente novamente.",
+            cause: lastError,
+          });
         }),
 
       // Anexos de laudo de medição quantitativa — reusa pgr_gse_evidencias (tipo=laudo).

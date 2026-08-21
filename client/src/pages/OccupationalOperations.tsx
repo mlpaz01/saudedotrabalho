@@ -135,6 +135,10 @@ export default function OccupationalOperations() {
   const isDoctor = user?.role === "medico";
   const utils = trpc.useUtils();
   const [tab, setTab] = useState<Tab>("painel");
+  useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get("tab") as Tab | null;
+    if (requested && tabs.some(item => item.id === requested)) setTab(requested);
+  }, []);
   const [workerQuery, setWorkerQuery] = useState("");
   const [orderOpen, setOrderOpen] = useState(false);
   const [pcmsoOrderOpen, setPcmsoOrderOpen] = useState(false);

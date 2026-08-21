@@ -52,7 +52,7 @@ export async function createContext(
     const rawRole = opts.req.headers["x-delegated-role"];
     const roleHeader = Array.isArray(rawRole) ? rawRole[0] : rawRole;
     if (roleHeader && typeof roleHeader === "string") {
-      const validRoles = ["admin", "rh", "sesmt", "psicologo", "chefia", "company_admin", "cipa"];
+      const validRoles = ["admin", "rh", "sesmt", "psicologo", "chefia", "company_admin", "cipa", "treinamento"];
       if (validRoles.includes(roleHeader)) {
         finalUser = {
           ...(finalUser ?? user) as any,

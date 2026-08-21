@@ -15,7 +15,7 @@ import {
 import { toast } from "sonner";
 import {
   FileText, Plus, Loader2, Building2, Download, Trash2, ArrowLeft, Save, ShieldCheck,
-  ListPlus, X, Info, CheckCircle2, Clock, Send, History, Paperclip, ExternalLink, FolderOpen, Sparkles, GitBranch, AlertTriangle,
+  ListPlus, X, Info, CheckCircle2, Clock, Send, History, Paperclip, ExternalLink, FolderOpen, Sparkles, GitBranch, AlertTriangle, Pencil,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -155,6 +155,19 @@ export default function AdminPGR() {
     },
     onError: (error: any) =>
       toast.error(error?.message ?? "Não foi possível criar a revisão."),
+  });
+  const [renameTarget, setRenameTarget] = useState<any | null>(null);
+  const [renameTitle, setRenameTitle] = useState("");
+  const renameMut = trpc.pgr.renameDocument.useMutation({
+    onSuccess: async (result: any) => {
+      toast.success("Nome do PGR atualizado e registrado na auditoria.");
+      setRenameTarget(null);
+      await listQ.refetch();
+      if (typeof editId === "number" && Number(result.id) === editId) {
+        setDoc((current: any) => ({ ...current, title: result.title }));
+      }
+    },
+    onError: (error: any) => toast.error(error?.message ?? "Não foi possível alterar o nome do PGR."),
   });
   const [historyOpen, setHistoryOpen] = useState(false);
   const [dashTab, setDashTab] = useState<"lista"|"painel">("lista");
@@ -437,6 +450,36 @@ export default function AdminPGR() {
     </Dialog>
   );
 
+  const renameDialog = (
+    <Dialog open={Boolean(renameTarget)} onOpenChange={open => !open && setRenameTarget(null)}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Alterar nome do PGR</DialogTitle>
+          <DialogDescription>
+            A alteração preserva o mesmo documento, ID e histórico técnico. Ela será registrada na auditoria.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 py-2">
+          <div className="border bg-slate-50 p-3 text-sm">
+            <b>{Number(renameTarget?.revisionNumber ?? renameTarget?.revision_number ?? 0) === 0 ? "Documento matricial original" : `Revisão ${String(renameTarget?.revisionNumber ?? renameTarget?.revision_number).padStart(2, "0")}`}</b>
+            <div className="mt-1 text-xs text-slate-500">PGR nº {renameTarget?.revisionRootId ?? renameTarget?.revision_root_id ?? renameTarget?.id} · Registro #{renameTarget?.id}</div>
+          </div>
+          <div>
+            <Label htmlFor="rename-pgr-title">Novo nome</Label>
+            <Input id="rename-pgr-title" className="mt-1" value={renameTitle} onChange={event => setRenameTitle(event.target.value)} />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setRenameTarget(null)}>Cancelar</Button>
+          <Button disabled={renameMut.isPending || renameTitle.trim().length < 5} onClick={() => renameMut.mutate({ id: Number(renameTarget.id), title: renameTitle.trim() })}>
+            {renameMut.isPending ? <Loader2 size={14} className="mr-2 animate-spin" /> : <Save size={14} className="mr-2" />}
+            Salvar nome
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+
   if (editId == null) {
     return (
       <AppLayout>
@@ -513,7 +556,7 @@ export default function AdminPGR() {
                   <FileText className="text-primary shrink-0" />
                   <div className="flex-1 min-w-0">
                      <div className="flex flex-wrap items-center gap-2">
-                       <div className="font-semibold text-foreground truncate">{p.razaoSocial || p.title}</div>
+                       <div className="font-semibold text-foreground truncate">{p.title || "PGR sem título"}</div>
                        {Number(p.isCurrentVersion) === 1 ? (
                          <Badge className="bg-emerald-100 text-emerald-800 border-emerald-200">PGR vigente</Badge>
                        ) : (
@@ -526,6 +569,7 @@ export default function AdminPGR() {
                        </Badge>
                      </div>
                     <div className="text-xs text-muted-foreground">
+                      {p.razaoSocial ? `${p.razaoSocial} · ` : ""}
                       {p.status === "gerado" ? "PDF gerado" : "Rascunho"}
                       {p.vigenciaInicio ? ` · Vigencia ${new Date(p.vigenciaInicio).toLocaleDateString("pt-BR")}` : ""}
                       {p.updatedAt ? ` · Atualizado ${new Date(p.updatedAt).toLocaleDateString("pt-BR")}` : ""}
@@ -537,6 +581,9 @@ export default function AdminPGR() {
                     </a>
                   )}
                    <Button size="sm" variant="outline" onClick={() => openEditor(p.id)}>Editar</Button>
+                   <Button size="icon" variant="ghost" title="Alterar nome" onClick={() => { setRenameTarget(p); setRenameTitle(String(p.title || "")); }}>
+                     <Pencil size={15} />
+                   </Button>
                    {Number(p.isCurrentVersion) === 1 && (
                      <Button size="sm" variant="outline" onClick={() => { setRevisionSource(p); setRevisionReason(""); setRevisionNotes(""); }}>
                        <GitBranch size={14} className="mr-1" /> Criar revisão
@@ -618,6 +665,7 @@ export default function AdminPGR() {
             </DialogContent>
            </Dialog>
            {revisionDialog}
+           {renameDialog}
          </div>
       </AppLayout>
     );
@@ -664,6 +712,11 @@ export default function AdminPGR() {
             </div>
           </div>
           <div className="flex gap-2">
+            {editId !== "new" && (
+              <Button variant="outline" size="icon" title="Alterar nome do PGR" onClick={() => { setRenameTarget({ ...currentPgrListItem, ...doc, id: editId }); setRenameTitle(String(doc.title || "")); }}>
+                <Pencil size={14} />
+              </Button>
+            )}
             <Button variant="outline" onClick={save} disabled={upsert.isPending || isReadOnlyVersion} className="gap-2">
               {upsert.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Salvar
             </Button>
@@ -1055,6 +1108,7 @@ export default function AdminPGR() {
           </div>
         </DialogContent>
       </Dialog>
+      {renameDialog}
       {revisionDialog}
     </AppLayout>
   );
