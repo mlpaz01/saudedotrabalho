@@ -14,9 +14,10 @@ function requireSesmt(ctx: any) {
   if (!ctx.user || !allowed.has(String(ctx.user.role || ""))) {
     throw new TRPCError({ code: "FORBIDDEN", message: "Acesso reservado ao SESMT e administradores autorizados." });
   }
+  const isGlobal = ["admin_global", "super_admin"].includes(String(ctx.user.role || ""));
   const companyId = Number(ctx.user.companyId || 0);
-  if (!companyId) throw new TRPCError({ code: "BAD_REQUEST", message: "Empresa não definida." });
-  return companyId;
+  if (!companyId && !isGlobal) throw new TRPCError({ code: "BAD_REQUEST", message: "Empresa não definida." });
+  return { companyId, isGlobal };
 }
 
 function parseJson(value: unknown) {
@@ -25,7 +26,7 @@ function parseJson(value: unknown) {
 
 export const technicalCommunicationRouter = router({
   list: protectedProcedure.query(async ({ ctx }) => {
-    const companyId = requireSesmt(ctx);
+    const access = requireSesmt(ctx);
     const db = await getDb();
     if (!db) return [];
     await ensurePgrVersioningTables(db);
@@ -34,8 +35,10 @@ export const technicalCommunicationRouter = router({
         resultpc.title result_pcmso_title,resultpc.revision_number result_pcmso_revision_number,
         oldp.title previous_pgr_title,oldp.revision_number previous_pgr_revision,
         newp.title new_pgr_title,newp.revision_number new_pgr_revision,newp.revision_reason,
-        sender.name sender_name,doctor.name medical_completed_by_name,ack.name sesmt_acknowledged_by_name
+        sender.name sender_name,doctor.name medical_completed_by_name,ack.name sesmt_acknowledged_by_name,
+        company.name company_name,company.cnpj company_cnpj
       FROM pcmso_pgr_revision_alerts a
+      JOIN companies company ON company.id=a.company_id
       JOIN pcmso_programs_v2 pc ON pc.id=a.pcmso_id AND pc.company_id=a.company_id
       LEFT JOIN pcmso_programs_v2 resultpc ON resultpc.id=a.result_pcmso_id AND resultpc.company_id=a.company_id
       JOIN pgr_documents oldp ON oldp.id=a.previous_pgr_id
@@ -43,7 +46,7 @@ export const technicalCommunicationRouter = router({
       LEFT JOIN users sender ON sender.id=a.sent_for_medical_by
       LEFT JOIN users doctor ON doctor.id=a.medical_completed_by
       LEFT JOIN users ack ON ack.id=a.sesmt_acknowledged_by
-      WHERE a.company_id=${companyId}
+      ${access.companyId ? drzSql`WHERE a.company_id=${access.companyId}` : drzSql``}
       ORDER BY FIELD(a.status,'aguardando_sesmt','aguardando_medico','em_analise_medica','pendente','concluido','sem_alteracao'),a.updated_at DESC,a.id DESC`);
     return rowsOf(result).map(row => ({
       ...row,
@@ -55,14 +58,15 @@ export const technicalCommunicationRouter = router({
   acknowledge: protectedProcedure
     .input(z.object({ id: z.number().int().positive(), notes: z.string().trim().max(2000).optional() }))
     .mutation(async ({ ctx, input }) => {
-      const companyId = requireSesmt(ctx);
+      const access = requireSesmt(ctx);
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       await ensurePgrVersioningTables(db);
       const result: any = await db.execute(drzSql`UPDATE pcmso_pgr_revision_alerts
         SET status='concluido',sesmt_acknowledged_at=NOW(),sesmt_acknowledged_by=${Number(ctx.user.id)},
             notes=COALESCE(${input.notes || null},notes)
-        WHERE id=${input.id} AND company_id=${companyId} AND status IN ('aguardando_sesmt','sem_alteracao')`);
+        WHERE id=${input.id} ${access.companyId ? drzSql`AND company_id=${access.companyId}` : drzSql``}
+          AND status IN ('aguardando_sesmt','sem_alteracao')`);
       if (!Number((result as any)[0]?.affectedRows || 0)) {
         throw new TRPCError({ code: "PRECONDITION_FAILED", message: "A atualização ainda não está pronta para conclusão pelo SESMT." });
       }

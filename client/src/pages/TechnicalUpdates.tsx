@@ -55,7 +55,7 @@ export default function TechnicalUpdates() {
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <div className="flex flex-wrap items-center gap-2"><b>{row.new_pgr_title}</b><Badge variant="outline">Revisão {String(row.new_pgr_revision || 0).padStart(2,"0")}</Badge><Badge className="rounded-sm bg-slate-100 text-slate-800">{labels[row.status] || row.status}</Badge></div>
-                      <p className="mt-1 text-xs text-slate-500">PCMSO: {row.result_pcmso_title || row.pcmso_title} · Motivo: {row.revision_reason || "revisão técnica"}</p>
+                      <p className="mt-1 text-xs text-slate-500">{row.company_name ? `${row.company_name} · ` : ""}PCMSO: {row.result_pcmso_title || row.pcmso_title} · Motivo: {row.revision_reason || "revisão técnica"}</p>
                     </div>
                     {row.status === "aguardando_sesmt" ? <AlertTriangle className="text-amber-600" size={20} /> : row.status === "concluido" ? <CheckCircle2 className="text-emerald-600" size={20} /> : <FileHeart className="text-teal-700" size={20} />}
                   </div>

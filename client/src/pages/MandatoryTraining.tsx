@@ -51,7 +51,10 @@ function exportCsv(rows: any[]) {
 export default function MandatoryTraining() {
   const { user } = useAuth();
   const [, navigate] = useLocation();
-  const accessQ = trpc.mandatoryTraining.moduleAccess.useQuery();
+  const isGlobal = ["admin_global", "super_admin"].includes(String(user?.role || ""));
+  const [selectedCompanyId, setSelectedCompanyId] = useState(0);
+  const companyInput = selectedCompanyId ? { companyId: selectedCompanyId } : undefined;
+  const accessQ = trpc.mandatoryTraining.moduleAccess.useQuery(companyInput);
   const access = accessQ.data;
   const canManage = Boolean(access?.canManage);
   const canViewTeam = Boolean(access?.canViewTeam);
@@ -67,10 +70,10 @@ export default function MandatoryTraining() {
     defaultTabSet.current = true;
   }, [access]);
 
-  const programsQ = trpc.mandatoryTraining.listPrograms.useQuery(undefined, { enabled: Boolean(access?.enabled && canViewTeam) });
-  const teamQ = trpc.mandatoryTraining.teamAssignments.useQuery(undefined, { enabled: Boolean(access?.enabled && canViewTeam) });
-  const mineQ = trpc.mandatoryTraining.myAssignments.useQuery(undefined, { enabled: Boolean(access?.enabled) });
-  const optionsQ = trpc.mandatoryTraining.setupOptions.useQuery(undefined, { enabled: Boolean(access?.enabled && canManage) });
+  const programsQ = trpc.mandatoryTraining.listPrograms.useQuery(companyInput, { enabled: Boolean(access?.enabled && canViewTeam) });
+  const teamQ = trpc.mandatoryTraining.teamAssignments.useQuery(companyInput, { enabled: Boolean(access?.enabled && canViewTeam) });
+  const mineQ = trpc.mandatoryTraining.myAssignments.useQuery(undefined, { enabled: Boolean(access?.enabled && !isGlobal) });
+  const optionsQ = trpc.mandatoryTraining.setupOptions.useQuery(companyInput, { enabled: Boolean(access?.enabled && canManage) });
   const refresh = () => { programsQ.refetch(); teamQ.refetch(); mineQ.refetch(); };
 
   const toggle = trpc.mandatoryTraining.setEnabled.useMutation({
@@ -111,37 +114,45 @@ export default function MandatoryTraining() {
 
   function submit() {
     if (!form.moduleId || !form.name.trim() || !form.dueDate) { toast.error("Selecione o curso e informe nome e prazo."); return; }
-    save.mutate({ id: form.id || undefined, moduleId: form.moduleId, name: form.name.trim(), description: form.description || undefined,
+    save.mutate({ companyId: selectedCompanyId || undefined, id: form.id || undefined, moduleId: form.moduleId, name: form.name.trim(), description: form.description || undefined,
       workloadMinutes: Number(form.workloadMinutes || 0), validityMonths: form.validityMonths || null, recurrenceMonths: form.recurrenceMonths || null,
       startDate: form.startDate || null, dueDate: form.dueDate, isMandatory: form.isMandatory, certificateRequired: form.certificateRequired,
       audience: form.audience, status: form.status });
   }
 
   if (accessQ.isLoading) return <AppLayout><div className="p-10 text-sm text-slate-500">Carregando centro de treinamentos...</div></AppLayout>;
+  if (access?.companySelectionRequired) {
+    return <AppLayout><div className="mx-auto max-w-3xl p-6"><div className="border bg-white p-8"><GraduationCap className="text-teal-700" size={34}/><h1 className="mt-4 text-xl font-bold">Treinamentos Obrigatorios</h1>
+      <p className="mt-2 text-sm text-slate-500">Selecione a empresa que deseja configurar e acompanhar.</p>
+      <select className="mt-5 w-full border bg-white px-3 py-2 text-sm" value={selectedCompanyId} onChange={event => setSelectedCompanyId(Number(event.target.value))}>
+        <option value={0}>Selecione uma empresa</option>{(access.companies || []).map((company: any) => <option key={company.id} value={company.id}>{company.name}{company.cnpj ? ` · ${company.cnpj}` : ""}</option>)}
+      </select>
+    </div></div></AppLayout>;
+  }
   if (!access?.enabled) {
     const canEnable = ["super_admin", "admin_global", "company_admin"].includes(String(user?.role || ""));
     return <AppLayout><div className="mx-auto max-w-3xl p-6"><div className="border bg-white p-8 text-center">
       <LockKeyhole className="mx-auto text-slate-400" size={38} /><h1 className="mt-4 text-xl font-bold">Treinamentos Obrigatorios</h1>
       <p className="mx-auto mt-2 max-w-xl text-sm text-slate-500">Centro corporativo para cursos obrigatorios, certificados, reciclagens, prazos e acompanhamento por equipe.</p>
-      {canEnable ? <Button className="mt-5" disabled={toggle.isPending} onClick={() => toggle.mutate({ enabled: true })}>Habilitar para esta empresa</Button> :
+      {canEnable ? <Button className="mt-5" disabled={toggle.isPending} onClick={() => toggle.mutate({ companyId: selectedCompanyId || undefined, enabled: true })}>Habilitar para esta empresa</Button> :
         <Badge className="mt-5 rounded-sm bg-slate-100 text-slate-700">Modulo adicional nao habilitado</Badge>}
     </div></div></AppLayout>;
   }
 
-  const tabs = canViewTeam ? [["painel", "Painel"], ["programas", "Treinamentos"], ["equipe", "Equipe"], ["meus", "Meus treinamentos"]] : [["meus", "Meus treinamentos"]];
+  const tabs = canViewTeam ? [["painel", "Painel"], ["programas", "Treinamentos"], ["equipe", "Equipe"], ...(!isGlobal ? [["meus", "Meus treinamentos"]] : [])] : [["meus", "Meus treinamentos"]];
   return <AppLayout><div className="mx-auto max-w-7xl space-y-5 p-4 md:p-6">
     <header className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex items-center gap-2 text-xs font-semibold uppercase text-teal-700"><GraduationCap size={15}/> Centro corporativo</div>
       <h1 className="mt-1 text-2xl font-bold">Treinamentos Obrigatorios</h1><p className="mt-1 text-sm text-slate-500">Obrigatoriedade, prazo, certificado, validade e reciclagem em um unico fluxo.</p></div>
-      <div className="flex gap-2"><Button variant="outline" size="icon" title="Atualizar" onClick={refresh}><RefreshCw size={16}/></Button>{canManage ? <Button onClick={() => openEdit()}><Plus size={16} className="mr-1"/> Novo treinamento</Button> : null}</div></header>
+      <div className="flex flex-wrap gap-2">{isGlobal ? <select className="border bg-white px-3 py-2 text-sm" value={selectedCompanyId} onChange={event => setSelectedCompanyId(Number(event.target.value))}>{(access.companies || []).map((company: any) => <option key={company.id} value={company.id}>{company.name}</option>)}</select> : null}<Button variant="outline" size="icon" title="Atualizar" onClick={refresh}><RefreshCw size={16}/></Button>{canManage ? <Button onClick={() => openEdit()}><Plus size={16} className="mr-1"/> Novo treinamento</Button> : null}</div></header>
 
     <div className="flex gap-1 overflow-x-auto border-b">{tabs.map(([key, label]) => <button key={key} onClick={() => setTab(key)} className={`whitespace-nowrap border-b-2 px-4 py-2 text-sm font-medium ${tab === key ? "border-teal-700 text-teal-800" : "border-transparent text-slate-500"}`}>{label}</button>)}</div>
 
     {tab === "painel" ? <><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><Metric label="Obrigatorios" value={totals.total} icon={<GraduationCap size={17}/>}/><Metric label="Concluidos" value={totals.completed} icon={<CheckCircle2 size={17}/>} tone="green"/><Metric label="Pendentes" value={totals.pending} icon={<Clock3 size={17}/>} tone="amber"/><Metric label="Vencidos" value={totals.overdue} icon={<AlertTriangle size={17}/>} tone="red"/></div>
       <div className="border bg-white p-4"><h2 className="font-semibold">Proximos passos</h2><div className="mt-3 grid gap-2 md:grid-cols-3"><Action title="Configurar publico" text="Filial, setor, cargo, GSE ou colaboradores especificos."/><Action title="Acompanhar conclusao" text="Progresso e certificados sincronizados com os cursos do Studio."/><Action title="Cobrar pendencias" text="Alertas internos, e-mail e WhatsApp com historico de envio."/></div></div></> : null}
 
-    {tab === "programas" ? <section className="border bg-white"><div className="flex items-center justify-between border-b p-4"><div><h2 className="font-semibold">Programas ativos</h2><p className="text-xs text-slate-500">O curso nasce no Studio e recebe aqui as regras corporativas.</p></div><Button variant="outline" disabled={reminders.isPending} onClick={() => reminders.mutate({ channels: ["interno", "email"] })}><BellRing size={15} className="mr-1"/> Enviar lembretes</Button></div>
+    {tab === "programas" ? <section className="border bg-white"><div className="flex items-center justify-between border-b p-4"><div><h2 className="font-semibold">Programas ativos</h2><p className="text-xs text-slate-500">O curso nasce no Studio e recebe aqui as regras corporativas.</p></div><Button variant="outline" disabled={reminders.isPending} onClick={() => reminders.mutate({ companyId: selectedCompanyId || undefined, channels: ["interno", "email"] })}><BellRing size={15} className="mr-1"/> Enviar lembretes</Button></div>
       <div className="divide-y">{programs.map(row => <article key={row.id} className="grid gap-3 p-4 md:grid-cols-[1fr_auto] md:items-center"><div><div className="flex flex-wrap items-center gap-2"><b>{row.name}</b><Badge variant="outline">{statusLabel[row.status] || row.status}</Badge></div><p className="mt-1 text-xs text-slate-500">Curso: {row.module_title} · Prazo {fmtDate(row.due_date)} · {row.validity_months || 0} meses de validade</p><div className="mt-3 flex flex-wrap gap-2 text-xs"><Badge className="rounded-sm bg-slate-100 text-slate-700">{row.assigned_count || 0} atribuidos</Badge><Badge className="rounded-sm bg-emerald-100 text-emerald-800">{row.completed_count || 0} concluidos</Badge><Badge className="rounded-sm bg-amber-100 text-amber-800">{row.pending_count || 0} pendentes</Badge><Badge className="rounded-sm bg-rose-100 text-rose-800">{row.overdue_count || 0} vencidos</Badge></div></div>
-        {canManage ? <div className="flex gap-1"><Button size="icon" variant="ghost" title="Editar" onClick={() => openEdit(row)}><Pencil size={15}/></Button><Button size="icon" variant="ghost" title="Enviar lembrete" onClick={() => reminders.mutate({ programId: Number(row.id), channels: ["interno", "email"] })}><Send size={15}/></Button><Button size="icon" variant="ghost" title="Arquivar" onClick={() => { if (confirm("Arquivar este treinamento mantendo todo o historico?")) archive.mutate({ id: Number(row.id) }); }}><Archive size={15}/></Button></div> : null}</article>)}{!programs.length ? <Empty text="Nenhum treinamento configurado."/> : null}</div></section> : null}
+        {canManage ? <div className="flex gap-1"><Button size="icon" variant="ghost" title="Editar" onClick={() => openEdit(row)}><Pencil size={15}/></Button><Button size="icon" variant="ghost" title="Enviar lembrete" onClick={() => reminders.mutate({ companyId: selectedCompanyId || undefined, programId: Number(row.id), channels: ["interno", "email"] })}><Send size={15}/></Button><Button size="icon" variant="ghost" title="Arquivar" onClick={() => { if (confirm("Arquivar este treinamento mantendo todo o historico?")) archive.mutate({ id: Number(row.id), companyId: selectedCompanyId || undefined }); }}><Archive size={15}/></Button></div> : null}</article>)}{!programs.length ? <Empty text="Nenhum treinamento configurado."/> : null}</div></section> : null}
 
     {tab === "equipe" ? <section className="border bg-white"><div className="flex flex-wrap items-center justify-between gap-2 border-b p-4"><Input className="max-w-sm" placeholder="Buscar colaborador, curso, filial ou setor" value={search} onChange={event => setSearch(event.target.value)}/><Button variant="outline" onClick={() => exportCsv(filteredTeam)}><Download size={15} className="mr-1"/> Exportar CSV</Button></div><div className="overflow-x-auto"><table className="w-full min-w-[940px] text-sm"><thead className="bg-slate-50 text-xs"><tr><Th>Colaborador</Th><Th>Filial / setor</Th><Th>Treinamento</Th><Th>Prazo</Th><Th>Situacao</Th><Th>Certificado</Th></tr></thead><tbody>{filteredTeam.map(row => <tr className="border-t" key={row.id}><Td><b>{row.user_name}</b><div className="text-xs text-slate-500">{row.position || row.cpf || row.employee_registration || "-"}</div></Td><Td>{row.branch_name || "-"}<div className="text-xs text-slate-500">{row.sector_name || "-"}</div></Td><Td>{row.program_name}</Td><Td>{fmtDate(row.due_date)}</Td><Td><Status value={row.status}/></Td><Td>{row.certificate_url ? <a className="text-teal-700 underline" href={row.certificate_url} target="_blank">Visualizar</a> : "-"}</Td></tr>)}</tbody></table>{!filteredTeam.length ? <Empty text="Nenhum colaborador encontrado."/> : null}</div></section> : null}
 

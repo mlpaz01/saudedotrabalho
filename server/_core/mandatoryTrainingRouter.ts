@@ -33,8 +33,16 @@ function rowsOf(result: any): any[] {
   return Array.isArray(result?.[0]) ? result[0] : Array.isArray(result) ? result : [];
 }
 
-function companyIdOf(ctx: any): number {
-  const companyId = Number(ctx.user?.companyId || 0);
+function companyIdOf(ctx: any, requestedCompanyId?: number): number {
+  const ownCompanyId = Number(ctx.user?.companyId || 0);
+  const isGlobal = ["admin_global", "super_admin"].includes(roleOf(ctx));
+  if (requestedCompanyId) {
+    if (!isGlobal && requestedCompanyId !== ownCompanyId) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "Empresa fora do seu escopo de acesso." });
+    }
+    return requestedCompanyId;
+  }
+  const companyId = ownCompanyId;
   if (!companyId) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "Empresa nao identificada." });
   }
@@ -257,6 +265,7 @@ const audienceSchema = z.object({
 });
 
 const programSchema = z.object({
+  companyId: z.number().int().positive().optional(),
   id: z.number().int().positive().optional(),
   moduleId: z.number().int().positive(),
   name: z.string().trim().min(3).max(255),
@@ -273,15 +282,31 @@ const programSchema = z.object({
 });
 
 export const mandatoryTrainingRouter = router({
-  moduleAccess: protectedProcedure.query(async ({ ctx }) => {
-    const companyId = companyIdOf(ctx);
+  moduleAccess: protectedProcedure
+  .input(z.object({ companyId: z.number().int().positive().optional() }).optional())
+  .query(async ({ ctx, input }) => {
     const db = await getDb();
-    if (!db) return { enabled: false, canManage: false, canViewTeam: false };
+    const canManage = FULL_MANAGER_ROLES.has(roleOf(ctx));
+    const canViewTeam = MANAGER_ROLES.has(roleOf(ctx));
+    if (!db) return { enabled: false, canManage, canViewTeam, companySelectionRequired: false, selectedCompanyId: null, companies: [] };
     await ensureTables(db);
+    const isGlobal = ["admin_global", "super_admin"].includes(roleOf(ctx));
+    const companiesResult: any = isGlobal
+      ? await db.execute(drzSql`SELECT id,name,cnpj FROM companies WHERE isActive=1 ORDER BY name`)
+      : [[]];
+    const companies = isGlobal ? rowsOf(companiesResult) : [];
+    const selectedCompanyId = Number(input?.companyId || ctx.user?.companyId || 0);
+    if (!selectedCompanyId) {
+      return { enabled: false, canManage, canViewTeam, companySelectionRequired: true, selectedCompanyId: null, companies };
+    }
+    const companyId = companyIdOf(ctx, selectedCompanyId);
     return {
       enabled: await enabledForCompany(db, companyId),
-      canManage: FULL_MANAGER_ROLES.has(roleOf(ctx)),
-      canViewTeam: MANAGER_ROLES.has(roleOf(ctx)),
+      canManage,
+      canViewTeam,
+      companySelectionRequired: false,
+      selectedCompanyId: companyId,
+      companies,
     };
   }),
 
@@ -291,10 +316,7 @@ export const mandatoryTrainingRouter = router({
       if (!new Set(["super_admin", "admin_global", "company_admin"]).has(roleOf(ctx))) {
         throw new TRPCError({ code: "FORBIDDEN", message: "Somente a administracao pode habilitar este modulo." });
       }
-      const companyId = input.companyId || companyIdOf(ctx);
-      if (roleOf(ctx) === "company_admin" && companyId !== companyIdOf(ctx)) {
-        throw new TRPCError({ code: "FORBIDDEN" });
-      }
+      const companyId = companyIdOf(ctx, input.companyId);
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       await ensureTables(db);
@@ -307,9 +329,11 @@ export const mandatoryTrainingRouter = router({
       return { ok: true };
     }),
 
-  setupOptions: protectedProcedure.query(async ({ ctx }) => {
+  setupOptions: protectedProcedure
+  .input(z.object({ companyId: z.number().int().positive().optional() }).optional())
+  .query(async ({ ctx, input }) => {
     requireFullManager(ctx);
-    const companyId = companyIdOf(ctx);
+    const companyId = companyIdOf(ctx, input?.companyId);
     const db = await getDb();
     if (!db) return { courses: [], branches: [], sectors: [], positions: [], gses: [], users: [] };
     await ensureTables(db);
@@ -331,9 +355,11 @@ export const mandatoryTrainingRouter = router({
       positions: rowsOf(positionsR).map(row => String(row.position)), gses: rowsOf(gsesR), users: rowsOf(usersR) };
   }),
 
-  listPrograms: protectedProcedure.query(async ({ ctx }) => {
+  listPrograms: protectedProcedure
+  .input(z.object({ companyId: z.number().int().positive().optional() }).optional())
+  .query(async ({ ctx, input }) => {
     requireManager(ctx);
-    const companyId = companyIdOf(ctx);
+    const companyId = companyIdOf(ctx, input?.companyId);
     const db = await getDb();
     if (!db) return [];
     await ensureTables(db);
@@ -352,7 +378,7 @@ export const mandatoryTrainingRouter = router({
 
   upsertProgram: protectedProcedure.input(programSchema).mutation(async ({ ctx, input }) => {
     requireFullManager(ctx);
-    const companyId = companyIdOf(ctx);
+    const companyId = companyIdOf(ctx, input.companyId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
     await ensureTables(db);
@@ -403,9 +429,9 @@ export const mandatoryTrainingRouter = router({
     return { ok: true, id: programId, assignments: userIds.length };
   }),
 
-  archiveProgram: protectedProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+  archiveProgram: protectedProcedure.input(z.object({ id: z.number().int().positive(), companyId: z.number().int().positive().optional() })).mutation(async ({ ctx, input }) => {
     requireFullManager(ctx);
-    const companyId = companyIdOf(ctx);
+    const companyId = companyIdOf(ctx, input.companyId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
     await ensureTables(db);
@@ -415,9 +441,11 @@ export const mandatoryTrainingRouter = router({
     return { ok: true };
   }),
 
-  teamAssignments: protectedProcedure.query(async ({ ctx }) => {
+  teamAssignments: protectedProcedure
+  .input(z.object({ companyId: z.number().int().positive().optional() }).optional())
+  .query(async ({ ctx, input }) => {
     requireManager(ctx);
-    const companyId = companyIdOf(ctx);
+    const companyId = companyIdOf(ctx, input?.companyId);
     const db = await getDb();
     if (!db) return [];
     await ensureTables(db);
@@ -490,10 +518,10 @@ export const mandatoryTrainingRouter = router({
     }),
 
   sendReminders: protectedProcedure
-    .input(z.object({ programId: z.number().int().positive().optional(), channels: z.array(z.enum(["interno", "email", "whatsapp"])).min(1) }))
+    .input(z.object({ companyId: z.number().int().positive().optional(), programId: z.number().int().positive().optional(), channels: z.array(z.enum(["interno", "email", "whatsapp"])).min(1) }))
     .mutation(async ({ ctx, input }) => {
       requireFullManager(ctx);
-      const companyId = companyIdOf(ctx);
+      const companyId = companyIdOf(ctx, input.companyId);
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       await ensureTables(db);
