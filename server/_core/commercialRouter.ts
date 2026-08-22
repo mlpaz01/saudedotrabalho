@@ -68,6 +68,24 @@ const DEFAULT_BANDS = [
   ["501-1000", 501, 1000], ["1001+", 1001, 999999],
 ] as const;
 
+const DEFAULT_CONTRACT_CLAUSES = [
+  ["objeto", "Objeto e escopo contratado", "escopo", "A CONTRATADA disponibilizara a plataforma digital indicada na proposta comercial aprovada, com os modulos, limites, servicos, precos e condicoes ali definidos. A proposta, seus anexos tecnicos e eventuais ordens de servico integram este contrato para fins de escopo operacional.", "todos"],
+  ["implantacao", "Implantacao, parametrizacao e suporte", "operacao", "A implantacao sera conduzida conforme cronograma comercial aprovado, podendo abranger configuracao inicial, treinamento, orientacao de uso, carga assistida de dados e suporte remoto. Customizacoes, integracoes e servicos adicionais dependerao de aceite especifico.", "todos"],
+  ["precos", "Investimento, faturamento e reajuste", "financeiro", "Os valores de setup, mensalidade, servicos adicionais, descontos e condicoes de pagamento serao aqueles definidos na proposta aprovada. Salvo ajuste expresso, a vigencia comercial sera anual, com possibilidade de reajuste, renovacao, revisao de escopo ou reprecificacao conforme alteracao de quantidade de colaboradores, CNPJs, modulos, consumo de IA/OCR, armazenamento ou integracoes.", "todos"],
+  ["lgpd", "Protecao de dados e confidencialidade", "juridico", "As partes deverao observar a legislacao de protecao de dados aplicavel, especialmente quanto a sigilo, finalidade, seguranca, controle de acesso e rastreabilidade. Dados pessoais, documentos ocupacionais, informacoes medicas e registros sensiveis deverao ser tratados apenas por perfis autorizados e conforme as finalidades contratadas.", "todos"],
+  ["assinatura", "Assinatura, evidencias e validade documental", "juridico", "O contrato podera ser formalizado por assinatura digital, assinatura eletronica, aceite comercial, upload de via assinada ou outro meio admitido pelas partes. A plataforma registrara versoes, historico de eventos, signatarios, documentos gerados, anexos e comprovantes vinculados.", "todos"],
+  ["destrato_exportacao", "Destrato, portabilidade e exportacao de dados", "saida", "Em caso de encerramento do contrato White Label ou de rescisao com parceiro operador, a CONTRATADA disponibilizara mecanismo de exportacao dos dados dos clientes vinculados ao ambiente do parceiro em padrao CSV ou formato estruturado equivalente, observadas as permissoes, seguranca, segregacao por cliente, logs de auditoria, prazo operacional acordado e regras de protecao de dados. A exportacao nao implica licenca de uso do codigo-fonte, segredos tecnicos, modelos internos, infraestrutura, marcas ou componentes proprietarios da plataforma.", "white_label"],
+  ["white_label", "Uso de marca e operacao White Label", "white_label", "Quando contratado o modelo White Label, a rede podera utilizar identidade visual propria, dominio, configuracoes comerciais, catalogo, planos, propostas e materiais de venda dentro do ambiente autorizado. Cada White Label permanece segregada das demais redes e nao tera acesso a clientes, propostas, precos ou dados comerciais de terceiros.", "white_label"],
+  ["integracoes", "Integracoes, eSocial, WhatsApp, IA e terceiros", "tecnologia", "Funcionalidades dependentes de provedores externos, credenciais, APIs, WhatsApp, eSocial, OCR, IA, assinatura digital, hospedagem, e-mail ou sistemas de RH dependem de disponibilidade tecnica, configuracao, homologacao e limites do respectivo fornecedor. A plataforma registrara status, tentativas, retornos e evidencias quando a integracao estiver habilitada.", "todos"],
+  ["responsabilidades", "Responsabilidades tecnicas e uso profissional", "juridico", "A plataforma fornece meios digitais, registros, alertas, documentos, relatorios e inteligencia assistiva, sem substituir a decisao tecnica dos profissionais legalmente habilitados. O contratante devera manter dados corretos, usuarios autorizados, documentos revisados e responsaveis tecnicos competentes para validar conteudos ocupacionais, medicos, legais e comerciais.", "todos"],
+  ["rescisao", "Vigencia, renovacao e rescisao", "juridico", "A vigencia, renovacao, denuncia, multa, aviso previo, suspensao por inadimplemento e demais condicoes de encerramento deverao observar as regras comerciais definidas na proposta e nas clausulas especificas aprovadas pelas partes.", "todos"],
+] as const;
+
+const DEFAULT_CONTRACT_TEMPLATES = [
+  ["saas_padrao", "Contrato SaaS - Cliente direto", "saas", "Modelo padrao para clientes diretos da Saude do Trabalho", `CONTRATO DE LICENCA DE USO DE SOFTWARE, SERVICOS DIGITAIS E SUPORTE\n\nCONTRATADA: {{BRAND_NAME}}\nCONTRATANTE: {{CLIENT_NAME}}\nCNPJ: {{CNPJ}}\nProposta de origem: {{PROPOSAL_NUMBER}}\nContrato: {{CONTRACT_NUMBER}}\n\n1. IDENTIFICACAO COMERCIAL\nPlano/escopo comercial: {{PLAN_NAME}}\nMensalidade: {{MONTHLY_VALUE}}\nSetup/implantacao: {{SETUP_VALUE}}\nVigencia: {{VALID_FROM}} a {{VALID_UNTIL}}\n\n2. ESCOPO FUNCIONAL\n{{FEATURES_SUMMARY}}\n\n{{CLAUSES}}\n\nENCERRAMENTO\nAs partes reconhecem que este instrumento reflete os dados comerciais e tecnicos existentes na plataforma na data de sua geracao, devendo eventuais ajustes ser formalizados por aditivo, nova versao ou registro de revisao contratual.`],
+  ["white_label_padrao", "Contrato White Label - Rede parceira", "white_label", "Modelo padrao para redes parceiras com marca propria", `CONTRATO DE PARCERIA WHITE LABEL, LICENCA DE USO DE PLATAFORMA E OPERACAO COMERCIAL\n\nCONTRATADA: {{BRAND_NAME}}\nREDE/PARCEIRA: {{CLIENT_NAME}}\nCNPJ: {{CNPJ}}\nProposta de origem: {{PROPOSAL_NUMBER}}\nContrato: {{CONTRACT_NUMBER}}\n\n1. MODELO CONTRATADO\nPlano/escopo comercial: {{PLAN_NAME}}\nMensalidade: {{MONTHLY_VALUE}}\nSetup/implantacao: {{SETUP_VALUE}}\nVigencia: {{VALID_FROM}} a {{VALID_UNTIL}}\n\n2. ESCOPO FUNCIONAL E COMERCIAL\n{{FEATURES_SUMMARY}}\n\n{{CLAUSES}}\n\nENCERRAMENTO\nEste contrato devera ser interpretado em conjunto com a proposta aprovada, anexos tecnicos, matriz de planos, politica de exportacao de dados, regras de suporte, politicas de seguranca e eventuais aditivos formalizados entre as partes.`],
+] as const;
+
 export const COMMERCIAL_STATUS_PROBABILITY: Record<string, number> = {
   novo_lead: 10, em_contato: 20, reuniao_agendada: 30, reuniao_realizada: 40,
   proposta_em_elaboracao: 50, proposta_enviada: 60, negociacao: 70,
@@ -390,6 +408,110 @@ async function ensureCommercialTables() {
     generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_portfolio_runs (owner_type,owner_id,generated_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await db.execute(drzSql`CREATE TABLE IF NOT EXISTS commercial_contract_templates (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    owner_type VARCHAR(20) NOT NULL,
+    owner_id INT NOT NULL DEFAULT 0,
+    code VARCHAR(100) NOT NULL,
+    name VARCHAR(180) NOT NULL,
+    contract_type VARCHAR(40) NOT NULL DEFAULT 'saas',
+    description TEXT NULL,
+    base_text LONGTEXT NOT NULL,
+    required_tags_json LONGTEXT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    legal_review_status VARCHAR(40) NOT NULL DEFAULT 'pendente_juridico',
+    created_by INT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_contract_template_scope (owner_type,owner_id,code),
+    INDEX idx_contract_template_scope (owner_type,owner_id,is_active,contract_type)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await db.execute(drzSql`CREATE TABLE IF NOT EXISTS commercial_contract_clauses (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    owner_type VARCHAR(20) NOT NULL,
+    owner_id INT NOT NULL DEFAULT 0,
+    code VARCHAR(100) NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    category VARCHAR(100) NOT NULL,
+    applies_to VARCHAR(40) NOT NULL DEFAULT 'todos',
+    clause_text LONGTEXT NOT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    requires_legal_review TINYINT(1) NOT NULL DEFAULT 1,
+    legal_review_status VARCHAR(40) NOT NULL DEFAULT 'pendente_juridico',
+    sort_order INT NOT NULL DEFAULT 0,
+    created_by INT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_contract_clause_scope (owner_type,owner_id,code),
+    INDEX idx_contract_clause_scope (owner_type,owner_id,is_active,applies_to,sort_order)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await db.execute(drzSql`CREATE TABLE IF NOT EXISTS commercial_contract_documents (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    owner_type VARCHAR(20) NOT NULL,
+    owner_id INT NOT NULL DEFAULT 0,
+    proposal_id INT NULL,
+    template_id INT NULL,
+    contract_number VARCHAR(80) NULL,
+    contract_type VARCHAR(40) NOT NULL DEFAULT 'saas',
+    title VARCHAR(255) NOT NULL,
+    client_name VARCHAR(255) NOT NULL,
+    cnpj VARCHAR(30) NULL,
+    status VARCHAR(40) NOT NULL DEFAULT 'rascunho',
+    signature_status VARCHAR(40) NOT NULL DEFAULT 'nao_enviado',
+    signature_provider VARCHAR(60) NULL,
+    version INT NOT NULL DEFAULT 1,
+    content_html LONGTEXT NOT NULL,
+    variables_json LONGTEXT NULL,
+    clauses_json LONGTEXT NULL,
+    pdf_url VARCHAR(700) NULL,
+    signed_pdf_url VARCHAR(700) NULL,
+    valid_from DATE NULL,
+    valid_until DATE NULL,
+    renewal_alert_days INT NOT NULL DEFAULT 60,
+    generated_at DATETIME NULL,
+    signed_at DATETIME NULL,
+    created_by INT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_contract_doc_scope (owner_type,owner_id,status,updated_at),
+    INDEX idx_contract_doc_proposal (proposal_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await db.execute(drzSql`CREATE TABLE IF NOT EXISTS commercial_contract_document_versions (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    contract_id BIGINT NOT NULL,
+    version INT NOT NULL,
+    status VARCHAR(40) NOT NULL,
+    content_html LONGTEXT NOT NULL,
+    pdf_url VARCHAR(700) NULL,
+    signed_pdf_url VARCHAR(700) NULL,
+    created_by INT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_contract_doc_version (contract_id,version),
+    INDEX idx_contract_doc_version_contract (contract_id,created_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await db.execute(drzSql`CREATE TABLE IF NOT EXISTS commercial_contract_signers (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    contract_id BIGINT NOT NULL,
+    signer_name VARCHAR(180) NOT NULL,
+    signer_email VARCHAR(180) NULL,
+    signer_role VARCHAR(120) NULL,
+    status VARCHAR(40) NOT NULL DEFAULT 'pendente',
+    signed_at DATETIME NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_contract_signer_contract (contract_id,status)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await db.execute(drzSql`CREATE TABLE IF NOT EXISTS commercial_contract_events (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    owner_type VARCHAR(20) NOT NULL,
+    owner_id INT NOT NULL DEFAULT 0,
+    contract_id BIGINT NOT NULL,
+    event_type VARCHAR(80) NOT NULL,
+    description TEXT NULL,
+    details_json LONGTEXT NULL,
+    created_by INT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_contract_events (owner_type,owner_id,contract_id,created_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
 
   for (const col of [
     "commercial_owner_type VARCHAR(20) NOT NULL DEFAULT 'global'",
@@ -493,6 +615,19 @@ async function seedScopeUnlocked(scope: CommercialScope) {
         (owner_type, owner_id, brand_name, legal_name, logo_url, primary_color, secondary_color, contact_email, website, presentation_text, objective_text, commercial_terms, next_steps_text)
         VALUES ('global', 0, 'Saúde do Trabalho', 'Saúde do Trabalho', '/plataforma/logo-full.png', '#0E2C46', '#0096A6', 'contato@saudedotrabalho.com', 'saudedotrabalho.com', ${"Uma plataforma integrada para prevenção, conformidade, saúde ocupacional e desenvolvimento contínuo das pessoas."}, ${"Entregar uma operação digital, rastreável e simples para RH, SESMT, lideranças e colaboradores."}, ${"Valores em reais. Condições, prazos e escopo sujeitos à aprovação comercial e formalização contratual."}, ${"Aprovação da proposta, alinhamento da implantação, assinatura contratual e início do projeto."})`);
     }
+  }
+  for (let i = 0; i < DEFAULT_CONTRACT_CLAUSES.length; i++) {
+    const [code, title, category, clauseText, appliesTo] = DEFAULT_CONTRACT_CLAUSES[i];
+    await db.execute(drzSql`INSERT INTO commercial_contract_clauses
+      (owner_type,owner_id,code,title,category,clause_text,applies_to,sort_order,requires_legal_review,legal_review_status)
+      VALUES (${scope.ownerType},${scope.ownerId},${code},${title},${category},${clauseText},${appliesTo},${i + 1},1,'pendente_juridico')
+      ON DUPLICATE KEY UPDATE title=VALUES(title),category=VALUES(category),applies_to=VALUES(applies_to),sort_order=VALUES(sort_order)`);
+  }
+  for (const [code, name, contractType, description, baseText] of DEFAULT_CONTRACT_TEMPLATES) {
+    await db.execute(drzSql`INSERT INTO commercial_contract_templates
+      (owner_type,owner_id,code,name,contract_type,description,base_text,required_tags_json,legal_review_status)
+      VALUES (${scope.ownerType},${scope.ownerId},${code},${name},${contractType},${description},${baseText},${JSON.stringify(["BRAND_NAME","CLIENT_NAME","CNPJ","PROPOSAL_NUMBER","CONTRACT_NUMBER","PLAN_NAME","MONTHLY_VALUE","SETUP_VALUE","VALID_FROM","VALID_UNTIL","FEATURES_SUMMARY","CLAUSES"])},'pendente_juridico')
+      ON DUPLICATE KEY UPDATE name=VALUES(name),description=VALUES(description),contract_type=VALUES(contract_type)`);
   }
   const officialPlans = [
     ["Essential", "Psicossocial e NR-01", 7.9, ["drps", "aep", "reports"]],
@@ -615,6 +750,47 @@ const proposalInput = z.object({
   status: z.enum(["lead", "novo_lead", "em_contato", "reuniao_agendada", "reuniao_realizada", "proposta_em_elaboracao", "negociacao", "proposta_enviada", "aguardando_retorno", "follow_up", "aprovada", "contrato_em_assinatura", "reprovada", "perdida", "pausada", "convertida"]).default("novo_lead"), notes: z.string().max(20000).optional(),
 });
 
+const contractTemplateInput = z.object({
+  id: z.number().int().positive().optional(),
+  code: z.string().trim().min(2).max(100),
+  name: z.string().trim().min(2).max(180),
+  contractType: z.enum(["saas", "white_label", "aditivo", "distrato"]).default("saas"),
+  description: z.string().trim().max(5000).optional(),
+  baseText: z.string().trim().min(10).max(500000),
+  isActive: z.boolean().default(true),
+  legalReviewStatus: z.enum(["pendente_juridico", "aprovado", "revisar"]).default("pendente_juridico"),
+});
+
+const contractClauseInput = z.object({
+  id: z.number().int().positive().optional(),
+  code: z.string().trim().min(2).max(100),
+  title: z.string().trim().min(2).max(255),
+  category: z.string().trim().min(2).max(100),
+  appliesTo: z.enum(["todos", "saas", "white_label", "aditivo", "distrato"]).default("todos"),
+  clauseText: z.string().trim().min(10).max(500000),
+  isActive: z.boolean().default(true),
+  requiresLegalReview: z.boolean().default(true),
+  legalReviewStatus: z.enum(["pendente_juridico", "aprovado", "revisar"]).default("pendente_juridico"),
+  sortOrder: z.number().int().min(0).default(0),
+});
+
+const createContractInput = z.object({
+  proposalId: z.number().int().positive(),
+  templateId: z.number().int().positive().optional(),
+  clauseIds: z.array(z.number().int().positive()).default([]),
+  title: z.string().trim().max(255).optional(),
+  contractType: z.enum(["saas", "white_label", "aditivo", "distrato"]).default("saas"),
+  validFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  validUntil: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  renewalAlertDays: z.number().int().min(0).max(365).default(60),
+});
+
+const uploadSignedContractInput = z.object({
+  id: z.number().int().positive(),
+  fileBase64: z.string().min(20),
+  fileName: z.string().trim().min(3).max(255).default("contrato_assinado.pdf"),
+});
+
 export function probabilityForCommercialStatus(status: string) {
   const legacy: Record<string, number> = { lead: 10, negociacao: 70, proposta_enviada: 60, aguardando_retorno: 70, aprovada: 90, reprovada: 0, convertida: 100 };
   return COMMERCIAL_STATUS_PROBABILITY[status] ?? legacy[status] ?? 10;
@@ -631,6 +807,38 @@ function esc(value: any) {
 
 function money(value: any) {
   return Number(value || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+
+function fmtDate(value: any) {
+  if (!value) return "A definir";
+  const date = new Date(String(value).slice(0, 10) + "T12:00:00");
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleDateString("pt-BR");
+}
+
+function paragraphHtml(text: any) {
+  return String(text || "")
+    .split(/\n{2,}/)
+    .map((block) => `<p>${esc(block).replace(/\n/g, "<br>")}</p>`)
+    .join("");
+}
+
+function replaceContractTags(text: string, variables: Record<string, string>) {
+  return String(text || "").replace(/\{\{\s*([A-Z0-9_]+)\s*\}\}/g, (_, key) => variables[key] ?? "");
+}
+
+function safeUploadName(name: string) {
+  return String(name || "arquivo.pdf").replace(/[^\w.\-]+/g, "_").slice(0, 160);
+}
+
+function writeBase64Upload(folder: string, name: string, base64: string) {
+  const clean = String(base64 || "").replace(/^data:[^;]+;base64,/, "");
+  const buffer = Buffer.from(clean, "base64");
+  if (!buffer.length) throw new TRPCError({ code: "BAD_REQUEST", message: "Arquivo vazio ou inválido." });
+  const outDir = path.join(process.cwd(), "uploads", folder);
+  fs.mkdirSync(outDir, { recursive: true });
+  const filename = `${Date.now()}_${safeUploadName(name)}`;
+  fs.writeFileSync(path.join(outDir, filename), buffer);
+  return `/uploads/${folder}/${filename}`;
 }
 
 async function logoDataUri(url?: string | null): Promise<string | null> {
@@ -650,6 +858,106 @@ async function logoDataUri(url?: string | null): Promise<string | null> {
     }
   } catch {}
   return null;
+}
+
+async function buildContractContent(scope: CommercialScope, proposal: any, template: any, clauses: any[], contractNumber: string, validFrom?: string | null, validUntil?: string | null) {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+  const brandResult: any = await db.execute(drzSql`SELECT * FROM commercial_brand_settings WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} LIMIT 1`);
+  const brand = rowsOf(brandResult)[0] || {};
+  const selectedPlan = proposal.plan_name || "Plano a definir";
+  const services = jsonArray(proposal.services_json);
+  const overrides = jsonArray(proposal.plan_overrides_json);
+  const selectedPlanOverride = overrides.find((item: any) => Number(item.planId) === Number(proposal.selected_plan_id || proposal.commercial_plan_id));
+  const featureIds = Array.isArray(selectedPlanOverride?.featureIds) ? selectedPlanOverride.featureIds.map(Number) : [];
+  let featureRows: any[] = [];
+  if (featureIds.length) {
+    const result: any = await db.execute(drzSql.raw(`SELECT name,category,description FROM commercial_feature_catalog WHERE id IN (${featureIds.join(",")}) AND owner_type='${scope.ownerType}' AND owner_id=${scope.ownerId} ORDER BY category,sort_order,name`));
+    featureRows = rowsOf(result);
+  }
+  if (!featureRows.length) {
+    const result: any = await db.execute(drzSql`SELECT f.name,f.category,f.description FROM commercial_feature_catalog f
+      JOIN commercial_plan_features pf ON pf.feature_id=f.id
+      WHERE pf.plan_id=${Number(proposal.commercial_plan_id || 0)} AND f.owner_type=${scope.ownerType} AND f.owner_id=${scope.ownerId}
+      ORDER BY f.category,f.sort_order,f.name`);
+    featureRows = rowsOf(result);
+  }
+  const featuresSummary = featureRows.length
+    ? featureRows.map((feature: any) => `- ${feature.name}: ${feature.description || feature.category || "funcionalidade contratada"}`).join("\n")
+    : "O escopo funcional sera aquele definido na proposta comercial aprovada e seus anexos tecnicos.";
+  const clauseText = clauses
+    .map((clause: any, index: number) => `${index + 3}. ${String(clause.title || "").toUpperCase()}\n${clause.clause_text}`)
+    .join("\n\n");
+  const variables: Record<string, string> = {
+    BRAND_NAME: String(brand.legal_name || brand.brand_name || "Saúde do Trabalho"),
+    CLIENT_NAME: String(proposal.razao_social || ""),
+    CNPJ: String(proposal.cnpj || "Não informado"),
+    PROPOSAL_NUMBER: String(proposal.proposal_number || `#${proposal.id}`),
+    CONTRACT_NUMBER: contractNumber,
+    PLAN_NAME: selectedPlan,
+    MONTHLY_VALUE: money(proposal.valor_mensal),
+    SETUP_VALUE: money(proposal.setup_value),
+    VALID_FROM: fmtDate(validFrom),
+    VALID_UNTIL: fmtDate(validUntil),
+    FEATURES_SUMMARY: featuresSummary,
+    CLAUSES: clauseText,
+  };
+  if (services.length) {
+    variables.FEATURES_SUMMARY += `\n\nServicos adicionais:\n${services.map((item: any) => `- ${item.name}: ${money(item.value)} ${item.description || ""}`.trim()).join("\n")}`;
+  }
+  const renderedText = replaceContractTags(template.base_text, variables);
+  return {
+    html: paragraphHtml(renderedText),
+    variables,
+    clauseSnapshot: clauses.map((clause: any) => ({
+      id: Number(clause.id), code: clause.code, title: clause.title, category: clause.category,
+      appliesTo: clause.applies_to, legalReviewStatus: clause.legal_review_status,
+      text: clause.clause_text,
+    })),
+  };
+}
+
+async function createContractPdf(scope: CommercialScope, contractId: number, actorId: number) {
+  const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+  const contractResult: any = await db.execute(drzSql`SELECT d.*,b.brand_name,b.legal_name,b.logo_url,b.primary_color,b.secondary_color,b.contact_email,b.contact_phone,b.website
+    FROM commercial_contract_documents d
+    JOIN commercial_brand_settings b ON b.owner_type=d.owner_type AND b.owner_id=d.owner_id
+    WHERE d.id=${contractId} AND d.owner_type=${scope.ownerType} AND d.owner_id=${scope.ownerId} LIMIT 1`);
+  const contract = rowsOf(contractResult)[0];
+  if (!contract) throw new TRPCError({ code: "NOT_FOUND", message: "Contrato não encontrado." });
+  const signersResult: any = await db.execute(drzSql`SELECT * FROM commercial_contract_signers WHERE contract_id=${contractId} ORDER BY id`);
+  const signers = rowsOf(signersResult);
+  const primary = /^#[0-9a-f]{6}$/i.test(contract.primary_color || "") ? contract.primary_color : "#0E2C46";
+  const secondary = /^#[0-9a-f]{6}$/i.test(contract.secondary_color || "") ? contract.secondary_color : "#0096A6";
+  const logo = await logoDataUri(contract.logo_url);
+  const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
+    @page{size:A4;margin:18mm 16mm}*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;color:#203241;font-size:10pt;line-height:1.52}.cover{height:250mm;margin:-18mm -16mm 14mm;padding:27mm 22mm;background:${primary};color:#fff;display:flex;flex-direction:column;justify-content:space-between;page-break-after:always}.brand-mark{display:inline-flex;align-items:center;background:#fff;padding:4mm 5mm;max-width:72mm;min-height:20mm}.brand-mark img{max-width:60mm;max-height:18mm;object-fit:contain;object-position:left}.kicker{letter-spacing:1px;text-transform:uppercase;color:${secondary};font-size:9pt;font-weight:700}.cover h1{font-size:34pt;line-height:1.05;margin:8mm 0}.cover p{font-size:14pt;color:#e2eef2}.meta{border-top:1px solid rgba(255,255,255,.32);padding-top:6mm}.content h1{font-size:20pt;color:${primary};border-bottom:3px solid ${secondary};padding-bottom:3mm}.content p{margin:0 0 4mm;white-space:normal}.notice{border-left:4px solid ${secondary};background:#f3f7f9;padding:5mm;margin:8mm 0}.signatures{page-break-before:always}.signature-grid{display:grid;grid-template-columns:1fr 1fr;gap:12mm 10mm;margin-top:14mm}.signature{min-height:35mm}.line{border-top:1px solid #203241;padding-top:2mm}.small{font-size:8.5pt;color:#64748b}.footer{margin-top:12mm;border-top:1px solid #dbe5ea;padding-top:4mm;color:#64748b;font-size:8.5pt}</style></head><body>
+    <section class="cover"><div>${logo ? `<span class="brand-mark"><img src="${logo}"></span>` : `<strong style="font-size:22pt">${esc(contract.brand_name || contract.legal_name || "Contrato")}</strong>`}</div><div><div class="kicker">Contrato comercial</div><h1>${esc(contract.title)}</h1><p>${esc(contract.client_name)}<br>${esc(contract.contract_number || `#${contract.id}`)}</p></div><div class="meta">Versão ${Number(contract.version || 1)} · Vigência ${fmtDate(contract.valid_from)} a ${fmtDate(contract.valid_until)}<br>Status: ${esc(contract.status)} · Assinatura: ${esc(contract.signature_status)}</div></section>
+    <main class="content"><h1>Instrumento contratual</h1>${contract.content_html}<div class="notice"><b>Rastreabilidade</b><br>Documento gerado pela plataforma a partir da proposta comercial, modelos e cláusulas deste ambiente. Alterações posteriores devem gerar nova versão, aditivo ou registro de evento.</div></main>
+    <section class="signatures"><h1>Assinaturas</h1><p class="small">Espaço reservado para assinatura manual, eletrônica ou digital. O upload da via assinada deve ser anexado ao mesmo contrato para manter a rastreabilidade.</p><div class="signature-grid">${(signers.length ? signers : [{ signer_name: contract.client_name, signer_role: "Contratante" }, { signer_name: contract.legal_name || contract.brand_name, signer_role: "Contratada" }]).map((signer: any) => `<div class="signature"><div class="line"><b>${esc(signer.signer_name)}</b><br>${esc(signer.signer_role || "Signatário")}<br><span class="small">${esc(signer.signer_email || "")}</span></div></div>`).join("")}</div><div class="footer">${esc(contract.brand_name || contract.legal_name || "")} · ${esc(contract.contact_email || "")} ${contract.contact_phone ? ` · ${esc(contract.contact_phone)}` : ""}<br>${esc(contract.website || "")}</div></section>
+  </body></html>`;
+  const puppeteer = (await import("puppeteer")).default;
+  const outDir = path.join(process.cwd(), "uploads", "contracts");
+  fs.mkdirSync(outDir, { recursive: true });
+  const version = Number(contract.pdf_url ? Number(contract.version || 1) + 1 : Number(contract.version || 1));
+  const filename = `contrato_${scope.ownerType}_${scope.ownerId}_${contractId}_v${version}_${Date.now()}.pdf`;
+  const outPath = path.join(outDir, filename);
+  const browser = await puppeteer.launch({ headless: true, executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined, args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"] });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: "load", timeout: 45000 });
+    await page.pdf({ path: outPath, format: "A4", printBackground: true });
+  } finally {
+    await browser.close();
+  }
+  const url = `/uploads/contracts/${filename}`;
+  await db.execute(drzSql`UPDATE commercial_contract_documents SET pdf_url=${url},version=${version},status=IF(status='rascunho','gerado',status),generated_at=NOW() WHERE id=${contractId} AND owner_type=${scope.ownerType} AND owner_id=${scope.ownerId}`);
+  await db.execute(drzSql`INSERT INTO commercial_contract_document_versions(contract_id,version,status,content_html,pdf_url,signed_pdf_url,created_by)
+    VALUES(${contractId},${version},${contract.status},${contract.content_html},${url},${contract.signed_pdf_url || null},${actorId})
+    ON DUPLICATE KEY UPDATE status=VALUES(status),content_html=VALUES(content_html),pdf_url=VALUES(pdf_url),signed_pdf_url=VALUES(signed_pdf_url)`);
+  await db.execute(drzSql`INSERT INTO commercial_contract_events(owner_type,owner_id,contract_id,event_type,description,details_json,created_by)
+    VALUES(${scope.ownerType},${scope.ownerId},${contractId},'pdf_generated','PDF do contrato gerado',${JSON.stringify({ url, version })},${actorId})`);
+  return url;
 }
 
 async function createProposalPdf(scope: CommercialScope, proposalId: number) {
@@ -1014,6 +1322,124 @@ export const commercialRouter = router({
       (owner_type,owner_id,proposal_id,contact_type,old_status,new_status,description,created_by)
       VALUES (${s.ownerType},${s.ownerId},${input.id},'email',${String(p.status || "")},'proposta_enviada',${`Proposta ${p.proposal_number || `#${p.id}`} enviada para ${p.email}${sent.preview ? " em modo de teste" : ""}.`},${Number(ctx.user.id)})`);
     return{ok:true,preview:sent.preview,url:pdfUrl};
+  }),
+  contractWorkspace: commercialProcedure.query(async ({ ctx }) => {
+    const s = (ctx as any).commercialScope as CommercialScope;
+    const db = await getDb(); if (!db) return { contracts: [], templates: [], clauses: [], proposals: [], metrics: {} };
+    const [contractsR, templatesR, clausesR, proposalsR, metricsR]: any[] = await Promise.all([
+      db.execute(drzSql`SELECT d.*,p.proposal_number,p.valor_mensal,p.setup_value,p.status proposal_status
+        FROM commercial_contract_documents d
+        LEFT JOIN commercial_proposals p ON p.id=d.proposal_id
+        WHERE d.owner_type=${s.ownerType} AND d.owner_id=${s.ownerId}
+        ORDER BY d.updated_at DESC,d.id DESC LIMIT 500`),
+      db.execute(drzSql`SELECT * FROM commercial_contract_templates WHERE owner_type=${s.ownerType} AND owner_id=${s.ownerId} ORDER BY is_active DESC,contract_type,name`),
+      db.execute(drzSql`SELECT * FROM commercial_contract_clauses WHERE owner_type=${s.ownerType} AND owner_id=${s.ownerId} ORDER BY is_active DESC,sort_order,title`),
+      db.execute(drzSql`SELECT p.id,p.proposal_number,p.razao_social,p.cnpj,p.responsavel,p.email,p.status,p.selected_plan_id,p.commercial_plan_id,pl.name plan_name,p.valor_mensal,p.setup_value
+        FROM commercial_proposals p LEFT JOIN commercial_plan_catalog pl ON pl.id=p.commercial_plan_id
+        WHERE p.commercial_owner_type=${s.ownerType} AND p.commercial_owner_id=${s.ownerId}
+          AND p.status IN ('aprovada','contrato_em_assinatura','convertida','proposta_enviada')
+        ORDER BY p.updated_at DESC,p.id DESC LIMIT 200`),
+      db.execute(drzSql`SELECT COUNT(*) total,
+        SUM(status IN ('rascunho','gerado','enviado_assinatura')) open_count,
+        SUM(status='assinado') signed_count,
+        SUM(valid_until IS NOT NULL AND valid_until<=DATE_ADD(CURDATE(),INTERVAL renewal_alert_days DAY) AND status IN ('assinado','ativo','gerado')) renewal_attention
+        FROM commercial_contract_documents WHERE owner_type=${s.ownerType} AND owner_id=${s.ownerId}`),
+    ]);
+    return {
+      contracts: rowsOf(contractsR),
+      templates: rowsOf(templatesR),
+      clauses: rowsOf(clausesR),
+      proposals: rowsOf(proposalsR),
+      metrics: rowsOf(metricsR)[0] || {},
+    };
+  }),
+  upsertContractTemplate: commercialProcedure.input(contractTemplateInput).mutation(async ({ ctx, input }) => {
+    const s = (ctx as any).commercialScope as CommercialScope; const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+    if (input.id) {
+      const owned: any = await db.execute(drzSql`SELECT id FROM commercial_contract_templates WHERE id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId} LIMIT 1`);
+      if (!rowsOf(owned).length) throw new TRPCError({ code: "FORBIDDEN" });
+      await db.execute(drzSql`UPDATE commercial_contract_templates SET code=${input.code},name=${input.name},contract_type=${input.contractType},description=${input.description || null},base_text=${input.baseText},is_active=${input.isActive ? 1 : 0},legal_review_status=${input.legalReviewStatus},updated_at=NOW() WHERE id=${input.id}`);
+      return { ok: true, id: input.id };
+    }
+    const result: any = await db.execute(drzSql`INSERT INTO commercial_contract_templates(owner_type,owner_id,code,name,contract_type,description,base_text,required_tags_json,is_active,legal_review_status,created_by)
+      VALUES(${s.ownerType},${s.ownerId},${input.code},${input.name},${input.contractType},${input.description || null},${input.baseText},${JSON.stringify(["BRAND_NAME","CLIENT_NAME","CNPJ","PROPOSAL_NUMBER","CONTRACT_NUMBER","PLAN_NAME","MONTHLY_VALUE","SETUP_VALUE","VALID_FROM","VALID_UNTIL","FEATURES_SUMMARY","CLAUSES"])},${input.isActive ? 1 : 0},${input.legalReviewStatus},${Number(ctx.user.id)})`);
+    return { ok: true, id: Number((result as any)[0]?.insertId || 0) };
+  }),
+  upsertContractClause: commercialProcedure.input(contractClauseInput).mutation(async ({ ctx, input }) => {
+    const s = (ctx as any).commercialScope as CommercialScope; const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+    if (input.id) {
+      const owned: any = await db.execute(drzSql`SELECT id FROM commercial_contract_clauses WHERE id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId} LIMIT 1`);
+      if (!rowsOf(owned).length) throw new TRPCError({ code: "FORBIDDEN" });
+      await db.execute(drzSql`UPDATE commercial_contract_clauses SET code=${input.code},title=${input.title},category=${input.category},applies_to=${input.appliesTo},clause_text=${input.clauseText},is_active=${input.isActive ? 1 : 0},requires_legal_review=${input.requiresLegalReview ? 1 : 0},legal_review_status=${input.legalReviewStatus},sort_order=${input.sortOrder},updated_at=NOW() WHERE id=${input.id}`);
+      return { ok: true, id: input.id };
+    }
+    const result: any = await db.execute(drzSql`INSERT INTO commercial_contract_clauses(owner_type,owner_id,code,title,category,applies_to,clause_text,is_active,requires_legal_review,legal_review_status,sort_order,created_by)
+      VALUES(${s.ownerType},${s.ownerId},${input.code},${input.title},${input.category},${input.appliesTo},${input.clauseText},${input.isActive ? 1 : 0},${input.requiresLegalReview ? 1 : 0},${input.legalReviewStatus},${input.sortOrder},${Number(ctx.user.id)})`);
+    return { ok: true, id: Number((result as any)[0]?.insertId || 0) };
+  }),
+  createContractFromProposal: commercialProcedure.input(createContractInput).mutation(async ({ ctx, input }) => {
+    const s = (ctx as any).commercialScope as CommercialScope; const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+    const proposalResult: any = await db.execute(drzSql.raw(`SELECT p.*,pl.name plan_name FROM commercial_proposals p LEFT JOIN commercial_plan_catalog pl ON pl.id=p.commercial_plan_id WHERE p.id=${input.proposalId} AND ${scopeSql(s, "p")} LIMIT 1`));
+    const proposal = rowsOf(proposalResult)[0];
+    if (!proposal) throw new TRPCError({ code: "NOT_FOUND", message: "Proposta não encontrada neste ambiente." });
+    const templateResult: any = input.templateId
+      ? await db.execute(drzSql`SELECT * FROM commercial_contract_templates WHERE id=${input.templateId} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId} AND is_active=1 LIMIT 1`)
+      : await db.execute(drzSql`SELECT * FROM commercial_contract_templates WHERE owner_type=${s.ownerType} AND owner_id=${s.ownerId} AND contract_type=${input.contractType} AND is_active=1 ORDER BY id LIMIT 1`);
+    const template = rowsOf(templateResult)[0];
+    if (!template) throw new TRPCError({ code: "BAD_REQUEST", message: "Cadastre ou ative um modelo de contrato para este tipo." });
+    const clauseResult: any = input.clauseIds.length
+      ? await db.execute(drzSql.raw(`SELECT * FROM commercial_contract_clauses WHERE id IN (${input.clauseIds.join(",")}) AND owner_type='${s.ownerType}' AND owner_id=${s.ownerId} AND is_active=1 ORDER BY sort_order,title`))
+      : await db.execute(drzSql`SELECT * FROM commercial_contract_clauses WHERE owner_type=${s.ownerType} AND owner_id=${s.ownerId} AND is_active=1 AND applies_to IN ('todos',${input.contractType}) ORDER BY sort_order,title`);
+    const clauses = rowsOf(clauseResult);
+    const insert: any = await db.execute(drzSql`INSERT INTO commercial_contract_documents(owner_type,owner_id,proposal_id,template_id,contract_type,title,client_name,cnpj,status,content_html,variables_json,clauses_json,valid_from,valid_until,renewal_alert_days,created_by)
+      VALUES(${s.ownerType},${s.ownerId},${input.proposalId},${Number(template.id)},${input.contractType},${input.title || `Contrato - ${proposal.razao_social}`},${proposal.razao_social},${proposal.cnpj || null},'rascunho','',NULL,NULL,${input.validFrom || null},${input.validUntil || null},${input.renewalAlertDays},${Number(ctx.user.id)})`);
+    const contractId = Number((insert as any)[0]?.insertId || 0);
+    const contractNumber = `CTR-${new Date().getFullYear()}-${String(contractId).padStart(6, "0")}`;
+    const built = await buildContractContent(s, proposal, template, clauses, contractNumber, input.validFrom, input.validUntil);
+    await db.execute(drzSql`UPDATE commercial_contract_documents SET contract_number=${contractNumber},content_html=${built.html},variables_json=${JSON.stringify(built.variables)},clauses_json=${JSON.stringify(built.clauseSnapshot)} WHERE id=${contractId} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId}`);
+    if (proposal.email || proposal.responsavel) {
+      await db.execute(drzSql`INSERT INTO commercial_contract_signers(contract_id,signer_name,signer_email,signer_role)
+        VALUES(${contractId},${proposal.responsavel || proposal.razao_social},${proposal.email || null},'Contratante')`);
+    }
+    await db.execute(drzSql`UPDATE commercial_proposals SET status='contrato_em_assinatura' WHERE id=${input.proposalId} AND commercial_owner_type=${s.ownerType} AND commercial_owner_id=${s.ownerId}`);
+    await db.execute(drzSql`INSERT INTO commercial_contract_events(owner_type,owner_id,contract_id,event_type,description,details_json,created_by)
+      VALUES(${s.ownerType},${s.ownerId},${contractId},'contract_created','Contrato criado a partir da proposta',${JSON.stringify({ proposalId: input.proposalId, templateId: Number(template.id), clauses: clauses.length })},${Number(ctx.user.id)})`);
+    return { ok: true, id: contractId, contractNumber };
+  }),
+  generateContractPdf: commercialProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => ({
+    url: await createContractPdf((ctx as any).commercialScope, input.id, Number(ctx.user.id)),
+  })),
+  updateContractStatus: commercialProcedure.input(z.object({
+    id: z.number().int().positive(),
+    status: z.enum(["rascunho", "gerado", "enviado_assinatura", "assinado", "ativo", "cancelado", "substituido", "distratado"]),
+    note: z.string().max(5000).optional(),
+  })).mutation(async ({ ctx, input }) => {
+    const s = (ctx as any).commercialScope as CommercialScope; const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+    await db.execute(drzSql`UPDATE commercial_contract_documents SET status=${input.status},signature_status=IF(${input.status}='enviado_assinatura','enviado',signature_status),signed_at=IF(${input.status} IN ('assinado','ativo'),COALESCE(signed_at,NOW()),signed_at) WHERE id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId}`);
+    await db.execute(drzSql`INSERT INTO commercial_contract_events(owner_type,owner_id,contract_id,event_type,description,details_json,created_by)
+      VALUES(${s.ownerType},${s.ownerId},${input.id},'status_changed',${`Status alterado para ${input.status}`},${JSON.stringify({ note: input.note || null })},${Number(ctx.user.id)})`);
+    return { ok: true };
+  }),
+  uploadSignedContract: commercialProcedure.input(uploadSignedContractInput).mutation(async ({ ctx, input }) => {
+    const s = (ctx as any).commercialScope as CommercialScope; const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+    const owned: any = await db.execute(drzSql`SELECT id,version,content_html,pdf_url FROM commercial_contract_documents WHERE id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId} LIMIT 1`);
+    const contract = rowsOf(owned)[0];
+    if (!contract) throw new TRPCError({ code: "NOT_FOUND" });
+    const url = writeBase64Upload("contracts", input.fileName, input.fileBase64);
+    await db.execute(drzSql`UPDATE commercial_contract_documents SET signed_pdf_url=${url},status='assinado',signature_status='assinado_manual',signed_at=NOW() WHERE id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId}`);
+    await db.execute(drzSql`INSERT INTO commercial_contract_document_versions(contract_id,version,status,content_html,pdf_url,signed_pdf_url,created_by)
+      VALUES(${input.id},${Number(contract.version || 1)},'assinado',${contract.content_html},${contract.pdf_url || null},${url},${Number(ctx.user.id)})
+      ON DUPLICATE KEY UPDATE status='assinado',signed_pdf_url=VALUES(signed_pdf_url)`);
+    await db.execute(drzSql`INSERT INTO commercial_contract_events(owner_type,owner_id,contract_id,event_type,description,details_json,created_by)
+      VALUES(${s.ownerType},${s.ownerId},${input.id},'signed_file_uploaded','Via assinada anexada manualmente',${JSON.stringify({ url, fileName: input.fileName })},${Number(ctx.user.id)})`);
+    return { ok: true, url };
+  }),
+  listContractEvents: commercialProcedure.input(z.object({ id: z.number().int().positive() })).query(async ({ ctx, input }) => {
+    const s = (ctx as any).commercialScope as CommercialScope; const db = await getDb(); if (!db) return [];
+    const result: any = await db.execute(drzSql`SELECT e.*,u.name created_by_name FROM commercial_contract_events e LEFT JOIN users u ON u.id=e.created_by
+      WHERE e.owner_type=${s.ownerType} AND e.owner_id=${s.ownerId} AND e.contract_id=${input.id}
+      ORDER BY e.created_at DESC,e.id DESC`);
+    return rowsOf(result);
   }),
   approveProposal: commercialProcedure.input(z.object({ id: z.number().int().positive(), createFinancialSchedule: z.boolean().default(true) })).mutation(async ({ ctx, input }) => {
     const s = (ctx as any).commercialScope as CommercialScope; const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); const r: any = await db.execute(drzSql.raw(`SELECT p.*, pl.name AS plan_name FROM commercial_proposals p LEFT JOIN commercial_plan_catalog pl ON pl.id=p.commercial_plan_id WHERE p.id=${input.id} AND ${scopeSql(s, "p")} LIMIT 1`)); const p = rowsOf(r)[0]; if (!p) throw new TRPCError({ code: "NOT_FOUND" });
