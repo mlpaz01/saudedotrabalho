@@ -476,6 +476,13 @@ async function ensureCommercialTables() {
     INDEX idx_contract_doc_scope (owner_type,owner_id,status,updated_at),
     INDEX idx_contract_doc_proposal (proposal_id)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await ensureColumn(db, "commercial_contract_documents", "is_deleted", "TINYINT(1) NOT NULL DEFAULT 0");
+  await ensureColumn(db, "commercial_contract_documents", "deleted_at", "DATETIME NULL");
+  await ensureColumn(db, "commercial_contract_documents", "deleted_by", "INT NULL");
+  await ensureColumn(db, "commercial_contract_documents", "delete_reason", "VARCHAR(500) NULL");
+  await ensureColumn(db, "commercial_contract_documents", "last_sent_at", "DATETIME NULL");
+  await ensureColumn(db, "commercial_contract_documents", "last_sent_to", "VARCHAR(180) NULL");
+  await ensureColumn(db, "commercial_contract_documents", "signature_message", "TEXT NULL");
   await db.execute(drzSql`CREATE TABLE IF NOT EXISTS commercial_contract_document_versions (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     contract_id BIGINT NOT NULL,
@@ -629,6 +636,18 @@ async function seedScopeUnlocked(scope: CommercialScope) {
       VALUES (${scope.ownerType},${scope.ownerId},${code},${name},${contractType},${description},${baseText},${JSON.stringify(["BRAND_NAME","CLIENT_NAME","CNPJ","PROPOSAL_NUMBER","CONTRACT_NUMBER","PLAN_NAME","MONTHLY_VALUE","SETUP_VALUE","VALID_FROM","VALID_UNTIL","FEATURES_SUMMARY","CLAUSES"])},'pendente_juridico')
       ON DUPLICATE KEY UPDATE name=VALUES(name),description=VALUES(description),contract_type=VALUES(contract_type)`);
   }
+  if (scope.ownerType === "white_label") {
+    await db.execute(drzSql`INSERT INTO commercial_contract_clauses
+      (owner_type,owner_id,code,title,category,applies_to,clause_text,is_active,requires_legal_review,legal_review_status,sort_order,created_by)
+      SELECT 'white_label',${scope.ownerId},code,title,category,applies_to,clause_text,is_active,requires_legal_review,legal_review_status,sort_order,NULL
+      FROM commercial_contract_clauses WHERE owner_type='global' AND owner_id=0
+      ON DUPLICATE KEY UPDATE title=VALUES(title),category=VALUES(category),applies_to=VALUES(applies_to),sort_order=VALUES(sort_order)`);
+    await db.execute(drzSql`INSERT INTO commercial_contract_templates
+      (owner_type,owner_id,code,name,contract_type,description,base_text,required_tags_json,is_active,legal_review_status,created_by)
+      SELECT 'white_label',${scope.ownerId},code,name,contract_type,description,base_text,required_tags_json,is_active,legal_review_status,NULL
+      FROM commercial_contract_templates WHERE owner_type='global' AND owner_id=0
+      ON DUPLICATE KEY UPDATE name=VALUES(name),description=VALUES(description),contract_type=VALUES(contract_type)`);
+  }
   const officialPlans = [
     ["Essential", "Psicossocial e NR-01", 7.9, ["drps", "aep", "reports"]],
     ["Professional", "Gestão Preventiva de SST", 12.9, ["drps", "aep", "pgr", "epi_epc", "cipa", "sipat", "dds", "courses", "certificates", "reports"]],
@@ -775,20 +794,48 @@ const contractClauseInput = z.object({
 });
 
 const createContractInput = z.object({
-  proposalId: z.number().int().positive(),
+  proposalId: z.number().int().positive().nullable().optional(),
   templateId: z.number().int().positive().optional(),
   clauseIds: z.array(z.number().int().positive()).default([]),
   title: z.string().trim().max(255).optional(),
   contractType: z.enum(["saas", "white_label", "aditivo", "distrato"]).default("saas"),
+  clientName: z.string().trim().min(2).max(255).optional(),
+  cnpj: z.string().trim().max(30).optional(),
+  contactName: z.string().trim().max(180).optional(),
+  contactEmail: z.string().trim().email().max(180).optional().or(z.literal("")),
+  planName: z.string().trim().max(180).optional(),
+  monthlyValue: z.number().min(0).default(0),
+  setupValue: z.number().min(0).default(0),
+  featuresSummary: z.string().trim().max(50000).optional(),
   validFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
   validUntil: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
   renewalAlertDays: z.number().int().min(0).max(365).default(60),
+}).refine((value) => Boolean(value.proposalId || value.clientName), {
+  message: "Selecione uma proposta ou informe o cliente para contrato direto.",
 });
 
 const uploadSignedContractInput = z.object({
   id: z.number().int().positive(),
   fileBase64: z.string().min(20),
   fileName: z.string().trim().min(3).max(255).default("contrato_assinado.pdf"),
+});
+
+const editContractInput = z.object({
+  id: z.number().int().positive(),
+  title: z.string().trim().min(2).max(255),
+  clientName: z.string().trim().min(2).max(255),
+  cnpj: z.string().trim().max(30).optional(),
+  validFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  validUntil: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  renewalAlertDays: z.number().int().min(0).max(365).default(60),
+  contentHtml: z.string().trim().min(10).max(900000),
+});
+
+const sendContractSignatureInput = z.object({
+  id: z.number().int().positive(),
+  recipientEmail: z.string().trim().email().max(180),
+  message: z.string().trim().max(5000).optional(),
+  sendEmail: z.boolean().default(true),
 });
 
 export function probabilityForCommercialStatus(status: string) {
@@ -882,9 +929,9 @@ async function buildContractContent(scope: CommercialScope, proposal: any, templ
       ORDER BY f.category,f.sort_order,f.name`);
     featureRows = rowsOf(result);
   }
-  const featuresSummary = featureRows.length
+  const featuresSummary = String(proposal.features_summary || "").trim() || (featureRows.length
     ? featureRows.map((feature: any) => `- ${feature.name}: ${feature.description || feature.category || "funcionalidade contratada"}`).join("\n")
-    : "O escopo funcional sera aquele definido na proposta comercial aprovada e seus anexos tecnicos.";
+    : "O escopo funcional sera aquele definido na proposta comercial aprovada e seus anexos tecnicos.");
   const clauseText = clauses
     .map((clause: any, index: number) => `${index + 3}. ${String(clause.title || "").toUpperCase()}\n${clause.clause_text}`)
     .join("\n\n");
@@ -917,16 +964,34 @@ async function buildContractContent(scope: CommercialScope, proposal: any, templ
   };
 }
 
+async function addDefaultContractSigners(db: any, scope: CommercialScope, contractId: number, contract: { clientName: string; contactName?: string | null; contactEmail?: string | null }) {
+  const brandResult: any = await db.execute(drzSql`SELECT brand_name,legal_name,contact_email FROM commercial_brand_settings WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} LIMIT 1`);
+  const brand = rowsOf(brandResult)[0] || {};
+  const signerName = contract.contactName || contract.clientName;
+  if (signerName || contract.contactEmail) {
+    await db.execute(drzSql`INSERT INTO commercial_contract_signers(contract_id,signer_name,signer_email,signer_role)
+      VALUES(${contractId},${signerName || contract.clientName},${contract.contactEmail || null},'Contratante')`);
+  }
+  await db.execute(drzSql`INSERT INTO commercial_contract_signers(contract_id,signer_name,signer_email,signer_role)
+    VALUES(${contractId},${brand.legal_name || brand.brand_name || "Saúde do Trabalho"},${brand.contact_email || null},'Contratada')`);
+}
+
 async function createContractPdf(scope: CommercialScope, contractId: number, actorId: number) {
   const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
   const contractResult: any = await db.execute(drzSql`SELECT d.*,b.brand_name,b.legal_name,b.logo_url,b.primary_color,b.secondary_color,b.contact_email,b.contact_phone,b.website
     FROM commercial_contract_documents d
     JOIN commercial_brand_settings b ON b.owner_type=d.owner_type AND b.owner_id=d.owner_id
-    WHERE d.id=${contractId} AND d.owner_type=${scope.ownerType} AND d.owner_id=${scope.ownerId} LIMIT 1`);
+    WHERE d.id=${contractId} AND d.owner_type=${scope.ownerType} AND d.owner_id=${scope.ownerId} AND COALESCE(d.is_deleted,0)=0 LIMIT 1`);
   const contract = rowsOf(contractResult)[0];
   if (!contract) throw new TRPCError({ code: "NOT_FOUND", message: "Contrato não encontrado." });
   const signersResult: any = await db.execute(drzSql`SELECT * FROM commercial_contract_signers WHERE contract_id=${contractId} ORDER BY id`);
   const signers = rowsOf(signersResult);
+  if (!signers.some((signer: any) => String(signer.signer_role || "").toLowerCase().includes("contratante"))) {
+    signers.unshift({ signer_name: contract.client_name, signer_role: "Contratante" });
+  }
+  if (!signers.some((signer: any) => String(signer.signer_role || "").toLowerCase().includes("contratada"))) {
+    signers.push({ signer_name: contract.legal_name || contract.brand_name || "Saúde do Trabalho", signer_email: contract.contact_email || "", signer_role: "Contratada" });
+  }
   const primary = /^#[0-9a-f]{6}$/i.test(contract.primary_color || "") ? contract.primary_color : "#0E2C46";
   const secondary = /^#[0-9a-f]{6}$/i.test(contract.secondary_color || "") ? contract.secondary_color : "#0096A6";
   const logo = await logoDataUri(contract.logo_url);
@@ -1330,7 +1395,7 @@ export const commercialRouter = router({
       db.execute(drzSql`SELECT d.*,p.proposal_number,p.valor_mensal,p.setup_value,p.status proposal_status
         FROM commercial_contract_documents d
         LEFT JOIN commercial_proposals p ON p.id=d.proposal_id
-        WHERE d.owner_type=${s.ownerType} AND d.owner_id=${s.ownerId}
+        WHERE d.owner_type=${s.ownerType} AND d.owner_id=${s.ownerId} AND COALESCE(d.is_deleted,0)=0
         ORDER BY d.updated_at DESC,d.id DESC LIMIT 500`),
       db.execute(drzSql`SELECT * FROM commercial_contract_templates WHERE owner_type=${s.ownerType} AND owner_id=${s.ownerId} ORDER BY is_active DESC,contract_type,name`),
       db.execute(drzSql`SELECT * FROM commercial_contract_clauses WHERE owner_type=${s.ownerType} AND owner_id=${s.ownerId} ORDER BY is_active DESC,sort_order,title`),
@@ -1343,7 +1408,7 @@ export const commercialRouter = router({
         SUM(status IN ('rascunho','gerado','enviado_assinatura')) open_count,
         SUM(status='assinado') signed_count,
         SUM(valid_until IS NOT NULL AND valid_until<=DATE_ADD(CURDATE(),INTERVAL renewal_alert_days DAY) AND status IN ('assinado','ativo','gerado')) renewal_attention
-        FROM commercial_contract_documents WHERE owner_type=${s.ownerType} AND owner_id=${s.ownerId}`),
+        FROM commercial_contract_documents WHERE owner_type=${s.ownerType} AND owner_id=${s.ownerId} AND COALESCE(is_deleted,0)=0`),
     ]);
     return {
       contracts: rowsOf(contractsR),
@@ -1379,50 +1444,130 @@ export const commercialRouter = router({
   }),
   createContractFromProposal: commercialProcedure.input(createContractInput).mutation(async ({ ctx, input }) => {
     const s = (ctx as any).commercialScope as CommercialScope; const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-    const proposalResult: any = await db.execute(drzSql.raw(`SELECT p.*,pl.name plan_name FROM commercial_proposals p LEFT JOIN commercial_plan_catalog pl ON pl.id=p.commercial_plan_id WHERE p.id=${input.proposalId} AND ${scopeSql(s, "p")} LIMIT 1`));
-    const proposal = rowsOf(proposalResult)[0];
-    if (!proposal) throw new TRPCError({ code: "NOT_FOUND", message: "Proposta não encontrada neste ambiente." });
+    let proposal: any = null;
+    if (input.proposalId) {
+      const proposalResult: any = await db.execute(drzSql.raw(`SELECT p.*,pl.name plan_name FROM commercial_proposals p LEFT JOIN commercial_plan_catalog pl ON pl.id=p.commercial_plan_id WHERE p.id=${input.proposalId} AND ${scopeSql(s, "p")} LIMIT 1`));
+      proposal = rowsOf(proposalResult)[0];
+      if (!proposal) throw new TRPCError({ code: "NOT_FOUND", message: "Proposta não encontrada neste ambiente." });
+    } else {
+      proposal = {
+        id: 0,
+        proposal_number: "Contrato direto",
+        razao_social: input.clientName,
+        cnpj: input.cnpj || null,
+        responsavel: input.contactName || input.clientName,
+        email: input.contactEmail || null,
+        plan_name: input.planName || (input.contractType === "white_label" ? "White Label" : "Escopo comercial direto"),
+        valor_mensal: input.monthlyValue || 0,
+        setup_value: input.setupValue || 0,
+        services_json: "[]",
+        plan_overrides_json: "[]",
+        selected_plan_id: null,
+        commercial_plan_id: null,
+        features_summary: input.featuresSummary || "",
+      };
+    }
     const templateResult: any = input.templateId
       ? await db.execute(drzSql`SELECT * FROM commercial_contract_templates WHERE id=${input.templateId} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId} AND is_active=1 LIMIT 1`)
       : await db.execute(drzSql`SELECT * FROM commercial_contract_templates WHERE owner_type=${s.ownerType} AND owner_id=${s.ownerId} AND contract_type=${input.contractType} AND is_active=1 ORDER BY id LIMIT 1`);
     const template = rowsOf(templateResult)[0];
     if (!template) throw new TRPCError({ code: "BAD_REQUEST", message: "Cadastre ou ative um modelo de contrato para este tipo." });
+    if (String(template.contract_type) !== input.contractType) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "O modelo selecionado pertence a outro tipo de contrato. Escolha um modelo compatível." });
+    }
     const clauseResult: any = input.clauseIds.length
-      ? await db.execute(drzSql.raw(`SELECT * FROM commercial_contract_clauses WHERE id IN (${input.clauseIds.join(",")}) AND owner_type='${s.ownerType}' AND owner_id=${s.ownerId} AND is_active=1 ORDER BY sort_order,title`))
+      ? await db.execute(drzSql.raw(`SELECT * FROM commercial_contract_clauses WHERE id IN (${input.clauseIds.join(",")}) AND owner_type='${s.ownerType}' AND owner_id=${s.ownerId} AND is_active=1 AND applies_to IN ('todos','${input.contractType}') ORDER BY sort_order,title`))
       : await db.execute(drzSql`SELECT * FROM commercial_contract_clauses WHERE owner_type=${s.ownerType} AND owner_id=${s.ownerId} AND is_active=1 AND applies_to IN ('todos',${input.contractType}) ORDER BY sort_order,title`);
     const clauses = rowsOf(clauseResult);
+    if (input.clauseIds.length && clauses.length !== input.clauseIds.length) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "Há cláusulas selecionadas que não pertencem ao tipo de contrato escolhido." });
+    }
     const insert: any = await db.execute(drzSql`INSERT INTO commercial_contract_documents(owner_type,owner_id,proposal_id,template_id,contract_type,title,client_name,cnpj,status,content_html,variables_json,clauses_json,valid_from,valid_until,renewal_alert_days,created_by)
-      VALUES(${s.ownerType},${s.ownerId},${input.proposalId},${Number(template.id)},${input.contractType},${input.title || `Contrato - ${proposal.razao_social}`},${proposal.razao_social},${proposal.cnpj || null},'rascunho','',NULL,NULL,${input.validFrom || null},${input.validUntil || null},${input.renewalAlertDays},${Number(ctx.user.id)})`);
+      VALUES(${s.ownerType},${s.ownerId},${input.proposalId || null},${Number(template.id)},${input.contractType},${input.title || `Contrato - ${proposal.razao_social}`},${proposal.razao_social},${proposal.cnpj || null},'rascunho','',NULL,NULL,${input.validFrom || null},${input.validUntil || null},${input.renewalAlertDays},${Number(ctx.user.id)})`);
     const contractId = Number((insert as any)[0]?.insertId || 0);
     const contractNumber = `CTR-${new Date().getFullYear()}-${String(contractId).padStart(6, "0")}`;
     const built = await buildContractContent(s, proposal, template, clauses, contractNumber, input.validFrom, input.validUntil);
     await db.execute(drzSql`UPDATE commercial_contract_documents SET contract_number=${contractNumber},content_html=${built.html},variables_json=${JSON.stringify(built.variables)},clauses_json=${JSON.stringify(built.clauseSnapshot)} WHERE id=${contractId} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId}`);
-    if (proposal.email || proposal.responsavel) {
-      await db.execute(drzSql`INSERT INTO commercial_contract_signers(contract_id,signer_name,signer_email,signer_role)
-        VALUES(${contractId},${proposal.responsavel || proposal.razao_social},${proposal.email || null},'Contratante')`);
+    await addDefaultContractSigners(db, s, contractId, { clientName: proposal.razao_social, contactName: proposal.responsavel, contactEmail: proposal.email });
+    if (input.proposalId) {
+      await db.execute(drzSql`UPDATE commercial_proposals SET status='contrato_em_assinatura' WHERE id=${input.proposalId} AND commercial_owner_type=${s.ownerType} AND commercial_owner_id=${s.ownerId}`);
     }
-    await db.execute(drzSql`UPDATE commercial_proposals SET status='contrato_em_assinatura' WHERE id=${input.proposalId} AND commercial_owner_type=${s.ownerType} AND commercial_owner_id=${s.ownerId}`);
     await db.execute(drzSql`INSERT INTO commercial_contract_events(owner_type,owner_id,contract_id,event_type,description,details_json,created_by)
-      VALUES(${s.ownerType},${s.ownerId},${contractId},'contract_created','Contrato criado a partir da proposta',${JSON.stringify({ proposalId: input.proposalId, templateId: Number(template.id), clauses: clauses.length })},${Number(ctx.user.id)})`);
+      VALUES(${s.ownerType},${s.ownerId},${contractId},'contract_created',${input.proposalId ? "Contrato criado a partir da proposta" : "Contrato direto criado"},${JSON.stringify({ proposalId: input.proposalId || null, templateId: Number(template.id), contractType: input.contractType, clauses: clauses.length })},${Number(ctx.user.id)})`);
     return { ok: true, id: contractId, contractNumber };
   }),
   generateContractPdf: commercialProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => ({
     url: await createContractPdf((ctx as any).commercialScope, input.id, Number(ctx.user.id)),
   })),
+  updateContractDocument: commercialProcedure.input(editContractInput).mutation(async ({ ctx, input }) => {
+    const s = (ctx as any).commercialScope as CommercialScope; const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+    const currentR: any = await db.execute(drzSql`SELECT id,status,version,pdf_url,signature_status FROM commercial_contract_documents WHERE id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId} AND COALESCE(is_deleted,0)=0 LIMIT 1`);
+    const current = rowsOf(currentR)[0];
+    if (!current) throw new TRPCError({ code: "NOT_FOUND", message: "Contrato não encontrado." });
+    if (["assinado", "ativo", "distratado"].includes(String(current.status))) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "Contrato assinado/ativo não deve ser editado diretamente. Gere aditivo, distrato ou nova versão operacional." });
+    }
+    const nextVersion = current.pdf_url ? Number(current.version || 1) + 1 : Number(current.version || 1);
+    await db.execute(drzSql`UPDATE commercial_contract_documents SET
+      title=${input.title},client_name=${input.clientName},cnpj=${input.cnpj || null},valid_from=${input.validFrom || null},valid_until=${input.validUntil || null},
+      renewal_alert_days=${input.renewalAlertDays},content_html=${input.contentHtml},pdf_url=NULL,status='rascunho',
+      signature_status=IF(signature_status='assinado_manual',signature_status,'nao_enviado'),version=${nextVersion},updated_at=NOW()
+      WHERE id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId}`);
+    await db.execute(drzSql`INSERT INTO commercial_contract_events(owner_type,owner_id,contract_id,event_type,description,details_json,created_by)
+      VALUES(${s.ownerType},${s.ownerId},${input.id},'contract_edited','Contrato editado; PDF precisa ser gerado novamente',${JSON.stringify({ version: nextVersion })},${Number(ctx.user.id)})`);
+    return { ok: true, version: nextVersion };
+  }),
+  deleteContractDocument: commercialProcedure.input(z.object({ id: z.number().int().positive(), reason: z.string().trim().max(500).optional() })).mutation(async ({ ctx, input }) => {
+    const s = (ctx as any).commercialScope as CommercialScope; const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+    const currentR: any = await db.execute(drzSql`SELECT id,status,pdf_url,signed_pdf_url,last_sent_at FROM commercial_contract_documents WHERE id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId} AND COALESCE(is_deleted,0)=0 LIMIT 1`);
+    const current = rowsOf(currentR)[0];
+    if (!current) throw new TRPCError({ code: "NOT_FOUND", message: "Contrato não encontrado." });
+    const auditOnly = Boolean(current.pdf_url || current.signed_pdf_url || current.last_sent_at || ["enviado_assinatura", "assinado", "ativo", "distratado"].includes(String(current.status)));
+    await db.execute(drzSql`UPDATE commercial_contract_documents SET is_deleted=1,deleted_at=NOW(),deleted_by=${Number(ctx.user.id)},delete_reason=${input.reason || null},status='cancelado' WHERE id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId}`);
+    await db.execute(drzSql`INSERT INTO commercial_contract_events(owner_type,owner_id,contract_id,event_type,description,details_json,created_by)
+      VALUES(${s.ownerType},${s.ownerId},${input.id},'contract_deleted','Contrato removido da visão operacional com histórico preservado',${JSON.stringify({ reason: input.reason || null, auditOnly })},${Number(ctx.user.id)})`);
+    return { ok: true, auditOnly };
+  }),
+  sendContractForSignature: commercialProcedure.input(sendContractSignatureInput).mutation(async ({ ctx, input }) => {
+    const s = (ctx as any).commercialScope as CommercialScope; const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+    const contractR: any = await db.execute(drzSql`SELECT d.*,b.brand_name FROM commercial_contract_documents d
+      JOIN commercial_brand_settings b ON b.owner_type=d.owner_type AND b.owner_id=d.owner_id
+      WHERE d.id=${input.id} AND d.owner_type=${s.ownerType} AND d.owner_id=${s.ownerId} AND COALESCE(d.is_deleted,0)=0 LIMIT 1`);
+    const contract = rowsOf(contractR)[0];
+    if (!contract) throw new TRPCError({ code: "NOT_FOUND", message: "Contrato não encontrado." });
+    const pdfUrl = contract.pdf_url || await createContractPdf(s, input.id, Number(ctx.user.id));
+    let sent: any = { ok: true, preview: false };
+    if (input.sendEmail) {
+      const link = `${getEmailLinkBaseUrl()}${pdfUrl}`;
+      sent = await sendEmail({
+        to: input.recipientEmail,
+        subject: `Contrato para assinatura - ${contract.brand_name}`,
+        html: `<p>Olá.</p><p>${esc(input.message || "Segue contrato disponibilizado para assinatura.")}</p><p><a href="${esc(link)}">Visualizar contrato</a></p><p>Atenciosamente,<br><b>${esc(contract.brand_name || "Saúde do Trabalho")}</b></p>`,
+      });
+      if (!sent.ok) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: sent.error || "Falha no envio do contrato." });
+    }
+    await db.execute(drzSql`UPDATE commercial_contract_documents SET status='enviado_assinatura',signature_status=${input.sendEmail ? "enviado_email" : "envio_registrado"},last_sent_at=NOW(),last_sent_to=${input.recipientEmail},signature_message=${input.message || null},pdf_url=${pdfUrl} WHERE id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId}`);
+    await db.execute(drzSql`INSERT INTO commercial_contract_events(owner_type,owner_id,contract_id,event_type,description,details_json,created_by)
+      VALUES(${s.ownerType},${s.ownerId},${input.id},'signature_sent',${input.sendEmail ? "Contrato enviado para assinatura por e-mail" : "Envio para assinatura registrado manualmente"},${JSON.stringify({ recipientEmail: input.recipientEmail, sendEmail: input.sendEmail, preview: Boolean(sent.preview), pdfUrl })},${Number(ctx.user.id)})`);
+    return { ok: true, preview: Boolean(sent.preview), url: pdfUrl };
+  }),
   updateContractStatus: commercialProcedure.input(z.object({
     id: z.number().int().positive(),
     status: z.enum(["rascunho", "gerado", "enviado_assinatura", "assinado", "ativo", "cancelado", "substituido", "distratado"]),
     note: z.string().max(5000).optional(),
   })).mutation(async ({ ctx, input }) => {
     const s = (ctx as any).commercialScope as CommercialScope; const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-    await db.execute(drzSql`UPDATE commercial_contract_documents SET status=${input.status},signature_status=IF(${input.status}='enviado_assinatura','enviado',signature_status),signed_at=IF(${input.status} IN ('assinado','ativo'),COALESCE(signed_at,NOW()),signed_at) WHERE id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId}`);
+    if (input.status === "enviado_assinatura") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "Use o fluxo de confirmação de envio para assinatura." });
+    }
+    await db.execute(drzSql`UPDATE commercial_contract_documents SET status=${input.status},signed_at=IF(${input.status} IN ('assinado','ativo'),COALESCE(signed_at,NOW()),signed_at) WHERE id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId} AND COALESCE(is_deleted,0)=0`);
     await db.execute(drzSql`INSERT INTO commercial_contract_events(owner_type,owner_id,contract_id,event_type,description,details_json,created_by)
       VALUES(${s.ownerType},${s.ownerId},${input.id},'status_changed',${`Status alterado para ${input.status}`},${JSON.stringify({ note: input.note || null })},${Number(ctx.user.id)})`);
     return { ok: true };
   }),
   uploadSignedContract: commercialProcedure.input(uploadSignedContractInput).mutation(async ({ ctx, input }) => {
     const s = (ctx as any).commercialScope as CommercialScope; const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-    const owned: any = await db.execute(drzSql`SELECT id,version,content_html,pdf_url FROM commercial_contract_documents WHERE id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId} LIMIT 1`);
+    const owned: any = await db.execute(drzSql`SELECT id,version,content_html,pdf_url FROM commercial_contract_documents WHERE id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId} AND COALESCE(is_deleted,0)=0 LIMIT 1`);
     const contract = rowsOf(owned)[0];
     if (!contract) throw new TRPCError({ code: "NOT_FOUND" });
     const url = writeBase64Upload("contracts", input.fileName, input.fileBase64);
