@@ -122,6 +122,17 @@ function statusLabel(value: string) {
   );
 }
 
+function pgrReferenceLabel(row: any) {
+  if (
+    Number(row.is_current_version) === 1 &&
+    String(row.status) === "publicado"
+  )
+    return "PGR vigente";
+  if (Number(row.is_current_version) !== 1) return "Historico";
+  if (String(row.status) === "arquivado") return "Arquivado";
+  return "Versao atual em elaboracao";
+}
+
 function today(offsetDays = 0) {
   const date = new Date();
   date.setDate(date.getDate() + offsetDays);
@@ -390,7 +401,7 @@ export default function PcmsoWorkspace({
                   <option value={0}>Selecione o PGR de referência</option>
                   {pgrs.map(row => (
                     <option value={row.id} key={row.id}>
-                      {Number(row.is_current_version) === 1 ? "PGR vigente" : "Histórico"} · {row.title}
+                      {pgrReferenceLabel(row)} · {row.title}
                       {row.exercise_year ? ` · ${row.exercise_year}` : ""}
                       {Number(row.revision_number || 0)
                         ? ` · revisão ${String(row.revision_number).padStart(2, "0")}`

@@ -232,6 +232,11 @@ const medicalNav: NavSection[] = [
         icon: <ClipboardCheck size={16} />,
       },
       {
+        label: "Atualizacoes SESMT x Medico",
+        href: "/admin/atualizacoes-tecnicas",
+        icon: <MessageSquareText size={16} />,
+      },
+      {
         label: "Gestao de PCD",
         href: "/admin/gestao-pcd",
         icon: <Accessibility size={16} />,
