@@ -576,8 +576,10 @@ export default function AdminPGR() {
                   <div className="flex-1 min-w-0">
                      <div className="flex flex-wrap items-center gap-2">
                        <div className="font-semibold text-foreground truncate">{p.title || "PGR sem título"}</div>
-                       {Number(p.isCurrentVersion) === 1 ? (
+                       {Number(p.isCurrentVersion) === 1 && String(p.status) === "publicado" ? (
                          <Badge className="bg-emerald-100 text-emerald-800 border-emerald-200">PGR vigente</Badge>
+                       ) : Number(p.isCurrentVersion) === 1 ? (
+                         <Badge className="bg-blue-100 text-blue-800 border-blue-200">Versão atual em elaboração</Badge>
                        ) : (
                          <Badge variant="outline">Histórico</Badge>
                        )}
@@ -730,8 +732,10 @@ export default function AdminPGR() {
                </Badge>
                {isHistoricalVersion ? (
                  <Badge variant="outline">Versão histórica · somente leitura</Badge>
-               ) : (
+               ) : currentPGRStatus === "publicado" ? (
                  <Badge className="bg-emerald-100 text-emerald-800 border-emerald-200">PGR vigente</Badge>
+               ) : (
+                 <Badge className="bg-blue-100 text-blue-800 border-blue-200">Versão atual em elaboração</Badge>
                )}
                <Badge variant="outline">
                  {Number(doc.revision_number || 0) === 0

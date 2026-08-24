@@ -19792,7 +19792,8 @@ Return only the JSON content object (no wrapper). Format per type:
           throw new TRPCError({ code: "FORBIDDEN" });
         const result: any = await db.execute(drzSql`
           SELECT DISTINCT other.id,other.title,other.status,other.exercise_year AS exerciseYear,
-                 other.revision_number AS revisionNumber,mg.code AS gseCode,mg.name AS gseName
+                 other.revision_number AS revisionNumber,other.updated_at AS updatedAt,
+                 mg.code AS gseCode,mg.name AS gseName
           FROM pgr_documents current_doc
           JOIN occupational_gse_pgr_links current_link ON current_link.pgr_id=current_doc.id
           JOIN occupational_gse_master mg ON mg.id=current_link.gse_id

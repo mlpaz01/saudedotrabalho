@@ -400,7 +400,11 @@ export default function AdminVisao360() {
                       </div>
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                      {Number(doc.is_current_version) === 1 ? <span style={{ fontSize: 11, color: C.greenD, fontWeight: 800 }}>PGR vigente</span> : null}
+                      {Number(doc.is_current_version) === 1 && String(doc.status) === "publicado" ? (
+                        <span style={{ fontSize: 11, color: C.greenD, fontWeight: 800 }}>PGR vigente</span>
+                      ) : Number(doc.is_current_version) === 1 ? (
+                        <span style={{ fontSize: 11, color: C.blue, fontWeight: 800 }}>Versão atual</span>
+                      ) : null}
                       <span style={{ border: `1px solid ${C.border2}`, borderRadius: 999, padding: "3px 8px", fontSize: 11, color: C.ink2, fontWeight: 700 }}>{docStatusText(doc.status)}</span>
                     </div>
                   </div>

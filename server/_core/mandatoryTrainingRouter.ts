@@ -4,6 +4,7 @@ import { z } from "zod";
 import { getDb, logAudit } from "../db";
 import { sendEmail } from "./email";
 import { activeEmployeeSql, ensureActiveEmployeeColumns } from "./activeEmployees";
+import { ensureOccupationalTables } from "./occupationalLifecycleRouter";
 import { protectedProcedure, router } from "./trpc";
 
 const MANAGER_ROLES = new Set([
@@ -338,6 +339,7 @@ export const mandatoryTrainingRouter = router({
     const db = await getDb();
     if (!db) return { courses: [], branches: [], sectors: [], positions: [], gses: [], users: [] };
     await ensureTables(db);
+    await ensureOccupationalTables();
     await requireEnabled(db, companyId);
     const [coursesR, branchesR, sectorsR, positionsR, gsesR, usersR] = await Promise.all([
       db.execute(drzSql`SELECT m.id,m.title,m.description,m.durationMinutes,m.validity_days,
@@ -347,10 +349,10 @@ export const mandatoryTrainingRouter = router({
         (m.created_by_company_id IS NULL OR m.created_by_company_id=${companyId} OR EXISTS
           (SELECT 1 FROM company_content_enrollments e WHERE e.company_id=${companyId} AND e.content_type='module' AND e.content_id=m.id AND e.is_active=1))
         ORDER BY m.title`),
-      db.execute(drzSql`SELECT id,name FROM branches WHERE company_id=${companyId} ORDER BY name`),
-      db.execute(drzSql`SELECT id,name,branch_id FROM sectors WHERE company_id=${companyId} ORDER BY name`),
+      db.execute(drzSql`SELECT id,name FROM branches WHERE company_id=${companyId} AND is_active=1 ORDER BY name`),
+      db.execute(drzSql`SELECT id,name,branch_id FROM sectors WHERE company_id=${companyId} AND is_active=1 ORDER BY name`),
       db.execute(drzSql`SELECT DISTINCT position FROM users WHERE company_id=${companyId} AND position IS NOT NULL AND position<>'' ORDER BY position`),
-      db.execute(drzSql`SELECT id,code,name FROM occupational_gse_master WHERE company_id=${companyId} AND is_active=1 ORDER BY code,name`),
+      db.execute(drzSql`SELECT id,code,name FROM occupational_gse_master WHERE company_id=${companyId} AND status='ativo' ORDER BY code,name`),
       db.execute(drzSql`SELECT u.id,u.name,u.cpf,u.employee_registration,u.branch_id,u.sector_id,u.position,
           h.gse_id AS current_gse_id
         FROM users u
