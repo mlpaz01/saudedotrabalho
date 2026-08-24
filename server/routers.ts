@@ -19090,6 +19090,143 @@ Return only the JSON content object (no wrapper). Format per type:
         return { ok: true };
       }),
 
+    archiveRevisionDocument: adminOrRhProcedure
+      .input(
+        z.object({
+          id: z.number().int().positive(),
+          reason: z.string().trim().max(500).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const role = String((ctx.user as any).role || "");
+        const isGlobal = role === "admin_global" || role === "super_admin";
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensurePgrVersioningTables(db);
+        const result: any = await db.execute(drzSql`SELECT id,company_id,status,revision_root_id,revision_number,is_current_version
+          FROM pgr_documents WHERE id=${input.id} LIMIT 1`);
+        const row = (result as any)[0]?.[0];
+        if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "Revisão do PGR não encontrada." });
+        if (!isGlobal && Number(row.company_id) !== Number((ctx.user as any).companyId))
+          throw new TRPCError({ code: "FORBIDDEN" });
+        if (Number(row.revision_number || 0) <= 0)
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Use a remoção comum para rascunhos originais. Esta ação é exclusiva para revisões." });
+        const companyId = Number(row.company_id);
+        const rootId = Number(row.revision_root_id || row.id);
+        const reason = input.reason || "Revisão arquivada pelo usuário.";
+        await db.transaction(async (tx: any) => {
+          await tx.execute(drzSql`UPDATE pgr_documents SET status='arquivado',is_current_version=0,updated_at=NOW() WHERE id=${input.id} AND company_id=${companyId}`);
+          const latestResult: any = await tx.execute(drzSql`SELECT id FROM pgr_documents
+            WHERE company_id=${companyId} AND revision_root_id=${rootId} AND status<>'arquivado'
+            ORDER BY revision_number DESC,id DESC LIMIT 1`);
+          const latestId = Number((latestResult as any)[0]?.[0]?.id || 0);
+          if (latestId) {
+            await tx.execute(drzSql`UPDATE pgr_documents SET is_current_version=CASE WHEN id=${latestId} THEN 1 ELSE 0 END
+              WHERE company_id=${companyId} AND revision_root_id=${rootId}`);
+          }
+          await tx.execute(drzSql`INSERT INTO pgr_version_events
+            (company_id,revision_root_id,pgr_id,source_pgr_id,revision_number,event_type,reason,changes_json,performed_by)
+            VALUES (${companyId},${rootId},${input.id},NULL,${Number(row.revision_number || 0)},'revision_archived',${reason},
+              ${JSON.stringify({ previousStatus: row.status, archivedAt: new Date().toISOString() })},${Number((ctx.user as any).id)})`);
+          await tx.execute(drzSql`INSERT INTO pgr_revision_history
+            (pgr_id,revision_number,action,performed_by_user_id,performed_by_name,notes)
+            VALUES (${input.id},${String(row.revision_number || "")},'arquivado',${Number((ctx.user as any).id)},${String((ctx.user as any).name || (ctx.user as any).email || "—")},${reason})`);
+        });
+        await logAudit({
+          userId: Number((ctx.user as any).id),
+          userEmail: (ctx.user as any).email || null,
+          action: "pgr_revision_archived",
+          entityType: "pgr_document",
+          entityId: input.id,
+          detailsJson: { revisionRootId: rootId, revisionNumber: Number(row.revision_number || 0), reason },
+        });
+        return { ok: true };
+      }),
+
+    deleteRevisionDocument: adminOrRhProcedure
+      .input(z.object({ id: z.number().int().positive() }))
+      .mutation(async ({ ctx, input }) => {
+        const role = String((ctx.user as any).role || "");
+        const isGlobal = role === "admin_global" || role === "super_admin";
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await ensurePgrVersioningTables(db);
+        const result: any = await db.execute(drzSql`SELECT id,company_id,status,revision_root_id,revision_parent_id,revision_number,is_current_version,pdf_url
+          FROM pgr_documents WHERE id=${input.id} LIMIT 1`);
+        const row = (result as any)[0]?.[0];
+        if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "Revisão do PGR não encontrada." });
+        if (!isGlobal && Number(row.company_id) !== Number((ctx.user as any).companyId))
+          throw new TRPCError({ code: "FORBIDDEN" });
+        if (Number(row.revision_number || 0) <= 0)
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "O documento original não pode ser excluído por esta rotina." });
+        if (String(row.status) === "publicado" || String(row.status) === "arquivado" || row.pdf_url)
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Esta revisão já possui publicação, arquivo ou histórico oficial. Arquive a revisão em vez de excluir." });
+        const companyId = Number(row.company_id);
+        const rootId = Number(row.revision_root_id || input.id);
+        let usage = 0;
+        const countUsage = async (query: any) => {
+          try {
+            const usageResult: any = await db.execute(query);
+            usage += Number((usageResult as any)[0]?.[0]?.total || 0);
+          } catch (_) {
+            // Algumas tabelas podem não existir em instalações antigas; nesse caso a rotina segue conservando as demais validações.
+          }
+        };
+        await countUsage(drzSql`SELECT COUNT(*) total FROM pcmso_programs_v2 WHERE company_id=${companyId} AND pgr_id=${input.id}`);
+        await countUsage(drzSql`SELECT COUNT(*) total FROM technical_documents_v2 WHERE company_id=${companyId} AND pgr_id=${input.id}`);
+        await countUsage(drzSql`SELECT COUNT(*) total FROM pcmso_pgr_revision_alerts WHERE company_id=${companyId} AND (previous_pgr_id=${input.id} OR new_pgr_id=${input.id})`);
+        await countUsage(drzSql`SELECT COUNT(*) total FROM pgr_documents WHERE company_id=${companyId} AND revision_parent_id=${input.id}`);
+        await countUsage(drzSql`SELECT COUNT(*) total FROM pgr_version_events WHERE company_id=${companyId} AND source_pgr_id=${input.id}`);
+        await countUsage(drzSql`SELECT COUNT(*) total FROM pgr_attachments WHERE company_id=${companyId} AND pgr_id=${input.id}`);
+        if (usage > 0)
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "Esta revisão já foi usada por PCMSO, laudo, anexo, alerta médico ou revisão posterior. Arquive para preservar a rastreabilidade.",
+          });
+        await db.transaction(async (tx: any) => {
+          const gseResult: any = await tx.execute(drzSql`SELECT id FROM pgr_gse WHERE pgr_id=${input.id}`);
+          const gseIds = ((gseResult as any)[0] || []).map((item: any) => Number(item.id)).filter(Boolean);
+          if (gseIds.length) {
+            const gseList = gseIds.join(",");
+            const riskResult: any = await tx.execute(drzSql.raw(`SELECT id FROM pgr_gse_riscos WHERE gse_id IN (${gseList})`));
+            const riskIds = ((riskResult as any)[0] || []).map((item: any) => Number(item.id)).filter(Boolean);
+            if (riskIds.length) {
+              try { await tx.execute(drzSql.raw(`DELETE FROM pgr_gse_riscos_detalhe WHERE risco_id IN (${riskIds.join(",")})`)); } catch (_) {}
+            }
+            await tx.execute(drzSql.raw(`DELETE FROM pgr_gse_evidencias WHERE gse_id IN (${gseList})`));
+            await tx.execute(drzSql.raw(`DELETE FROM pgr_gse_acoes WHERE gse_id IN (${gseList})`));
+            await tx.execute(drzSql.raw(`DELETE FROM pgr_gse_epi WHERE gse_id IN (${gseList})`));
+            await tx.execute(drzSql.raw(`DELETE FROM pgr_gse_epc WHERE gse_id IN (${gseList})`));
+            await tx.execute(drzSql.raw(`DELETE FROM pgr_gse_treinamentos WHERE gse_id IN (${gseList})`));
+            await tx.execute(drzSql.raw(`DELETE FROM pgr_gse_setores WHERE gse_id IN (${gseList})`));
+            await tx.execute(drzSql.raw(`DELETE FROM pgr_gse_cargos WHERE gse_id IN (${gseList})`));
+            await tx.execute(drzSql.raw(`DELETE FROM pgr_gse_riscos WHERE gse_id IN (${gseList})`));
+            await tx.execute(drzSql.raw(`DELETE FROM occupational_gse_pgr_links WHERE pgr_id=${Number(input.id)} OR pgr_gse_id IN (${gseList})`));
+            await tx.execute(drzSql.raw(`DELETE FROM pgr_gse WHERE id IN (${gseList})`));
+          }
+          await tx.execute(drzSql`DELETE FROM pgr_version_events WHERE company_id=${companyId} AND pgr_id=${input.id} AND event_type='revision_created'`);
+          await tx.execute(drzSql`DELETE FROM pgr_revision_history WHERE pgr_id=${input.id}`);
+          await tx.execute(drzSql`DELETE FROM pgr_documents WHERE id=${input.id} AND company_id=${companyId}`);
+          const latestResult: any = await tx.execute(drzSql`SELECT id FROM pgr_documents
+            WHERE company_id=${companyId} AND revision_root_id=${rootId} AND status<>'arquivado'
+            ORDER BY revision_number DESC,id DESC LIMIT 1`);
+          const latestId = Number((latestResult as any)[0]?.[0]?.id || 0);
+          if (latestId) {
+            await tx.execute(drzSql`UPDATE pgr_documents SET is_current_version=CASE WHEN id=${latestId} THEN 1 ELSE 0 END
+              WHERE company_id=${companyId} AND revision_root_id=${rootId}`);
+          }
+        });
+        await logAudit({
+          userId: Number((ctx.user as any).id),
+          userEmail: (ctx.user as any).email || null,
+          action: "pgr_revision_deleted",
+          entityType: "pgr_document",
+          entityId: input.id,
+          detailsJson: { revisionRootId: rootId, revisionNumber: Number(row.revision_number || 0) },
+        });
+        return { ok: true };
+      }),
+
     // Resumo executivo de um PGR: indicadores de inventário, matriz e plano de ação.
     // Usado pela aba "Executivo" (AdminPGRExecutive).
     executiveOverview: adminOrRhProcedure

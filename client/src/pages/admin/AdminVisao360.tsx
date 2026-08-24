@@ -209,6 +209,8 @@ export default function AdminVisao360() {
   const usersQuery = trpc.admin.listUsers.useQuery({ page: 1, limit: 50 });
   const statsQuery = trpc.admin.stats.useQuery();
   const sectorQuery = trpc.admin.sectorEngagement.useQuery();
+  const pgrDocsQuery = trpc.technicalDocuments.listPgrs.useQuery();
+  const occupationalDocsQuery = trpc.technicalDocuments.complianceSummary.useQuery();
 
   const users = usersQuery.data?.data ?? [];
   const total = usersQuery.data?.total ?? statsQuery.data?.totalUsers ?? 0;
@@ -232,6 +234,18 @@ export default function AdminVisao360() {
     { label: "Risco elevado",   value: Number(psicoBands.risco_elevado   || 0), color: C.red    },
   ];
   const donutActual = donutSegments.reduce((a, s) => a + s.value, 0);
+  const pgrDocs = ((pgrDocsQuery.data as any[]) || []).slice(0, 5);
+  const pcmsoSummary = (occupationalDocsQuery.data as any)?.pcmso || {};
+  const pgrRevisionAlerts = (occupationalDocsQuery.data as any)?.pgrRevisionAlerts || {};
+  const pgrRevisionPending = Number(pgrRevisionAlerts.medical_pending || 0) + Number(pgrRevisionAlerts.sesmt_pending || 0);
+  const docStatusText = (status: string) => ({
+    rascunho: "Rascunho",
+    em_revisao: "Em revisão",
+    aprovado: "Concluída",
+    publicado: "Vigente",
+    arquivado: "Arquivada",
+    vigente: "Vigente",
+  } as Record<string, string>)[String(status || "")] || "Rascunho";
 
   // sector progress bars
   const deptBars = sectors.length > 0
@@ -355,6 +369,60 @@ export default function AdminVisao360() {
             >{t.label}</button>
           ))}
         </div>
+
+        {activeTab === "dashboard" && (
+          <div style={{ ...cardStyle, marginBottom: 22 }}>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 18 }}>
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: 9, color: C.navy, fontWeight: 800, fontSize: 15 }}>
+                  <IconFile /> Documentos PGR / PCMSO
+                </div>
+                <p style={{ color: C.ink2, fontSize: 12.5, marginTop: 6, maxWidth: 650 }}>
+                  Linha documental da empresa com PGR original, revisões, versão vigente e reflexos do PCMSO.
+                </p>
+              </div>
+              <button
+                onClick={() => navigate("/admin/documentos-tecnicos")}
+                style={{ background: C.navy, color: "#fff", border: 0, borderRadius: 8, padding: "9px 13px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}
+              >
+                Abrir documentos
+              </button>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1.35fr .65fr", gap: 18, marginTop: 16 }}>
+              <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
+                {pgrDocs.length ? pgrDocs.map((doc: any) => (
+                  <div key={doc.id} style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 12, padding: "10px 12px", borderTop: `1px solid ${C.line}` }}>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: C.ink }}>{doc.title || "PGR sem título"}</div>
+                      <div style={{ fontSize: 11.5, color: C.ink3, marginTop: 2 }}>
+                        {Number(doc.revision_number || 0) === 0 ? "Documento original" : `Revisão ${String(doc.revision_number).padStart(2, "0")}`}
+                        {doc.exercise_year ? ` · Exercício ${doc.exercise_year}` : ""}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                      {Number(doc.is_current_version) === 1 ? <span style={{ fontSize: 11, color: C.greenD, fontWeight: 800 }}>PGR vigente</span> : null}
+                      <span style={{ border: `1px solid ${C.border2}`, borderRadius: 999, padding: "3px 8px", fontSize: 11, color: C.ink2, fontWeight: 700 }}>{docStatusText(doc.status)}</span>
+                    </div>
+                  </div>
+                )) : (
+                  <div style={{ padding: 14, fontSize: 12.5, color: C.ink3 }}>Nenhum PGR registrado para exibir.</div>
+                )}
+              </div>
+              <div style={{ border: `1px solid ${pgrRevisionPending ? C.amber : C.border}`, background: pgrRevisionPending ? C.amberSoft : C.surface2, borderRadius: 10, padding: 14 }}>
+                <div style={{ fontSize: 12, fontWeight: 800, color: C.ink2 }}>PCMSO</div>
+                <div style={{ fontSize: 28, fontWeight: 900, color: C.navy, marginTop: 6 }}>{Number(pcmsoSummary.total || 0)}</div>
+                <div style={{ fontSize: 12, color: C.ink2, marginTop: 4 }}>programa(s) cadastrados · {Number(pcmsoSummary.vigente || 0)} vigente(s)</div>
+                {pgrRevisionPending ? (
+                  <div style={{ marginTop: 12, color: C.orange, fontSize: 12, fontWeight: 800 }}>
+                    PCMSO aguardando revisão técnica após alteração do PGR: {pgrRevisionPending}
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 12, color: C.greenD, fontSize: 12, fontWeight: 800 }}>Sem revisão PGR-PCMSO pendente</div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* ── IMPORTAR DADOS TAB ───────────────────────────────────────────── */}
         {activeTab === "importar" && (

@@ -154,7 +154,7 @@ const adminSections: NavSection[] = [
     section: "Saude Ocupacional",
     items: [
       { label: "Operacao Ocupacional", href: "/admin/saude-ocupacional", roles: ["sesmt", "admin", "company_admin", "admin_global", "super_admin"], icon: <ClipboardCheck size={16} /> },
-      { label: "Atualizacoes SESMT x Medico", href: "/admin/atualizacoes-tecnicas", roles: ["sesmt", "admin", "company_admin", "admin_global", "super_admin"], icon: <MessageSquareText size={16} /> },
+      { label: "Atualizacoes SESMT x Medico", href: "/admin/atualizacoes-tecnicas", roles: ["sesmt", "medico", "admin", "company_admin", "admin_global", "super_admin"], icon: <MessageSquareText size={16} /> },
       { label: "Gestao de PCD", href: "/admin/gestao-pcd", roles: ["rh", "sesmt", "medico", "admin", "company_admin", "admin_global", "super_admin"], icon: <Accessibility size={16} /> },
       { label: "PCA", href: "/admin/pca", roles: ["sesmt", "medico", "admin", "company_admin", "admin_global", "super_admin"], icon: <Ear size={16} /> },
       { label: "Eventos eSocial", href: "/admin/esocial", roles: ["sesmt", "admin", "company_admin", "admin_global", "super_admin"], icon: <FileCheck size={16} /> },

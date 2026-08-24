@@ -139,6 +139,14 @@ export default function AdminPGR() {
     onSuccess: () => { toast.success("PGR removido"); listQ.refetch(); },
     onError: (e: any) => toast.error(e?.message ?? "Erro"),
   });
+  const archiveRevisionMut = trpc.pgr.archiveRevisionDocument.useMutation({
+    onSuccess: () => { toast.success("Revisão arquivada com rastreabilidade preservada."); listQ.refetch(); },
+    onError: (e: any) => toast.error(e?.message ?? "Não foi possível arquivar a revisão."),
+  });
+  const deleteRevisionMut = trpc.pgr.deleteRevisionDocument.useMutation({
+    onSuccess: () => { toast.success("Revisão excluída."); listQ.refetch(); },
+    onError: (e: any) => toast.error(e?.message ?? "Não foi possível excluir a revisão."),
+  });
   const [revisionSource, setRevisionSource] = useState<any | null>(null);
   const [revisionReason, setRevisionReason] = useState("");
   const [revisionNotes, setRevisionNotes] = useState("");
@@ -269,7 +277,7 @@ export default function AdminPGR() {
   const isHistoricalVersion =
     Number(doc.is_current_version ?? currentPgrListItem?.isCurrentVersion ?? 1) !== 1;
   const isPublishedVersion = currentPGRStatus === "publicado";
-  const isReadOnlyVersion = isHistoricalVersion || isPublishedVersion;
+  const isReadOnlyVersion = isHistoricalVersion || isPublishedVersion || currentPGRStatus === "arquivado";
   const conflictsQ = trpc.pgr.checkExerciseConflicts.useQuery(
     { pgrId: typeof editId === "number" ? editId : 0 },
     { enabled: typeof editId === "number" }
@@ -278,11 +286,22 @@ export default function AdminPGR() {
     const map: Record<string, { label: string; cls: string }> = {
       rascunho: { label: "Rascunho", cls: "bg-slate-100 text-slate-600 border-slate-200" },
       em_revisao: { label: "Em Revisão", cls: "bg-yellow-100 text-yellow-700 border-yellow-200" },
-      aprovado: { label: "Aprovado", cls: "bg-blue-100 text-blue-700 border-blue-200" },
-      publicado: { label: "Publicado", cls: "bg-green-100 text-green-700 border-green-200" },
+      aprovado: { label: "Concluída", cls: "bg-blue-100 text-blue-700 border-blue-200" },
+      publicado: { label: "Vigente", cls: "bg-green-100 text-green-700 border-green-200" },
+      arquivado: { label: "Arquivada", cls: "bg-zinc-100 text-zinc-700 border-zinc-200" },
     };
     const d = map[s] ?? map["rascunho"];
     return <Badge className={`${d.cls} gap-1`}>{d.label}</Badge>;
+  }
+  function pgrStatusText(s: string) {
+    const map: Record<string, string> = {
+      rascunho: "Rascunho",
+      em_revisao: "Em revisão",
+      aprovado: "Concluída",
+      publicado: "Vigente",
+      arquivado: "Arquivada",
+    };
+    return map[String(s || "")] || "Rascunho";
   }
 
   async function openEditor(id: number | "new", branchId: number | null = null) {
@@ -570,7 +589,7 @@ export default function AdminPGR() {
                      </div>
                     <div className="text-xs text-muted-foreground">
                       {p.razaoSocial ? `${p.razaoSocial} · ` : ""}
-                      {p.status === "gerado" ? "PDF gerado" : "Rascunho"}
+                      {pgrStatusText(p.status)}
                       {p.vigenciaInicio ? ` · Vigencia ${new Date(p.vigenciaInicio).toLocaleDateString("pt-BR")}` : ""}
                       {p.updatedAt ? ` · Atualizado ${new Date(p.updatedAt).toLocaleDateString("pt-BR")}` : ""}
                     </div>
@@ -592,6 +611,16 @@ export default function AdminPGR() {
                    {p.status !== "publicado" && Number(p.revisionNumber || 0) === 0 && (
                      <Button size="sm" variant="ghost" onClick={() => { if (confirm("Remover este rascunho de PGR?")) delMut.mutate({ id: p.id }); }}>
                        <Trash2 size={14} className="text-rose-600" />
+                     </Button>
+                   )}
+                   {Number(p.revisionNumber || 0) > 0 && p.status !== "arquivado" && (
+                     <Button size="icon" variant="ghost" title="Arquivar revisão" onClick={() => { const reason = prompt("Motivo do arquivamento da revisão:", "Substituída por nova revisão."); if (reason !== null) archiveRevisionMut.mutate({ id: Number(p.id), reason }); }}>
+                       <FolderOpen size={15} />
+                     </Button>
+                   )}
+                   {Number(p.revisionNumber || 0) > 0 && p.status !== "publicado" && p.status !== "arquivado" && (
+                     <Button size="icon" variant="ghost" title="Excluir revisão ainda não utilizada" onClick={() => { if (confirm("Excluir esta revisão somente se ela não tiver sido usada por PCMSO, laudos, anexos ou histórico posterior?")) deleteRevisionMut.mutate({ id: Number(p.id) }); }}>
+                       <Trash2 size={15} className="text-rose-600" />
                      </Button>
                    )}
                 </div>
@@ -734,19 +763,29 @@ export default function AdminPGR() {
             {editId !== "new" && !isReadOnlyVersion && currentPGRStatus === "em_revisao" && (
               <Button variant="outline" size="sm" className="gap-1 border-blue-300 text-blue-700"
                 onClick={() => updateStatusM.mutate({ id: editId as number, status: "aprovado" })}>
-                <CheckCircle2 size={14}/>Aprovar
+                <CheckCircle2 size={14}/>Concluir revisão
               </Button>
             )}
             {editId !== "new" && !isReadOnlyVersion && currentPGRStatus === "aprovado" && (
               <Button variant="outline" size="sm" className="gap-1 border-green-300 text-green-700"
                 onClick={() => updateStatusM.mutate({ id: editId as number, status: "publicado" })}>
-                <CheckCircle2 size={14}/>Publicar
+                <CheckCircle2 size={14}/>Tornar vigente
               </Button>
             )}
             {editId !== "new" && pgrStatusBadge(currentPGRStatus)}
             {editId !== "new" && !isHistoricalVersion && (
               <Button variant="outline" size="sm" className="gap-1" onClick={() => { setRevisionSource(currentPgrListItem || doc); setRevisionReason(""); setRevisionNotes(""); }}>
                 <GitBranch size={14} /> Criar revisão
+              </Button>
+            )}
+            {editId !== "new" && Number(doc.revision_number || 0) > 0 && currentPGRStatus !== "arquivado" && (
+              <Button variant="outline" size="sm" className="gap-1" onClick={() => { const reason = prompt("Motivo do arquivamento da revisão:", "Substituída por nova revisão."); if (reason !== null) archiveRevisionMut.mutate({ id: editId as number, reason }); }}>
+                <FolderOpen size={14}/>Arquivar revisão
+              </Button>
+            )}
+            {editId !== "new" && Number(doc.revision_number || 0) > 0 && currentPGRStatus !== "publicado" && currentPGRStatus !== "arquivado" && (
+              <Button variant="outline" size="sm" className="gap-1 text-rose-700" onClick={() => { if (confirm("Excluir esta revisão somente se ela ainda não tiver sido usada por PCMSO, laudos, anexos ou revisão posterior?")) deleteRevisionMut.mutate({ id: editId as number }); }}>
+                <Trash2 size={14}/>Excluir revisão
               </Button>
             )}
           </div>

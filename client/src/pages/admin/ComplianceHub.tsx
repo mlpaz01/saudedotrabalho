@@ -827,7 +827,7 @@ function OccupationalDocumentsCompliancePanel() {
       label: "PCMSO",
       total: Number(pcmso.total || 0),
       active: Number(pcmso.vigente || 0),
-      review: Number(pcmso.revisar_pgr || 0),
+      review: Number(pcmso.revisar_pgr || 0) + Number(data?.pgrRevisionAlerts?.medical_pending || 0),
       score: Math.round(Number(pcmso.score || 0)),
       pending: Number(pcmso.pendencias || 0),
     },
@@ -841,6 +841,11 @@ function OccupationalDocumentsCompliancePanel() {
     ["Insalubridade", data?.checklists?.technical?.insalubridade],
     ["Periculosidade", data?.checklists?.technical?.periculosidade],
   ] as Array<[string, any]>;
+  const pgrRevisionAlerts = data?.pgrRevisionAlerts || {};
+  const medicalPending = Number(pgrRevisionAlerts.medical_pending || 0);
+  const sesmtPending = Number(pgrRevisionAlerts.sesmt_pending || 0);
+  const reviewedWithoutChange = Number(pgrRevisionAlerts.reviewed_without_change || 0);
+  const totalRevisionAlerts = Number(pgrRevisionAlerts.total_open || 0);
   return (
     <div className="space-y-4">
       <div className="border bg-white p-5">
@@ -850,6 +855,15 @@ function OccupationalDocumentsCompliancePanel() {
           o PGR, decisões técnicas, auditorias e versões vigentes.
         </p>
       </div>
+      {totalRevisionAlerts > 0 ? (
+        <div className="border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+          <div className="font-semibold">PGR revisado com reflexo no PCMSO</div>
+          <p className="mt-1 text-xs">
+            Existem atualizações técnicas abertas: {medicalPending} aguardando análise médica,
+            {" "}{sesmtPending} aguardando retorno do SESMT e {reviewedWithoutChange} marcadas sem alteração pelo médico.
+          </p>
+        </div>
+      ) : null}
       <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
         {rows.map(row => {
           const status =

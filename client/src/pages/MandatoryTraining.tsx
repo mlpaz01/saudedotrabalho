@@ -63,6 +63,7 @@ export default function MandatoryTraining() {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(emptyForm());
   const [search, setSearch] = useState("");
+  const [courseSearch, setCourseSearch] = useState("");
 
   useEffect(() => {
     if (!access || defaultTabSet.current) return;
@@ -102,6 +103,44 @@ export default function MandatoryTraining() {
   const totals = { total: team.length, completed: team.filter(row => row.status === "concluido").length,
     pending: team.filter(row => ["pendente", "em_andamento"].includes(row.status)).length,
     overdue: team.filter(row => row.status === "vencido").length };
+  const courses = (optionsQ.data?.courses || []) as any[];
+  const filteredCourses = useMemo(() => {
+    const query = courseSearch.trim().toLowerCase();
+    if (!query) return courses;
+    return courses.filter(course =>
+      [
+        course.title,
+        course.description,
+        course.code,
+        course.templateCategory,
+        course.profession,
+        course.id,
+      ].some(value => String(value || "").toLowerCase().includes(query))
+    );
+  }, [courses, courseSearch]);
+  const selectedCourse = useMemo(
+    () => courses.find(course => Number(course.id) === Number(form.moduleId)),
+    [courses, form.moduleId]
+  );
+  const audienceUsers = (optionsQ.data?.users || []) as any[];
+  const matchedAudienceUsers = useMemo(() => {
+    const audience = form.audience || {};
+    if (audience.allEmployees) return audienceUsers;
+    const branchIds = new Set((audience.branchIds || []).map(Number));
+    const sectorIds = new Set((audience.sectorIds || []).map(Number));
+    const gseIds = new Set((audience.gseIds || []).map(Number));
+    const userIds = new Set((audience.userIds || []).map(Number));
+    const positions = new Set((audience.positions || []).map(value => String(value).trim().toLowerCase()));
+    const hasFilter = branchIds.size || sectorIds.size || gseIds.size || userIds.size || positions.size;
+    if (!hasFilter) return [];
+    return audienceUsers.filter(user =>
+      userIds.has(Number(user.id)) ||
+      branchIds.has(Number(user.branch_id)) ||
+      sectorIds.has(Number(user.sector_id)) ||
+      gseIds.has(Number(user.current_gse_id)) ||
+      positions.has(String(user.position || "").trim().toLowerCase())
+    );
+  }, [audienceUsers, form.audience]);
 
   function openEdit(row?: any) {
     if (!row) { setForm(emptyForm()); setShowForm(true); return; }
@@ -159,12 +198,13 @@ export default function MandatoryTraining() {
     {tab === "meus" ? <section className="grid gap-3 md:grid-cols-2">{mine.map(row => <article className="border bg-white p-4" key={row.id}><div className="flex items-start justify-between gap-3"><div><Status value={row.status}/><h2 className="mt-2 font-semibold">{row.name}</h2><p className="mt-1 text-xs text-slate-500">Ciclo {row.cycle_number || 1} · prazo {fmtDate(row.due_date)} · {Math.round(Number(row.workload_minutes || 0) / 60)}h · validade {row.validity_months || 0} meses</p></div><GraduationCap className="text-teal-700" size={22}/></div><p className="mt-3 text-sm text-slate-600">{row.description || "Treinamento corporativo obrigatorio."}</p><div className="mt-4 flex flex-wrap gap-2">{row.status === "concluido" ? <Link href={`/cursos/${row.module_id}`}><Button>Revisar curso</Button></Link> : <Button disabled={startAssignment.isPending} onClick={() => startAssignment.mutate({ assignmentId: Number(row.id) })}>{Number(row.cycle_number || 1) > 1 ? "Iniciar reciclagem" : "Acessar curso"}</Button>}{row.certificate_url ? <a href={row.certificate_url} target="_blank"><Button variant="outline"><Award size={15} className="mr-1"/> Certificado</Button></a> : null}</div></article>)}{!mine.length ? <div className="md:col-span-2"><Empty text="Voce nao possui treinamento obrigatorio pendente."/></div> : null}</section> : null}
 
     <Dialog open={showForm} onOpenChange={setShowForm}><DialogContent className="max-h-[92vh] max-w-3xl overflow-y-auto"><DialogHeader><DialogTitle>{form.id ? "Editar treinamento" : "Novo treinamento obrigatorio"}</DialogTitle></DialogHeader>
-      <div className="grid gap-4 md:grid-cols-2"><Field label="Curso do Studio"><select className="w-full border bg-white px-3 py-2 text-sm" value={form.moduleId} onChange={event => { const id = Number(event.target.value); const course = (optionsQ.data?.courses || []).find((item: any) => Number(item.id) === id); setForm(old => ({ ...old, moduleId: id, name: old.name || course?.title || "", workloadMinutes: old.workloadMinutes || Number(course?.durationMinutes || 0) })); }}><option value={0}>Selecione</option>{(optionsQ.data?.courses || []).map((course: any) => <option value={course.id} key={course.id}>{course.title}</option>)}</select></Field><Field label="Nome"><Input value={form.name} onChange={e => setForm(old => ({ ...old, name: e.target.value }))}/></Field>
+      <div className="grid gap-4 md:grid-cols-2"><Field label="Curso do Studio"><div className="space-y-2"><Input placeholder="Buscar por nome, código, categoria, tema ou NR" value={courseSearch} onChange={event => setCourseSearch(event.target.value)} /><select className="w-full border bg-white px-3 py-2 text-sm" value={form.moduleId} onChange={event => { const id = Number(event.target.value); const course = courses.find((item: any) => Number(item.id) === id); const validityMonths = course?.validity_days ? Math.max(1, Math.round(Number(course.validity_days) / 30)) : form.validityMonths; setForm(old => ({ ...old, moduleId: id, name: course?.title || old.name, description: old.description || course?.description || "", workloadMinutes: Number(course?.durationMinutes || 0), validityMonths })); }}><option value={0}>Selecione</option>{filteredCourses.map((course: any) => <option value={course.id} key={course.id}>{course.title}{course.code ? ` · ${course.code}` : ""}{course.templateCategory ? ` · ${course.templateCategory}` : ""}{course.profession ? ` · ${course.profession}` : ""}</option>)}</select>{selectedCourse ? <div className="rounded-sm border bg-slate-50 p-2 text-xs text-slate-600">Curso selecionado: <b>{selectedCourse.title}</b>{selectedCourse.durationMinutes ? ` · ${selectedCourse.durationMinutes} min` : ""}{selectedCourse.validity_days ? ` · validade padrão ${Math.max(1, Math.round(Number(selectedCourse.validity_days) / 30))} meses` : ""}</div> : null}</div></Field><Field label="Nome"><Input value={form.name} onChange={e => setForm(old => ({ ...old, name: e.target.value }))}/></Field>
         <Field label="Data de inicio"><Input type="date" value={form.startDate} onChange={e => setForm(old => ({ ...old, startDate: e.target.value }))}/></Field><Field label="Prazo para conclusao"><Input type="date" value={form.dueDate} onChange={e => setForm(old => ({ ...old, dueDate: e.target.value }))}/></Field>
         <Field label="Carga horaria (minutos)"><Input type="number" min={0} value={form.workloadMinutes} onChange={e => setForm(old => ({ ...old, workloadMinutes: Number(e.target.value) }))}/></Field><Field label="Validade do certificado (meses)"><Input type="number" min={0} value={form.validityMonths} onChange={e => setForm(old => ({ ...old, validityMonths: Number(e.target.value) }))}/></Field>
         <Field label="Reciclagem (meses)"><Input type="number" min={0} value={form.recurrenceMonths} onChange={e => setForm(old => ({ ...old, recurrenceMonths: Number(e.target.value) }))}/></Field><Field label="Situacao"><select className="w-full border bg-white px-3 py-2 text-sm" value={form.status} onChange={e => setForm(old => ({ ...old, status: e.target.value as any }))}><option value="rascunho">Rascunho</option><option value="ativo">Ativo</option><option value="arquivado">Arquivado</option></select></Field>
         <div className="md:col-span-2"><Label>Descricao</Label><Textarea className="mt-1" value={form.description} onChange={e => setForm(old => ({ ...old, description: e.target.value }))}/></div>
-        <div className="md:col-span-2 border p-4"><div className="flex items-center justify-between"><div><b className="text-sm">Publico-alvo</b><p className="text-xs text-slate-500">Os criterios selecionados sao combinados para incluir os colaboradores correspondentes.</p></div><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={Boolean(form.audience.allEmployees)} onChange={e => setForm(old => ({ ...old, audience: { ...old.audience, allEmployees: e.target.checked } }))}/> Todos</label></div>
+        <div className="md:col-span-2 border p-4"><div className="flex items-center justify-between"><div><b className="text-sm">Publico-alvo</b><p className="text-xs text-slate-500">Use os cadastros reais da plataforma. Novos colaboradores que passarem a atender aos filtros entram no público automaticamente, preservando o histórico anterior.</p></div><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={Boolean(form.audience.allEmployees)} onChange={e => setForm(old => ({ ...old, audience: { ...old.audience, allEmployees: e.target.checked } }))}/> Todos</label></div>
+          <div className="mt-3 flex flex-wrap items-center gap-2 rounded-sm border bg-teal-50 p-3 text-xs text-teal-900"><Users size={14}/><b>{matchedAudienceUsers.length}</b> colaborador(es) serão atribuídos com os critérios atuais.<Button type="button" size="sm" variant="outline" className="h-7 bg-white text-xs" disabled={!matchedAudienceUsers.length || Boolean(form.audience.allEmployees)} onClick={() => setForm(old => ({ ...old, audience: { ...old.audience, branchIds: [], sectorIds: [], positions: [], gseIds: [], userIds: matchedAudienceUsers.map(user => Number(user.id)) } }))}>Fixar encontrados como seleção individual</Button><span className="text-teal-700">Sem importação por CSV.</span></div>
           {!form.audience.allEmployees ? <div className="mt-4 grid gap-4 md:grid-cols-2"><CheckGroup title="Filiais" rows={optionsQ.data?.branches || []} selected={form.audience.branchIds || []} onChange={values => setForm(old => ({ ...old, audience: { ...old.audience, branchIds: values } }))}/><CheckGroup title="Setores" rows={optionsQ.data?.sectors || []} selected={form.audience.sectorIds || []} onChange={values => setForm(old => ({ ...old, audience: { ...old.audience, sectorIds: values } }))}/><CheckTextGroup title="Cargos / funcoes" rows={optionsQ.data?.positions || []} selected={form.audience.positions || []} onChange={values => setForm(old => ({ ...old, audience: { ...old.audience, positions: values } }))}/><CheckGroup title="GSE" rows={(optionsQ.data?.gses || []).map((row: any) => ({ ...row, name: `${row.code || ""} ${row.name}` }))} selected={form.audience.gseIds || []} onChange={values => setForm(old => ({ ...old, audience: { ...old.audience, gseIds: values } }))}/><CheckGroup title="Colaboradores especificos" rows={optionsQ.data?.users || []} selected={form.audience.userIds || []} onChange={values => setForm(old => ({ ...old, audience: { ...old.audience, userIds: values } }))}/></div> : null}
         </div><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isMandatory} onChange={e => setForm(old => ({ ...old, isMandatory: e.target.checked }))}/> Obrigatorio</label><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.certificateRequired} onChange={e => setForm(old => ({ ...old, certificateRequired: e.target.checked }))}/> Certificado obrigatorio</label></div>
       <DialogFooter><Button variant="outline" onClick={() => setShowForm(false)}>Cancelar</Button><Button disabled={save.isPending} onClick={submit}>Salvar e atribuir</Button></DialogFooter></DialogContent></Dialog>

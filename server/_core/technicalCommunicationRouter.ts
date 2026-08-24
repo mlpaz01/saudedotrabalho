@@ -9,6 +9,17 @@ function rowsOf(result: any): any[] {
   return Array.isArray(result?.[0]) ? result[0] : Array.isArray(result) ? result : [];
 }
 
+function requireTechnicalAccess(ctx: any) {
+  const allowed = new Set(["sesmt", "medico", "admin", "rh", "company_admin", "admin_global", "super_admin"]);
+  if (!ctx.user || !allowed.has(String(ctx.user.role || ""))) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Acesso reservado aos perfis técnicos autorizados." });
+  }
+  const isGlobal = ["admin_global", "super_admin"].includes(String(ctx.user.role || ""));
+  const companyId = Number(ctx.user.companyId || 0);
+  if (!companyId && !isGlobal) throw new TRPCError({ code: "BAD_REQUEST", message: "Empresa não definida." });
+  return { companyId, isGlobal };
+}
+
 function requireSesmt(ctx: any) {
   const allowed = new Set(["sesmt", "admin", "rh", "company_admin", "admin_global", "super_admin"]);
   if (!ctx.user || !allowed.has(String(ctx.user.role || ""))) {
@@ -26,7 +37,7 @@ function parseJson(value: unknown) {
 
 export const technicalCommunicationRouter = router({
   list: protectedProcedure.query(async ({ ctx }) => {
-    const access = requireSesmt(ctx);
+    const access = requireTechnicalAccess(ctx);
     const db = await getDb();
     if (!db) return [];
     await ensurePgrVersioningTables(db);

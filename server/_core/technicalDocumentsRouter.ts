@@ -15,6 +15,7 @@ import {
   type TechnicalDocumentType,
 } from "./technicalDocumentIntelligence";
 import { loadDocumentDefaults } from "./documentDefaults";
+import { ensurePgrVersioningTables } from "./pgrVersioning";
 
 let tablesReady = false;
 
@@ -329,6 +330,7 @@ export const technicalDocumentsRouter = router({
     await ensureTables();
     const db = await getDb();
     if (!db) return null;
+    await ensurePgrVersioningTables(db);
     const companyId = companyOf(ctx);
     const [
       documentsResult,
@@ -336,6 +338,7 @@ export const technicalDocumentsRouter = router({
       pcmsoResult,
       pcmsoAuditResult,
       technicalAuditsResult,
+      pgrRevisionAlertsResult,
     ] = await Promise.all([
       db.execute(drzSql`SELECT
         COUNT(*) total,
@@ -376,6 +379,13 @@ export const technicalDocumentsRouter = router({
         JOIN technical_documents_v2 d ON d.id=a.document_id AND d.company_id=a.company_id
         WHERE a.company_id=${companyId}
         ORDER BY a.created_at DESC,a.id DESC LIMIT 50`),
+      db.execute(drzSql`SELECT
+        COUNT(*) total_open,
+        SUM(status IN ('pendente','aguardando_medico','em_analise_medica')) medical_pending,
+        SUM(status='aguardando_sesmt') sesmt_pending,
+        SUM(status='sem_alteracao') reviewed_without_change
+        FROM pcmso_pgr_revision_alerts
+        WHERE company_id=${companyId} AND status<>'concluido'`),
     ]);
     const latestTechnicalAudits: Record<string, any> = {};
     for (const row of rowsOf(technicalAuditsResult)) {
@@ -390,6 +400,7 @@ export const technicalDocumentsRouter = router({
       documents: rowsOf(documentsResult)[0] || {},
       documentsByType: rowsOf(documentsByTypeResult),
       pcmso: rowsOf(pcmsoResult)[0] || {},
+      pgrRevisionAlerts: rowsOf(pgrRevisionAlertsResult)[0] || {},
       checklists: {
         pcmso: pcmsoAudit
           ? {
@@ -425,8 +436,11 @@ export const technicalDocumentsRouter = router({
     requireRead(ctx);
     const db = await getDb();
     if (!db) return [];
+    await ensurePgrVersioningTables(db);
     const result: any = await db.execute(
-      drzSql`SELECT id,title,status,branch_id,updated_at FROM pgr_documents WHERE company_id=${companyOf(ctx)} ORDER BY updated_at DESC,id DESC LIMIT 200`
+      drzSql`SELECT id,title,status,branch_id,pdf_url,updated_at,
+        exercise_year,revision_root_id,revision_parent_id,revision_number,is_current_version,revision_reason
+        FROM pgr_documents WHERE company_id=${companyOf(ctx)} ORDER BY updated_at DESC,id DESC LIMIT 200`
     );
     return rowsOf(result);
   }),

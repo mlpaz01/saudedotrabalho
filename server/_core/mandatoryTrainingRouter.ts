@@ -340,7 +340,9 @@ export const mandatoryTrainingRouter = router({
     await ensureTables(db);
     await requireEnabled(db, companyId);
     const [coursesR, branchesR, sectorsR, positionsR, gsesR, usersR] = await Promise.all([
-      db.execute(drzSql`SELECT m.id,m.title,m.description,m.durationMinutes,m.validity_days
+      db.execute(drzSql`SELECT m.id,m.title,m.description,m.durationMinutes,m.validity_days,
+          m.template_category AS templateCategory,m.profession,
+          CONCAT('CURSO-',m.id) AS code
         FROM modules m WHERE m.isActive=1 AND m.publish_status='published' AND
         (m.created_by_company_id IS NULL OR m.created_by_company_id=${companyId} OR EXISTS
           (SELECT 1 FROM company_content_enrollments e WHERE e.company_id=${companyId} AND e.content_type='module' AND e.content_id=m.id AND e.is_active=1))
@@ -349,7 +351,10 @@ export const mandatoryTrainingRouter = router({
       db.execute(drzSql`SELECT id,name,branch_id FROM sectors WHERE company_id=${companyId} ORDER BY name`),
       db.execute(drzSql`SELECT DISTINCT position FROM users WHERE company_id=${companyId} AND position IS NOT NULL AND position<>'' ORDER BY position`),
       db.execute(drzSql`SELECT id,code,name FROM occupational_gse_master WHERE company_id=${companyId} AND is_active=1 ORDER BY code,name`),
-      db.execute(drzSql`SELECT id,name,cpf,employee_registration,branch_id,sector_id,position FROM users u
+      db.execute(drzSql`SELECT u.id,u.name,u.cpf,u.employee_registration,u.branch_id,u.sector_id,u.position,
+          h.gse_id AS current_gse_id
+        FROM users u
+        LEFT JOIN occupational_gse_worker_history h ON h.company_id=u.company_id AND h.collaborator_id=u.id AND h.is_current=1
         WHERE u.company_id=${companyId} AND ${drzSql.raw(activeEmployeeSql("u"))} ORDER BY u.name`),
     ]);
     return { courses: rowsOf(coursesR), branches: rowsOf(branchesR), sectors: rowsOf(sectorsR),

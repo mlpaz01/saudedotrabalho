@@ -1341,9 +1341,10 @@ export const medicalRouter = router({
       return db.transaction(async (tx: any) => {
         const alertResult: any = await tx.execute(drzSql`SELECT
             a.id alert_id,a.pcmso_id,a.previous_pgr_id,a.new_pgr_id,
-            p.revision_root_id,p.doctor_name
+            p.revision_root_id,p.doctor_name,newp.revision_number new_pgr_revision
           FROM pcmso_pgr_revision_alerts a
           JOIN pcmso_programs_v2 p ON p.id=a.pcmso_id AND p.company_id=a.company_id
+          JOIN pgr_documents newp ON newp.id=a.new_pgr_id AND newp.company_id=a.company_id
           WHERE a.id=${input.id} AND a.company_id=${companyId} AND a.status IN ('pendente','aguardando_medico','em_analise_medica')
           LIMIT 1 FOR UPDATE`);
         const source = rowsOf(alertResult)[0];
@@ -1352,8 +1353,13 @@ export const medicalRouter = router({
         const revisionResult: any = await tx.execute(
           drzSql`SELECT COALESCE(MAX(revision_number),0) max_revision FROM pcmso_programs_v2 WHERE company_id=${companyId} AND revision_root_id=${rootId}`
         );
-        const revisionNumber =
+        const nextPcmsoRevision =
           Number(rowsOf(revisionResult)[0]?.max_revision || 0) + 1;
+        const pgrRevisionNumber = Number(source.new_pgr_revision || 0);
+        const revisionNumber = Math.max(
+          nextPcmsoRevision,
+          pgrRevisionNumber || nextPcmsoRevision
+        );
         const label = String(revisionNumber).padStart(2, "0");
         const inserted: any = await tx.execute(drzSql`INSERT INTO pcmso_programs_v2
           (company_id,pgr_id,title,status,valid_from,valid_until,introduction,objective,methodology,conclusion,
@@ -1472,6 +1478,7 @@ export const medicalRouter = router({
             sourcePcmsoId: Number(source.pcmso_id),
             previousPgrId: Number(source.previous_pgr_id),
             newPgrId: Number(source.new_pgr_id),
+            pgrRevisionNumber,
             revisionNumber,
             importedRisks: imported,
             reusedRisks: reused,
