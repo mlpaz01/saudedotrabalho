@@ -69,8 +69,11 @@ import SuperAdminAccessHours from "@/pages/superadmin/SuperAdminAccessHours";
 import CommercialCrm from "@/pages/CommercialCrm";
 import SuperAdminIntegrations from "@/pages/superadmin/SuperAdminIntegrations";
 import ESocialCenter from "@/pages/ESocialCenter";
+import AdminS2221 from "@/pages/admin/AdminS2221";
+import BiometricManagement from "@/pages/BiometricManagement";
 import SuperAdminWhiteLabel from "@/pages/superadmin/SuperAdminWhiteLabel";
 import WhiteLabelNetworkAdmin from "@/pages/WhiteLabelNetworkAdmin";
+import WhiteLabelCourseLibrary from "@/pages/WhiteLabelCourseLibrary";
 import IntermediadorDashboard from "@/pages/IntermediadorDashboard";
 import Cipa from "@/pages/Cipa";
 import AdminCipa from "@/pages/admin/AdminCipa";
@@ -182,6 +185,15 @@ function WhiteLabelNetworkRoute({ component: Component ,}: { component: React.Co
   return <Component />;
 }
 
+function CourseStudioRoute({ component: Component }: { component: React.ComponentType }) {
+  const { user, loading } = useAuth();
+  if (loading) return (<div className="min-h-screen brand-gradient flex items-center justify-center"><div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" /></div>);
+  if (!user) return <Redirect to="/login" />;
+  if (user.role === "company_admin") return <Redirect to="/rede/biblioteca-cursos" />;
+  if (!isManagerRole(user.role)) return <Redirect to="/inicio" />;
+  return <Component />;
+}
+
 
 function MedicalRoute({ component: Component ,}: { component: React.ComponentType ;}) {
   const { user, loading } = useAuth();
@@ -204,6 +216,15 @@ function OccupationalRoute({ component: Component }: { component: React.Componen
   if (loading) return (<div className="min-h-screen brand-gradient flex items-center justify-center"><div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" /></div>);
   if (!user) return <Redirect to="/login" />;
   if (!["medico", "sesmt", "admin", "company_admin", "admin_global", "super_admin"].includes(user.role)) return <Redirect to="/inicio" />;
+  return <Component />;
+}
+
+function SesmtAdminRoute({ component: Component, allowRh = false }: { component: React.ComponentType; allowRh?: boolean }) {
+  const { user, loading } = useAuth();
+  if (loading) return (<div className="min-h-screen brand-gradient flex items-center justify-center"><div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" /></div>);
+  if (!user) return <Redirect to="/login" />;
+  const roles = allowRh ? ["rh", "sesmt", "admin", "company_admin", "admin_global", "super_admin"] : ["sesmt", "admin", "company_admin", "admin_global", "super_admin"];
+  if (!roles.includes(user.role)) return <Redirect to="/inicio" />;
   return <Component />;
 }
 
@@ -295,8 +316,8 @@ function Router() {
       <Route path="/admin/vencimentos" component={() => (<ProtectedRoute component={AdminExpirations} adminOnly />)} />
       <Route path="/admin/usuarios" component={() => <ProtectedRoute component={AdminUsers} adminOnly />} />
       <Route path="/admin/campanhas" component={() => (<ProtectedRoute component={AdminCampaigns} adminOnly />)} />
-      <Route path="/admin/modulos" component={() => (<ProtectedRoute component={AdminModules} adminOnly />)} />
-      <Route path="/admin/cursos" component={() => (<ProtectedRoute component={AdminModules} adminOnly />)} />
+      <Route path="/admin/modulos" component={() => (<CourseStudioRoute component={AdminModules} />)} />
+      <Route path="/admin/cursos" component={() => (<CourseStudioRoute component={AdminModules} />)} />
       <Route path="/admin/lembretes" component={() => (<ProtectedRoute component={AdminReminders} adminOnly />)} />
       <Route path="/admin/analises" component={() => (<ProtectedRoute component={AdminAnalytics} adminOnly />)} />
       <Route path="/admin/riscos-psicossociais" component={() => (<ProtectedRoute component={AdminRiscosPsicossociais} adminOnly />)} />
@@ -321,8 +342,8 @@ function Router() {
           path="/admin/colaboradores/:id/dossie"
           component={(p: any) => (<ProtectedRoute component={() => <EmployeeDossier id={Number(p.params?.id)} />} adminOnly />)} />
             <Route path="/admin/trilhas" component={() => <ProtectedRoute component={AdminTrails} adminOnly />} />
-            <Route path="/admin/modulos/novo" component={() => (<ProtectedRoute component={AdminModuleWizard} adminOnly />)} />
-            <Route path="/admin/cursos/novo" component={() => (<ProtectedRoute component={AdminModuleWizard} adminOnly />)} />
+            <Route path="/admin/modulos/novo" component={() => (<CourseStudioRoute component={AdminModuleWizard} />)} />
+            <Route path="/admin/cursos/novo" component={() => (<CourseStudioRoute component={AdminModuleWizard} />)} />
       <Route path="/admin/empresas/:id/configuracoes" component={() => (<ProtectedRoute component={AdminCompanySettings} adminOnly />)} />
       <Route path="/admin/empresas" component={() => (<ProtectedRoute component={AdminCompanies} adminOnly />)} />
       <Route path="/admin/planos" component={() => <ProtectedRoute component={AdminPlans} adminOnly />} />
@@ -334,9 +355,9 @@ function Router() {
       <Route path="/admin/filiais" component={() => (<ProtectedRoute component={AdminBranches} adminOnly />)} />
       <Route path="/admin/agenda" component={() => (<ProtectedRoute component={AdminScheduling} adminOnly />)} />
       <Route path="/admin/setores" component={() => (<ProtectedRoute component={AdminDepartments} adminOnly />)} />
-            <Route path="/admin/ai-studio" component={() => <ProtectedRoute component={AIStudio} adminOnly />} />
-      <Route path="/admin/modulos/:id/editar" component={() => (<ProtectedRoute component={CourseEditor} adminOnly />)} />
-      <Route path="/admin/cursos/:id/editar" component={() => (<ProtectedRoute component={CourseEditor} adminOnly />)} />
+            <Route path="/admin/ai-studio" component={() => <CourseStudioRoute component={AIStudio} />} />
+      <Route path="/admin/modulos/:id/editar" component={() => (<CourseStudioRoute component={CourseEditor} />)} />
+      <Route path="/admin/cursos/:id/editar" component={() => (<CourseStudioRoute component={CourseEditor} />)} />
       <Route path="/admin/compliance" component={() => (<ProtectedRoute component={ComplianceHub} adminOnly />)} />
       <Route path="/admin/compliance/relatorio-fiscalizacao" component={() => (<ProtectedRoute component={RelatorioFiscalizacao} adminOnly />)} />
       <Route path="/admin/compliance/relatorio-metodologia" component={() => (<ProtectedRoute component={RelatorioMetodologia} adminOnly />)} />
@@ -378,6 +399,8 @@ function Router() {
       <Route path="/admin/saude-ocupacional" component={() => <OccupationalRoute component={OccupationalOperations} />} />
       <Route path="/admin/atualizacoes-tecnicas" component={() => <OccupationalRoute component={TechnicalUpdates} />} />
       <Route path="/admin/esocial" component={() => <OccupationalRoute component={ESocialCenter} />} />
+      <Route path="/admin/esocial/s2221" component={() => <SesmtAdminRoute component={AdminS2221} />} />
+      <Route path="/admin/biometria" component={() => <SesmtAdminRoute component={BiometricManagement} allowRh />} />
       <Route path="/admin/ppp" component={() => <ProtectedRoute component={AdminPpp} adminOnly />} />
         <Route
           path="/medico"
@@ -433,9 +456,11 @@ function Router() {
       <Route path="/super-admin/horarios" component={() => (<SuperAdminRoute component={SuperAdminAccessHours} />)} />
       <Route path="/super-admin/integracoes" component={() => (<SuperAdminRoute component={SuperAdminIntegrations} />)} />
       <Route path="/super-admin/integracoes/esocial" component={() => (<SuperAdminRoute component={ESocialCenter} />)} />
+      <Route path="/super-admin/biometria" component={() => (<SuperAdminRoute component={BiometricManagement} />)} />
       <Route path="/super-admin/crm" component={() => <SuperAdminRoute component={CommercialCrm} />} />
       <Route path="/super-admin/white-label" component={() => <SuperAdminRoute component={SuperAdminWhiteLabel} />} />
       <Route path="/rede" component={() => (<WhiteLabelNetworkRoute component={WhiteLabelNetworkAdmin} />)} />
+      <Route path="/rede/biblioteca-cursos" component={() => (<WhiteLabelNetworkRoute component={WhiteLabelCourseLibrary} />)} />
       <Route path="/intermediador" component={() => (<IntermediadorRoute component={IntermediadorDashboard} />)} />
       <Route path="/campanhas" component={() => <ProtectedRoute component={CampanhasIndex} />} />
       <Route path="/campanhas/:id" component={() => <ProtectedRoute component={CampanhaDetail} />} />

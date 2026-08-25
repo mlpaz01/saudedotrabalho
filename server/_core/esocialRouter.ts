@@ -82,8 +82,36 @@ async function ensureEsocialTables() {
     INDEX idx_esocial_history_event (transmission_id, created_at),
     INDEX idx_esocial_history_company (company_id, created_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await db.execute(drzSql`CREATE TABLE IF NOT EXISTS occupational_s2221_exams (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    company_id INT NOT NULL,
+    collaborator_id INT NOT NULL,
+    exam_type VARCHAR(30) NOT NULL DEFAULT 'periodic',
+    exam_date DATE NOT NULL,
+    admission_date DATE NULL,
+    next_due_date DATE NULL,
+    laboratory_name VARCHAR(220) NOT NULL,
+    laboratory_cnpj VARCHAR(14) NOT NULL,
+    exam_code VARCHAR(11) NOT NULL,
+    result_status VARCHAR(30) NOT NULL DEFAULT 'pending',
+    doctor_name VARCHAR(220) NOT NULL,
+    doctor_crm VARCHAR(30) NOT NULL,
+    doctor_uf CHAR(2) NOT NULL,
+    notes TEXT NULL,
+    transmission_id BIGINT NULL,
+    created_by INT NULL,
+    updated_by INT NULL,
+    archived_at DATETIME NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_s2221_company_exam_code (company_id, exam_code),
+    INDEX idx_s2221_company_employee (company_id, collaborator_id, exam_date),
+    INDEX idx_s2221_company_due (company_id, next_due_date),
+    INDEX idx_s2221_transmission (transmission_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
   await ensureColumn(db, "occupational_esocial_transmissions", "collaborator_id", "INT NULL");
   await ensureColumn(db, "occupational_esocial_transmissions", "event_date", "DATE NULL");
+  await ensureColumn(db, "occupational_esocial_transmissions", "due_date", "DATE NULL");
   await ensureColumn(db, "occupational_esocial_transmissions", "attempt_count", "INT NOT NULL DEFAULT 0");
   await ensureColumn(db, "occupational_esocial_transmissions", "last_attempt_at", "DATETIME NULL");
   await ensureColumn(db, "occupational_esocial_transmissions", "last_response_at", "DATETIME NULL");
@@ -95,6 +123,91 @@ function parseJson(value: unknown, fallback: any = null) {
   if (!value) return fallback;
   if (typeof value === "object") return value;
   try { return JSON.parse(String(value)); } catch { return fallback; }
+}
+
+function digits(value: unknown) {
+  return String(value || "").replace(/\D/g, "");
+}
+
+function validCpf(value: unknown) {
+  const cpf = digits(value);
+  if (!/^\d{11}$/.test(cpf) || /^(\d)\1{10}$/.test(cpf)) return false;
+  const calc = (length: number) => {
+    let sum = 0;
+    for (let i = 0; i < length; i += 1) sum += Number(cpf[i]) * (length + 1 - i);
+    const remainder = (sum * 10) % 11;
+    return remainder === 10 ? 0 : remainder;
+  };
+  return calc(9) === Number(cpf[9]) && calc(10) === Number(cpf[10]);
+}
+
+function validCnpj(value: unknown) {
+  const cnpj = digits(value);
+  if (!/^\d{14}$/.test(cnpj) || /^(\d)\1{13}$/.test(cnpj)) return false;
+  const digit = (base: string, weights: number[]) => {
+    const sum = base.split("").reduce((total, char, index) => total + Number(char) * weights[index], 0);
+    const remainder = sum % 11;
+    return remainder < 2 ? 0 : 11 - remainder;
+  };
+  const first = digit(cnpj.slice(0, 12), [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]);
+  const second = digit(cnpj.slice(0, 12) + first, [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]);
+  return `${first}${second}` === cnpj.slice(12);
+}
+
+export function isValidS2221ExamCode(value: unknown) {
+  return /^[A-Z]{2}\d{9}$/.test(String(value || "").trim().toUpperCase());
+}
+
+function s2221Validation(input: any, employee: any, employer: any = {}) {
+  const issues: Array<{ field: string; message: string; action: string }> = [];
+  if (!employee) issues.push({ field: "Funcionário", message: "Colaborador não localizado nesta empresa.", action: "Selecione novamente o colaborador." });
+  if (!validCpf(employee?.cpf)) issues.push({ field: "CPF", message: "CPF ausente ou inválido.", action: "Corrija o CPF no cadastro do colaborador." });
+  if (!String(employee?.employee_registration || "").trim()) issues.push({ field: "Matrícula eSocial", message: "Matrícula do vínculo não informada.", action: "Informe a matrícula no cadastro do colaborador antes da transmissão." });
+  if (!validCnpj(employer?.cnpj)) issues.push({ field: "CNPJ do empregador", message: "CNPJ da empresa ausente ou inválido.", action: "Corrija o CNPJ no cadastro da empresa antes da transmissão." });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(input.examDate || ""))) issues.push({ field: "Data do exame", message: "Data de realização inválida.", action: "Informe a data no formato DD/MM/AAAA." });
+  if (!validCnpj(input.laboratoryCnpj)) issues.push({ field: "CNPJ do laboratório", message: "CNPJ ausente ou inválido.", action: "Confira o cadastro do laboratório." });
+  if (!isValidS2221ExamCode(input.examCode)) issues.push({ field: "Código do exame", message: "O código deve conter duas letras e nove números (AA999999999).", action: "Informe o código sequencial fornecido pelo laboratório." });
+  if (!String(input.laboratoryName || "").trim()) issues.push({ field: "Laboratório", message: "Laboratório responsável não informado.", action: "Informe o laboratório que realizou o exame." });
+  if (!String(input.doctorName || "").trim()) issues.push({ field: "Médico", message: "Médico responsável não informado.", action: "Informe o nome do médico." });
+  if (!String(input.doctorCrm || "").trim()) issues.push({ field: "CRM", message: "CRM não informado.", action: "Informe o CRM do médico responsável." });
+  if (!/^[A-Z]{2}$/.test(String(input.doctorUf || "").trim().toUpperCase())) issues.push({ field: "UF do CRM", message: "UF do CRM inválida.", action: "Selecione a UF do registro profissional." });
+  if (input.examType === "pre_admission" && !input.admissionDate) issues.push({ field: "Admissão", message: "A data de admissão é necessária no exame pré-admissional.", action: "Informe a data de admissão para calcular o prazo do evento." });
+  return issues;
+}
+
+function nextDueDate(examDate: string, examType: string) {
+  if (examType !== "periodic") return null;
+  const date = new Date(`${examDate}T12:00:00Z`);
+  date.setUTCMonth(date.getUTCMonth() + 30);
+  return date.toISOString().slice(0, 10);
+}
+
+function transmissionDueDate(examDate: string, examType: string, admissionDate?: string | null) {
+  const base = new Date(`${examType === "pre_admission" && admissionDate ? admissionDate : examDate}T12:00:00Z`);
+  if (examType === "pre_admission") base.setUTCDate(base.getUTCDate() + 15);
+  else {
+    base.setUTCMonth(base.getUTCMonth() + 1, 15);
+  }
+  return base.toISOString().slice(0, 10);
+}
+
+export function buildS2221Payload(input: any, employee: any, employer: any = {}) {
+  const employerCnpj = digits(employer.cnpj);
+  return {
+    evtToxic: {
+      ideEvento: { indRetif: 1, tpAmb: employer.environment === "production" ? 1 : 2, procEmi: 1, verProc: "Saude do Trabalho" },
+      ideEmpregador: { tpInsc: 1, nrInsc: employerCnpj.slice(0, 8) },
+      ideVinculo: { cpfTrab: digits(employee.cpf), matricula: String(employee.employee_registration || "") },
+      toxicologico: {
+        dtExame: input.examDate,
+        cnpjLab: digits(input.laboratoryCnpj),
+        codSeqExame: String(input.examCode || "").trim().toUpperCase(),
+        nmMed: String(input.doctorName || "").trim(),
+        nrCRM: String(input.doctorCrm || "").trim(),
+        ufCRM: String(input.doctorUf || "").trim().toUpperCase(),
+      },
+    },
+  };
 }
 
 function validationIssues(row: any) {
@@ -212,6 +325,162 @@ export const esocialRouter = router({
       WHERE t.company_id=${companyId}${safeStatus ? ` AND t.status='${safeStatus}'` : ""}${safeEventCode ? ` AND t.event_code='${safeEventCode}'` : ""}
       ORDER BY t.updated_at DESC,t.id DESC LIMIT ${Number(input.limit)}`));
     return rowsOf(result).map(row => ({ ...row, issues: validationIssues(row), payload: parseJson(row.payload_json), response: parseJson(row.response_json) }));
+  }),
+
+  s2221Employees: protectedProcedure.input(z.object({ companyId: z.number().int().positive().optional(), search: z.string().max(120).optional() }).default({})).query(async ({ ctx, input }) => {
+    requireAccess(ctx);
+    await ensureEsocialTables();
+    const db = await getDb();
+    if (!db) return [];
+    const companyId = companyOf(ctx, input.companyId);
+    const search = String(input.search || "").trim();
+    const like = `%${search}%`;
+    const result: any = await db.execute(drzSql`SELECT u.id,u.name,u.cpf,u.employee_registration,u.position,
+      b.name branch_name,s.name sector_name
+      FROM users u
+      LEFT JOIN branches b ON b.id=u.branch_id AND b.company_id=u.company_id
+      LEFT JOIN sectors s ON s.id=u.sector_id AND s.company_id=u.company_id
+      WHERE u.company_id=${companyId} AND u.is_active=1
+        AND (${search}='' OR u.name LIKE ${like} OR u.cpf LIKE ${like} OR u.employee_registration LIKE ${like})
+      ORDER BY u.name LIMIT 300`);
+    return rowsOf(result);
+  }),
+
+  s2221Summary: protectedProcedure.input(z.object({ companyId: z.number().int().positive().optional() }).default({})).query(async ({ ctx, input }) => {
+    requireAccess(ctx);
+    await ensureEsocialTables();
+    const db = await getDb();
+    if (!db) return {};
+    const companyId = companyOf(ctx, input.companyId);
+    const result: any = await db.execute(drzSql`SELECT
+      (SELECT COUNT(DISTINCT u.id) FROM users u WHERE u.company_id=${companyId} AND u.is_active=1 AND LOWER(COALESCE(u.position,'')) LIKE '%motorista%') total_drivers,
+      COUNT(DISTINCT CASE WHEN x.next_due_date>=CURDATE() AND x.result_status IN ('negative','positive','inconclusive') THEN x.collaborator_id END) up_to_date,
+      COUNT(DISTINCT CASE WHEN x.result_status='pending' THEN x.collaborator_id END) awaiting_result,
+      COUNT(DISTINCT CASE WHEN t.status IN ('pendente_integracao','necessita_correcao','pronto_para_envio') THEN x.collaborator_id END) pending_send,
+      COUNT(DISTINCT CASE WHEN t.status IN ('enviado','processando','aceito') THEN x.collaborator_id END) sent,
+      COUNT(DISTINCT CASE WHEN t.status='rejeitado' THEN x.collaborator_id END) rejected
+      FROM occupational_s2221_exams x
+      LEFT JOIN occupational_esocial_transmissions t ON t.id=x.transmission_id AND t.company_id=x.company_id
+      WHERE x.company_id=${companyId} AND x.archived_at IS NULL`);
+    const row = rowsOf(result)[0] || {};
+    const total = Number(row.total_drivers || 0);
+    const covered = Number(row.up_to_date || 0) + Number(row.awaiting_result || 0);
+    return { ...row, pending: Math.max(0, total - covered) };
+  }),
+
+  s2221List: protectedProcedure.input(z.object({
+    companyId: z.number().int().positive().optional(),
+    status: z.enum(["all", "up_to_date", "pending", "awaiting_result", "pending_send", "sent", "rejected"]).default("all"),
+    search: z.string().max(120).optional(),
+  }).default({ status: "all" })).query(async ({ ctx, input }) => {
+    requireAccess(ctx);
+    await ensureEsocialTables();
+    const db = await getDb();
+    if (!db) return [];
+    const companyId = companyOf(ctx, input.companyId);
+    const search = String(input.search || "").trim();
+    const like = `%${search}%`;
+    if (input.status === "pending") {
+      const pendingResult: any = await db.execute(drzSql`SELECT NULL id,u.id collaborator_id,u.name collaborator_name,u.cpf,u.employee_registration,u.position,
+        b.name branch_name,s.name sector_name,NULL exam_code,NULL exam_date,NULL laboratory_name,'missing' result_status,NULL next_due_date,NULL transmission_status,
+        'Nenhum exame toxicológico vigente foi localizado para este motorista.' error_message
+        FROM users u
+        LEFT JOIN branches b ON b.id=u.branch_id AND b.company_id=u.company_id
+        LEFT JOIN sectors s ON s.id=u.sector_id AND s.company_id=u.company_id
+        WHERE u.company_id=${companyId} AND u.is_active=1 AND LOWER(COALESCE(u.position,'')) LIKE '%motorista%'
+          AND (${search}='' OR u.name LIKE ${like} OR u.cpf LIKE ${like} OR u.employee_registration LIKE ${like})
+          AND NOT EXISTS (SELECT 1 FROM occupational_s2221_exams x WHERE x.company_id=u.company_id AND x.collaborator_id=u.id AND x.archived_at IS NULL AND x.next_due_date>=CURDATE())
+        ORDER BY u.name LIMIT 500`);
+      return rowsOf(pendingResult);
+    }
+    const statusClause: Record<string, string> = {
+      up_to_date: " AND x.next_due_date>=CURDATE() AND x.result_status IN ('negative','positive','inconclusive')",
+      awaiting_result: " AND x.result_status='pending'",
+      pending_send: " AND t.status IN ('pendente_integracao','necessita_correcao','pronto_para_envio')",
+      sent: " AND t.status IN ('enviado','processando','aceito')",
+      rejected: " AND t.status='rejeitado'",
+    };
+    const whereStatus = statusClause[input.status] || "";
+    const result: any = await db.execute(drzSql.raw(`SELECT x.*,u.name collaborator_name,u.cpf,u.employee_registration,u.position,
+      b.name branch_name,s.name sector_name,t.status transmission_status,t.protocol,t.receipt,t.error_message,t.due_date,t.last_attempt_at,t.last_response_at,t.response_json,
+      DATEDIFF(x.next_due_date,CURDATE()) days_to_due
+      FROM occupational_s2221_exams x
+      JOIN users u ON u.id=x.collaborator_id AND u.company_id=x.company_id
+      LEFT JOIN branches b ON b.id=u.branch_id AND b.company_id=u.company_id
+      LEFT JOIN sectors s ON s.id=u.sector_id AND s.company_id=u.company_id
+      LEFT JOIN occupational_esocial_transmissions t ON t.id=x.transmission_id AND t.company_id=x.company_id
+      WHERE x.company_id=${companyId} AND x.archived_at IS NULL${whereStatus}
+        ${search ? `AND (u.name LIKE ${JSON.stringify(like)} OR u.cpf LIKE ${JSON.stringify(like)} OR x.exam_code LIKE ${JSON.stringify(like)})` : ""}
+      ORDER BY x.exam_date DESC,x.id DESC LIMIT 500`));
+    return rowsOf(result);
+  }),
+
+  saveS2221: protectedProcedure.input(z.object({
+    companyId: z.number().int().positive().optional(),
+    id: z.number().int().positive().optional(),
+    collaboratorId: z.number().int().positive(),
+    examType: z.enum(["pre_admission", "periodic", "dismissal", "other"]),
+    examDate: z.string().date(),
+    admissionDate: z.string().date().nullable().optional(),
+    laboratoryName: z.string().min(2).max(220),
+    laboratoryCnpj: z.string().min(14).max(20),
+    examCode: z.string().min(11).max(11),
+    resultStatus: z.enum(["pending", "negative", "positive", "inconclusive"]),
+    doctorName: z.string().min(2).max(220),
+    doctorCrm: z.string().min(2).max(30),
+    doctorUf: z.string().length(2),
+    notes: z.string().max(10000).optional(),
+  })).mutation(async ({ ctx, input }) => {
+    requireAccess(ctx);
+    await ensureEsocialTables();
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+    const companyId = companyOf(ctx, input.companyId);
+    const employeeResult: any = await db.execute(drzSql`SELECT id,name,cpf,employee_registration FROM users WHERE id=${input.collaboratorId} AND company_id=${companyId} AND is_active=1 LIMIT 1`);
+    const employerResult: any = await db.execute(drzSql`SELECT c.cnpj,COALESCE(i.environment,'restricted') environment FROM companies c LEFT JOIN esocial_company_integrations i ON i.company_id=c.id WHERE c.id=${companyId} LIMIT 1`);
+    const employee = rowsOf(employeeResult)[0];
+    const employer = rowsOf(employerResult)[0] || {};
+    const issues = s2221Validation(input, employee, employer);
+    const payload = buildS2221Payload(input, employee || {}, employer);
+    const status = issues.length ? "necessita_correcao" : "pronto_para_envio";
+    const payloadJson = JSON.stringify(payload);
+    const due = nextDueDate(input.examDate, input.examType);
+    const eventDue = transmissionDueDate(input.examDate, input.examType, input.admissionDate);
+    let examId = Number(input.id || 0);
+    let transmissionId = 0;
+    if (examId) {
+      const existing: any = await db.execute(drzSql`SELECT transmission_id FROM occupational_s2221_exams WHERE id=${examId} AND company_id=${companyId} AND archived_at IS NULL LIMIT 1`);
+      const row = rowsOf(existing)[0];
+      if (!row) throw new TRPCError({ code: "NOT_FOUND" });
+      transmissionId = Number(row.transmission_id || 0);
+      await db.execute(drzSql`UPDATE occupational_s2221_exams SET collaborator_id=${input.collaboratorId},exam_type=${input.examType},exam_date=${input.examDate},admission_date=${input.admissionDate || null},next_due_date=${due},laboratory_name=${input.laboratoryName.trim()},laboratory_cnpj=${digits(input.laboratoryCnpj)},exam_code=${input.examCode.trim().toUpperCase()},result_status=${input.resultStatus},doctor_name=${input.doctorName.trim()},doctor_crm=${input.doctorCrm.trim()},doctor_uf=${input.doctorUf.toUpperCase()},notes=${input.notes || null},updated_by=${Number(ctx.user.id)} WHERE id=${examId} AND company_id=${companyId}`);
+    } else {
+      const inserted: any = await db.execute(drzSql`INSERT INTO occupational_s2221_exams (company_id,collaborator_id,exam_type,exam_date,admission_date,next_due_date,laboratory_name,laboratory_cnpj,exam_code,result_status,doctor_name,doctor_crm,doctor_uf,notes,created_by,updated_by) VALUES (${companyId},${input.collaboratorId},${input.examType},${input.examDate},${input.admissionDate || null},${due},${input.laboratoryName.trim()},${digits(input.laboratoryCnpj)},${input.examCode.trim().toUpperCase()},${input.resultStatus},${input.doctorName.trim()},${input.doctorCrm.trim()},${input.doctorUf.toUpperCase()},${input.notes || null},${Number(ctx.user.id)},${Number(ctx.user.id)})`);
+      examId = Number((inserted as any)?.[0]?.insertId || (inserted as any)?.insertId || 0);
+    }
+    if (transmissionId) {
+      await db.execute(drzSql`UPDATE occupational_esocial_transmissions SET collaborator_id=${input.collaboratorId},event_date=${input.examDate},due_date=${eventDue},status=${status},payload_json=${payloadJson},correction_guidance=${issues.map(item => `${item.field}: ${item.action}`).join("\n") || null},updated_at=NOW() WHERE id=${transmissionId} AND company_id=${companyId}`);
+    } else {
+      const transmission: any = await db.execute(drzSql`INSERT INTO occupational_esocial_transmissions (company_id,entity_type,entity_id,collaborator_id,event_code,layout_version,status,event_date,due_date,payload_json,correction_guidance,requested_by) VALUES (${companyId},'s2221',${examId},${input.collaboratorId},'S-2221','S-1.3 NT 06/2026',${status},${input.examDate},${eventDue},${payloadJson},${issues.map(item => `${item.field}: ${item.action}`).join("\n") || null},${Number(ctx.user.id)})`);
+      transmissionId = Number((transmission as any)?.[0]?.insertId || (transmission as any)?.insertId || 0);
+      await db.execute(drzSql`UPDATE occupational_s2221_exams SET transmission_id=${transmissionId} WHERE id=${examId} AND company_id=${companyId}`);
+    }
+    await db.execute(drzSql`INSERT INTO esocial_transmission_history (transmission_id,company_id,previous_status,new_status,detail,created_by) VALUES (${transmissionId},${companyId},NULL,${status},${`S-2221 salvo. Prazo de transmissão calculado: ${eventDue}. Resultado clínico mantido apenas no controle interno.`},${Number(ctx.user.id)})`);
+    return { ok: true, id: examId, transmissionId, status, issues, transmissionDueDate: eventDue };
+  }),
+
+  archiveS2221: protectedProcedure.input(z.object({ id: z.number().int().positive(), companyId: z.number().int().positive().optional(), reason: z.string().min(5).max(1000) })).mutation(async ({ ctx, input }) => {
+    requireAccess(ctx);
+    await ensureEsocialTables();
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+    const companyId = companyOf(ctx, input.companyId);
+    const result: any = await db.execute(drzSql`SELECT transmission_id FROM occupational_s2221_exams WHERE id=${input.id} AND company_id=${companyId} AND archived_at IS NULL LIMIT 1`);
+    const row = rowsOf(result)[0];
+    if (!row) throw new TRPCError({ code: "NOT_FOUND" });
+    await db.execute(drzSql`UPDATE occupational_s2221_exams SET archived_at=NOW(),notes=CONCAT_WS('\n',notes,${`Arquivado: ${input.reason}`}),updated_by=${Number(ctx.user.id)} WHERE id=${input.id} AND company_id=${companyId}`);
+    if (row.transmission_id) await db.execute(drzSql`INSERT INTO esocial_transmission_history (transmission_id,company_id,previous_status,new_status,detail,created_by) SELECT id,company_id,status,status,${`Registro S-2221 arquivado: ${input.reason}`},${Number(ctx.user.id)} FROM occupational_esocial_transmissions WHERE id=${Number(row.transmission_id)} AND company_id=${companyId}`);
+    return { ok: true };
   }),
 
   eventDetails: protectedProcedure.input(z.object({ id: z.number().int().positive(), companyId: z.number().int().positive().optional() })).query(async ({ ctx, input }) => {

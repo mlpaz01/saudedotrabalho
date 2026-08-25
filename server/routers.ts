@@ -30,6 +30,7 @@ import { occupationalPppRouter } from "./_core/occupationalPppRouter";
 import { ddsRouter } from "./_core/ddsRouter";
 import { esocialRouter } from "./_core/esocialRouter";
 import { occupationalProgramsRouter } from "./_core/occupationalProgramsRouter";
+import { biometricRouter } from "./_core/biometricRouter";
 
 import { medicalRouter } from "./_core/medicalRouter";
 import { technicalDocumentsRouter } from "./_core/technicalDocumentsRouter";
@@ -480,6 +481,16 @@ const adminOrRhProcedure = protectedProcedure.use(({ ctx, next }) => {
     });
   }
 
+  return next({ ctx });
+});
+
+const courseStudioProcedure = adminOrRhProcedure.use(({ ctx, next }) => {
+  if (ctx.user.role === "company_admin") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "O Estúdio de Cursos é administrado pelo SuperAdmin. Utilize a Biblioteca de Cursos da rede para selecionar e distribuir conteúdos oficiais.",
+    });
+  }
   return next({ ctx });
 });
 
@@ -1156,6 +1167,7 @@ const PLAN_FEATURE_CATALOG = [
   },
   { code: "analytics", label: "Análises & Dashboards", group: "Gestão" },
   { code: "campaigns", label: "Campanhas de Engajamento", group: "Gestão" },
+  { code: "biometric_identity", label: "Identificação Biométrica PLUS", group: "Tecnologia" },
 ] as const;
 
 // Executa SQL com placeholders `?` + params. NECESSARIO porque o Drizzle
@@ -4607,6 +4619,7 @@ export const appRouter = router({
   dds: ddsRouter,
   esocial: esocialRouter,
   occupationalPrograms: occupationalProgramsRouter,
+  biometric: biometricRouter,
   medical: medicalRouter,
   technicalDocuments: technicalDocumentsRouter,
   technicalCommunication: technicalCommunicationRouter,
@@ -7309,7 +7322,7 @@ export const appRouter = router({
       return { sent, total: inactiveUsers.length };
     }),
 
-    updateModuleVideo: adminOrRhProcedure
+    updateModuleVideo: courseStudioProcedure
 
       .input(
         z.object({
@@ -7335,7 +7348,7 @@ export const appRouter = router({
         return { success: true };
       }),
 
-    updateModuleCert: adminOrRhProcedure
+    updateModuleCert: courseStudioProcedure
 
       .input(
         z.object({
@@ -7441,7 +7454,7 @@ export const appRouter = router({
 
     // ─── Module CRUD ───────────────────────────────────────────────────────────
 
-    createModule: adminOrRhProcedure
+    createModule: courseStudioProcedure
 
       .input(
         z.object({
@@ -7478,7 +7491,7 @@ export const appRouter = router({
         return { success: true };
       }),
 
-    updateModuleAdmin: adminOrRhProcedure
+    updateModuleAdmin: courseStudioProcedure
 
       .input(
         z.object({
@@ -7529,7 +7542,7 @@ export const appRouter = router({
         return { success: true };
       }),
 
-    deleteModule: adminOrRhProcedure
+    deleteModule: courseStudioProcedure
 
       .input(z.object({ id: z.number() }))
 
@@ -7542,7 +7555,7 @@ export const appRouter = router({
     // ─── Course publish workflow ────────────────────────────────────────────────
 
     /** Submit a course for review (any admin/rh) */
-    submitForReview: adminOrRhProcedure
+    submitForReview: courseStudioProcedure
       .input(z.object({ moduleId: z.number().int() }))
       .mutation(async ({ ctx, input }) => {
         const db2 = await getDb();
@@ -7682,7 +7695,7 @@ export const appRouter = router({
         return listAllLessonsByModule(input.moduleId);
       }),
 
-    createLesson: adminOrRhProcedure
+    createLesson: courseStudioProcedure
 
       .input(
         z.object({
@@ -7708,7 +7721,7 @@ export const appRouter = router({
         return { success: true };
       }),
 
-    updateLesson: adminOrRhProcedure
+    updateLesson: courseStudioProcedure
 
       .input(
         z.object({
@@ -7736,7 +7749,7 @@ export const appRouter = router({
         return { success: true };
       }),
 
-    deleteLesson: adminOrRhProcedure
+    deleteLesson: courseStudioProcedure
 
       .input(z.object({ id: z.number() }))
 
@@ -7756,7 +7769,7 @@ export const appRouter = router({
         return await getQuizForGrading(input.lessonId);
       }),
 
-    upsertQuiz: adminOrRhProcedure
+    upsertQuiz: courseStudioProcedure
 
       .input(
         z.object({
@@ -8571,7 +8584,7 @@ export const appRouter = router({
   }),
 
   companies: router({
-    list: adminOrRhProcedure.query(async ({ ctx }) => {
+    list: courseStudioProcedure.query(async ({ ctx }) => {
       const user = ctx.user;
 
       // admin_global sees all companies
@@ -11222,7 +11235,7 @@ export const appRouter = router({
       return listAIGenerationsForCompany(cid);
     }),
 
-    getModulePdf: protectedProcedure
+    getModulePdf: courseStudioProcedure
       .input(z.object({ moduleId: z.number() }))
       .query(async ({ input }) => {
         const db = await getDb();
@@ -11243,7 +11256,7 @@ export const appRouter = router({
         }
       }),
 
-    generate: adminOrRhProcedure
+    generate: courseStudioProcedure
 
       .input(
         z.object({
@@ -11583,7 +11596,7 @@ export const appRouter = router({
         return { ok: true, generationId: genId };
       }),
 
-    getStatus: adminOrRhProcedure
+    getStatus: courseStudioProcedure
 
       .input(z.object({ id: z.number() }))
 
@@ -11591,7 +11604,7 @@ export const appRouter = router({
         return getAIGenerationStatus(input.id);
       }),
 
-    get: adminOrRhProcedure
+    get: courseStudioProcedure
 
       .input(z.object({ id: z.number() }))
 

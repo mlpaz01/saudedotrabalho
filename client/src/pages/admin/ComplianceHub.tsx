@@ -30,6 +30,7 @@ import {
   GraduationCap,
   Stethoscope,
   Activity,
+  Truck,
 } from "lucide-react";
 
 type TabId =
@@ -44,7 +45,39 @@ type TabId =
   | "analytical_report"
   | "occupational_programs"
   | "occupational_docs"
-  | "occupational_lifecycle";
+  | "occupational_lifecycle"
+  | "s2221";
+
+function S2221CompliancePanel() {
+  const [filter, setFilter] = useState<"all" | "up_to_date" | "pending" | "awaiting_result" | "pending_send" | "sent" | "rejected">("all");
+  const summary = (trpc.esocial as any).s2221Summary.useQuery({});
+  const records = (trpc.esocial as any).s2221List.useQuery({ status: filter });
+  const cards = [
+    ["all", "Motoristas", summary.data?.total_drivers || 0, "text-slate-900"],
+    ["up_to_date", "Em dia", summary.data?.up_to_date || 0, "text-emerald-700"],
+    ["pending", "Pendentes", summary.data?.pending || 0, "text-orange-700"],
+    ["awaiting_result", "Aguardando resultado", summary.data?.awaiting_result || 0, "text-amber-700"],
+    ["pending_send", "Pendentes de envio", summary.data?.pending_send || 0, "text-cyan-700"],
+    ["sent", "Enviados", summary.data?.sent || 0, "text-blue-700"],
+    ["rejected", "Erro/rejeição", summary.data?.rejected || 0, "text-red-700"],
+  ] as const;
+  return <div className="space-y-4">
+    <div className="bg-white rounded-xl border p-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+      <div><h2 className="font-semibold text-lg flex items-center gap-2"><Truck size={18}/> Motoristas profissionais · S-2221</h2><p className="text-sm text-slate-500">Indicadores acionáveis dos exames toxicológicos e do envio ao eSocial.</p></div>
+      <Link href="/admin/esocial/s2221" className="inline-flex items-center gap-2 rounded-md bg-emerald-700 px-4 py-2 text-sm font-medium text-white">Abrir gestão S-2221 <ExternalLink size={14}/></Link>
+    </div>
+    <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3">
+      {cards.map(([key,label,value,tone]) => <button key={key} onClick={() => setFilter(key)} className={`bg-white border rounded-lg p-4 text-left ${filter === key ? "ring-2 ring-emerald-600" : "hover:bg-slate-50"}`}><div className="text-xs text-slate-500">{label}</div><div className={`text-2xl font-bold mt-1 ${tone}`}>{value}</div></button>)}
+    </div>
+    <div className="bg-white rounded-xl border overflow-hidden">
+      <div className="px-5 py-3 border-b bg-slate-50"><b className="text-sm">Funcionários e providências</b></div>
+      <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="text-left text-slate-500"><th className="p-3">Funcionário</th><th className="p-3">Exame</th><th className="p-3">Situação</th><th className="p-3">Pendência / providência</th><th className="p-3">eSocial</th></tr></thead><tbody>
+        {(records.data || []).map((row:any) => <tr key={`${row.id || "pending"}-${row.collaborator_id}`} className="border-t"><td className="p-3"><b>{row.collaborator_name}</b><div className="text-xs text-slate-500">{row.position || "Cargo não informado"}</div></td><td className="p-3">{row.exam_code || "Sem exame vigente"}<div className="text-xs text-slate-500">{row.exam_date ? String(row.exam_date).slice(0,10) : "Cadastro necessário"}</div></td><td className="p-3">{row.result_status === "missing" ? "Pendente" : row.result_status === "pending" ? "Aguardando resultado" : Number(row.days_to_due) < 0 ? "Vencido" : "Em acompanhamento"}</td><td className="p-3">{row.error_message || (row.transmission_status === "necessita_correcao" ? "Corrigir dados cadastrais e validar novamente." : row.result_status === "pending" ? "Lançar o resultado e conferir o evento." : "Nenhuma ação imediata.")}</td><td className="p-3">{row.transmission_status || "Pendente"}</td></tr>)}
+        {!records.isLoading && !records.data?.length && <tr><td colSpan={5} className="p-8 text-center text-slate-400">Nenhum registro compõe este indicador.</td></tr>}
+      </tbody></table></div>
+    </div>
+  </div>;
+}
 
 const AXIS_ICONS: Record<string, any> = {
   ciclo: ShieldCheck,
@@ -985,6 +1018,7 @@ export default function ComplianceHub() {
     { id: "primeiros_socorros", label: "Primeiros Socorros", icon: FileText },
     { id: "epi_epc", label: "EPI / EPC", icon: ShieldAlert },
     { id: "analytical_report", label: "Relatório Analítico", icon: FileCheck2 },
+    { id: "s2221", label: "Motoristas / S-2221", icon: Truck },
     { id: "occupational_programs", label: "PCD / PCA", icon: Activity },
     {
       id: "occupational_lifecycle",
@@ -1581,6 +1615,8 @@ export default function ComplianceHub() {
         {tab === "epi_epc" && <EpiEpcCompliancePanel />}
 
         {tab === "analytical_report" && <AnalyticalReportCompliancePanel />}
+
+        {tab === "s2221" && <S2221CompliancePanel />}
 
         {tab === "occupational_programs" && <OccupationalProgramsCompliancePanel />}
 

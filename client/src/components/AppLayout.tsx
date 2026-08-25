@@ -11,7 +11,7 @@ import {
   Link2, Layers, RotateCcw, Activity, Search, LineChart, Signature, FileText,
   LifeBuoy, Headphones, HeartHandshake, BarChart3, ListChecks, BookMarked,
   Megaphone, Briefcase, Trophy, Printer, Pencil, Upload, HardHat, ClipboardCheck,
-  MessageSquareText, Accessibility, Ear,
+  MessageSquareText, Accessibility, Ear, Fingerprint,
 Syringe,} from "lucide-react";
 import { useEffect, useState } from "react";
 import { trpc } from "@/lib/trpc";
@@ -84,7 +84,7 @@ const adminSections: NavSection[] = [
   {
     section: "Conteudo",
     items: [
-      { label: "Cursos", href: "/admin/cursos", notRoles: ["chefia", "sesmt", "psicologo"], icon: <BookOpen size={16} />, feature: "courses", dotCount: 3 ,},
+      { label: "Cursos", href: "/admin/cursos", notRoles: ["chefia", "sesmt", "psicologo", "company_admin"], icon: <BookOpen size={16} />, feature: "courses", dotCount: 3 ,},
       { label: "Treinamentos Obrigatorios", href: "/admin/treinamentos-obrigatorios", roles: ["treinamento", "chefia", "admin", "rh", "sesmt", "company_admin", "admin_global", "super_admin"], icon: <GraduationCap size={16} /> },
       { label: "Pesquisas", href: "/admin/pesquisas", notRoles: ["chefia", "sesmt", "psicologo"], icon: <ClipboardList size={16} />, feature: "surveys" ,},
       // VÍDEO V1 — item dedicado pro RH achar o upload de questionários impressos
@@ -158,6 +158,8 @@ const adminSections: NavSection[] = [
       { label: "Gestao de PCD", href: "/admin/gestao-pcd", roles: ["rh", "sesmt", "medico", "admin", "company_admin", "admin_global", "super_admin"], icon: <Accessibility size={16} /> },
       { label: "PCA", href: "/admin/pca", roles: ["sesmt", "medico", "admin", "company_admin", "admin_global", "super_admin"], icon: <Ear size={16} /> },
       { label: "Eventos eSocial", href: "/admin/esocial", roles: ["sesmt", "admin", "company_admin", "admin_global", "super_admin"], icon: <FileCheck size={16} /> },
+      { label: "S-2221 Toxicológico", href: "/admin/esocial/s2221", roles: ["sesmt", "admin", "company_admin", "admin_global", "super_admin"], icon: <Stethoscope size={16} /> },
+      { label: "Identificação Biométrica", href: "/admin/biometria", roles: ["sesmt", "admin", "rh", "company_admin", "admin_global", "super_admin"], icon: <Fingerprint size={16} />, feature: "biometric_identity" },
       { label: "Atestados e Afastamentos", href: "/admin/atestados-afastamentos", roles: ["admin", "rh", "sesmt", "company_admin", "admin_global", "super_admin", "chefia",], icon: <Stethoscope size={16} /> ,
        },
       { label: "Gestao de Vacinacao", href: "/admin/vacinacao", roles: ["sesmt", "company_admin", "admin_global", "super_admin"], icon: <Syringe size={16} /> },
@@ -203,6 +205,7 @@ const superAdminNav: NavItem[] = [
   { label: "Horários de acesso", href: "/super-admin/horarios", notRoles: ["sesmt", "psicologo"], icon: <Clock size={16} /> ,},
   { label: "Integrações", href: "/super-admin/integracoes", notRoles: ["sesmt", "psicologo"], icon: <Link2 size={16} /> ,},
   { label: "Central eSocial", href: "/super-admin/integracoes/esocial", notRoles: ["sesmt", "psicologo"], icon: <FileCheck size={16} /> ,},
+  { label: "Biometria PLUS", href: "/super-admin/biometria", notRoles: ["sesmt", "psicologo"], icon: <Fingerprint size={16} /> },
   { label: "CRM / Financeiro", href: "/super-admin/crm", notRoles: ["sesmt", "psicologo"], icon: <Briefcase size={16} /> ,},
   { label: "White Label", href: "/super-admin/white-label", notRoles: ["sesmt", "psicologo"], icon: <Store size={16} /> ,
   },
@@ -215,6 +218,7 @@ const superAdminNav: NavItem[] = [
 
 const whiteLabelNetworkNav: NavItem[] = [
   { label: "Painel da Rede", href: "/rede", icon: <ShieldCheck size={16} /> },
+  { label: "Biblioteca de Cursos", href: "/rede/biblioteca-cursos", icon: <Library size={16} /> },
 ];
 
 const medicalNav: NavSection[] = [
@@ -349,6 +353,8 @@ const ITEM_LABELS: Record<string, string> = {
   Integrações: "Integrações",
   "Central eSocial": "Central eSocial",
   "Eventos eSocial": "Eventos eSocial",
+  "S-2221 Toxicológico": "S-2221 Toxicológico",
+  "Identificação Biométrica": "Identificação Biométrica",
 };
 
 const SECTION_LABELS: Record<string, string> = {

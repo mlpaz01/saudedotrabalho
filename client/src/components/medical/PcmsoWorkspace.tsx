@@ -31,6 +31,8 @@ type PcmsoWorkspaceProps = {
   onNew: () => void;
   onEdit: () => void;
   onAnnex: () => void;
+  onEditAnnex: (row: any) => void;
+  onDeleteAnnex: (id: number) => void;
   onDownload: (kind: "pcmso_annex" | "pcmso_version", id: number) => void;
   onImport: (id: number) => void;
   onDecision: (payload: any) => void;
@@ -149,6 +151,8 @@ export default function PcmsoWorkspace({
   onNew,
   onEdit,
   onAnnex,
+  onEditAnnex,
+  onDeleteAnnex,
   onDownload,
   onImport,
   onDecision,
@@ -737,6 +741,8 @@ export default function PcmsoWorkspace({
                   `Anexo ${row.annex_number} · ${row.title || row.file_name}`
                 }
                 onOpen={row => onDownload("pcmso_annex", Number(row.id))}
+                onEdit={onEditAnnex}
+                onDelete={row => onDeleteAnnex(Number(row.id))}
               />
               <DocumentList
                 empty="Nenhuma versão gerada."
@@ -758,11 +764,15 @@ function DocumentList({
   rows,
   render,
   onOpen,
+  onEdit,
+  onDelete,
   empty,
 }: {
   rows: any[];
   render: (row: any) => string;
   onOpen: (row: any) => void;
+  onEdit?: (row: any) => void;
+  onDelete?: (row: any) => void;
   empty: string;
 }) {
   return (
@@ -770,15 +780,11 @@ function DocumentList({
       <h3 className="mb-2 text-sm font-semibold">Arquivos</h3>
       <div className="divide-y border">
         {rows.map(row => (
-          <button
-            className="flex w-full items-center justify-between gap-3 p-3 text-left text-sm hover:bg-slate-50"
-            key={row.id}
-            onClick={() => onOpen(row)}
-            type="button"
-          >
-            <span>{render(row)}</span>
-            <Download className="shrink-0" size={14} />
-          </button>
+          <div className="flex w-full items-center gap-2 p-3 text-sm" key={row.id}>
+            <button className="flex min-w-0 flex-1 items-center justify-between gap-3 text-left hover:text-teal-700" onClick={() => onOpen(row)} type="button"><span className="truncate">{render(row)}</span><Download className="shrink-0" size={14} /></button>
+            {onEdit ? <button className="inline-flex h-8 w-8 items-center justify-center border" title="Editar ou substituir" onClick={() => onEdit(row)} type="button"><Pencil size={13}/></button> : null}
+            {onDelete ? <button className="inline-flex h-8 w-8 items-center justify-center border text-red-700" title="Excluir" onClick={() => onDelete(row)} type="button"><Trash2 size={13}/></button> : null}
+          </div>
         ))}
         {!rows.length ? (
           <p className="p-3 text-sm text-slate-500">{empty}</p>

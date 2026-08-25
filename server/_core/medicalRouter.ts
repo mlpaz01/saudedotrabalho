@@ -1050,12 +1050,19 @@ export function buildPcmsoPdfHtml(input: {
       removePcmsoSuggestedExamsSection(program.conclusion)
     )
   );
+  const hasSection16 = /(?:^|\s)16(?:\.|\s)/.test(
+    `${richTextToPlainText(officialIntroduction)} ${richTextToPlainText(officialContinuation)}`
+  );
+  const section16 = hasSection16
+    ? ""
+    : `<h2>16. Planejamento do controle médico ocupacional</h2><p>O monitoramento médico ocupacional será executado conforme os riscos vigentes, a população abrangida e as decisões registradas pelo médico responsável na matriz de cada GSE. Periodicidades, avaliações clínicas, exames complementares e condutas devem ser revisados sempre que houver alteração relevante no PGR, no processo de trabalho ou na condição ocupacional do trabalhador.</p>`;
   const templateBody = `
     <section class="document-content technical-template">${officialIntroduction}</section>
     <h2>15. Detalhamento dos GSEs e integração com o PGR</h2>${pgrReference}${matrix || "<p>Nenhum risco importado.</p>"}
+    ${section16}
     ${officialContinuation ? `<section class="document-content technical-template">${officialContinuation}</section>` : ""}`;
   return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
-  @page{size:A4;margin:18mm 15mm}body{font-family:Arial,sans-serif;color:#172b3a;font-size:10pt;line-height:1.45}h1{font-size:25pt;color:#0e2c46}h2{margin-top:9mm;color:#0e2c46;border-bottom:2px solid #0096a6;padding-bottom:2mm}h3{margin-top:6mm;color:#0e2c46}table{width:100%;border-collapse:collapse;font-size:7.7pt;margin:3mm 0 6mm}th,td{border:1px solid #d7e1e8;padding:2mm;vertical-align:top}th{background:#0e2c46;color:#fff}.cover{height:240mm;display:flex;flex-direction:column;justify-content:center;text-align:center;page-break-after:always}.meta{color:#607486}.signature{margin-top:18mm;text-align:center}.signature img{display:block;max-width:70mm;max-height:24mm;object-fit:contain;margin:0 auto 2mm}.signature-line{border-top:1px solid #172b3a;width:80mm;margin:0 auto 2mm}.notice{border-left:3px solid #eab308;padding:3mm;background:#fffbeb;font-size:8.5pt}.toc{columns:2}.page-break{page-break-before:always}p{white-space:pre-wrap}.document-content ul,.document-content ol{padding-left:7mm}.document-content li{margin:1.2mm 0}.document-content li>p{margin:0}.document-content img{max-width:100%;height:auto}</style></head><body>
+  @page{size:A4;margin:18mm 15mm}*{box-sizing:border-box}html,body{font-family:Arial,sans-serif;color:#172b3a;font-size:10pt;line-height:1.48;letter-spacing:0}body{margin:0}h1{font-size:25pt;color:#0e2c46;line-height:1.15}h2{font-size:15pt;line-height:1.25;margin:9mm 0 3mm;color:#0e2c46;border-bottom:2px solid #0096a6;padding-bottom:2mm;break-after:avoid-page;page-break-after:avoid}h3{font-size:11.5pt;line-height:1.3;margin:6mm 0 2.5mm;color:#0e2c46;break-after:avoid-page;page-break-after:avoid}h2+*,h3+*{break-before:avoid-page;page-break-before:avoid}p{margin:0 0 3.5mm;orphans:3;widows:3}ul,ol{margin:2mm 0 4mm;padding-left:7mm}li{margin:1.2mm 0;orphans:2;widows:2}table{width:100%;border-collapse:collapse;font-size:8pt;margin:3mm 0 6mm}thead{display:table-header-group}tr{break-inside:avoid;page-break-inside:avoid}th,td{border:1px solid #d7e1e8;padding:2.2mm;vertical-align:top}th{background:#0e2c46;color:#fff}.cover{height:240mm;display:flex;flex-direction:column;justify-content:center;text-align:center;page-break-after:always}.cover h2{border:0;margin:4mm 0}.meta{color:#607486}.signature{margin-top:18mm;text-align:center;break-inside:avoid}.signature img{display:block;max-width:70mm;max-height:24mm;object-fit:contain;margin:0 auto 2mm}.signature-line{border-top:1px solid #172b3a;width:80mm;margin:0 auto 2mm}.notice{border-left:3px solid #eab308;padding:3mm;background:#fffbeb;font-size:8.5pt;break-inside:avoid}.toc{columns:2}.page-break{page-break-before:always}.document-content h1{font-size:17pt;border-bottom:2px solid #0096a6;padding-bottom:2mm;break-after:avoid-page}.document-content h2{font-size:15pt}.document-content h3{font-size:11.5pt}.document-content p{white-space:normal}.document-content ul,.document-content ol{padding-left:7mm}.document-content li>p{margin:0}.document-content img{max-width:100%;height:auto;break-inside:avoid}</style></head><body>
   <section class="cover"><h1>${esc(program.title)}</h1><h2>${esc(program.company_name)}</h2><p>CNPJ: ${esc(program.cnpj || "-")}<br>Vigência: ${esc(program.valid_from || "-")} a ${esc(program.valid_until || "-")}</p><p class="meta">Programa de Controle Médico de Saúde Ocupacional</p></section>
   <h2>Controle do documento</h2><table><tbody><tr><td><b>Versão</b></td><td>${esc(program.current_version || 1)}</td><td><b>Situação</b></td><td>${esc(program.status)}</td></tr><tr><td><b>PGR de referência</b></td><td>${esc(program.pgr_title || "-")}</td><td><b>Sincronização</b></td><td>${esc(program.pgr_synced_at || "-")}</td></tr></tbody></table>
   <h2>Identificação da organização</h2><p><b>Empresa:</b> ${esc(program.company_name)}<br><b>CNPJ:</b> ${esc(program.cnpj || "-")}<br><b>Endereço:</b> ${esc(program.address || "-")}<br><b>Médico responsável:</b> ${esc(program.doctor_name || "-")} · ${esc(program.doctor_crm || "-")}</p>
@@ -1064,6 +1071,57 @@ export function buildPcmsoPdfHtml(input: {
   <h2>Anexos associados</h2><ol>${annexes.map(item => `<li>Anexo ${item.annex_number}: ${esc(item.title || item.file_name)}</li>`).join("") || "<li>Nenhum anexo associado.</li>"}</ol>
   <div class="signature">${signatureImage ? `<img src="${signatureImage}" alt="Assinatura do médico responsável">` : ""}${stampImage ? `<img src="${stampImage}" alt="Carimbo do médico responsável">` : ""}<div class="signature-line"></div><b>${esc(program.doctor_name || "Médico responsável")}</b><br>${esc(program.doctor_crm || "CRM não informado")}<br>Registro de autoria e integridade: ${esc(program.signature_hash || "documento ainda não confirmado")}</div>
   </body></html>`;
+}
+
+export async function appendPcmsoAttachments(basePdf: Uint8Array, annexes: any[]) {
+  if (!annexes.length) return { bytes: basePdf, appendedPages: 0 };
+  const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib");
+  const target = await PDFDocument.load(basePdf);
+  const font = await target.embedFont(StandardFonts.Helvetica);
+  const bold = await target.embedFont(StandardFonts.HelveticaBold);
+  let appendedPages = 0;
+  for (const annex of annexes) {
+    const privatePath = String(annex.private_path || "");
+    if (!privatePath || !fs.existsSync(privatePath)) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: `O arquivo do Anexo ${annex.annex_number} não está disponível. Substitua o anexo antes de gerar o PCMSO.` });
+    }
+    const cover = target.addPage([595.28, 841.89]);
+    cover.drawRectangle({ x: 0, y: 0, width: 595.28, height: 841.89, color: rgb(0.055, 0.173, 0.275) });
+    cover.drawRectangle({ x: 52, y: 620, width: 72, height: 6, color: rgb(0, 0.588, 0.651) });
+    cover.drawText(`ANEXO ${annex.annex_number}`, { x: 52, y: 565, size: 30, font: bold, color: rgb(1, 1, 1) });
+    const title = String(annex.title || annex.file_name || "Documento associado").slice(0, 72);
+    cover.drawText(title, { x: 52, y: 520, size: 15, font, color: rgb(0.88, 0.94, 0.96), maxWidth: 490, lineHeight: 20 });
+    cover.drawText("Documento incorporado integralmente ao PCMSO", { x: 52, y: 90, size: 10, font, color: rgb(0.7, 0.82, 0.86) });
+    appendedPages += 1;
+    const file = fs.readFileSync(privatePath);
+    const mime = String(annex.mime_type || "").toLowerCase();
+    const extension = path.extname(privatePath).toLowerCase();
+    try {
+      if (mime.includes("pdf") || extension === ".pdf") {
+        const source = await PDFDocument.load(file);
+        const copied = await target.copyPages(source, source.getPageIndices());
+        copied.forEach(page => target.addPage(page));
+        appendedPages += copied.length;
+      } else if (mime.includes("png") || extension === ".png") {
+        const image = await target.embedPng(file);
+        const page = target.addPage([595.28, 841.89]);
+        const scale = Math.min(535 / image.width, 781 / image.height);
+        page.drawImage(image, { x: (595.28 - image.width * scale) / 2, y: (841.89 - image.height * scale) / 2, width: image.width * scale, height: image.height * scale });
+        appendedPages += 1;
+      } else if (mime.includes("jpeg") || mime.includes("jpg") || [".jpg", ".jpeg"].includes(extension)) {
+        const image = await target.embedJpg(file);
+        const page = target.addPage([595.28, 841.89]);
+        const scale = Math.min(535 / image.width, 781 / image.height);
+        page.drawImage(image, { x: (595.28 - image.width * scale) / 2, y: (841.89 - image.height * scale) / 2, width: image.width * scale, height: image.height * scale });
+        appendedPages += 1;
+      } else {
+        throw new Error("formato não suportado");
+      }
+    } catch (error: any) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: `Não foi possível incorporar integralmente o Anexo ${annex.annex_number} (${annex.file_name}). Verifique se o arquivo é um PDF, PNG ou JPEG válido.` });
+    }
+  }
+  return { bytes: await target.save(), appendedPages };
 }
 
 function buildAnalyticalReportPdfHtml(input: {
@@ -2849,6 +2907,22 @@ export const medicalRouter = router({
       return { ok: true, id };
     }),
 
+  updateAnnex: protectedProcedure.input(z.object({
+    id: z.number().int().positive(), annexNumber: z.number().int().min(1).max(8), title: z.string().max(255).optional(),
+    sortOrder: z.number().int().default(0), fileName: z.string().min(1).max(255).optional(), fileBase64: z.string().min(20).max(20_000_000).optional(),
+  })).mutation(async ({ctx,input})=>{
+    requireDoctor(ctx);await ensureTables();const db=await getDb();const companyId=companyOf(ctx);if(!db)throw new TRPCError({code:"INTERNAL_SERVER_ERROR"});
+    const result:any=await db.execute(drzSql`SELECT * FROM pcmso_attachments_v2 WHERE id=${input.id} AND company_id=${companyId} LIMIT 1`);const row=rowsOf(result)[0];if(!row)throw new TRPCError({code:"NOT_FOUND"});await assertPcmsoEditable(db,companyId,Number(row.pcmso_id));
+    let privatePath=row.private_path,mimeType=row.mime_type,fileName=row.file_name;
+    if(input.fileBase64&&input.fileName){const file=savePrivateFile(companyId,`pcmso_${Number(row.pcmso_id)}`,input.fileName,input.fileBase64);privatePath=file.target;mimeType=file.mimeType;fileName=input.fileName;try{if(row.private_path&&fs.existsSync(row.private_path))fs.unlinkSync(row.private_path);}catch{}}
+    await db.execute(drzSql`UPDATE pcmso_attachments_v2 SET annex_number=${input.annexNumber},title=${input.title||null},file_name=${fileName},mime_type=${mimeType},private_path=${privatePath},sort_order=${input.sortOrder} WHERE id=${input.id} AND company_id=${companyId}`);
+    await audit(db,ctx,"pcmso_annex_updated","pcmso_annex",input.id,null,{annexNumber:input.annexNumber,fileReplaced:!!input.fileBase64});return{ok:true};
+  }),
+
+  deleteAnnex: protectedProcedure.input(z.object({id:z.number().int().positive()})).mutation(async({ctx,input})=>{
+    requireDoctor(ctx);await ensureTables();const db=await getDb();const companyId=companyOf(ctx);if(!db)throw new TRPCError({code:"INTERNAL_SERVER_ERROR"});const result:any=await db.execute(drzSql`SELECT * FROM pcmso_attachments_v2 WHERE id=${input.id} AND company_id=${companyId} LIMIT 1`);const row=rowsOf(result)[0];if(!row)throw new TRPCError({code:"NOT_FOUND"});await assertPcmsoEditable(db,companyId,Number(row.pcmso_id));await db.execute(drzSql`DELETE FROM pcmso_attachments_v2 WHERE id=${input.id} AND company_id=${companyId}`);try{if(row.private_path&&fs.existsSync(row.private_path))fs.unlinkSync(row.private_path);}catch{}await audit(db,ctx,"pcmso_annex_deleted","pcmso_annex",input.id,null,{pcmsoId:Number(row.pcmso_id),annexNumber:Number(row.annex_number),fileName:row.file_name});return{ok:true};
+  }),
+
   generatePcmsoPdf: protectedProcedure
     .input(z.object({ id: z.number().int().positive() }))
     .mutation(async ({ ctx, input }) => {
@@ -2877,7 +2951,7 @@ export const medicalRouter = router({
         drzSql`SELECT m.*,e.name exam_name,(SELECT COUNT(*) FROM occupational_gse_worker_history h WHERE h.company_id=m.company_id AND h.gse_id=m.master_gse_id AND h.is_current=1) population_count FROM pcmso_risk_monitoring_v2 m LEFT JOIN pcmso_exam_catalog_v2 e ON e.id=m.exam_id WHERE m.pcmso_id=${input.id} AND m.company_id=${companyId} ORDER BY m.gse_name,m.risk_name`
       );
       const annexesResult: any = await db.execute(
-        drzSql`SELECT annex_number,title,file_name FROM pcmso_attachments_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId} ORDER BY annex_number,sort_order,id`
+        drzSql`SELECT id,annex_number,title,file_name,mime_type,private_path,sort_order FROM pcmso_attachments_v2 WHERE pcmso_id=${input.id} AND company_id=${companyId} ORDER BY annex_number,sort_order,id`
       );
       const monitoring = rowsOf(monitoringResult);
       const annexes = rowsOf(annexesResult);
@@ -2905,15 +2979,27 @@ export const medicalRouter = router({
         headless: true,
         args: ["--no-sandbox"],
       });
-      const page = await browser.newPage();
-      await page.setContent(html, { waitUntil: "load" });
-      const pdf = await page.pdf({ format: "A4", printBackground: true });
-      await browser.close();
+      let pdf: Uint8Array;
+      try {
+        const page = await browser.newPage();
+        await page.setContent(html, { waitUntil: "load" });
+        pdf = await page.pdf({
+          format: "A4",
+          printBackground: true,
+          displayHeaderFooter: true,
+          headerTemplate: "<div></div>",
+          footerTemplate: '<div style="width:100%;font:8px Arial;color:#64748b;text-align:center"><span class="pageNumber"></span> / <span class="totalPages"></span></div>',
+          margin: { top: "18mm", right: "15mm", bottom: "20mm", left: "15mm" },
+        });
+      } finally {
+        await browser.close();
+      }
+      const merged = await appendPcmsoAttachments(pdf!, annexes);
       const version = Number(program.current_version || 1);
       const dir = path.join(privateRoot(companyId), `pcmso_${input.id}`);
       fs.mkdirSync(dir, { recursive: true });
       const target = path.join(dir, `pcmso_v${version}_${Date.now()}.pdf`);
-      fs.writeFileSync(target, pdf);
+      fs.writeFileSync(target, merged.bytes);
       await db.execute(
         drzSql`INSERT INTO pcmso_versions_v2 (company_id,pcmso_id,version_number,pdf_private_path,generated_by) VALUES (${companyId},${input.id},${version},${target},${Number(ctx.user.id)})`
       );
@@ -2922,12 +3008,16 @@ export const medicalRouter = router({
       );
       await audit(db, ctx, "pcmso_pdf_generated", "pcmso", input.id, null, {
         version,
+        annexes: annexes.length,
+        appendedPages: merged.appendedPages,
       });
       return {
         fileName: `PCMSO_${version}.pdf`,
         mimeType: "application/pdf",
-        dataBase64: `data:application/pdf;base64,${Buffer.from(pdf).toString("base64")}`,
+        dataBase64: `data:application/pdf;base64,${Buffer.from(merged.bytes).toString("base64")}`,
         version,
+        annexesIncluded: annexes.length,
+        annexPagesIncluded: merged.appendedPages,
       };
     }),
 

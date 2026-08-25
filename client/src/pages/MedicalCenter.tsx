@@ -133,6 +133,7 @@ export default function MedicalCenter() {
   const [programOpen, setProgramOpen] = useState(false);
   const [programDraft, setProgramDraft] = useState<any>(null);
   const [annexOpen, setAnnexOpen] = useState(false);
+  const [annexDraft, setAnnexDraft] = useState<any>(null);
   const [examOpen, setExamOpen] = useState(false);
   const [examDraft, setExamDraft] = useState<any>(null);
   const [vaccineOpen, setVaccineOpen] = useState(false);
@@ -284,8 +285,17 @@ export default function MedicalCenter() {
     onSuccess: () => {
       programQ.refetch();
       setAnnexOpen(false);
+      setAnnexDraft(null);
       toast.success("Anexo arquivado no PCMSO.");
     },
+    onError: error => toast.error(error.message),
+  });
+  const annexUpdate = trpc.medical.updateAnnex.useMutation({
+    onSuccess: () => { programQ.refetch(); setAnnexOpen(false); setAnnexDraft(null); toast.success("Anexo atualizado."); },
+    onError: error => toast.error(error.message),
+  });
+  const annexDelete = trpc.medical.deleteAnnex.useMutation({
+    onSuccess: () => { programQ.refetch(); toast.success("Anexo excluído com registro de auditoria."); },
     onError: error => toast.error(error.message),
   });
   const examSave = trpc.medical.upsertExam.useMutation({
@@ -717,7 +727,9 @@ export default function MedicalCenter() {
               setProgramDraft(selectedProgram);
               setProgramOpen(true);
             }}
-            onAnnex={() => setAnnexOpen(true)}
+            onAnnex={() => { setAnnexDraft(null); setAnnexOpen(true); }}
+            onEditAnnex={row => { setAnnexDraft(row); setAnnexOpen(true); }}
+            onDeleteAnnex={id => { if (window.confirm("Excluir este anexo do PCMSO?")) annexDelete.mutate({ id }); }}
             onDownload={downloadPrivate}
             onImport={pgrId =>
               selectedProgramId &&
@@ -1060,10 +1072,11 @@ export default function MedicalCenter() {
         />
         <AnnexDialog
           open={annexOpen}
-          close={() => setAnnexOpen(false)}
+          close={() => { setAnnexOpen(false); setAnnexDraft(null); }}
           pcmsoId={selectedProgramId}
-          save={payload => annexSave.mutate(payload)}
-          busy={annexSave.isPending}
+          initial={annexDraft}
+          save={payload => payload.id ? annexUpdate.mutate(payload) : annexSave.mutate(payload)}
+          busy={annexSave.isPending || annexUpdate.isPending}
         />
         <VaccineDialog
           open={vaccineOpen}
@@ -2161,34 +2174,35 @@ function AnnexDialog({
   open,
   close,
   pcmsoId,
+  initial,
   save,
   busy,
 }: {
   open: boolean;
   close: () => void;
   pcmsoId: number | null;
+  initial?: any;
   save: (p: any) => void;
   busy: boolean;
 }) {
   const [annex, setAnnex] = useState(1);
   const [title, setTitle] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  useEffect(() => {
+    setAnnex(Number(initial?.annex_number || 1));
+    setTitle(initial?.title || "");
+    setFile(null);
+  }, [initial, open]);
   const submit = () => {
-    if (!pcmsoId || !file) return;
-    if (file.size > 12 * 1024 * 1024) {
+    if (!pcmsoId || (!file && !initial)) return;
+    if (file && file.size > 12 * 1024 * 1024) {
       toast.error("O arquivo deve ter no máximo 12 MB.");
       return;
     }
+    const payload = { id: initial?.id, pcmsoId, annexNumber: annex, title: title || undefined, sortOrder: Number(initial?.sort_order || 0) } as any;
+    if (!file) { save(payload); return; }
     const reader = new FileReader();
-    reader.onload = () =>
-      save({
-        pcmsoId,
-        annexNumber: annex,
-        title: title || undefined,
-        fileName: file.name,
-        fileBase64: String(reader.result),
-        sortOrder: 0,
-      });
+    reader.onload = () => save({ ...payload, fileName: file.name, fileBase64: String(reader.result) });
     reader.onerror = () => toast.error("Não foi possível ler o arquivo.");
     reader.readAsDataURL(file);
   };
@@ -2196,7 +2210,7 @@ function AnnexDialog({
     <Dialog open={open} onOpenChange={value => !value && close()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Anexar documento ao PCMSO</DialogTitle>
+          <DialogTitle>{initial ? "Atualizar anexo do PCMSO" : "Anexar documento ao PCMSO"}</DialogTitle>
         </DialogHeader>
         <div className="grid gap-3">
           <Field label="Número do anexo">
@@ -2221,8 +2235,9 @@ function AnnexDialog({
               onChange={e => setFile(e.target.files?.[0] || null)}
             />
           </Field>
-          <Button disabled={!pcmsoId || !file || busy} onClick={submit}>
-            {busy ? "Arquivando..." : "Arquivar anexo"}
+          {initial && <p className="text-xs text-slate-500">Arquivo atual: {initial.file_name}. Selecione outro somente para substituí-lo.</p>}
+          <Button disabled={!pcmsoId || (!file && !initial) || busy} onClick={submit}>
+            {busy ? "Salvando..." : initial ? "Atualizar anexo" : "Arquivar anexo"}
           </Button>
         </div>
       </DialogContent>

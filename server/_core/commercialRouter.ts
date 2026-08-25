@@ -49,6 +49,7 @@ const FEATURE_PILLAR: Record<string, string> = {
   pcd_management: "occupational_health", pca: "occupational_health", clinic_portal: "integrations",
   custom_analytics: "business_intelligence", commercial_portfolio: "strategic_differentials",
   mandatory_training: "learning",
+  s2221_toxicological: "esocial", biometric_identity: "technology", white_label_course_library: "learning",
 };
 
 const DEFAULT_ADDONS = [
@@ -60,6 +61,7 @@ const DEFAULT_ADDONS = [
   ["ai_credits", "Créditos adicionais de IA", "Franquia adicional para recursos de inteligência artificial"],
   ["ocr_credits", "Créditos adicionais de OCR", "Franquia adicional para leitura de documentos"],
   ["storage", "Armazenamento adicional", "Espaço adicional para documentos e evidências"],
+  ["biometric_identity", "Identificação Biométrica PLUS", "Identificação e ciência eletrônica com evidências, governança e rastreabilidade"],
 ] as const;
 
 const DEFAULT_BANDS = [
@@ -130,6 +132,9 @@ const DEFAULT_FEATURES = [
   ["Conformidade e Saúde", "clinic_portal", "Portal de Clínicas Credenciadas", "Requisições, resultados, comprovantes e demonstrativos integrados"],
   ["Tecnologia e Operações", "custom_analytics", "Análise Personalizada e BI", "Construtor de métricas com fontes, dimensões e filtros configuráveis"],
   ["Tecnologia e Operações", "commercial_portfolio", "Portfólio Comercial Vivo", "Apresentações comerciais completas ou segmentadas geradas pela plataforma"],
+  ["Conformidade e Saúde", "s2221_toxicological", "S-2221 - Exame Toxicológico", "Gestão de motoristas profissionais, exames e acompanhamento do evento no eSocial"],
+  ["Tecnologia e Operações", "biometric_identity", "Identificação Biométrica PLUS", "Ciência eletrônica e evidências auditáveis com governança LGPD"],
+  ["Conteúdo e Aprendizagem", "white_label_course_library", "Biblioteca White Label de Cursos", "Seleção e distribuição de cursos oficiais por rede e cliente"],
 ] as const;
 
 let tablesReady = false;
@@ -223,6 +228,21 @@ async function ensureCommercialTables() {
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uq_commercial_feature (owner_type, owner_id, code),
     INDEX idx_commercial_feature_scope (owner_type, owner_id, is_active, sort_order)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await db.execute(drzSql`CREATE TABLE IF NOT EXISTS commercial_feature_images (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    owner_type VARCHAR(20) NOT NULL,
+    owner_id INT NOT NULL DEFAULT 0,
+    feature_id INT NOT NULL,
+    image_url VARCHAR(1200) NOT NULL,
+    original_name VARCHAR(255) NOT NULL,
+    caption VARCHAR(500) NULL,
+    sort_order INT NOT NULL DEFAULT 0,
+    is_primary TINYINT(1) NOT NULL DEFAULT 0,
+    uploaded_by INT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_commercial_feature_images (owner_type,owner_id,feature_id,sort_order),
+    INDEX idx_commercial_feature_primary (feature_id,is_primary)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
   await db.execute(drzSql`CREATE TABLE IF NOT EXISTS commercial_pillars (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -888,6 +908,20 @@ function writeBase64Upload(folder: string, name: string, base64: string) {
   return `/uploads/${folder}/${filename}`;
 }
 
+function assertPortfolioImage(base64: string, mimeType: "image/png" | "image/jpeg" | "image/webp") {
+  const clean = String(base64 || "").replace(/^data:[^;]+;base64,/, "");
+  const buffer = Buffer.from(clean, "base64");
+  if (!buffer.length || buffer.length > 12 * 1024 * 1024) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "A imagem deve ter no máximo 12 MB." });
+  }
+  const valid = mimeType === "image/png"
+    ? buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+    : mimeType === "image/jpeg"
+      ? buffer[0] === 0xff && buffer[1] === 0xd8 && buffer.at(-2) === 0xff && buffer.at(-1) === 0xd9
+      : buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP";
+  if (!valid) throw new TRPCError({ code: "BAD_REQUEST", message: "O conteúdo do arquivo não corresponde a uma imagem PNG, JPEG ou WebP válida." });
+}
+
 async function logoDataUri(url?: string | null): Promise<string | null> {
   if (!url) return null;
   try {
@@ -1034,7 +1068,7 @@ async function createProposalPdf(scope: CommercialScope, proposalId: number) {
   if (!p) throw new TRPCError({ code: "NOT_FOUND", message: "Proposta não encontrada." });
   const brandResult: any = await db.execute(drzSql`SELECT * FROM commercial_brand_settings WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} LIMIT 1`);
   const brand = rowsOf(brandResult)[0] || {};
-  const allFeaturesResult: any = await db.execute(drzSql`SELECT id,category,name,description FROM commercial_feature_catalog WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} AND is_active=1 ORDER BY category,sort_order,id`);
+  const allFeaturesResult: any = await db.execute(drzSql`SELECT id,category,name,description,screenshot_url FROM commercial_feature_catalog WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} AND is_active=1 ORDER BY category,sort_order,id`);
   const features = rowsOf(allFeaturesResult);
   const grouped = new Map<string, any[]>();
   for (const f of features) grouped.set(String(f.category), [...(grouped.get(String(f.category)) || []), f]);
@@ -1072,16 +1106,19 @@ async function createProposalPdf(scope: CommercialScope, proposalId: number) {
   const matrix = plans.length ? `<section><h2>Matriz comparativa dos planos</h2><p class="small">✓ Incluído &nbsp;&nbsp; — Não incluído &nbsp;&nbsp; * Adicional/opcional. A recomendação comercial não representa contratação.</p><table><thead><tr><th>Funcionalidade</th>${plans.map((x: any) => `<th>${esc(x.name)}${Number(p.recommended_plan_id) === Number(x.id) ? `<br><span class="recommended">★ Recomendado</span>` : ""}${Number(p.selected_plan_id) === Number(x.id) ? `<br><span class="contracted">Selecionado</span>` : ""}</th>`).join("")}</tr></thead><tbody>${matrixFeatures.map((f) => `<tr><td><span class="small">${esc(f.category)}</span><br>${esc(f.name)}</td>${plans.map((pl: any) => `<td class="center">${pl.proposalFeatureIds.includes(Number(f.id)) ? "✓ Incluído" : pl.proposalOptionalFeatureIds.includes(Number(f.id)) ? "* Adicional" : "— Não incluído"}</td>`).join("")}</tr>`).join("")}</tbody></table></section>` : "";
   const investmentOptions = plans.map((plan: any) => { const employees = Number(plan.proposalEmployees || p.qtd_colaboradores || 0); const perEmployee = employees ? plan.proposalMonthly / employees : 0; return `<div class="plan-option ${Number(p.recommended_plan_id) === Number(plan.id) ? "is-recommended" : ""}"><div class="plan-label">${Number(p.selected_plan_id) === Number(plan.id) ? "PLANO SELECIONADO" : Number(p.recommended_plan_id) === Number(plan.id) ? "PLANO RECOMENDADO" : "PLANO DISPONÍVEL"}</div><h3>${esc(plan.name)}</h3><p>${esc(plan.description || "")}</p><div class="price">${money(plan.proposalMonthly)}<span> / mês</span></div><p><b>Implantação:</b> ${money(plan.proposalSetup)}<br><b>Colaboradores considerados:</b> ${employees.toLocaleString("pt-BR")}${plan.employee_limit ? `<br><b>Limite do plano:</b> ${Number(plan.employee_limit).toLocaleString("pt-BR")} colaboradores` : ""}${plan.cnpj_limit ? `<br><b>Limite:</b> ${Number(plan.cnpj_limit).toLocaleString("pt-BR")} CNPJ(s)` : ""}${plan.proposalLimits ? `<br>${esc(plan.proposalLimits)}` : ""}</p>${employees ? `<p class="small">${money(perEmployee)} por colaborador/mês · ${money(perEmployee / 30)} por colaborador/dia</p>` : ""}</div>`; }).join("");
   const chosenPlan = plans.find((plan:any)=>Number(plan.id)===Number(p.selected_plan_id)) || plans.find((plan:any)=>Number(plan.id)===Number(p.recommended_plan_id)) || plans[0];
-  const principalFeatures = chosenPlan ? features.filter((feature:any)=>chosenPlan.proposalFeatureIds.includes(Number(feature.id))).slice(0,14) : [];
+  const principalFeatures = await Promise.all((chosenPlan ? features.filter((feature:any)=>chosenPlan.proposalFeatureIds.includes(Number(feature.id))).slice(0,14) : []).map(async (feature: any) => ({
+    ...feature,
+    screenshot_data_uri: await logoDataUri(feature.screenshot_url),
+  })));
   const addonIds:number[]=(()=>{try{return JSON.parse(p.selected_addons_json||"[]").map(Number)}catch{return[]}})();
   const addonResult:any=addonIds.length?await db.execute(drzSql.raw(`SELECT name,description,unit_price,setup_price FROM commercial_addons WHERE id IN (${addonIds.join(",")}) AND owner_type='${scope.ownerType}' AND owner_id=${scope.ownerId}`)):null;
   const selectedAddons=rowsOf(addonResult);
   const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
-    @page{size:A4;margin:18mm 16mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#243447;margin:0;font-size:10.5pt;line-height:1.5}.cover{height:250mm;display:flex;flex-direction:column;justify-content:space-between;page-break-after:always;background:${primary};color:#fff;margin:-18mm -16mm;padding:28mm 22mm}.cover img{max-width:210px;max-height:90px;object-fit:contain;object-position:left center}.eyebrow{font-size:10pt;text-transform:uppercase;letter-spacing:1.5px;color:${secondary};font-weight:700}.cover h1{font-size:36pt;line-height:1.08;margin:24mm 0 8mm}.cover .client{font-size:19pt}.cover .meta{border-top:1px solid rgba(255,255,255,.35);padding-top:8mm}h2{font-size:18pt;color:${primary};border-bottom:3px solid ${secondary};padding-bottom:3mm;margin:10mm 0 5mm;break-after:avoid}h3{color:${primary};font-size:13pt}.lead{font-size:13pt;color:#475569}.feature-grid{display:grid;grid-template-columns:1fr 1fr;gap:4mm}.feature{border:1px solid #dbe5ea;padding:4mm;border-radius:6px;min-height:24mm;break-inside:avoid}.feature b{display:block;color:${primary};font-size:11pt}.feature span{display:block;color:#64748b;font-size:9pt;margin-top:2mm}.investment{background:#f3f7f9;border-left:5px solid ${secondary};padding:6mm;margin:6mm 0}.price{font-size:24pt;color:${primary};font-weight:800}.price span{font-size:11pt}.small{font-size:8.5pt;color:#64748b}table{width:100%;border-collapse:collapse;font-size:8.5pt}thead{display:table-header-group}tr{break-inside:avoid}th{background:${primary};color:white;text-align:left;padding:2.5mm}td{border-bottom:1px solid #dbe5ea;padding:2.5mm}.center{text-align:center}.footer{margin-top:14mm;border-top:1px solid #dbe5ea;padding-top:5mm;color:#64748b}.page-break{break-before:page;height:0}.recommended{color:#ffe082;font-size:8pt}.contracted{color:#b7f7cf;font-size:8pt}.plan-options{display:grid;grid-template-columns:repeat(3,1fr);gap:4mm}.plan-option{border:1px solid #dbe5ea;padding:5mm;break-inside:avoid}.plan-option.is-recommended{border:2px solid ${secondary}}.plan-label{font-size:7.5pt;font-weight:700;color:${secondary}}
+    @page{size:A4;margin:18mm 16mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#243447;margin:0;font-size:10.5pt;line-height:1.5}.cover{height:250mm;display:flex;flex-direction:column;justify-content:space-between;page-break-after:always;background:${primary};color:#fff;margin:-18mm -16mm;padding:28mm 22mm}.cover img{max-width:210px;max-height:90px;object-fit:contain;object-position:left center}.eyebrow{font-size:10pt;text-transform:uppercase;letter-spacing:1.5px;color:${secondary};font-weight:700}.cover h1{font-size:36pt;line-height:1.08;margin:24mm 0 8mm}.cover .client{font-size:19pt}.cover .meta{border-top:1px solid rgba(255,255,255,.35);padding-top:8mm}h2{font-size:18pt;color:${primary};border-bottom:3px solid ${secondary};padding-bottom:3mm;margin:10mm 0 5mm;break-after:avoid}h3{color:${primary};font-size:13pt}.lead{font-size:13pt;color:#475569}.feature-grid{display:grid;grid-template-columns:1fr 1fr;gap:4mm}.feature{border:1px solid #dbe5ea;padding:4mm;border-radius:6px;min-height:24mm;break-inside:avoid}.feature img{display:block;width:100%;height:34mm;object-fit:cover;object-position:top;border:1px solid #dbe5ea;margin-bottom:3mm}.feature b{display:block;color:${primary};font-size:11pt}.feature span{display:block;color:#64748b;font-size:9pt;margin-top:2mm}.investment{background:#f3f7f9;border-left:5px solid ${secondary};padding:6mm;margin:6mm 0}.price{font-size:24pt;color:${primary};font-weight:800}.price span{font-size:11pt}.small{font-size:8.5pt;color:#64748b}table{width:100%;border-collapse:collapse;font-size:8.5pt}thead{display:table-header-group}tr{break-inside:avoid}th{background:${primary};color:white;text-align:left;padding:2.5mm}td{border-bottom:1px solid #dbe5ea;padding:2.5mm}.center{text-align:center}.footer{margin-top:14mm;border-top:1px solid #dbe5ea;padding-top:5mm;color:#64748b}.page-break{break-before:page;height:0}.recommended{color:#ffe082;font-size:8pt}.contracted{color:#b7f7cf;font-size:8pt}.plan-options{display:grid;grid-template-columns:repeat(3,1fr);gap:4mm}.plan-option{border:1px solid #dbe5ea;padding:5mm;break-inside:avoid}.plan-option.is-recommended{border:2px solid ${secondary}}.plan-label{font-size:7.5pt;font-weight:700;color:${secondary}}
   </style></head><body>
   <div class="cover"><div>${logo ? `<img src="${logo}">` : `<div style="font-size:22pt;font-weight:800">${esc(brand.brand_name)}</div>`}</div><div><div class="eyebrow">Proposta comercial</div><h1>${esc(p.proposal_title || "Solução integrada em Saúde e Segurança do Trabalho")}</h1><div class="client">Preparada para ${esc(p.razao_social)}</div></div><div class="meta">Validade: ${Number(p.validade_dias || 15)} dias<br>Emissão: ${new Date().toLocaleDateString("pt-BR")}</div></div>
   <section><div class="eyebrow">Apresentação</div><h2>${esc(brand.brand_name || "Nossa plataforma")}</h2><p class="lead">${esc(p.presentation_text || brand.presentation_text || "")}</p><h3>Objetivo da proposta</h3><p>${esc(p.objective_text || brand.objective_text || "")}</p><p><b>Cliente:</b> ${esc(p.razao_social)}${p.cnpj ? ` | <b>CNPJ:</b> ${esc(p.cnpj)}` : ""}<br><b>Responsável:</b> ${esc(p.responsavel || "A definir")} | <b>Colaboradores:</b> ${Number(p.qtd_colaboradores || 0).toLocaleString("pt-BR")}</p></section>
-  <section><div class="eyebrow">Escopo comercial</div><h2>${chosenPlan ? esc(chosenPlan.name) : "Solução proposta"}</h2><p>${chosenPlan ? esc(chosenPlan.description || "") : "Escopo personalizado conforme premissas desta proposta."}</p><div class="feature-grid">${principalFeatures.map((f:any)=>`<div class="feature"><b>${esc(f.name)}</b><span>${esc(f.description||"")}</span></div>`).join("") || `<p>As funcionalidades serão detalhadas no Anexo Técnico.</p>`}</div><p class="small">O catálogo completo, os 17 pilares e a matriz de disponibilidade por plano são apresentados no documento separado “Anexo Técnico - Catálogo de Funcionalidades”.</p></section>
+  <section><div class="eyebrow">Escopo comercial</div><h2>${chosenPlan ? esc(chosenPlan.name) : "Solução proposta"}</h2><p>${chosenPlan ? esc(chosenPlan.description || "") : "Escopo personalizado conforme premissas desta proposta."}</p><div class="feature-grid">${principalFeatures.map((f:any)=>`<div class="feature">${f.screenshot_data_uri ? `<img src="${f.screenshot_data_uri}" alt="${esc(f.name)}">` : ""}<b>${esc(f.name)}</b><span>${esc(f.description||"")}</span></div>`).join("") || `<p>As funcionalidades serão detalhadas no Anexo Técnico.</p>`}</div><p class="small">O catálogo completo, os 17 pilares e a matriz de disponibilidade por plano são apresentados no documento separado “Anexo Técnico - Catálogo de Funcionalidades”.</p></section>
   <section><h2>Investimento personalizado</h2><div class="plan-options">${investmentOptions}</div>${selectedAddons.length?`<div class="investment"><h3>Add-ons selecionados</h3>${selectedAddons.map((a:any)=>`<p><b>${esc(a.name)}:</b> ${money(a.unit_price)} ${a.setup_price?` + setup ${money(a.setup_price)}`:""}<br><span class="small">${esc(a.description||"")}</span></p>`).join("")}</div>`:""}${services.length ? `<div class="investment"><h3>Serviços e custos adicionais</h3>${services.map((s: any) => `<p><b>${esc(s.name)}:</b> ${money(s.value)} ${esc(s.description || "")}</p>`).join("")}</div>` : ""}${discount ? `<p><b>Desconto comercial condicionado:</b> ${money(discount)}</p>` : ""}</section>
   <section><h2>Condições comerciais</h2><p>${esc(p.conditions_text || brand.commercial_terms || "")}</p>${p.payment_terms_text ? `<h3>Condições de pagamento</h3><p>${esc(p.payment_terms_text)}</p>` : ""}${p.implementation_days ? `<p><b>Prazo estimado de implantação:</b> ${Number(p.implementation_days)} dias.</p>` : ""}<h2>Próximos passos</h2><p>${esc(p.next_steps_text || brand.next_steps_text || "")}</p></section>
   <div class="footer"><b>${esc(brand.contact_name || brand.brand_name || "Contato comercial")}</b><br>${esc(brand.contact_email || "")} ${brand.contact_phone ? ` | ${esc(brand.contact_phone)}` : ""}<br>${esc(brand.website || "")}</div>
@@ -1165,14 +1202,15 @@ async function createCommercialPortfolioPdf(
   const secondary = /^#[0-9a-f]{6}$/i.test(brand.secondary_color || "") ? brand.secondary_color : "#0096A6";
   const logo = await logoDataUri(brand.logo_url);
   const integrationNames = [...new Set(selectedFeatures.flatMap((feature: any) => jsonArray(feature.integrations_json).map(String)))].slice(0, 14);
-  const featurePages = selectedFeatures.map((feature: any, index: number) => {
+  const featurePages = (await Promise.all(selectedFeatures.map(async (feature: any, index: number) => {
     const benefits = jsonArray(feature.benefits_json);
     const resources = jsonArray(feature.resources_json);
     const flow = jsonArray(feature.flow_json);
     const indicators = jsonArray(feature.indicators_json);
-    const screenshot = feature.screenshot_url ? `<img class="screenshot" src="${esc(feature.screenshot_url)}" alt="Tela ${esc(feature.name)}">` : `<div class="visual"><span>${String(index + 1).padStart(2, "0")}</span><strong>${esc(feature.module_name || feature.category)}</strong><small>Fluxo integrado, rastreável e orientado por dados</small></div>`;
+    const screenshotUri = await logoDataUri(feature.screenshot_url);
+    const screenshot = screenshotUri ? `<img class="screenshot" src="${screenshotUri}" alt="Tela ${esc(feature.name)}">` : `<div class="visual"><span>${String(index + 1).padStart(2, "0")}</span><strong>${esc(feature.module_name || feature.category)}</strong><small>Fluxo integrado, rastreável e orientado por dados</small></div>`;
     return `<section class="feature-page page-break"><div class="kicker">${esc(feature.category)} · ${String(index + 1).padStart(2, "0")}</div><h2>${esc(feature.name)}</h2><p class="lead">${esc(feature.description)}</p><div class="hero-grid">${screenshot}<div><h3>O desafio</h3><p>${esc(feature.problem_text || "Processos fragmentados, controles paralelos e baixa rastreabilidade.")}</p><h3>A resposta da plataforma</h3><p>${esc(feature.objective_text || feature.description)}</p></div></div><div class="two-cols"><div><h3>Benefícios para a operação</h3><ul>${benefits.map(item => `<li>${esc(item)}</li>`).join("")}</ul></div><div><h3>Recursos principais</h3><ul>${resources.map(item => `<li>${esc(item)}</li>`).join("")}</ul></div></div>${flow.length ? `<div class="flow">${flow.map((item, flowIndex) => `<span>${flowIndex ? "→ " : ""}${esc(item)}</span>`).join("")}</div>` : ""}${indicators.length ? `<div class="indicator-row">${indicators.slice(0, 4).map(item => `<div><b>${esc(item)}</b><small>Indicador disponível</small></div>`).join("")}</div>` : ""}</section>`;
-  }).join("");
+  }))).join("");
   const pillarPage = `<section class="page-break"><div class="kicker">Visão do ecossistema</div><h2>Pilares selecionados</h2><p class="lead">Uma apresentação alinhada à necessidade da reunião, sem perder a percepção de integração da plataforma.</p><div class="pillar-grid">${pillars.map((pillar: any) => `<div><span>${esc(pillar.category || "Pilar")}</span><b>${esc(pillar.name)}</b><small>${selectedFeatures.filter((feature: any) => String(feature.pillar_code) === String(pillar.code)).length} funcionalidade(s)</small></div>`).join("")}</div><h2>Integração que transforma dados em gestão</h2><div class="ecosystem">${integrationNames.map((name, index) => `<span>${index ? "→ " : ""}${esc(name)}</span>`).join("")}</div><p class="callout">A plataforma conecta prevenção, operação, evidências, saúde ocupacional e indicadores. Cada registro alimenta o próximo processo e reduz a dependência de planilhas, e-mails e controles paralelos.</p></section>`;
   const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
     @page{size:A4;margin:16mm}*{box-sizing:border-box}body{margin:0;color:#183044;font-family:Arial,sans-serif;font-size:10pt;line-height:1.5}.cover{height:265mm;margin:-16mm;background:${primary};color:white;padding:25mm 20mm;display:flex;flex-direction:column;justify-content:space-between;page-break-after:always}.cover .brand-mark{display:inline-flex;align-items:center;background:#fff;padding:4mm 5mm;max-width:70mm;min-height:20mm;border-radius:2mm}.cover .brand-mark img{max-width:58mm;max-height:18mm;object-fit:contain;object-position:left}.cover h1{font-size:35pt;line-height:1.05;margin:12mm 0 7mm}.cover .sub{font-size:15pt;max-width:150mm;color:#e7f4f5}.cover .line{height:5px;background:${secondary};width:32mm;margin-bottom:8mm}.cover small{color:#c9d9df}.kicker{text-transform:uppercase;color:${secondary};font-weight:700;font-size:8.5pt;letter-spacing:1px}.page-break{page-break-before:always}h2{font-size:25pt;line-height:1.1;color:${primary};margin:4mm 0 5mm}h3{font-size:12pt;color:${primary};margin:4mm 0 2mm}.lead{font-size:13pt;color:#526b7b;margin-bottom:8mm}.hero-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:7mm;align-items:stretch}.visual{min-height:76mm;background:${primary};color:white;padding:9mm;display:flex;flex-direction:column;justify-content:flex-end}.visual span{font-size:34pt;color:${secondary};font-weight:800}.visual strong{font-size:18pt}.visual small{margin-top:3mm;color:#d7e5e9}.screenshot{width:100%;height:76mm;object-fit:cover;object-position:top;border:1px solid #d4e0e5}.two-cols{display:grid;grid-template-columns:1fr 1fr;gap:8mm;margin-top:8mm}.two-cols>div{border-top:4px solid ${secondary};padding-top:3mm}ul{padding-left:5mm;margin:2mm 0}li{margin:1.5mm 0}.flow,.ecosystem{display:flex;flex-wrap:wrap;gap:2mm;margin-top:8mm;background:#edf6f7;padding:5mm;color:${primary};font-weight:700}.indicator-row{display:grid;grid-template-columns:repeat(4,1fr);gap:2mm;margin-top:7mm}.indicator-row div{border:1px solid #d7e2e7;padding:3mm;min-height:18mm}.indicator-row b{display:block;font-size:8.5pt}.indicator-row small{color:#6b7f8d;font-size:7.5pt}.pillar-grid{display:grid;grid-template-columns:1fr 1fr;gap:3mm}.pillar-grid div{border-left:5px solid ${secondary};background:#f2f6f8;padding:5mm}.pillar-grid span,.pillar-grid small{display:block;color:#6b7f8d;font-size:8pt}.pillar-grid b{display:block;color:${primary};font-size:12pt;margin:1mm 0}.callout{margin-top:10mm;background:${primary};color:white;padding:8mm;font-size:13pt}.footer{margin-top:12mm;border-top:1px solid #d7e2e7;padding-top:4mm;color:#6b7f8d;font-size:8.5pt}
@@ -1287,7 +1325,25 @@ export const commercialRouter = router({
       : await db.execute(drzSql`SELECT * FROM commercial_feature_catalog WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} AND is_active=1 ORDER BY sort_order,name`);
     const pillars: any = await db.execute(drzSql`SELECT * FROM commercial_pillars WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} AND is_active=1 ORDER BY sort_order,id`);
     const runs: any = await db.execute(drzSql`SELECT * FROM commercial_portfolio_runs WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} ORDER BY generated_at DESC,id DESC LIMIT 30`);
-    return { pillars: rowsOf(pillars), features: rowsOf(features), runs: rowsOf(runs), releaseCode: PLATFORM_RELEASE.code };
+    const images: any = await db.execute(drzSql`SELECT i.*,f.name feature_name,f.code feature_code FROM commercial_feature_images i JOIN commercial_feature_catalog f ON f.id=i.feature_id AND f.owner_type=i.owner_type AND f.owner_id=i.owner_id WHERE i.owner_type=${scope.ownerType} AND i.owner_id=${scope.ownerId} ORDER BY i.feature_id,i.is_primary DESC,i.sort_order,i.id`);
+    return { pillars: rowsOf(pillars), features: rowsOf(features), runs: rowsOf(runs), images: rowsOf(images), releaseCode: PLATFORM_RELEASE.code };
+  }),
+  uploadPortfolioImage: commercialProcedure.input(z.object({ featureId:z.number().int().positive(), fileName:z.string().min(1).max(255), mimeType:z.enum(["image/png","image/jpeg","image/webp"]), base64:z.string().min(100).max(20_000_000), caption:z.string().max(500).optional(), sortOrder:z.number().int().min(0).max(10000).default(0), isPrimary:z.boolean().default(false) })).mutation(async ({ctx,input})=>{
+    const s=(ctx as any).commercialScope as CommercialScope;const db=await getDb();if(!db)throw new TRPCError({code:"INTERNAL_SERVER_ERROR"});
+    const owned:any=await db.execute(drzSql`SELECT id FROM commercial_feature_catalog WHERE id=${input.featureId} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId} LIMIT 1`);if(!rowsOf(owned)[0])throw new TRPCError({code:"NOT_FOUND",message:"Funcionalidade não localizada."});
+    assertPortfolioImage(input.base64,input.mimeType);
+    const extension=input.mimeType==="image/png"?"png":input.mimeType==="image/webp"?"webp":"jpg";const url=writeBase64Upload("portfolio-images",`${path.parse(input.fileName).name}.${extension}`,input.base64);
+    if(input.isPrimary) await db.execute(drzSql`UPDATE commercial_feature_images SET is_primary=0 WHERE owner_type=${s.ownerType} AND owner_id=${s.ownerId} AND feature_id=${input.featureId}`);
+    const inserted:any=await db.execute(drzSql`INSERT INTO commercial_feature_images(owner_type,owner_id,feature_id,image_url,original_name,caption,sort_order,is_primary,uploaded_by) VALUES(${s.ownerType},${s.ownerId},${input.featureId},${url},${input.fileName},${input.caption||null},${input.sortOrder},${input.isPrimary?1:0},${Number(ctx.user.id)})`);
+    const id=Number(inserted?.[0]?.insertId||inserted?.insertId||0);if(input.isPrimary) await db.execute(drzSql`UPDATE commercial_feature_catalog SET screenshot_url=${url} WHERE id=${input.featureId} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId}`);
+    return{ok:true,id,url};
+  }),
+  setPrimaryPortfolioImage: commercialProcedure.input(z.object({id:z.number().int().positive()})).mutation(async({ctx,input})=>{
+    const s=(ctx as any).commercialScope as CommercialScope;const db=await getDb();if(!db)throw new TRPCError({code:"INTERNAL_SERVER_ERROR"});const result:any=await db.execute(drzSql`SELECT * FROM commercial_feature_images WHERE id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId} LIMIT 1`);const image=rowsOf(result)[0];if(!image)throw new TRPCError({code:"NOT_FOUND"});await db.execute(drzSql`UPDATE commercial_feature_images SET is_primary=0 WHERE owner_type=${s.ownerType} AND owner_id=${s.ownerId} AND feature_id=${Number(image.feature_id)}`);await db.execute(drzSql`UPDATE commercial_feature_images SET is_primary=1 WHERE id=${input.id}`);await db.execute(drzSql`UPDATE commercial_feature_catalog SET screenshot_url=${image.image_url} WHERE id=${Number(image.feature_id)} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId}`);return{ok:true};
+  }),
+  deletePortfolioImage: commercialProcedure.input(z.object({id:z.number().int().positive()})).mutation(async({ctx,input})=>{
+    const s=(ctx as any).commercialScope as CommercialScope;const db=await getDb();if(!db)throw new TRPCError({code:"INTERNAL_SERVER_ERROR"});const result:any=await db.execute(drzSql`SELECT * FROM commercial_feature_images WHERE id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId} LIMIT 1`);const image=rowsOf(result)[0];if(!image)throw new TRPCError({code:"NOT_FOUND"});await db.execute(drzSql`DELETE FROM commercial_feature_images WHERE id=${input.id}`);if(image.is_primary){const fallback:any=await db.execute(drzSql`SELECT * FROM commercial_feature_images WHERE owner_type=${s.ownerType} AND owner_id=${s.ownerId} AND feature_id=${Number(image.feature_id)} ORDER BY sort_order,id LIMIT 1`);const next=rowsOf(fallback)[0];if(next){await db.execute(drzSql`UPDATE commercial_feature_images SET is_primary=1 WHERE id=${Number(next.id)}`);await db.execute(drzSql`UPDATE commercial_feature_catalog SET screenshot_url=${next.image_url} WHERE id=${Number(image.feature_id)}`);}else await db.execute(drzSql`UPDATE commercial_feature_catalog SET screenshot_url=NULL WHERE id=${Number(image.feature_id)}`);}const local=String(image.image_url||"");if(local.startsWith("/uploads/portfolio-images/")){const target=path.join(process.cwd(),local.replace(/^\/+/,""));try{fs.unlinkSync(target);}catch{}}
+    return{ok:true};
   }),
   generatePortfolio: commercialProcedure.input(z.object({
     mode: z.enum(["complete", "custom"]), title: z.string().min(3).max(255),

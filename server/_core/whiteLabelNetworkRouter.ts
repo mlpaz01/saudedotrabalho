@@ -21,6 +21,31 @@ async function ensureNetworkTables() {
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Banco indisponivel." });
   try { await db.execute(drzSql`ALTER TABLE commercial_proposals ADD COLUMN white_label_partner_id INT NULL`); } catch {}
   try { await db.execute(drzSql`CREATE INDEX idx_proposal_white_label ON commercial_proposals(white_label_partner_id, status, created_at)`); } catch {}
+  await db.execute(drzSql`CREATE TABLE IF NOT EXISTS white_label_course_library (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    partner_id INT NOT NULL,
+    module_id INT NOT NULL,
+    custom_title VARCHAR(255) NULL,
+    sort_order INT NOT NULL DEFAULT 0,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    selected_by INT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_white_label_course (partner_id,module_id),
+    INDEX idx_white_label_course_partner (partner_id,is_active,sort_order)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await db.execute(drzSql`CREATE TABLE IF NOT EXISTS white_label_course_distribution (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    partner_id INT NOT NULL,
+    module_id INT NOT NULL,
+    company_id INT NOT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    distributed_by INT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_white_label_course_company (partner_id,module_id,company_id),
+    INDEX idx_white_label_course_company (company_id,is_active)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
   networkTablesReady = true;
 }
 
@@ -242,6 +267,46 @@ export const whiteLabelNetworkRouter = router({
       return { ok: true };
     }),
 
+  listCourseLibrary: networkAdminProcedure.query(async ({ ctx }) => {
+    await ensureNetworkTables();
+    const db = await getDb(); if (!db) return { courses: [], companies: [] };
+    const partnerId = Number((ctx as any).whiteLabelPartnerId);
+    const coursesResult: any = await db.execute(drzSql`SELECT m.id,m.title,m.description,m.durationMinutes,m.image_url,m.template_category,m.profession,m.validity_days,
+      COALESCE(l.is_active,0) selected,COALESCE(l.custom_title,m.title) display_title,COALESCE(l.sort_order,m.orderIndex) sort_order,
+      GROUP_CONCAT(DISTINCT CASE WHEN d.is_active=1 THEN d.company_id END ORDER BY d.company_id) company_ids
+      FROM modules m
+      LEFT JOIN white_label_course_library l ON l.module_id=m.id AND l.partner_id=${partnerId}
+      LEFT JOIN white_label_course_distribution d ON d.module_id=m.id AND d.partner_id=${partnerId}
+      WHERE m.isActive=1 AND m.publish_status='published' AND (m.is_catalog_master=1 OR m.created_by_company_id IS NULL)
+      GROUP BY m.id,l.id ORDER BY COALESCE(l.is_active,0) DESC,COALESCE(l.sort_order,m.orderIndex),m.title`);
+    const companiesResult: any = await db.execute(drzSql`SELECT c.id,c.name,c.cnpj FROM white_label_company_links link JOIN companies c ON c.id=link.company_id WHERE link.partner_id=${partnerId} AND link.is_active=1 AND c.is_active=1 ORDER BY c.name`);
+    return { courses: rowsOf(coursesResult).map((row:any) => ({ ...row, companyIds: String(row.company_ids || "").split(",").filter(Boolean).map(Number) })), companies: rowsOf(companiesResult) };
+  }),
+
+  saveCourseLibrary: networkAdminProcedure.input(z.object({
+    moduleId: z.number().int().positive(), selected: z.boolean(), customTitle: z.string().max(255).optional(),
+    sortOrder: z.number().int().min(0).max(100000).default(0), companyIds: z.array(z.number().int().positive()).default([]),
+  })).mutation(async ({ ctx, input }) => {
+    await ensureNetworkTables();
+    const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+    const partnerId = Number((ctx as any).whiteLabelPartnerId);
+    const officialResult: any = await db.execute(drzSql`SELECT id FROM modules WHERE id=${input.moduleId} AND isActive=1 AND publish_status='published' AND (is_catalog_master=1 OR created_by_company_id IS NULL) LIMIT 1`);
+    if (!rowsOf(officialResult)[0]) throw new TRPCError({ code: "BAD_REQUEST", message: "Curso oficial não localizado ou ainda não publicado." });
+    for (const companyId of input.companyIds) await requireOwnedCompany(partnerId, companyId);
+    await db.execute(drzSql`INSERT INTO white_label_course_library (partner_id,module_id,custom_title,sort_order,is_active,selected_by) VALUES (${partnerId},${input.moduleId},${input.customTitle || null},${input.sortOrder},${input.selected ? 1 : 0},${Number(ctx.user.id)}) ON DUPLICATE KEY UPDATE custom_title=VALUES(custom_title),sort_order=VALUES(sort_order),is_active=VALUES(is_active),selected_by=VALUES(selected_by)`);
+    const existingCompaniesResult: any = await db.execute(drzSql`SELECT company_id FROM white_label_course_distribution WHERE partner_id=${partnerId} AND module_id=${input.moduleId}`);
+    const existingCompanyIds = rowsOf(existingCompaniesResult).map((row:any) => Number(row.company_id));
+    const desired = input.selected ? new Set(input.companyIds) : new Set<number>();
+    for (const companyId of new Set([...existingCompanyIds, ...input.companyIds])) {
+      const active = desired.has(companyId);
+      await db.execute(drzSql`INSERT INTO white_label_course_distribution (partner_id,module_id,company_id,is_active,distributed_by) VALUES (${partnerId},${input.moduleId},${companyId},${active ? 1 : 0},${Number(ctx.user.id)}) ON DUPLICATE KEY UPDATE is_active=VALUES(is_active),distributed_by=VALUES(distributed_by)`);
+      if (active) await db.execute(drzSql`INSERT INTO company_content_enrollments (company_id,content_type,content_id,is_active) VALUES (${companyId},'module',${input.moduleId},1) ON DUPLICATE KEY UPDATE is_active=1`);
+      else await db.execute(drzSql`UPDATE company_content_enrollments SET is_active=0 WHERE company_id=${companyId} AND content_type='module' AND content_id=${input.moduleId}`);
+    }
+    await logNetworkAction(partnerId, null, Number(ctx.user.id), "network_course_library_updated", { moduleId: input.moduleId, selected: input.selected, companyIds: input.companyIds });
+    return { ok: true };
+  }),
+
   listAudit: networkAdminProcedure.query(async ({ ctx }) => {
     const db = await getDb(); if (!db) return [];
     const partnerId = Number((ctx as any).whiteLabelPartnerId);
@@ -255,4 +320,3 @@ export const whiteLabelNetworkRouter = router({
     return rowsOf(result);
   }),
 });
-
