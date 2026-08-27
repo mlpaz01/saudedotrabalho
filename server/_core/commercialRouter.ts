@@ -1488,7 +1488,26 @@ export const commercialRouter = router({
     const s=(ctx as any).commercialScope as CommercialScope;const db=await getDb();if(!db)throw new TRPCError({code:"INTERNAL_SERVER_ERROR"});const result:any=await db.execute(drzSql`SELECT * FROM commercial_feature_images WHERE id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId} LIMIT 1`);const image=rowsOf(result)[0];if(!image)throw new TRPCError({code:"NOT_FOUND"});await db.execute(drzSql`UPDATE commercial_feature_images SET is_primary=0 WHERE owner_type=${s.ownerType} AND owner_id=${s.ownerId} AND feature_id=${Number(image.feature_id)}`);await db.execute(drzSql`UPDATE commercial_feature_images SET is_primary=1 WHERE id=${input.id}`);if(s.ownerType==="global")await db.execute(drzSql`UPDATE commercial_feature_catalog SET screenshot_url=${image.image_url} WHERE id=${Number(image.feature_id)} AND owner_type='global' AND owner_id=0`);else await db.execute(drzSql`INSERT INTO commercial_white_label_features(white_label_partner_id,feature_id,enabled,show_in_portfolio,custom_image_url,updated_by) VALUES(${s.ownerId},${Number(image.feature_id)},1,1,${image.image_url},${Number(ctx.user.id)}) ON DUPLICATE KEY UPDATE custom_image_url=VALUES(custom_image_url),updated_by=VALUES(updated_by)`);return{ok:true};
   }),
   deletePortfolioImage: commercialProcedure.input(z.object({id:z.number().int().positive()})).mutation(async({ctx,input})=>{
-    const s=(ctx as any).commercialScope as CommercialScope;const db=await getDb();if(!db)throw new TRPCError({code:"INTERNAL_SERVER_ERROR"});const result:any=await db.execute(drzSql`SELECT * FROM commercial_feature_images WHERE id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId} LIMIT 1`);const image=rowsOf(result)[0];if(!image)throw new TRPCError({code:"NOT_FOUND"});await db.execute(drzSql`DELETE FROM commercial_feature_images WHERE id=${input.id}`);if(image.is_primary){const fallback:any=await db.execute(drzSql`SELECT * FROM commercial_feature_images WHERE owner_type=${s.ownerType} AND owner_id=${s.ownerId} AND feature_id=${Number(image.feature_id)} ORDER BY sort_order,id LIMIT 1`);const next=rowsOf(fallback)[0];if(next){await db.execute(drzSql`UPDATE commercial_feature_images SET is_primary=1 WHERE id=${Number(next.id)}`);await db.execute(drzSql`UPDATE commercial_feature_catalog SET screenshot_url=${next.image_url} WHERE id=${Number(image.feature_id)}`);}else await db.execute(drzSql`UPDATE commercial_feature_catalog SET screenshot_url=NULL WHERE id=${Number(image.feature_id)}`);}const local=String(image.image_url||"");if(local.startsWith("/uploads/portfolio-images/")){const target=path.join(process.cwd(),local.replace(/^\/+/,""));try{fs.unlinkSync(target);}catch{}}
+    const s=(ctx as any).commercialScope as CommercialScope;
+    const db=await getDb();
+    if(!db)throw new TRPCError({code:"INTERNAL_SERVER_ERROR"});
+    const result:any=await db.execute(drzSql`SELECT * FROM commercial_feature_images WHERE id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId} LIMIT 1`);
+    const image=rowsOf(result)[0];
+    if(!image)throw new TRPCError({code:"NOT_FOUND"});
+    await db.execute(drzSql`DELETE FROM commercial_feature_images WHERE id=${input.id}`);
+    if(image.is_primary){
+      const featureId=Number(image.feature_id);
+      const fallback:any=await db.execute(drzSql`SELECT * FROM commercial_feature_images WHERE owner_type=${s.ownerType} AND owner_id=${s.ownerId} AND feature_id=${featureId} ORDER BY sort_order,id LIMIT 1`);
+      const next=rowsOf(fallback)[0];
+      if(next)await db.execute(drzSql`UPDATE commercial_feature_images SET is_primary=1 WHERE id=${Number(next.id)}`);
+      if(s.ownerType==="global"){
+        await db.execute(drzSql`UPDATE commercial_feature_catalog SET screenshot_url=${next?.image_url||null} WHERE id=${featureId} AND owner_type='global' AND owner_id=0`);
+      }else{
+        await db.execute(drzSql`UPDATE commercial_white_label_features SET custom_image_url=${next?.image_url||null},updated_by=${Number(ctx.user.id)} WHERE white_label_partner_id=${s.ownerId} AND feature_id=${featureId}`);
+      }
+    }
+    const local=String(image.image_url||"");
+    if(local.startsWith("/uploads/portfolio-images/")){const target=path.join(process.cwd(),local.replace(/^\/+/,""));try{fs.unlinkSync(target);}catch{}}
     return{ok:true};
   }),
   generatePortfolio: commercialProcedure.input(z.object({
