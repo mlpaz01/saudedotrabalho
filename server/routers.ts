@@ -35,6 +35,10 @@ import { biometricRouter } from "./_core/biometricRouter";
 import { medicalRouter } from "./_core/medicalRouter";
 import { technicalDocumentsRouter } from "./_core/technicalDocumentsRouter";
 import { technicalCommunicationRouter } from "./_core/technicalCommunicationRouter";
+import {
+  recordTechnicalChangeEvent,
+  technicalChangedFields,
+} from "./_core/technicalChangeEvents";
 import { mandatoryTrainingRouter } from "./_core/mandatoryTrainingRouter";
 import { resolveImportedRoles } from "./_core/importRoles";
 import {
@@ -21764,11 +21768,15 @@ Return only the JSON content object (no wrapper). Format per type:
             gseId: input.gseId,
           });
           const r: any = await db.execute(drzSql`
-            SELECT p.company_id FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
+            SELECT p.company_id,p.id pgr_id,p.title pgr_title,g.nome gse_name,g.master_gse_id
+            FROM pgr_gse g INNER JOIN pgr_documents p ON p.id=g.pgr_id
             WHERE g.id=${input.gseId} LIMIT 1`);
           const own = (r as any)[0]?.[0];
           if (!own || Number(own.company_id) !== Number(cid))
             throw new TRPCError({ code: "FORBIDDEN" });
+          const beforeResult: any = await db.execute(drzSql`SELECT id,tipo,agente,fonte_geradora,possivel_dano,tipo_exposicao,severidade,probabilidade,risco_final,notes
+            FROM pgr_gse_riscos WHERE gse_id=${input.gseId}`);
+          const beforeRows = ((beforeResult as any)[0] || []) as any[];
           const keepIds: number[] = [];
           for (const it of input.riscos as any[]) {
             if (it.id && Number.isInteger(it.id)) {
@@ -21805,6 +21813,51 @@ Return only the JSON content object (no wrapper). Format per type:
             await db.execute(
               drzSql`DELETE FROM pgr_gse_riscos WHERE gse_id=${input.gseId}`
             );
+          }
+          const afterResult: any = await db.execute(drzSql`SELECT id,tipo,agente,fonte_geradora,possivel_dano,tipo_exposicao,severidade,probabilidade,risco_final,notes
+            FROM pgr_gse_riscos WHERE gse_id=${input.gseId}`);
+          const afterRows = ((afterResult as any)[0] || []) as any[];
+          const beforeById = new Map(beforeRows.map(row => [Number(row.id), row]));
+          const afterById = new Map(afterRows.map(row => [Number(row.id), row]));
+          const context = {
+            pgrId: Number(own.pgr_id),
+            pgrTitle: own.pgr_title,
+            gseId: input.gseId,
+            gseName: own.gse_name,
+            masterGseId: own.master_gse_id ? Number(own.master_gse_id) : null,
+          };
+          for (const row of afterRows) {
+            const previous = beforeById.get(Number(row.id));
+            if (!previous) {
+              await recordTechnicalChangeEvent(db, {
+                companyId: Number(cid),originRole: String((ctx.user as any).role || "sesmt"),changeType: "risk_added",
+                entityType: "pgr_risk",entityId: Number(row.id),title: "Novo risco incluído pelo SESMT",
+                summary: `${row.agente} foi incluído no ${own.gse_name || "GSE"}.`,
+                actionExpected: "Avaliar o impacto no PCMSO e definir exames ou avaliações médicas quando aplicável.",
+                after: row,context,createdBy: Number((ctx.user as any).id),
+              });
+              continue;
+            }
+            if (Object.keys(technicalChangedFields(previous, row)).length) {
+              await recordTechnicalChangeEvent(db, {
+                companyId: Number(cid),originRole: String((ctx.user as any).role || "sesmt"),changeType: "risk_updated",
+                entityType: "pgr_risk",entityId: Number(row.id),title: "Risco ocupacional alterado pelo SESMT",
+                summary: `${row.agente} recebeu alterações no ${own.gse_name || "GSE"}.`,
+                actionExpected: "Revisar as alterações e confirmar se há impacto na definição médica do PCMSO.",
+                before: previous,after: row,context,createdBy: Number((ctx.user as any).id),
+              });
+            }
+          }
+          for (const row of beforeRows) {
+            if (!afterById.has(Number(row.id))) {
+              await recordTechnicalChangeEvent(db, {
+                companyId: Number(cid),originRole: String((ctx.user as any).role || "sesmt"),changeType: "risk_removed",
+                entityType: "pgr_risk",entityId: Number(row.id),title: "Risco removido pelo SESMT",
+                summary: `${row.agente} foi removido do ${own.gse_name || "GSE"}.`,
+                actionExpected: "Verificar se exames ou condutas médicas vinculados ao risco precisam ser revisados.",
+                before: row,context,createdBy: Number((ctx.user as any).id),
+              });
+            }
           }
           return { ok: true, count: input.riscos.length };
         }),

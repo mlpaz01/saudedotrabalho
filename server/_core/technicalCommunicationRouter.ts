@@ -4,6 +4,10 @@ import { z } from "zod";
 import { getDb, logAudit } from "../db";
 import { protectedProcedure, router } from "./trpc";
 import { ensurePgrVersioningTables } from "./pgrVersioning";
+import {
+  ensureTechnicalChangeEventTables,
+  TECHNICAL_EVENT_STATUSES,
+} from "./technicalChangeEvents";
 
 function rowsOf(result: any): any[] {
   return Array.isArray(result?.[0]) ? result[0] : Array.isArray(result) ? result : [];
@@ -35,7 +39,80 @@ function parseJson(value: unknown) {
   try { return JSON.parse(String(value || "{}")); } catch { return {}; }
 }
 
+function eventTargetForRole(role: string) {
+  return role === "medico" ? "medico" : role === "sesmt" ? "sesmt" : null;
+}
+
 export const technicalCommunicationRouter = router({
+  feed: protectedProcedure.query(async ({ ctx }) => {
+    const access = requireTechnicalAccess(ctx);
+    const db = await getDb();
+    if (!db) return { events: [], newCount: 0, pendingCount: 0, counts: {} };
+    await ensureTechnicalChangeEventTables(db);
+    const roleTarget = eventTargetForRole(String(ctx.user.role || ""));
+    const result: any = await db.execute(drzSql`SELECT e.*,
+        actor.name created_by_name,actor.email created_by_email,company.name company_name,company.cnpj company_cnpj
+      FROM technical_change_events e
+      JOIN companies company ON company.id=e.company_id
+      LEFT JOIN users actor ON actor.id=e.created_by
+      WHERE 1=1
+        ${access.companyId ? drzSql`AND e.company_id=${access.companyId}` : drzSql``}
+        ${roleTarget ? drzSql`AND e.target_role=${roleTarget}` : drzSql``}
+      ORDER BY FIELD(e.status,'nova','requer_analise','em_analise','visualizada','ajuste_realizado','concluida'),e.created_at DESC,e.id DESC
+      LIMIT 500`);
+    const events = rowsOf(result).map(row => ({
+      ...row,
+      before: parseJson(row.before_json),
+      after: parseJson(row.after_json),
+      changes: parseJson(row.changes_json),
+      context: parseJson(row.context_json),
+    }));
+    const counts = events.reduce((acc: Record<string, number>, event: any) => {
+      acc[event.status] = (acc[event.status] || 0) + 1;
+      return acc;
+    }, {});
+    return {
+      events,
+      counts,
+      newCount: counts.nova || 0,
+      pendingCount: events.filter((event: any) => !["ajuste_realizado", "concluida"].includes(event.status)).length,
+    };
+  }),
+
+  updateEventStatus: protectedProcedure
+    .input(z.object({
+      id: z.number().int().positive(),
+      status: z.enum(TECHNICAL_EVENT_STATUSES),
+      notes: z.string().trim().max(4000).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const access = requireTechnicalAccess(ctx);
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      await ensureTechnicalChangeEventTables(db);
+      const roleTarget = eventTargetForRole(String(ctx.user.role || ""));
+      const result: any = await db.execute(drzSql`UPDATE technical_change_events SET
+        status=${input.status},
+        viewed_at=CASE WHEN ${input.status} IN ('visualizada','requer_analise','em_analise','ajuste_realizado','concluida') THEN COALESCE(viewed_at,NOW()) ELSE viewed_at END,
+        viewed_by=CASE WHEN ${input.status} IN ('visualizada','requer_analise','em_analise','ajuste_realizado','concluida') THEN COALESCE(viewed_by,${Number(ctx.user.id)}) ELSE viewed_by END,
+        analysis_started_at=CASE WHEN ${input.status} IN ('em_analise','ajuste_realizado','concluida') THEN COALESCE(analysis_started_at,NOW()) ELSE analysis_started_at END,
+        analysis_started_by=CASE WHEN ${input.status} IN ('em_analise','ajuste_realizado','concluida') THEN COALESCE(analysis_started_by,${Number(ctx.user.id)}) ELSE analysis_started_by END,
+        resolved_at=CASE WHEN ${input.status} IN ('ajuste_realizado','concluida') THEN NOW() ELSE NULL END,
+        resolved_by=CASE WHEN ${input.status} IN ('ajuste_realizado','concluida') THEN ${Number(ctx.user.id)} ELSE NULL END,
+        resolution_notes=COALESCE(${input.notes || null},resolution_notes)
+        WHERE id=${input.id}
+          ${access.companyId ? drzSql`AND company_id=${access.companyId}` : drzSql``}
+          ${roleTarget ? drzSql`AND target_role=${roleTarget}` : drzSql``}`);
+      if (!Number((result as any)[0]?.affectedRows || 0)) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Atualização não encontrada ou não destinada ao seu perfil." });
+      }
+      await logAudit({
+        userId: Number(ctx.user.id),userEmail: ctx.user.email || null,action: "technical_change_status_updated",
+        entityType: "technical_change_event",entityId: input.id,detailsJson: { status: input.status, notes: input.notes || null },
+      });
+      return { ok: true };
+    }),
+
   list: protectedProcedure.query(async ({ ctx }) => {
     const access = requireTechnicalAccess(ctx);
     const db = await getDb();

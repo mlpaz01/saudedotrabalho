@@ -27,6 +27,10 @@ import {
   validateCatDraft,
 } from "./catValidation";
 import { protectedProcedure, router } from "./trpc";
+import {
+  recordTechnicalChangeEvent,
+  technicalChangedFields,
+} from "./technicalChangeEvents";
 
 let occupationalTablesReady = false;
 
@@ -2181,6 +2185,13 @@ export const occupationalLifecycleRouter = router({
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       let id = Number(input.id || 0);
+      let previous: any = null;
+      if (id) {
+        const previousResult: any = await db.execute(
+          drzSql`SELECT id,name,exam_type,category,description,default_periodicity,periodicity_rules_json,result_type,default_unit,reference_guidance,is_active FROM pcmso_exam_catalog_v2 WHERE id=${id} AND company_id=${companyId} LIMIT 1`
+        );
+        previous = rowsOf(previousResult)[0] || null;
+      }
       const periodicityLabels: Record<string, string> = {
         no_atendimento: "No atendimento",
         "6_meses": "6 meses",
@@ -2219,6 +2230,34 @@ export const occupationalLifecycleRouter = router({
         "exam_catalog",
         id
       );
+      const currentResult: any = await db.execute(
+        drzSql`SELECT id,name,exam_type,category,description,default_periodicity,periodicity_rules_json,result_type,default_unit,reference_guidance,is_active FROM pcmso_exam_catalog_v2 WHERE id=${id} AND company_id=${companyId} LIMIT 1`
+      );
+      const current = rowsOf(currentResult)[0] || null;
+      const changed = technicalChangedFields(previous, current);
+      if (!previous || Object.keys(changed).length) {
+        const periodicityChanged = Boolean(previous && changed.default_periodicity);
+        await recordTechnicalChangeEvent(db, {
+          companyId,
+          originRole: String(ctx.user.role || "sesmt"),
+          changeType: previous ? (periodicityChanged ? "exam_periodicity_updated" : "exam_updated") : "exam_added",
+          entityType: "exam_catalog",
+          entityId: id,
+          title: previous
+            ? periodicityChanged
+              ? "Periodicidade de exame alterada"
+              : "Exame do Catálogo Mestre alterado"
+            : "Novo exame incluído no Catálogo Mestre",
+          summary: `${current?.name || input.name}${current?.default_periodicity ? ` · ${current.default_periodicity}` : ""}`,
+          actionExpected: String(ctx.user.role || "") === "medico"
+            ? "O SESMT deve avaliar os reflexos operacionais nas requisições e controles de exames."
+            : "O médico deve avaliar se a alteração impacta definições do PCMSO.",
+          before: previous,
+          after: current,
+          context: { category: current?.category || input.category || null },
+          createdBy: Number(ctx.user.id),
+        });
+      }
       return { ok: true, id };
     }),
 

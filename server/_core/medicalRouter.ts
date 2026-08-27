@@ -21,6 +21,10 @@ import {
 import { loadDocumentDefaults } from "./documentDefaults";
 import { richTextToPlainText, sanitizeRichText } from "./richText";
 import { ensurePgrVersioningTables } from "./pgrVersioning";
+import {
+  recordTechnicalChangeEvent,
+  technicalChangedFields,
+} from "./technicalChangeEvents";
 
 let tablesReady = false;
 
@@ -1984,6 +1988,13 @@ export const medicalRouter = router({
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       let id = input.id || 0;
+      let previous: any = null;
+      if (id) {
+        const previousResult: any = await db.execute(
+          drzSql`SELECT id,name,exam_type,description,default_periodicity,periodicity_rules_json,is_active FROM pcmso_exam_catalog_v2 WHERE id=${id} AND company_id=${companyId} LIMIT 1`
+        );
+        previous = rowsOf(previousResult)[0] || null;
+      }
       const periodicityLabels: Record<string, string> = {
         no_atendimento: "No atendimento",
         "6_meses": "6 meses",
@@ -2020,6 +2031,22 @@ export const medicalRouter = router({
         "pcmso_exam",
         id
       );
+      const currentResult: any = await db.execute(
+        drzSql`SELECT id,name,exam_type,description,default_periodicity,periodicity_rules_json,is_active FROM pcmso_exam_catalog_v2 WHERE id=${id} AND company_id=${companyId} LIMIT 1`
+      );
+      const current = rowsOf(currentResult)[0] || null;
+      if (!previous || Object.keys(technicalChangedFields(previous, current)).length) {
+        await recordTechnicalChangeEvent(db, {
+          companyId,originRole: String(ctx.user.role || "medico"),changeType: previous ? "exam_updated" : "exam_added",
+          entityType: "exam_catalog",entityId: Number(id),
+          title: previous ? "Exame atualizado pelo médico" : "Novo exame incluído pelo médico",
+          summary: `${current?.name || input.name}${current?.default_periodicity ? ` · ${current.default_periodicity}` : ""}`,
+          actionExpected: String(ctx.user.role || "") === "medico"
+            ? "O SESMT deve avaliar os reflexos nas requisições e no controle operacional de exames."
+            : "O médico deve avaliar se a alteração impacta as definições do PCMSO.",
+          before: previous,after: current,createdBy: Number(ctx.user.id),
+        });
+      }
       return { ok: true, id };
     }),
 
@@ -2180,6 +2207,29 @@ export const medicalRouter = router({
           periodicitySource,
         }
       );
+      const savedResult: any = await db.execute(
+        drzSql`SELECT id,pcmso_id,pgr_id,pgr_gse_id,pgr_risk_id,master_gse_code,branch_name,sector_name,gse_name,risk_name,monitoring_kind,exam_id,monitoring_name,periodicity,catalog_periodicity,periodicity_source,applicability,observations,suggestion_status FROM pcmso_risk_monitoring_v2 WHERE id=${savedId} AND company_id=${companyId} LIMIT 1`
+      );
+      const saved = rowsOf(savedResult)[0] || null;
+      const monitoringBefore = input.id ? {
+        id: requested.id,pcmso_id: requested.pcmso_id,pgr_id: requested.pgr_id,pgr_gse_id: requested.pgr_gse_id,pgr_risk_id: requested.pgr_risk_id,
+        master_gse_code: requested.master_gse_code,branch_name: requested.branch_name,sector_name: requested.sector_name,gse_name: requested.gse_name,
+        risk_name: requested.risk_name,monitoring_kind: requested.monitoring_kind,exam_id: requested.exam_id,monitoring_name: requested.monitoring_name,
+        periodicity: requested.periodicity,catalog_periodicity: requested.catalog_periodicity,periodicity_source: requested.periodicity_source,
+        applicability: requested.applicability,observations: requested.observations,suggestion_status: requested.suggestion_status,
+      } : null;
+      if (!monitoringBefore || Object.keys(technicalChangedFields(monitoringBefore, saved)).length) {
+        await recordTechnicalChangeEvent(db, {
+          companyId,originRole: "medico",changeType: input.id ? "monitoring_updated" : "monitoring_added",
+          entityType: "pcmso_risk_monitoring",entityId: savedId,
+          title: input.id ? "Definição médica atualizada" : "Novo exame ou avaliação definido pelo médico",
+          summary: `${saved?.risk_name || source.risk_name}: ${saved?.monitoring_name || monitoringName || "conduta atualizada"}${saved?.periodicity ? ` · ${saved.periodicity}` : ""}`,
+          actionExpected: "O SESMT deve verificar trabalhadores impactados e as requisições que precisam ser geradas ou atualizadas.",
+          before: monitoringBefore,after: saved,
+          context: { pcmsoId: Number(source.pcmso_id),pgrId: source.pgr_id ? Number(source.pgr_id) : null,gseName: source.gse_name,riskName: source.risk_name },
+          createdBy: Number(ctx.user.id),
+        });
+      }
       return { ok: true, id: savedId, examId, monitoringName, periodicity };
     }),
 
@@ -2192,7 +2242,7 @@ export const medicalRouter = router({
       const companyId = companyOf(ctx);
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       const result: any = await db.execute(
-        drzSql`SELECT id,is_primary,pcmso_id,exam_id,monitoring_name FROM pcmso_risk_monitoring_v2 WHERE id=${input.id} AND company_id=${companyId} LIMIT 1`
+        drzSql`SELECT id,is_primary,pcmso_id,pgr_id,pgr_gse_id,pgr_risk_id,gse_name,risk_name,exam_id,monitoring_name,periodicity,monitoring_kind FROM pcmso_risk_monitoring_v2 WHERE id=${input.id} AND company_id=${companyId} LIMIT 1`
       );
       const row = rowsOf(result)[0];
       if (!row) throw new TRPCError({ code: "NOT_FOUND" });
@@ -2219,6 +2269,15 @@ export const medicalRouter = router({
           monitoringName: row.monitoring_name || null,
         }
       );
+      await recordTechnicalChangeEvent(db, {
+        companyId,originRole: "medico",changeType: "monitoring_removed",entityType: "pcmso_risk_monitoring",entityId: input.id,
+        title: "Exame ou avaliação removido pelo médico",
+        summary: `${row.risk_name || "Risco"}: ${row.monitoring_name || "definição médica removida"}`,
+        actionExpected: "O SESMT deve verificar se existem requisições ou controles operacionais que precisam ser cancelados ou atualizados.",
+        before: row,after: Number(row.is_primary) ? { ...row, exam_id: null, monitoring_name: null, periodicity: null, monitoring_kind: "nao_definido" } : null,
+        context: { pcmsoId: Number(row.pcmso_id),pgrId: row.pgr_id ? Number(row.pgr_id) : null,gseName: row.gse_name,riskName: row.risk_name },
+        createdBy: Number(ctx.user.id),
+      });
       return { ok: true };
     }),
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { probabilityForCommercialStatus, scopeSql } from "./commercialRouter";
+import { featureMatchesAudience, probabilityForCommercialStatus, scopeSql } from "./commercialRouter";
 
 describe("isolamento comercial por rede", () => {
   it("gera filtros diferentes para o SuperAdmin Global e cada White Label", () => {
@@ -21,5 +21,15 @@ describe("probabilidade do pipeline comercial", () => {
   it("mantém compatibilidade com propostas do pipeline antigo", () => {
     expect(probabilityForCommercialStatus("lead")).toBe(10);
     expect(probabilityForCommercialStatus("reprovada")).toBe(0);
+  });
+});
+
+describe("portfólio comercial por perfil", () => {
+  it("prioriza conteúdo coerente com o público selecionado", () => {
+    const pcmso = { name: "PCMSO Integrado", category: "Saúde Ocupacional", module_name: "Central Médica", audience_json: '["Médico do Trabalho","SESMT"]' };
+    const analytics = { name: "Analytics Executivo", category: "Inteligência", module_name: "Dashboards", audience_json: '["Diretoria"]' };
+    expect(featureMatchesAudience(pcmso, "medico")).toBe(true);
+    expect(featureMatchesAudience(pcmso, "diretoria")).toBe(false);
+    expect(featureMatchesAudience(analytics, "diretoria")).toBe(true);
   });
 });

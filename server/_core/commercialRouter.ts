@@ -143,6 +143,40 @@ function rowsOf(result: any): any[] {
   return Array.isArray(result?.[0]) ? result[0] : Array.isArray(result) ? result : [];
 }
 
+function commercialSlug(value: string) {
+  return String(value || "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function defaultCommercialHeadline(feature: { name: string; benefits?: string[]; objective?: string }) {
+  const benefit = feature.benefits?.find(Boolean);
+  if (benefit) return benefit.replace(/[.]+$/, "").toUpperCase() + ".";
+  return String(feature.objective || feature.name).replace(/[.]+$/, "").toUpperCase() + ".";
+}
+
+function nextContentVersion(current: string | null | undefined) {
+  const match = String(current || "1.0").match(/^(\d+)\.(\d+)$/);
+  if (!match) return "1.1";
+  return `${Number(match[1])}.${Number(match[2]) + 1}`;
+}
+
+export function featureMatchesAudience(feature: any, profile: string | undefined) {
+  if (!profile) return true;
+  const source = [
+    ...jsonArray(feature.audience_json), feature.name, feature.category, feature.module_name,
+    feature.description, feature.pillar_code,
+  ].join(" ").toLowerCase();
+  const terms: Record<string, string[]> = {
+    diretoria: ["diretoria", "liderança", "gestor", "indicador", "analytics", "dashboard", "visão 360", "conformidade"],
+    rh: ["rh", "recursos humanos", "pessoas", "colaborador", "dossiê", "treinamento", "pcd", "afastamento", "cipa"],
+    sesmt: ["sesmt", "pgr", "gro", "gse", "ghe", "epi", "risco", "inspeção", "esocial", "segurança"],
+    medico: ["médico", "medico", "pcmso", "central médica", "exame", "aso", "cat", "pca", "vacinação", "saúde ocupacional"],
+    engenharia: ["engenharia", "pgr", "gse", "ghe", "ltcat", "insalubridade", "periculosidade", "epi", "ergonomia", "esocial"],
+  };
+  return (terms[profile] || []).some(term => source.includes(term));
+}
+
 async function ensureColumn(db: any, table: string, name: string, definition: string) {
   try {
     await db.execute(drzSql.raw(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`));
@@ -152,16 +186,22 @@ async function ensureColumn(db: any, table: string, name: string, definition: st
 async function synchronizePlatformManifest(db: any) {
   for (let index = 0; index < PLATFORM_FEATURE_MANIFEST.length; index++) {
     const feature = PLATFORM_FEATURE_MANIFEST[index];
+    const slug = commercialSlug(feature.code || feature.name);
+    const headline = defaultCommercialHeadline(feature);
     await db.execute(drzSql`INSERT INTO commercial_feature_catalog
       (owner_type,owner_id,category,code,name,description,pillar_code,module_name,sort_order,is_active,
-       manifest_version,problem_text,objective_text,benefits_json,resources_json,audience_json,flow_json,integrations_json,indicators_json)
+       manifest_version,problem_text,objective_text,benefits_json,resources_json,audience_json,flow_json,integrations_json,indicators_json,
+       slug,commercial_title,headline,commercial_result,content_version,availability_status,available_global,available_white_label)
       VALUES ('global',0,${feature.category},${feature.code},${feature.name},${feature.description},${feature.pillarCode},${feature.moduleName},${1000 + index},1,
        ${feature.version},${feature.problem},${feature.objective},${JSON.stringify(feature.benefits)},${JSON.stringify(feature.resources)},
-       ${JSON.stringify(feature.audience)},${JSON.stringify(feature.flow)},${JSON.stringify(feature.integrations)},${JSON.stringify(feature.indicators)})
+       ${JSON.stringify(feature.audience)},${JSON.stringify(feature.flow)},${JSON.stringify(feature.integrations)},${JSON.stringify(feature.indicators)},
+       ${slug},${feature.name},${headline},${feature.objective},${feature.version},'published',1,1)
       ON DUPLICATE KEY UPDATE category=VALUES(category),name=VALUES(name),description=VALUES(description),pillar_code=VALUES(pillar_code),
        module_name=VALUES(module_name),manifest_version=VALUES(manifest_version),problem_text=VALUES(problem_text),objective_text=VALUES(objective_text),
        benefits_json=VALUES(benefits_json),resources_json=VALUES(resources_json),audience_json=VALUES(audience_json),flow_json=VALUES(flow_json),
-       integrations_json=VALUES(integrations_json),indicators_json=VALUES(indicators_json)`);
+       integrations_json=VALUES(integrations_json),indicators_json=VALUES(indicators_json),slug=COALESCE(slug,VALUES(slug)),
+       commercial_title=COALESCE(commercial_title,VALUES(commercial_title)),headline=COALESCE(headline,VALUES(headline)),
+       commercial_result=COALESCE(commercial_result,VALUES(commercial_result)),content_version=VALUES(content_version)`);
   }
   const manuals = await publishAutomaticKnowledgeArticles(
     PLATFORM_FEATURE_MANIFEST.map(feature => ({
@@ -350,6 +390,15 @@ async function ensureCommercialTables() {
   await ensureColumn(db, "commercial_feature_catalog", "integrations_json", "LONGTEXT NULL");
   await ensureColumn(db, "commercial_feature_catalog", "indicators_json", "LONGTEXT NULL");
   await ensureColumn(db, "commercial_feature_catalog", "screenshot_url", "VARCHAR(1200) NULL");
+  await ensureColumn(db, "commercial_feature_catalog", "slug", "VARCHAR(180) NULL");
+  await ensureColumn(db, "commercial_feature_catalog", "commercial_title", "VARCHAR(255) NULL");
+  await ensureColumn(db, "commercial_feature_catalog", "headline", "VARCHAR(600) NULL");
+  await ensureColumn(db, "commercial_feature_catalog", "commercial_result", "TEXT NULL");
+  await ensureColumn(db, "commercial_feature_catalog", "image_mobile_url", "VARCHAR(1200) NULL");
+  await ensureColumn(db, "commercial_feature_catalog", "content_version", "VARCHAR(40) NOT NULL DEFAULT '1.0'");
+  await ensureColumn(db, "commercial_feature_catalog", "availability_status", "VARCHAR(30) NOT NULL DEFAULT 'published'");
+  await ensureColumn(db, "commercial_feature_catalog", "available_global", "TINYINT(1) NOT NULL DEFAULT 1");
+  await ensureColumn(db, "commercial_feature_catalog", "available_white_label", "TINYINT(1) NOT NULL DEFAULT 1");
   await ensureColumn(db, "commercial_plan_features", "access_level", "VARCHAR(30) NOT NULL DEFAULT 'included'");
   await ensureColumn(db, "commercial_plan_features", "limitations_text", "TEXT NULL");
   await ensureColumn(db, "commercial_plan_catalog", "storage_gb", "DECIMAL(12,2) NULL");
@@ -427,6 +476,35 @@ async function ensureCommercialTables() {
     pdf_url VARCHAR(700),
     generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_portfolio_runs (owner_type,owner_id,generated_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await ensureColumn(db, "commercial_portfolio_runs", "audience_profile", "VARCHAR(50) NULL");
+  await ensureColumn(db, "commercial_portfolio_runs", "snapshot_json", "LONGTEXT NULL");
+  await ensureColumn(db, "commercial_portfolio_runs", "content_version", "VARCHAR(50) NULL");
+  await db.execute(drzSql`CREATE TABLE IF NOT EXISTS commercial_feature_versions (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    feature_id INT NOT NULL,
+    content_version VARCHAR(40) NOT NULL,
+    snapshot_json LONGTEXT NOT NULL,
+    created_by INT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_commercial_feature_version (feature_id,content_version),
+    INDEX idx_commercial_feature_versions (feature_id,created_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await db.execute(drzSql`CREATE TABLE IF NOT EXISTS commercial_white_label_features (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    white_label_partner_id INT NOT NULL,
+    feature_id INT NOT NULL,
+    enabled TINYINT(1) NOT NULL DEFAULT 1,
+    show_in_portfolio TINYINT(1) NOT NULL DEFAULT 1,
+    sort_order INT NOT NULL DEFAULT 0,
+    custom_title VARCHAR(255) NULL,
+    custom_description TEXT NULL,
+    custom_image_url VARCHAR(1200) NULL,
+    updated_by INT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_commercial_wl_feature (white_label_partner_id,feature_id),
+    INDEX idx_commercial_wl_portfolio (white_label_partner_id,enabled,show_in_portfolio,sort_order)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
   await db.execute(drzSql`CREATE TABLE IF NOT EXISTS commercial_contract_templates (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -577,6 +655,19 @@ async function ensureCommercialTables() {
   try { await db.execute(drzSql`CREATE INDEX idx_proposal_commercial_owner ON commercial_proposals(commercial_owner_type, commercial_owner_id, status, updated_at)`); } catch {}
   await db.execute(drzSql`UPDATE commercial_proposals SET commercial_owner_type='white_label', commercial_owner_id=white_label_partner_id WHERE white_label_partner_id IS NOT NULL AND white_label_partner_id>0 AND (commercial_owner_type='global' OR commercial_owner_id=0)`);
   await synchronizePlatformManifest(db);
+  await db.execute(drzSql`INSERT IGNORE INTO commercial_feature_versions (feature_id,content_version,snapshot_json)
+    SELECT id,COALESCE(NULLIF(content_version,''),'1.0'),JSON_OBJECT(
+      'id',id,'code',code,'name',name,'slug',slug,'pillar_code',pillar_code,'category',category,
+      'commercial_title',commercial_title,'headline',headline,'description',description,'benefits_json',benefits_json,
+      'resources_json',resources_json,'flow_json',flow_json,'integrations_json',integrations_json,'screenshot_url',screenshot_url,
+      'content_version',content_version)
+    FROM commercial_feature_catalog WHERE owner_type='global' AND owner_id=0`);
+  await db.execute(drzSql`INSERT IGNORE INTO commercial_white_label_features
+    (white_label_partner_id,feature_id,enabled,show_in_portfolio,sort_order)
+    SELECT local.owner_id,global_feature.id,local.is_active,local.is_active,local.sort_order
+    FROM commercial_feature_catalog local
+    JOIN commercial_feature_catalog global_feature ON global_feature.owner_type='global' AND global_feature.owner_id=0 AND global_feature.code=local.code
+    WHERE local.owner_type='white_label'`);
   tablesReady = true;
 }
 
@@ -1167,10 +1258,11 @@ async function createCommercialPortfolioPdf(
   scope: CommercialScope,
   actorId: number,
   input: {
-    mode: "complete" | "custom";
+    mode: "complete" | "pillar" | "custom" | "profile";
     title: string;
     pillarCodes: string[];
     featureCodes: string[];
+    audienceProfile?: "diretoria" | "rh" | "sesmt" | "medico" | "engenharia";
     presentationText?: string;
     consultantName?: string;
     consultantContact?: string;
@@ -1179,19 +1271,26 @@ async function createCommercialPortfolioPdf(
   const db = await getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
   const brandResult: any = await db.execute(drzSql`SELECT * FROM commercial_brand_settings WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} LIMIT 1`);
-  const pillarResult: any = await db.execute(drzSql`SELECT * FROM commercial_pillars WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} AND is_active=1 ORDER BY sort_order,id`);
+  const pillarResult: any = await db.execute(drzSql`SELECT * FROM commercial_pillars WHERE owner_type='global' AND owner_id=0 AND is_active=1 ORDER BY sort_order,id`);
   const featureResult: any = scope.ownerType === "white_label"
-    ? await db.execute(drzSql`SELECT DISTINCT f.* FROM commercial_feature_catalog f
-        JOIN commercial_plan_features pf ON pf.feature_id=f.id
-        JOIN commercial_plan_catalog p ON p.id=pf.plan_id AND p.owner_type=f.owner_type AND p.owner_id=f.owner_id AND p.is_active=1
-        WHERE f.owner_type=${scope.ownerType} AND f.owner_id=${scope.ownerId} AND f.is_active=1
-        ORDER BY f.sort_order,f.name`)
-    : await db.execute(drzSql`SELECT * FROM commercial_feature_catalog WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} AND is_active=1 ORDER BY sort_order,name`);
+    ? await db.execute(drzSql`SELECT g.*,
+        COALESCE(w.custom_title,g.commercial_title,g.name) portfolio_title,
+        COALESCE(w.custom_description,g.description) portfolio_description,
+        COALESCE(w.custom_image_url,g.screenshot_url) portfolio_image_url,
+        COALESCE(w.sort_order,g.sort_order) portfolio_sort_order
+      FROM commercial_feature_catalog g
+      JOIN commercial_white_label_features w ON w.feature_id=g.id AND w.white_label_partner_id=${scope.ownerId} AND w.enabled=1 AND w.show_in_portfolio=1
+      WHERE g.owner_type='global' AND g.owner_id=0 AND g.is_active=1 AND g.available_white_label=1
+      ORDER BY COALESCE(w.sort_order,g.sort_order),g.name`)
+    : await db.execute(drzSql`SELECT g.*,COALESCE(g.commercial_title,g.name) portfolio_title,g.description portfolio_description,g.screenshot_url portfolio_image_url,g.sort_order portfolio_sort_order
+      FROM commercial_feature_catalog g WHERE g.owner_type='global' AND g.owner_id=0 AND g.is_active=1 AND g.available_global=1 ORDER BY g.sort_order,g.name`);
   const brand = rowsOf(brandResult)[0] || {};
   const allPillars = rowsOf(pillarResult);
   const allFeatures = rowsOf(featureResult);
   const selectedFeatures = allFeatures.filter((feature: any) => {
     if (input.mode === "complete") return true;
+    if (input.mode === "profile") return featureMatchesAudience(feature, input.audienceProfile);
+    if (input.mode === "pillar") return input.pillarCodes.includes(String(feature.pillar_code));
     return input.featureCodes.includes(String(feature.code)) || input.pillarCodes.includes(String(feature.pillar_code));
   });
   if (!selectedFeatures.length)
@@ -1203,18 +1302,23 @@ async function createCommercialPortfolioPdf(
   const logo = await logoDataUri(brand.logo_url);
   const integrationNames = [...new Set(selectedFeatures.flatMap((feature: any) => jsonArray(feature.integrations_json).map(String)))].slice(0, 14);
   const featurePages = (await Promise.all(selectedFeatures.map(async (feature: any, index: number) => {
-    const benefits = jsonArray(feature.benefits_json);
-    const resources = jsonArray(feature.resources_json);
+    const benefits = jsonArray(feature.benefits_json).slice(0, 5);
     const flow = jsonArray(feature.flow_json);
-    const indicators = jsonArray(feature.indicators_json);
-    const screenshotUri = await logoDataUri(feature.screenshot_url);
-    const screenshot = screenshotUri ? `<img class="screenshot" src="${screenshotUri}" alt="Tela ${esc(feature.name)}">` : `<div class="visual"><span>${String(index + 1).padStart(2, "0")}</span><strong>${esc(feature.module_name || feature.category)}</strong><small>Fluxo integrado, rastreável e orientado por dados</small></div>`;
-    return `<section class="feature-page page-break"><div class="kicker">${esc(feature.category)} · ${String(index + 1).padStart(2, "0")}</div><h2>${esc(feature.name)}</h2><p class="lead">${esc(feature.description)}</p><div class="hero-grid">${screenshot}<div><h3>O desafio</h3><p>${esc(feature.problem_text || "Processos fragmentados, controles paralelos e baixa rastreabilidade.")}</p><h3>A resposta da plataforma</h3><p>${esc(feature.objective_text || feature.description)}</p></div></div><div class="two-cols"><div><h3>Benefícios para a operação</h3><ul>${benefits.map(item => `<li>${esc(item)}</li>`).join("")}</ul></div><div><h3>Recursos principais</h3><ul>${resources.map(item => `<li>${esc(item)}</li>`).join("")}</ul></div></div>${flow.length ? `<div class="flow">${flow.map((item, flowIndex) => `<span>${flowIndex ? "→ " : ""}${esc(item)}</span>`).join("")}</div>` : ""}${indicators.length ? `<div class="indicator-row">${indicators.slice(0, 4).map(item => `<div><b>${esc(item)}</b><small>Indicador disponível</small></div>`).join("")}</div>` : ""}</section>`;
+    const integrations = jsonArray(feature.integrations_json).slice(0, 6);
+    const screenshotUri = await logoDataUri(feature.portfolio_image_url || feature.screenshot_url);
+    const screenshot = screenshotUri ? `<img class="screenshot" src="${screenshotUri}" alt="Tela ${esc(feature.name)}">` : `<div class="visual"><span>${String(index + 1).padStart(2, "0")}</span><strong>${esc(feature.module_name || feature.category)}</strong><small>Imagem oficial ainda não cadastrada na biblioteca comercial.</small></div>`;
+    const headline = feature.headline || defaultCommercialHeadline({ name: feature.name, benefits, objective: feature.objective_text });
+    const result = feature.commercial_result || feature.objective_text || feature.description;
+    const interstitial = index > 0 && index % 8 === 0 ? `<section class="impact-page page-break"><div class="kicker">Ecossistema em ação</div><h2>Essa é apenas uma parte da operação conectada.</h2><p>Descubra como os registros deste pilar alimentam saúde, segurança, conformidade, evidências e decisão executiva.</p><div class="impact-flow">Dados <b>→</b> Processo <b>→</b> Ação <b>→</b> Evidência <b>→</b> Indicador</div></section>` : "";
+    return `${interstitial}<section class="feature-page page-break"><div class="kicker">${esc(feature.category)} · ${String(index + 1).padStart(2, "0")}</div><div class="feature-layout"><div class="feature-copy"><h2>${esc(feature.portfolio_title || feature.commercial_title || feature.name)}</h2><h3 class="headline">${esc(headline)}</h3><p class="lead">${esc(feature.portfolio_description || feature.description)}</p><h4>O que a empresa ganha</h4><ul class="benefits">${benefits.map(item => `<li>${esc(item)}</li>`).join("")}</ul></div><div>${screenshot}</div></div>${flow.length ? `<div class="flow"><b>Como funciona</b>${flow.slice(0, 6).map((item, flowIndex) => `<span>${flowIndex ? "→ " : ""}${esc(item)}</span>`).join("")}</div>` : ""}${integrations.length ? `<div class="integration-row"><b>Conecta com</b>${integrations.map(item => `<span>${esc(item)}</span>`).join("")}</div>` : ""}<p class="result"><b>Resultado:</b> ${esc(result)}</p></section>`;
   }))).join("");
-  const pillarPage = `<section class="page-break"><div class="kicker">Visão do ecossistema</div><h2>Pilares selecionados</h2><p class="lead">Uma apresentação alinhada à necessidade da reunião, sem perder a percepção de integração da plataforma.</p><div class="pillar-grid">${pillars.map((pillar: any) => `<div><span>${esc(pillar.category || "Pilar")}</span><b>${esc(pillar.name)}</b><small>${selectedFeatures.filter((feature: any) => String(feature.pillar_code) === String(pillar.code)).length} funcionalidade(s)</small></div>`).join("")}</div><h2>Integração que transforma dados em gestão</h2><div class="ecosystem">${integrationNames.map((name, index) => `<span>${index ? "→ " : ""}${esc(name)}</span>`).join("")}</div><p class="callout">A plataforma conecta prevenção, operação, evidências, saúde ocupacional e indicadores. Cada registro alimenta o próximo processo e reduz a dependência de planilhas, e-mails e controles paralelos.</p></section>`;
+  const whyPlatformPage = `<section class="page-break institutional"><div class="kicker">Por que uma plataforma?</div><h2>O diferencial não está apenas na quantidade. Está na conexão.</h2><div class="before-after"><div><h3>Antes</h3><p>Planilhas</p><p>PDFs</p><p>E-mails e WhatsApp</p><p>Sistemas isolados</p><p>Informações espalhadas</p></div><div class="connected"><h3>Com a plataforma</h3><p>Uma operação conectada, rastreável e orientada para ação.</p><div>Colaborador → Saúde → Segurança → Riscos → PGR → PCMSO → Exames → Treinamentos → Evidências → Indicadores → Decisão</div></div></div></section>`;
+  const differentiatorPage = `<section class="impact-page page-break"><div class="kicker">Diferencial competitivo</div><h2>${selectedFeatures.length} funcionalidades. Um único ecossistema.</h2><p>Existem ferramentas para exames, treinamentos, PGR, comunicação e indicadores. O diferencial é conectar tudo isso em uma única estrutura de gestão.</p><div class="pill-list"><span>Integração</span><span>Rastreabilidade</span><span>Automação</span><span>Inteligência</span><span>Conformidade</span><span>Escalabilidade</span><span>White Label</span></div></section>`;
+  const whiteLabelPage = scope.ownerType === "white_label" ? `<section class="impact-page page-break"><div class="kicker">Tecnologia White Label</div><h2>Sua marca. Nossa tecnologia. Um novo negócio.</h2><p>Sua identidade, seus clientes e sua operação comercial apoiados por um ecossistema completo de Saúde e Segurança do Trabalho.</p><div class="impact-flow">Plataforma Global <b>→</b> White Label <b>→</b> Sua Marca <b>→</b> Seus Clientes <b>→</b> Sua Operação</div></section>` : "";
+  const pillarPage = `<section class="page-break"><div class="kicker">Jornadas selecionadas</div><h2>Explore o ecossistema por pilares.</h2><p class="lead">Conteúdo alinhado ao público e ao objetivo da reunião, sem perder a percepção de integração.</p><div class="pillar-grid">${pillars.map((pillar: any) => `<div><span>${esc(pillar.category || "Pilar")}</span><b>${esc(pillar.name)}</b><small>${selectedFeatures.filter((feature: any) => String(feature.pillar_code) === String(pillar.code)).length} funcionalidade(s)</small></div>`).join("")}</div><h3>Conexões deste material</h3><div class="ecosystem">${integrationNames.map((name, index) => `<span>${index ? "→ " : ""}${esc(name)}</span>`).join("")}</div></section>`;
   const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
-    @page{size:A4;margin:16mm}*{box-sizing:border-box}body{margin:0;color:#183044;font-family:Arial,sans-serif;font-size:10pt;line-height:1.5}.cover{height:265mm;margin:-16mm;background:${primary};color:white;padding:25mm 20mm;display:flex;flex-direction:column;justify-content:space-between;page-break-after:always}.cover .brand-mark{display:inline-flex;align-items:center;background:#fff;padding:4mm 5mm;max-width:70mm;min-height:20mm;border-radius:2mm}.cover .brand-mark img{max-width:58mm;max-height:18mm;object-fit:contain;object-position:left}.cover h1{font-size:35pt;line-height:1.05;margin:12mm 0 7mm}.cover .sub{font-size:15pt;max-width:150mm;color:#e7f4f5}.cover .line{height:5px;background:${secondary};width:32mm;margin-bottom:8mm}.cover small{color:#c9d9df}.kicker{text-transform:uppercase;color:${secondary};font-weight:700;font-size:8.5pt;letter-spacing:1px}.page-break{page-break-before:always}h2{font-size:25pt;line-height:1.1;color:${primary};margin:4mm 0 5mm}h3{font-size:12pt;color:${primary};margin:4mm 0 2mm}.lead{font-size:13pt;color:#526b7b;margin-bottom:8mm}.hero-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:7mm;align-items:stretch}.visual{min-height:76mm;background:${primary};color:white;padding:9mm;display:flex;flex-direction:column;justify-content:flex-end}.visual span{font-size:34pt;color:${secondary};font-weight:800}.visual strong{font-size:18pt}.visual small{margin-top:3mm;color:#d7e5e9}.screenshot{width:100%;height:76mm;object-fit:cover;object-position:top;border:1px solid #d4e0e5}.two-cols{display:grid;grid-template-columns:1fr 1fr;gap:8mm;margin-top:8mm}.two-cols>div{border-top:4px solid ${secondary};padding-top:3mm}ul{padding-left:5mm;margin:2mm 0}li{margin:1.5mm 0}.flow,.ecosystem{display:flex;flex-wrap:wrap;gap:2mm;margin-top:8mm;background:#edf6f7;padding:5mm;color:${primary};font-weight:700}.indicator-row{display:grid;grid-template-columns:repeat(4,1fr);gap:2mm;margin-top:7mm}.indicator-row div{border:1px solid #d7e2e7;padding:3mm;min-height:18mm}.indicator-row b{display:block;font-size:8.5pt}.indicator-row small{color:#6b7f8d;font-size:7.5pt}.pillar-grid{display:grid;grid-template-columns:1fr 1fr;gap:3mm}.pillar-grid div{border-left:5px solid ${secondary};background:#f2f6f8;padding:5mm}.pillar-grid span,.pillar-grid small{display:block;color:#6b7f8d;font-size:8pt}.pillar-grid b{display:block;color:${primary};font-size:12pt;margin:1mm 0}.callout{margin-top:10mm;background:${primary};color:white;padding:8mm;font-size:13pt}.footer{margin-top:12mm;border-top:1px solid #d7e2e7;padding-top:4mm;color:#6b7f8d;font-size:8.5pt}
-  </style></head><body><div class="cover"><div>${logo ? `<span class="brand-mark"><img src="${logo}"></span>` : `<strong style="font-size:22pt">${esc(brand.brand_name || "Plataforma")}</strong>`}</div><div><div class="line"></div><div class="kicker" style="color:${secondary}">Portfólio comercial</div><h1>${esc(input.title)}</h1><div class="sub">${esc(input.presentationText || "Tecnologia, prevenção e inteligência conectadas em uma única plataforma.")}</div></div><small>Base comercial ${esc(PLATFORM_RELEASE.code)} · ${selectedFeatures.length} funcionalidades · ${new Date().toLocaleDateString("pt-BR")}</small></div>${pillarPage}${featurePages}<section class="page-break"><div class="kicker">Próximo passo</div><h2>Vamos transformar a operação?</h2><p class="lead">Estruturamos a implantação conforme o cenário, o porte e as prioridades da organização, preservando segurança, rastreabilidade e evolução contínua.</p><div class="callout"><b>${esc(input.consultantName || brand.contact_name || brand.brand_name || "Contato comercial")}</b><br>${esc(input.consultantContact || brand.contact_email || "")}${brand.contact_phone ? ` · ${esc(brand.contact_phone)}` : ""}<br>${esc(brand.website || "")}</div><div class="footer">Portfólio gerado pela base viva de funcionalidades da plataforma. O escopo contratual é definido na proposta comercial.</div></section></body></html>`;
+    @page{size:A4;margin:16mm}*{box-sizing:border-box}body{margin:0;color:#183044;font-family:Arial,sans-serif;font-size:10pt;line-height:1.5}.cover{height:265mm;margin:-16mm;background:${primary};color:white;padding:24mm 20mm;display:flex;flex-direction:column;justify-content:space-between;page-break-after:always}.cover .brand-mark{display:inline-flex;align-items:center;background:#fff;padding:4mm 5mm;max-width:70mm;min-height:20mm;border-radius:2mm}.cover .brand-mark img{max-width:58mm;max-height:18mm;object-fit:contain;object-position:left}.cover h1{font-size:33pt;line-height:1.05;margin:10mm 0 6mm;max-width:165mm}.cover .sub{font-size:14pt;max-width:155mm;color:#e7f4f5}.cover .line{height:5px;background:${secondary};width:32mm;margin-bottom:8mm}.cover small{color:#c9d9df}.kicker{text-transform:uppercase;color:${secondary};font-weight:700;font-size:8.5pt;letter-spacing:1px}.page-break{page-break-before:always}h2{font-size:25pt;line-height:1.1;color:${primary};margin:4mm 0 5mm}h3{font-size:12pt;color:${primary};margin:4mm 0 2mm}.lead{font-size:12pt;color:#526b7b;margin-bottom:7mm}.feature-layout{display:grid;grid-template-columns:48% 52%;gap:8mm;align-items:start}.feature-copy h2{font-size:24pt}.headline{font-size:15pt;color:${secondary};line-height:1.2;margin:2mm 0 5mm}.feature-copy h4{margin:7mm 0 2mm;text-transform:uppercase;font-size:8pt;color:#6b7f8d}.benefits{padding-left:5mm;margin:0}.benefits li{margin:2mm 0}.visual{min-height:105mm;background:${primary};color:white;padding:9mm;display:flex;flex-direction:column;justify-content:flex-end}.visual span{font-size:34pt;color:${secondary};font-weight:800}.visual strong{font-size:18pt}.visual small{margin-top:3mm;color:#d7e5e9}.screenshot{width:100%;height:105mm;object-fit:cover;object-position:top;border:1px solid #d4e0e5}.flow,.ecosystem{display:flex;flex-wrap:wrap;gap:2mm;margin-top:8mm;background:#edf6f7;padding:5mm;color:${primary};font-weight:700}.flow b,.integration-row b{width:100%;font-size:8pt;text-transform:uppercase;color:#6b7f8d}.integration-row{display:flex;flex-wrap:wrap;gap:2mm;margin-top:5mm}.integration-row span,.pill-list span{border:1px solid #c9d9df;padding:2mm 3mm;font-size:8pt}.result{border-left:4px solid ${secondary};margin-top:6mm;padding:3mm 4mm;background:#f5f8f9}.pillar-grid{display:grid;grid-template-columns:1fr 1fr;gap:3mm}.pillar-grid div{border-left:5px solid ${secondary};background:#f2f6f8;padding:5mm}.pillar-grid span,.pillar-grid small{display:block;color:#6b7f8d;font-size:8pt}.pillar-grid b{display:block;color:${primary};font-size:12pt;margin:1mm 0}.before-after{display:grid;grid-template-columns:.75fr 1.25fr;gap:7mm;margin-top:12mm}.before-after>div{border-top:5px solid #c6d1d6;padding:6mm;background:#f5f7f8}.before-after .connected{border-color:${secondary};background:#edf7f7}.connected div{margin-top:7mm;font-size:13pt;font-weight:700;line-height:1.7}.impact-page{min-height:250mm;background:${primary};color:white;margin:-16mm;padding:28mm 20mm;display:flex;flex-direction:column;justify-content:center}.impact-page h2{color:white;font-size:32pt;max-width:165mm}.impact-page p{font-size:15pt;color:#d9e7ea;max-width:160mm}.impact-flow{margin-top:14mm;border-top:5px solid ${secondary};padding-top:8mm;font-size:16pt}.pill-list{display:flex;flex-wrap:wrap;gap:3mm;margin-top:10mm}.pill-list span{border-color:#6d8793}.callout{margin-top:10mm;background:${primary};color:white;padding:8mm;font-size:13pt}.footer{margin-top:12mm;border-top:1px solid #d7e2e7;padding-top:4mm;color:#6b7f8d;font-size:8.5pt}
+  </style></head><body><div class="cover"><div>${logo ? `<span class="brand-mark"><img src="${logo}"></span>` : `<strong style="font-size:22pt">${esc(brand.brand_name || "Plataforma")}</strong>`}</div><div><div class="line"></div><div class="kicker" style="color:${secondary}">${esc(input.title)}</div><h1>Sua operação de SST, conectada de ponta a ponta.</h1><div class="sub">${esc(input.presentationText || "Saúde, Segurança, Pessoas, Conformidade e Inteligência em uma única plataforma. Tudo conectado. Tudo rastreável.")}</div></div><small>Base comercial ${esc(PLATFORM_RELEASE.code)} · ${selectedFeatures.length} funcionalidades · ${new Date().toLocaleDateString("pt-BR")}</small></div>${whyPlatformPage}${differentiatorPage}${whiteLabelPage}${pillarPage}${featurePages}<section class="page-break"><div class="kicker">Próximo passo</div><h2>Vamos transformar a gestão de SST?</h2><p class="lead">Apresente o cenário da sua organização e conheça uma jornada de implantação adequada às suas necessidades.</p><div class="callout"><b>Solicitar demonstração</b><br><br>${esc(input.consultantName || brand.contact_name || brand.brand_name || "Contato comercial")}<br>${esc(input.consultantContact || brand.contact_email || "")}${brand.contact_phone ? ` · ${esc(brand.contact_phone)}` : ""}<br>${esc(brand.website || "")}</div><div class="footer">Portfólio gerado pela Base Global de Funcionalidades. O escopo contratual é definido na proposta comercial.</div></section></body></html>`;
   const puppeteer = (await import("puppeteer")).default;
   const outDir = path.join(process.cwd(), "uploads", "portfolios");
   fs.mkdirSync(outDir, { recursive: true });
@@ -1229,9 +1333,21 @@ async function createCommercialPortfolioPdf(
     await browser.close();
   }
   const url = `/uploads/portfolios/${filename}`;
+  const snapshot = JSON.stringify({
+    generatedAt: new Date().toISOString(),release: PLATFORM_RELEASE.code,scope,brand,
+    selection: { mode: input.mode,pillarCodes: input.pillarCodes,featureCodes: selectedFeatures.map((feature: any) => feature.code),audienceProfile: input.audienceProfile || null },
+    pillars,
+    features: selectedFeatures.map((feature: any) => ({
+      id: feature.id,code: feature.code,slug: feature.slug,name: feature.name,portfolioTitle: feature.portfolio_title,
+      pillarCode: feature.pillar_code,category: feature.category,headline: feature.headline,
+      description: feature.portfolio_description || feature.description,benefits: jsonArray(feature.benefits_json),
+      resources: jsonArray(feature.resources_json),flow: jsonArray(feature.flow_json),integrations: jsonArray(feature.integrations_json),
+      imageUrl: feature.portfolio_image_url || feature.screenshot_url || null,contentVersion: feature.content_version,
+    })),
+  });
   await db.execute(drzSql`INSERT INTO commercial_portfolio_runs
-    (owner_type,owner_id,title,mode,pillar_codes_json,feature_codes_json,generated_by,pdf_url)
-    VALUES (${scope.ownerType},${scope.ownerId},${input.title},${input.mode},${JSON.stringify(input.pillarCodes)},${JSON.stringify(selectedFeatures.map((feature: any) => feature.code))},${actorId},${url})`);
+    (owner_type,owner_id,title,mode,pillar_codes_json,feature_codes_json,audience_profile,snapshot_json,content_version,generated_by,pdf_url)
+    VALUES (${scope.ownerType},${scope.ownerId},${input.title},${input.mode},${JSON.stringify(input.pillarCodes)},${JSON.stringify(selectedFeatures.map((feature: any) => feature.code))},${input.audienceProfile || null},${snapshot},${PLATFORM_RELEASE.code},${actorId},${url})`);
   return { url, featureCount: selectedFeatures.length, pillarCount: pillars.length };
 }
 
@@ -1250,6 +1366,11 @@ async function publishCommercialUpdateToPartner(db: any, updateId: number, partn
     const masterResult: any = await db.execute(drzSql`SELECT * FROM commercial_feature_catalog WHERE owner_type='global' AND owner_id=0 AND code=${code} LIMIT 1`);
     const feature = rowsOf(masterResult)[0];
     if (!feature) continue;
+    if (!Number(feature.available_white_label ?? 1)) continue;
+    await db.execute(drzSql`INSERT INTO commercial_white_label_features
+      (white_label_partner_id,feature_id,enabled,show_in_portfolio,sort_order,updated_by)
+      VALUES(${partnerId},${Number(feature.id)},1,1,${Number(feature.sort_order||0)},${actorId})
+      ON DUPLICATE KEY UPDATE enabled=1,show_in_portfolio=1,sort_order=VALUES(sort_order),updated_by=VALUES(updated_by)`);
     await db.execute(drzSql`INSERT INTO commercial_feature_catalog
       (owner_type,owner_id,category,code,name,description,pillar_code,subtitle,module_name,limitations_text,is_addon_eligible,is_active,sort_order,
        manifest_version,problem_text,objective_text,benefits_json,resources_json,audience_json,flow_json,integrations_json,indicators_json,screenshot_url)
@@ -1321,34 +1442,60 @@ export const commercialRouter = router({
     const db = await getDb();
     if (!db) return { pillars: [], features: [], runs: [] };
     const features: any = scope.ownerType === "white_label"
-      ? await db.execute(drzSql`SELECT DISTINCT f.* FROM commercial_feature_catalog f JOIN commercial_plan_features pf ON pf.feature_id=f.id JOIN commercial_plan_catalog p ON p.id=pf.plan_id AND p.owner_type=f.owner_type AND p.owner_id=f.owner_id AND p.is_active=1 WHERE f.owner_type=${scope.ownerType} AND f.owner_id=${scope.ownerId} AND f.is_active=1 ORDER BY f.sort_order,f.name`)
-      : await db.execute(drzSql`SELECT * FROM commercial_feature_catalog WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} AND is_active=1 ORDER BY sort_order,name`);
-    const pillars: any = await db.execute(drzSql`SELECT * FROM commercial_pillars WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} AND is_active=1 ORDER BY sort_order,id`);
+      ? await db.execute(drzSql`SELECT g.*,
+          COALESCE(w.custom_title,g.commercial_title,g.name) portfolio_title,
+          COALESCE(w.custom_description,g.description) portfolio_description,
+          COALESCE(w.custom_image_url,g.screenshot_url) portfolio_image_url,
+          COALESCE(w.enabled,0) wl_enabled,COALESCE(w.show_in_portfolio,0) show_in_portfolio,
+          COALESCE(w.sort_order,g.sort_order) portfolio_sort_order
+        FROM commercial_feature_catalog g
+        LEFT JOIN commercial_white_label_features w ON w.feature_id=g.id AND w.white_label_partner_id=${scope.ownerId}
+        WHERE g.owner_type='global' AND g.owner_id=0 AND g.is_active=1 AND g.available_white_label=1
+        ORDER BY COALESCE(w.sort_order,g.sort_order),g.name`)
+      : await db.execute(drzSql`SELECT g.*,COALESCE(g.commercial_title,g.name) portfolio_title,g.description portfolio_description,g.screenshot_url portfolio_image_url,1 wl_enabled,1 show_in_portfolio,g.sort_order portfolio_sort_order
+          FROM commercial_feature_catalog g WHERE g.owner_type='global' AND g.owner_id=0 AND g.is_active=1 AND g.available_global=1 ORDER BY g.sort_order,g.name`);
+    const pillars: any = await db.execute(drzSql`SELECT * FROM commercial_pillars WHERE owner_type='global' AND owner_id=0 AND is_active=1 ORDER BY sort_order,id`);
     const runs: any = await db.execute(drzSql`SELECT * FROM commercial_portfolio_runs WHERE owner_type=${scope.ownerType} AND owner_id=${scope.ownerId} ORDER BY generated_at DESC,id DESC LIMIT 30`);
-    const images: any = await db.execute(drzSql`SELECT i.*,f.name feature_name,f.code feature_code FROM commercial_feature_images i JOIN commercial_feature_catalog f ON f.id=i.feature_id AND f.owner_type=i.owner_type AND f.owner_id=i.owner_id WHERE i.owner_type=${scope.ownerType} AND i.owner_id=${scope.ownerId} ORDER BY i.feature_id,i.is_primary DESC,i.sort_order,i.id`);
-    return { pillars: rowsOf(pillars), features: rowsOf(features), runs: rowsOf(runs), images: rowsOf(images), releaseCode: PLATFORM_RELEASE.code };
+    const images: any = await db.execute(drzSql`SELECT i.*,f.name feature_name,f.code feature_code FROM commercial_feature_images i JOIN commercial_feature_catalog f ON f.id=i.feature_id AND f.owner_type='global' AND f.owner_id=0 WHERE i.owner_type=${scope.ownerType} AND i.owner_id=${scope.ownerId} ORDER BY i.feature_id,i.is_primary DESC,i.sort_order,i.id`);
+    return { pillars: rowsOf(pillars), features: rowsOf(features), runs: rowsOf(runs), images: rowsOf(images), releaseCode: PLATFORM_RELEASE.code, ownerType: scope.ownerType };
+  }),
+  saveWhiteLabelPortfolioFeature: commercialProcedure.input(z.object({
+    featureId:z.number().int().positive(),enabled:z.boolean(),showInPortfolio:z.boolean(),sortOrder:z.number().int().min(0).max(100000),
+    customTitle:z.string().max(255).optional(),customDescription:z.string().max(10000).optional(),customImageUrl:z.string().max(1200).optional(),
+  })).mutation(async ({ctx,input})=>{
+    const s=(ctx as any).commercialScope as CommercialScope;
+    if(s.ownerType!=="white_label")throw new TRPCError({code:"BAD_REQUEST",message:"Configuração disponível somente para White Label."});
+    const db=await getDb();if(!db)throw new TRPCError({code:"INTERNAL_SERVER_ERROR"});
+    const featureResult:any=await db.execute(drzSql`SELECT id FROM commercial_feature_catalog WHERE id=${input.featureId} AND owner_type='global' AND owner_id=0 AND is_active=1 AND available_white_label=1 LIMIT 1`);
+    if(!rowsOf(featureResult)[0])throw new TRPCError({code:"NOT_FOUND",message:"Funcionalidade global não localizada."});
+    await db.execute(drzSql`INSERT INTO commercial_white_label_features
+      (white_label_partner_id,feature_id,enabled,show_in_portfolio,sort_order,custom_title,custom_description,custom_image_url,updated_by)
+      VALUES(${s.ownerId},${input.featureId},${input.enabled?1:0},${input.showInPortfolio?1:0},${input.sortOrder},${input.customTitle||null},${input.customDescription||null},${input.customImageUrl||null},${Number(ctx.user.id)})
+      ON DUPLICATE KEY UPDATE enabled=VALUES(enabled),show_in_portfolio=VALUES(show_in_portfolio),sort_order=VALUES(sort_order),custom_title=VALUES(custom_title),custom_description=VALUES(custom_description),custom_image_url=VALUES(custom_image_url),updated_by=VALUES(updated_by)`);
+    return{ok:true};
   }),
   uploadPortfolioImage: commercialProcedure.input(z.object({ featureId:z.number().int().positive(), fileName:z.string().min(1).max(255), mimeType:z.enum(["image/png","image/jpeg","image/webp"]), base64:z.string().min(100).max(20_000_000), caption:z.string().max(500).optional(), sortOrder:z.number().int().min(0).max(10000).default(0), isPrimary:z.boolean().default(false) })).mutation(async ({ctx,input})=>{
     const s=(ctx as any).commercialScope as CommercialScope;const db=await getDb();if(!db)throw new TRPCError({code:"INTERNAL_SERVER_ERROR"});
-    const owned:any=await db.execute(drzSql`SELECT id FROM commercial_feature_catalog WHERE id=${input.featureId} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId} LIMIT 1`);if(!rowsOf(owned)[0])throw new TRPCError({code:"NOT_FOUND",message:"Funcionalidade não localizada."});
+    const owned:any=await db.execute(drzSql`SELECT id FROM commercial_feature_catalog WHERE id=${input.featureId} AND owner_type='global' AND owner_id=0 AND is_active=1 ${s.ownerType==="white_label"?drzSql`AND available_white_label=1`:drzSql``} LIMIT 1`);if(!rowsOf(owned)[0])throw new TRPCError({code:"NOT_FOUND",message:"Funcionalidade global não localizada."});
     assertPortfolioImage(input.base64,input.mimeType);
     const extension=input.mimeType==="image/png"?"png":input.mimeType==="image/webp"?"webp":"jpg";const url=writeBase64Upload("portfolio-images",`${path.parse(input.fileName).name}.${extension}`,input.base64);
     if(input.isPrimary) await db.execute(drzSql`UPDATE commercial_feature_images SET is_primary=0 WHERE owner_type=${s.ownerType} AND owner_id=${s.ownerId} AND feature_id=${input.featureId}`);
     const inserted:any=await db.execute(drzSql`INSERT INTO commercial_feature_images(owner_type,owner_id,feature_id,image_url,original_name,caption,sort_order,is_primary,uploaded_by) VALUES(${s.ownerType},${s.ownerId},${input.featureId},${url},${input.fileName},${input.caption||null},${input.sortOrder},${input.isPrimary?1:0},${Number(ctx.user.id)})`);
-    const id=Number(inserted?.[0]?.insertId||inserted?.insertId||0);if(input.isPrimary) await db.execute(drzSql`UPDATE commercial_feature_catalog SET screenshot_url=${url} WHERE id=${input.featureId} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId}`);
+    const id=Number(inserted?.[0]?.insertId||inserted?.insertId||0);if(input.isPrimary){if(s.ownerType==="global")await db.execute(drzSql`UPDATE commercial_feature_catalog SET screenshot_url=${url} WHERE id=${input.featureId} AND owner_type='global' AND owner_id=0`);else await db.execute(drzSql`INSERT INTO commercial_white_label_features(white_label_partner_id,feature_id,enabled,show_in_portfolio,custom_image_url,updated_by) VALUES(${s.ownerId},${input.featureId},1,1,${url},${Number(ctx.user.id)}) ON DUPLICATE KEY UPDATE custom_image_url=VALUES(custom_image_url),updated_by=VALUES(updated_by)`);}
     return{ok:true,id,url};
   }),
   setPrimaryPortfolioImage: commercialProcedure.input(z.object({id:z.number().int().positive()})).mutation(async({ctx,input})=>{
-    const s=(ctx as any).commercialScope as CommercialScope;const db=await getDb();if(!db)throw new TRPCError({code:"INTERNAL_SERVER_ERROR"});const result:any=await db.execute(drzSql`SELECT * FROM commercial_feature_images WHERE id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId} LIMIT 1`);const image=rowsOf(result)[0];if(!image)throw new TRPCError({code:"NOT_FOUND"});await db.execute(drzSql`UPDATE commercial_feature_images SET is_primary=0 WHERE owner_type=${s.ownerType} AND owner_id=${s.ownerId} AND feature_id=${Number(image.feature_id)}`);await db.execute(drzSql`UPDATE commercial_feature_images SET is_primary=1 WHERE id=${input.id}`);await db.execute(drzSql`UPDATE commercial_feature_catalog SET screenshot_url=${image.image_url} WHERE id=${Number(image.feature_id)} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId}`);return{ok:true};
+    const s=(ctx as any).commercialScope as CommercialScope;const db=await getDb();if(!db)throw new TRPCError({code:"INTERNAL_SERVER_ERROR"});const result:any=await db.execute(drzSql`SELECT * FROM commercial_feature_images WHERE id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId} LIMIT 1`);const image=rowsOf(result)[0];if(!image)throw new TRPCError({code:"NOT_FOUND"});await db.execute(drzSql`UPDATE commercial_feature_images SET is_primary=0 WHERE owner_type=${s.ownerType} AND owner_id=${s.ownerId} AND feature_id=${Number(image.feature_id)}`);await db.execute(drzSql`UPDATE commercial_feature_images SET is_primary=1 WHERE id=${input.id}`);if(s.ownerType==="global")await db.execute(drzSql`UPDATE commercial_feature_catalog SET screenshot_url=${image.image_url} WHERE id=${Number(image.feature_id)} AND owner_type='global' AND owner_id=0`);else await db.execute(drzSql`INSERT INTO commercial_white_label_features(white_label_partner_id,feature_id,enabled,show_in_portfolio,custom_image_url,updated_by) VALUES(${s.ownerId},${Number(image.feature_id)},1,1,${image.image_url},${Number(ctx.user.id)}) ON DUPLICATE KEY UPDATE custom_image_url=VALUES(custom_image_url),updated_by=VALUES(updated_by)`);return{ok:true};
   }),
   deletePortfolioImage: commercialProcedure.input(z.object({id:z.number().int().positive()})).mutation(async({ctx,input})=>{
     const s=(ctx as any).commercialScope as CommercialScope;const db=await getDb();if(!db)throw new TRPCError({code:"INTERNAL_SERVER_ERROR"});const result:any=await db.execute(drzSql`SELECT * FROM commercial_feature_images WHERE id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId} LIMIT 1`);const image=rowsOf(result)[0];if(!image)throw new TRPCError({code:"NOT_FOUND"});await db.execute(drzSql`DELETE FROM commercial_feature_images WHERE id=${input.id}`);if(image.is_primary){const fallback:any=await db.execute(drzSql`SELECT * FROM commercial_feature_images WHERE owner_type=${s.ownerType} AND owner_id=${s.ownerId} AND feature_id=${Number(image.feature_id)} ORDER BY sort_order,id LIMIT 1`);const next=rowsOf(fallback)[0];if(next){await db.execute(drzSql`UPDATE commercial_feature_images SET is_primary=1 WHERE id=${Number(next.id)}`);await db.execute(drzSql`UPDATE commercial_feature_catalog SET screenshot_url=${next.image_url} WHERE id=${Number(image.feature_id)}`);}else await db.execute(drzSql`UPDATE commercial_feature_catalog SET screenshot_url=NULL WHERE id=${Number(image.feature_id)}`);}const local=String(image.image_url||"");if(local.startsWith("/uploads/portfolio-images/")){const target=path.join(process.cwd(),local.replace(/^\/+/,""));try{fs.unlinkSync(target);}catch{}}
     return{ok:true};
   }),
   generatePortfolio: commercialProcedure.input(z.object({
-    mode: z.enum(["complete", "custom"]), title: z.string().min(3).max(255),
+    mode: z.enum(["complete", "pillar", "custom", "profile"]), title: z.string().min(3).max(255),
     pillarCodes: z.array(z.string().max(100)).max(50).default([]),
     featureCodes: z.array(z.string().max(100)).max(300).default([]),
+    audienceProfile: z.enum(["diretoria","rh","sesmt","medico","engenharia"]).optional(),
     presentationText: z.string().max(20000).optional(), consultantName: z.string().max(180).optional(), consultantContact: z.string().max(255).optional(),
   })).mutation(async ({ ctx, input }) => createCommercialPortfolioPdf((ctx as any).commercialScope, Number(ctx.user.id), input)),
   saveSettings: commercialProcedure.input(z.object({ brandName: z.string().min(2), legalName: z.string().optional(), logoUrl: z.string().optional(), primaryColor: z.string(), secondaryColor: z.string(), presentationText: z.string().optional(), objectiveText: z.string().optional(), contactName: z.string().optional(), contactEmail: z.string().optional(), contactPhone: z.string().optional(), website: z.string().optional(), commercialTerms: z.string().optional(), nextStepsText: z.string().optional() })).mutation(async ({ ctx, input }) => {
@@ -1377,12 +1524,29 @@ export const commercialRouter = router({
     return{ok:true};
   }),
   listFeatures: commercialProcedure.query(async ({ ctx }) => { const s = (ctx as any).commercialScope as CommercialScope; const db = await getDb(); if (!db) return []; const r: any = await db.execute(drzSql`SELECT f.*,p.name pillar_name,p.sort_order pillar_sort FROM commercial_feature_catalog f LEFT JOIN commercial_pillars p ON p.owner_type=f.owner_type AND p.owner_id=f.owner_id AND p.code=f.pillar_code WHERE f.owner_type=${s.ownerType} AND f.owner_id=${s.ownerId} ORDER BY COALESCE(p.sort_order,999),f.category,f.sort_order,f.name`); return rowsOf(r); }),
-  upsertFeature: commercialProcedure.input(z.object({ id: z.number().int().positive().optional(), category: z.string().min(2), code: z.string().min(2), name: z.string().min(2), description: z.string().optional(), pillarCode:z.string().max(100).optional(), moduleName:z.string().max(180).optional(), limitationsText:z.string().max(5000).optional(), problemText:z.string().max(20000).optional(), objectiveText:z.string().max(20000).optional(), benefits:z.array(z.string().max(1000)).max(30).default([]), resources:z.array(z.string().max(1000)).max(50).default([]), audience:z.array(z.string().max(200)).max(30).default([]), flow:z.array(z.string().max(500)).max(30).default([]), integrations:z.array(z.string().max(300)).max(50).default([]), indicators:z.array(z.string().max(300)).max(50).default([]), screenshotUrl:z.string().max(1200).optional(), isAddonEligible:z.boolean().default(false), isActive: z.boolean().default(true), sortOrder: z.number().int().default(0) })).mutation(async ({ ctx, input }) => {
-    const s = (ctx as any).commercialScope as CommercialScope; const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-    const metadata = [JSON.stringify(input.benefits),JSON.stringify(input.resources),JSON.stringify(input.audience),JSON.stringify(input.flow),JSON.stringify(input.integrations),JSON.stringify(input.indicators)];
-    if (input.id) await db.execute(drzSql`UPDATE commercial_feature_catalog SET category=${input.category}, code=${input.code}, name=${input.name}, description=${input.description || null},pillar_code=${input.pillarCode||null},module_name=${input.moduleName||null},limitations_text=${input.limitationsText||null},problem_text=${input.problemText||null},objective_text=${input.objectiveText||null},benefits_json=${metadata[0]},resources_json=${metadata[1]},audience_json=${metadata[2]},flow_json=${metadata[3]},integrations_json=${metadata[4]},indicators_json=${metadata[5]},screenshot_url=${input.screenshotUrl||null},is_addon_eligible=${input.isAddonEligible?1:0}, is_active=${input.isActive ? 1 : 0}, sort_order=${input.sortOrder} WHERE id=${input.id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId}`);
-    else await db.execute(drzSql`INSERT INTO commercial_feature_catalog (owner_type, owner_id, category, code, name, description,pillar_code,module_name,limitations_text,problem_text,objective_text,benefits_json,resources_json,audience_json,flow_json,integrations_json,indicators_json,screenshot_url,is_addon_eligible,is_active, sort_order) VALUES (${s.ownerType}, ${s.ownerId}, ${input.category}, ${input.code}, ${input.name}, ${input.description || null},${input.pillarCode||null},${input.moduleName||null},${input.limitationsText||null},${input.problemText||null},${input.objectiveText||null},${metadata[0]},${metadata[1]},${metadata[2]},${metadata[3]},${metadata[4]},${metadata[5]},${input.screenshotUrl||null},${input.isAddonEligible?1:0},${input.isActive ? 1 : 0}, ${input.sortOrder})`);
-    return { ok: true };
+  upsertFeature: commercialProcedure.input(z.object({
+    id:z.number().int().positive().optional(),category:z.string().min(2),code:z.string().min(2),name:z.string().min(2),slug:z.string().max(180).optional(),
+    commercialTitle:z.string().max(255).optional(),headline:z.string().max(600).optional(),description:z.string().optional(),commercialResult:z.string().max(10000).optional(),
+    pillarCode:z.string().max(100).optional(),moduleName:z.string().max(180).optional(),limitationsText:z.string().max(5000).optional(),problemText:z.string().max(20000).optional(),objectiveText:z.string().max(20000).optional(),
+    benefits:z.array(z.string().max(1000)).max(30).default([]),resources:z.array(z.string().max(1000)).max(50).default([]),audience:z.array(z.string().max(200)).max(30).default([]),flow:z.array(z.string().max(500)).max(30).default([]),integrations:z.array(z.string().max(300)).max(50).default([]),indicators:z.array(z.string().max(300)).max(50).default([]),
+    screenshotUrl:z.string().max(1200).optional(),imageMobileUrl:z.string().max(1200).optional(),availabilityStatus:z.enum(["draft","published","archived"]).default("published"),
+    availableGlobal:z.boolean().default(true),availableWhiteLabel:z.boolean().default(true),isAddonEligible:z.boolean().default(false),isActive:z.boolean().default(true),sortOrder:z.number().int().default(0),
+  })).mutation(async ({ ctx, input }) => {
+    const s=(ctx as any).commercialScope as CommercialScope;const db=await getDb();if(!db)throw new TRPCError({code:"INTERNAL_SERVER_ERROR"});
+    const metadata=[JSON.stringify(input.benefits),JSON.stringify(input.resources),JSON.stringify(input.audience),JSON.stringify(input.flow),JSON.stringify(input.integrations),JSON.stringify(input.indicators)];
+    const slug=input.slug||commercialSlug(input.code||input.name);let id=Number(input.id||0);let version="1.0";
+    if(id){
+      const currentResult:any=await db.execute(drzSql`SELECT * FROM commercial_feature_catalog WHERE id=${id} AND owner_type=${s.ownerType} AND owner_id=${s.ownerId} LIMIT 1`);const current=rowsOf(currentResult)[0];if(!current)throw new TRPCError({code:"NOT_FOUND"});
+      version=s.ownerType==="global"?nextContentVersion(current.content_version):String(current.content_version||"1.0");
+      await db.execute(drzSql`UPDATE commercial_feature_catalog SET category=${input.category},code=${input.code},name=${input.name},slug=${slug},commercial_title=${input.commercialTitle||input.name},headline=${input.headline||null},description=${input.description||null},commercial_result=${input.commercialResult||null},pillar_code=${input.pillarCode||null},module_name=${input.moduleName||null},limitations_text=${input.limitationsText||null},problem_text=${input.problemText||null},objective_text=${input.objectiveText||null},benefits_json=${metadata[0]},resources_json=${metadata[1]},audience_json=${metadata[2]},flow_json=${metadata[3]},integrations_json=${metadata[4]},indicators_json=${metadata[5]},screenshot_url=${input.screenshotUrl||null},image_mobile_url=${input.imageMobileUrl||null},availability_status=${input.availabilityStatus},available_global=${input.availableGlobal?1:0},available_white_label=${input.availableWhiteLabel?1:0},content_version=${version},is_addon_eligible=${input.isAddonEligible?1:0},is_active=${input.isActive?1:0},sort_order=${input.sortOrder} WHERE id=${id}`);
+    }else{
+      const inserted:any=await db.execute(drzSql`INSERT INTO commercial_feature_catalog(owner_type,owner_id,category,code,name,slug,commercial_title,headline,description,commercial_result,pillar_code,module_name,limitations_text,problem_text,objective_text,benefits_json,resources_json,audience_json,flow_json,integrations_json,indicators_json,screenshot_url,image_mobile_url,availability_status,available_global,available_white_label,content_version,is_addon_eligible,is_active,sort_order) VALUES(${s.ownerType},${s.ownerId},${input.category},${input.code},${input.name},${slug},${input.commercialTitle||input.name},${input.headline||null},${input.description||null},${input.commercialResult||null},${input.pillarCode||null},${input.moduleName||null},${input.limitationsText||null},${input.problemText||null},${input.objectiveText||null},${metadata[0]},${metadata[1]},${metadata[2]},${metadata[3]},${metadata[4]},${metadata[5]},${input.screenshotUrl||null},${input.imageMobileUrl||null},${input.availabilityStatus},${input.availableGlobal?1:0},${input.availableWhiteLabel?1:0},${version},${input.isAddonEligible?1:0},${input.isActive?1:0},${input.sortOrder})`);id=Number((inserted as any)[0]?.insertId||0);
+    }
+    if(s.ownerType==="global"){
+      const snapshotResult:any=await db.execute(drzSql`SELECT * FROM commercial_feature_catalog WHERE id=${id} LIMIT 1`);const snapshot=rowsOf(snapshotResult)[0]||{};
+      await db.execute(drzSql`INSERT INTO commercial_feature_versions(feature_id,content_version,snapshot_json,created_by) VALUES(${id},${version},${JSON.stringify(snapshot)},${Number(ctx.user.id)}) ON DUPLICATE KEY UPDATE snapshot_json=VALUES(snapshot_json),created_by=VALUES(created_by)`);
+    }
+    return{ok:true,id,version};
   }),
   listPlans: commercialProcedure.query(async ({ ctx }) => { const s = (ctx as any).commercialScope as CommercialScope; const db = await getDb(); if (!db) return []; const r: any = await db.execute(drzSql`SELECT p.*, GROUP_CONCAT(pf.feature_id) AS feature_ids FROM commercial_plan_catalog p LEFT JOIN commercial_plan_features pf ON pf.plan_id=p.id WHERE p.owner_type=${s.ownerType} AND p.owner_id=${s.ownerId} AND p.is_active=1 GROUP BY p.id ORDER BY p.sort_order, p.id`); return rowsOf(r).map((x) => ({ ...x, featureIds: String(x.feature_ids || "").split(",").filter(Boolean).map(Number) })); }),
   upsertPlan: commercialProcedure.input(planInput).mutation(async ({ ctx, input }) => {
