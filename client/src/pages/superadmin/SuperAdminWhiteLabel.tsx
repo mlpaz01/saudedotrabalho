@@ -345,6 +345,8 @@ function PartnersTab({ plans, partners, selectedPartnerId, setSelectedPartnerId,
                 <option value="active">Ativo</option>
                 <option value="trial">Piloto</option>
                 <option value="paused">Pausado</option>
+                <option value="suspended">Suspenso</option>
+                <option value="blocked">Bloqueado</option>
                 <option value="canceled">Cancelado</option>
               </Select>
             </Field>

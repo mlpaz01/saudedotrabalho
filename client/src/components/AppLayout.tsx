@@ -12,7 +12,7 @@ import {
   LifeBuoy, Headphones, HeartHandshake, BarChart3, ListChecks, BookMarked,
   Megaphone, Briefcase, Trophy, Printer, Pencil, Upload, HardHat, ClipboardCheck,
   MessageSquareText, Accessibility, Ear, Fingerprint,
-Syringe,} from "lucide-react";
+Syringe, ClipboardSignature,} from "lucide-react";
 import { useEffect, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { NotificationBell } from "./NotificationBell";
@@ -97,6 +97,12 @@ const adminSections: NavSection[] = [
       // P15 #4 — Gestão da CIPA (eleições, mandato, reuniões, indicadores).
       { label: "CIPA", href: "/admin/cipa", notRoles: ["chefia", "psicologo"], icon: <ShieldCheck size={16} /> ,},
       { label: "DDS Online", href: "/admin/dds", roles: ["admin", "rh", "sesmt", "company_admin", "admin_global", "super_admin"], icon: <MessageSquareText size={16} /> ,},
+    ],
+  },
+  {
+    section: "SGQ Qualidade",
+    items: [
+      { label: "Central SGQ", href: "/admin/sgq", roles: ["gestor_qualidade", "qualidade", "treinamento", "rh", "admin", "company_admin", "admin_global", "super_admin"], icon: <ClipboardSignature size={16} /> },
     ],
   },
   {
@@ -206,6 +212,7 @@ const superAdminNav: NavItem[] = [
   { label: "Integrações", href: "/super-admin/integracoes", notRoles: ["sesmt", "psicologo"], icon: <Link2 size={16} /> ,},
   { label: "Central eSocial", href: "/super-admin/integracoes/esocial", notRoles: ["sesmt", "psicologo"], icon: <FileCheck size={16} /> ,},
   { label: "Biometria PLUS", href: "/super-admin/biometria", notRoles: ["sesmt", "psicologo"], icon: <Fingerprint size={16} /> },
+  { label: "SGQ Global", href: "/super-admin/sgq", icon: <ClipboardSignature size={16} /> },
   { label: "CRM / Financeiro", href: "/super-admin/crm", notRoles: ["sesmt", "psicologo"], icon: <Briefcase size={16} /> ,},
   { label: "White Label", href: "/super-admin/white-label", notRoles: ["sesmt", "psicologo"], icon: <Store size={16} /> ,
   },

@@ -2,7 +2,12 @@ import AppLayout from "@/components/AppLayout";
 import { trpc } from "@/lib/trpc";
 import { useState } from "react";
 import { toast } from "sonner";
-import { Plus, Trash2, Pencil, Shield, History } from "lucide-react";
+import { Plus, Trash2, Pencil, Shield, History, Lock, Unlock, Users, KeyRound } from "lucide-react";
+
+function isCompanyBlocked(company: any) {
+  return Number(company?.isActive ?? company?.is_active ?? 1) !== 1 ||
+    ["blocked", "bloqueado", "suspended", "suspenso"].includes(String(company?.subscriptionStatus ?? "").toLowerCase());
+}
 
 export default function SuperAdminClients() {
   const list = trpc.superAdmin.listCompanies.useQuery();
@@ -18,9 +23,14 @@ export default function SuperAdminClients() {
     onSuccess: () => { toast.success("Cliente removido"); list.refetch(); },
     onError: (e) => toast.error(e.message),
   });
+  const setAccess = trpc.superAdmin.setCompanyAccess.useMutation({
+    onSuccess: () => { toast.success("Acesso atualizado"); list.refetch(); },
+    onError: (e) => toast.error(e.message),
+  });
 
   const [showNew, setShowNew] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
+  const [accessFor, setAccessFor] = useState<any | null>(null);
   const [form, setForm] = useState<any>({ name: "", cnpj: "", plan: "essencial", subscriptionStatus: "trial", mrr: 0, maxEmployees: 50 });
   const resetForm = () => setForm({ name: "", cnpj: "", plan: "essencial", subscriptionStatus: "trial", mrr: 0, maxEmployees: 50 });
 
@@ -29,6 +39,7 @@ export default function SuperAdminClients() {
   // uma justificativa (auditada no servidor). Vazio = volta ao SuperAdmin normal.
   const [delegateFor, setDelegateFor] = useState<any | null>(null);
   const [showLogs, setShowLogs] = useState(false);
+  const [showSecurityLogs, setShowSecurityLogs] = useState(false);
   const logMut = trpc.superAdmin.logDelegatedAction.useMutation();
 
   return (
@@ -39,6 +50,9 @@ export default function SuperAdminClients() {
           <div className="flex gap-2">
             <button onClick={() => setShowLogs(true)} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border text-sm">
               <History size={14} /> Auditoria de acessos delegados
+            </button>
+            <button onClick={() => setShowSecurityLogs(true)} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border text-sm">
+              <Lock size={14} /> Auditoria de segurança
             </button>
             <button onClick={() => setShowNew(true)} className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium">
               <Plus size={16} /> Novo cliente
@@ -67,22 +81,39 @@ export default function SuperAdminClients() {
               </tr>
             </thead>
             <tbody>
-              {(list.data ?? []).map((c: any) => (
-                <tr key={c.id} className="border-t">
+              {(list.data ?? []).map((c: any) => {
+                const blocked = isCompanyBlocked(c);
+                return (
+                <tr key={c.id} className={`border-t ${blocked ? "bg-red-50/50" : ""}`}>
                   <td className="p-3 font-medium">{c.name}</td>
                   <td className="p-3">{c.cnpj ?? "-"}</td>
                   <td className="p-3 capitalize">{c.plan ?? "essencial"}</td>
-                  <td className="p-3">{c.subscriptionStatus ?? "trial"}</td>
+                  <td className="p-3">
+                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${blocked ? "bg-red-100 text-red-700" : "bg-emerald-100 text-emerald-700"}`}>
+                      {blocked ? "Bloqueado" : (c.subscriptionStatus ?? "trial")}
+                    </span>
+                  </td>
                   <td className="p-3 text-right">R$ {Number(c.mrr ?? 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</td>
                   <td className="p-3 text-right">{c.employeesCount ?? 0}</td>
                   <td className="p-3 text-right">{c.maxEmployees ?? 50}</td>
                   <td className="p-3 text-right">
                     <button onClick={() => setDelegateFor(c)} className="text-xs px-2 py-1 rounded bg-primary/10 text-primary hover:bg-primary/20 mr-2 inline-flex items-center gap-1"><Shield size={11} /> Administrar como</button>
+                    <button onClick={() => setAccessFor(c)} className="text-xs px-2 py-1 rounded bg-slate-100 text-slate-700 hover:bg-slate-200 mr-2 inline-flex items-center gap-1"><Users size={11} /> Acessos</button>
+                    <button
+                      onClick={() => {
+                        const reason = prompt(blocked ? "Motivo do desbloqueio" : "Motivo do bloqueio");
+                        if (reason === null) return;
+                        setAccess.mutate({ companyId: c.id, blocked: !blocked, reason });
+                      }}
+                      className={`text-xs px-2 py-1 rounded mr-2 inline-flex items-center gap-1 ${blocked ? "bg-emerald-100 text-emerald-700 hover:bg-emerald-200" : "bg-red-100 text-red-700 hover:bg-red-200"}`}
+                    >
+                      {blocked ? <Unlock size={11} /> : <Lock size={11} />} {blocked ? "Desbloquear" : "Bloquear"}
+                    </button>
                     <button onClick={() => setEditing(c)} className="p-1 hover:bg-muted rounded"><Pencil size={14} /></button>
                     <button onClick={() => confirm("Remover cliente?") && del.mutate({ id: c.id })} className="p-1 hover:bg-red-100 text-red-600 rounded"><Trash2 size={14} /></button>
                   </td>
                 </tr>
-              ))}
+              )})}
               {(list.data ?? []).length === 0 && (
                 <tr><td colSpan={8} className="p-6 text-center text-muted-foreground">Nenhum cliente.</td></tr>
               )}
@@ -103,7 +134,9 @@ export default function SuperAdminClients() {
             }}
           />
         )}
+        {accessFor && <AccessModal client={accessFor} onClose={() => setAccessFor(null)} />}
         {showLogs && <DelegatedLogsModal onClose={() => setShowLogs(false)} />}
+        {showSecurityLogs && <SecurityLogsModal onClose={() => setShowSecurityLogs(false)} />}
 
         {(showNew || editing) && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -132,6 +165,8 @@ export default function SuperAdminClients() {
                   onChange={(e) => editing ? setEditing({ ...editing, subscriptionStatus: e.target.value }) : setForm({ ...form, subscriptionStatus: e.target.value })}>
                   <option value="trial">Trial</option>
                   <option value="active">Ativo</option>
+                  <option value="blocked">Bloqueado</option>
+                  <option value="suspended">Suspenso</option>
                   <option value="past_due">Inadimplente</option>
                   <option value="canceled">Cancelado</option>
                 </select>
@@ -161,6 +196,127 @@ export default function SuperAdminClients() {
         )}
       </div>
     </AppLayout>
+  );
+}
+
+function AccessModal({ client, onClose }: any) {
+  const usersQ = trpc.superAdmin.listCompanyUsersForAccess.useQuery({ companyId: client.id });
+  const blockUser = trpc.superAdmin.setUserAccess.useMutation({
+    onSuccess: () => { toast.success("Acesso do usuário atualizado"); usersQ.refetch(); },
+    onError: (e) => toast.error(e.message),
+  });
+  const resetPassword = trpc.superAdmin.resetManagedUserPassword.useMutation({
+    onSuccess: () => toast.success("Senha temporária definida"),
+    onError: (e) => toast.error(e.message),
+  });
+  const users = (usersQ.data ?? []) as any[];
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-lg p-6 max-w-5xl w-full space-y-3 max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <div className="flex justify-between items-center">
+          <h2 className="text-lg font-bold flex items-center gap-2"><Users size={18} className="text-primary" /> Gestão de acessos — {client.name}</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600">✕</button>
+        </div>
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+          O bloqueio individual impede login mesmo com senha válida. O reset define uma senha temporária informada pelo Super Admin; compartilhe por canal seguro e registre o motivo.
+        </div>
+        <table className="w-full text-xs">
+          <thead className="bg-slate-50">
+            <tr>
+              <th className="text-left p-2">Usuário</th>
+              <th className="text-left p-2">E-mail</th>
+              <th className="p-2">Perfil</th>
+              <th className="p-2">Senha</th>
+              <th className="p-2">Status</th>
+              <th className="text-right p-2">Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            {users.map((u: any) => {
+              const blocked = !u.isActive;
+              return (
+                <tr key={u.id} className="border-t">
+                  <td className="p-2 font-medium">{u.name || "—"}</td>
+                  <td className="p-2">{u.email || "—"}</td>
+                  <td className="p-2 text-center">{u.role || "user"}</td>
+                  <td className="p-2 text-center">{u.hasSetPassword ? "Configurada" : "Pendente"}</td>
+                  <td className="p-2 text-center">
+                    <span className={`inline-flex rounded-full px-2 py-0.5 font-semibold ${blocked ? "bg-red-100 text-red-700" : "bg-emerald-100 text-emerald-700"}`}>
+                      {blocked ? "Bloqueado" : "Ativo"}
+                    </span>
+                  </td>
+                  <td className="p-2 text-right whitespace-nowrap">
+                    <button
+                      onClick={() => {
+                        const reason = prompt(blocked ? "Motivo do desbloqueio do usuário" : "Motivo do bloqueio do usuário");
+                        if (reason === null) return;
+                        blockUser.mutate({ userId: u.id, blocked: !blocked, reason });
+                      }}
+                      className={`mr-2 inline-flex items-center gap-1 rounded px-2 py-1 ${blocked ? "bg-emerald-100 text-emerald-700 hover:bg-emerald-200" : "bg-red-100 text-red-700 hover:bg-red-200"}`}
+                    >
+                      {blocked ? <Unlock size={12} /> : <Lock size={12} />} {blocked ? "Desbloquear" : "Bloquear"}
+                    </button>
+                    <button
+                      onClick={() => {
+                        const temporaryPassword = prompt("Informe a nova senha temporária (mínimo 8 caracteres)");
+                        if (!temporaryPassword) return;
+                        if (temporaryPassword.length < 8) return toast.error("Senha temporária deve ter ao menos 8 caracteres");
+                        const reason = prompt("Motivo do reset de senha") || "";
+                        resetPassword.mutate({ userId: u.id, temporaryPassword, reason });
+                      }}
+                      className="inline-flex items-center gap-1 rounded bg-primary/10 px-2 py-1 text-primary hover:bg-primary/20"
+                    >
+                      <KeyRound size={12} /> Resetar senha
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+            {users.length === 0 && <tr><td colSpan={6} className="p-6 text-center text-slate-400">Nenhum usuário vinculado a esta empresa.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function SecurityLogsModal({ onClose }: any) {
+  const q = trpc.superAdmin.listAccessSecurityLogs.useQuery({ limit: 150 });
+  const rows = (q.data ?? []) as any[];
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-lg p-6 max-w-5xl w-full space-y-3 max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <div className="flex justify-between items-center">
+          <h2 className="text-lg font-bold flex items-center gap-2"><Lock size={18} className="text-primary" /> Auditoria de segurança e credenciais</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600">✕</button>
+        </div>
+        <table className="w-full text-xs">
+          <thead className="bg-slate-50">
+            <tr>
+              <th className="text-left p-2">Data</th>
+              <th className="text-left p-2">Operador</th>
+              <th className="text-left p-2">Ação</th>
+              <th className="text-left p-2">Empresa / White Label</th>
+              <th className="text-left p-2">Usuário afetado</th>
+              <th className="text-left p-2">Justificativa</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r: any) => (
+              <tr key={r.id} className="border-t">
+                <td className="p-2 whitespace-nowrap">{new Date(r.created_at).toLocaleString("pt-BR")}</td>
+                <td className="p-2">{r.operator_email || "—"}</td>
+                <td className="p-2 font-semibold">{r.action}</td>
+                <td className="p-2">{r.company_name || r.white_label_name || "—"}</td>
+                <td className="p-2">{r.target_email || "—"}</td>
+                <td className="p-2 text-slate-600">{r.reason || "—"}</td>
+              </tr>
+            ))}
+            {rows.length === 0 && <tr><td colSpan={6} className="p-6 text-center text-slate-400">Nenhuma ação de segurança registrada ainda.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 

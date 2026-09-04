@@ -644,16 +644,20 @@ function ResultDialog({ row, close, saved }: any) {
   const [form, setForm] = useState<any>({
     resultType: "qualitativo",
     performedAt: "",
+    methodName: "",
     resultSummary: "",
     referenceText: "",
+    parameters: [],
   });
   useEffect(() => {
     setFile(null);
     setForm({
       resultType: "qualitativo",
       performedAt: inputDateTime(row?.performed_at),
+      methodName: "",
       resultSummary: "",
       referenceText: "",
+      parameters: [],
     });
   }, [row?.id]);
   const ocr = trpc.clinicPortal.analyzeResultOcr.useMutation({
@@ -664,6 +668,7 @@ function ResultDialog({ row, close, saved }: any) {
         performedAt: data.performedDate
           ? `${data.performedDate}T12:00`
           : f.performedAt,
+        methodName: data.methodName || "",
         resultSummary: data.resultSummary || "",
         referenceText: data.referenceText || "",
         parameters: Array.isArray(data.parameters) ? data.parameters : [],
@@ -697,6 +702,7 @@ function ResultDialog({ row, close, saved }: any) {
       orderId: Number(row.id),
       performedAt: form.performedAt,
       resultType: form.resultType,
+      methodName: form.methodName || undefined,
       resultSummary: form.resultSummary || undefined,
       referenceText: form.referenceText || undefined,
       parameters: form.parameters || [],
@@ -748,6 +754,15 @@ function ResultDialog({ row, close, saved }: any) {
                 </select>
               </label>
             </div>
+            <label className="block text-xs font-semibold">
+              Método laboratorial
+              <Input
+                className="mt-1"
+                value={form.methodName}
+                onChange={e => setForm({ ...form, methodName: e.target.value })}
+                placeholder="Ex.: impedância, citometria, espectrofotometria"
+              />
+            </label>
             <label className="block text-xs font-semibold">
               Documento original
               <Input

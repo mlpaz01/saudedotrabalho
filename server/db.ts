@@ -2693,6 +2693,121 @@ export async function listAllCompaniesWithStats() {
 
 }
 
+let _accessSecurityAuditReady = false;
+
+async function ensureAccessSecurityAuditTable(db: any) {
+  if (_accessSecurityAuditReady || !db) return;
+  await db.execute(sql.raw(`CREATE TABLE IF NOT EXISTS access_security_audit_logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    operator_user_id INT NULL,
+    operator_email VARCHAR(320) NULL,
+    company_id INT NULL,
+    white_label_partner_id INT NULL,
+    target_user_id INT NULL,
+    target_email VARCHAR(320) NULL,
+    action VARCHAR(80) NOT NULL,
+    reason TEXT NULL,
+    details_json JSON NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_access_security_company (company_id, created_at),
+    INDEX idx_access_security_user (target_user_id, created_at),
+    INDEX idx_access_security_action (action, created_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`));
+  _accessSecurityAuditReady = true;
+}
+
+function resultRows<T = any>(result: any): T[] {
+  if (Array.isArray(result)) {
+    if (Array.isArray(result[0])) return result[0] as T[];
+    return result as T[];
+  }
+  return [];
+}
+
+function isBlockedStatus(status: unknown): boolean {
+  return ["blocked", "bloqueado", "suspended", "suspenso"].includes(
+    String(status ?? "").trim().toLowerCase()
+  );
+}
+
+export async function getAccessBlockForUser(userId: number): Promise<{ blocked: boolean; reason: string } | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const simpleQuery = async () => {
+    const r: any = await db.execute(sql`
+      SELECT u.id, u.email, COALESCE(u.is_active,1) AS user_is_active,
+             c.id AS company_id, c.name AS company_name, COALESCE(c.is_active,1) AS company_is_active,
+             c.subscription_status,
+             ce.isActive AS corporate_email_is_active
+        FROM users u
+        LEFT JOIN companies c ON c.id = u.company_id
+        LEFT JOIN corporate_emails ce ON ce.userId = u.id OR (LOWER(ce.email) = LOWER(u.email) AND (ce.company_id = u.company_id OR ce.company_id IS NULL))
+       WHERE u.id=${userId}
+       LIMIT 1`);
+    return resultRows<any>(r)[0] || null;
+  };
+
+  let row: any = null;
+  try {
+    const r: any = await db.execute(sql`
+      SELECT u.id, u.email, COALESCE(u.is_active,1) AS user_is_active,
+             c.id AS company_id, c.name AS company_name, COALESCE(c.is_active,1) AS company_is_active,
+             c.subscription_status,
+             ce.isActive AS corporate_email_is_active,
+             w.id AS white_label_partner_id, w.legal_name AS white_label_name, w.status AS white_label_status
+        FROM users u
+        LEFT JOIN companies c ON c.id = u.company_id
+        LEFT JOIN corporate_emails ce ON ce.userId = u.id OR (LOWER(ce.email) = LOWER(u.email) AND (ce.company_id = u.company_id OR ce.company_id IS NULL))
+        LEFT JOIN white_label_company_links l ON l.company_id = c.id AND l.is_active = 1
+        LEFT JOIN white_label_partners w ON w.id = COALESCE(c.white_label_partner_id, l.partner_id)
+       WHERE u.id=${userId}
+       LIMIT 1`);
+    row = resultRows<any>(r)[0] || null;
+  } catch (_) {
+    row = await simpleQuery();
+  }
+
+  if (!row) return { blocked: true, reason: "Usuário não encontrado." };
+  if (Number(row.user_is_active ?? 1) !== 1) {
+    return { blocked: true, reason: "Este usuário foi bloqueado pelo Super Admin." };
+  }
+  if (row.corporate_email_is_active != null && Number(row.corporate_email_is_active) !== 1) {
+    return { blocked: true, reason: "Este acesso corporativo foi bloqueado pelo Super Admin." };
+  }
+  if (row.company_id && Number(row.company_is_active ?? 1) !== 1) {
+    return { blocked: true, reason: `A empresa ${row.company_name || ""} está com acesso bloqueado pelo Super Admin.` };
+  }
+  if (isBlockedStatus(row.subscription_status)) {
+    return { blocked: true, reason: `A empresa ${row.company_name || ""} está com acesso ${String(row.subscription_status)}.` };
+  }
+  if (isBlockedStatus(row.white_label_status)) {
+    return { blocked: true, reason: `A White Label ${row.white_label_name || ""} está com acesso bloqueado pelo Super Admin.` };
+  }
+  return null;
+}
+
+export async function logAccessSecurityAction(input: {
+  operatorUserId?: number | null;
+  operatorEmail?: string | null;
+  companyId?: number | null;
+  whiteLabelPartnerId?: number | null;
+  targetUserId?: number | null;
+  targetEmail?: string | null;
+  action: string;
+  reason?: string | null;
+  details?: unknown;
+}) {
+  const db = await getDb();
+  if (!db) return;
+  await ensureAccessSecurityAuditTable(db);
+  await db.execute(sql`
+    INSERT INTO access_security_audit_logs
+      (operator_user_id, operator_email, company_id, white_label_partner_id, target_user_id, target_email, action, reason, details_json)
+    VALUES
+      (${input.operatorUserId ?? null}, ${input.operatorEmail ?? null}, ${input.companyId ?? null}, ${input.whiteLabelPartnerId ?? null},
+       ${input.targetUserId ?? null}, ${input.targetEmail ?? null}, ${input.action}, ${input.reason ?? null}, ${JSON.stringify(input.details ?? {})})`);
+}
+
 
 
 export async function getSuperAdminOverview() {
@@ -4193,6 +4308,7 @@ export async function getHierarchyTreeForCompany(companyId: number | null, opts:
                     u.company_id AS companyId, u.branch_id AS branchId, u.sector_id AS sectorId,
                     u.position AS position, u.cpf AS cpf,
                     u.employee_registration AS employeeRegistration,
+                    u.sex AS sex, u.birth_date AS birthDate,
                     u.whatsapp_e164 AS whatsapp,
                     COALESCE(u.employment_status, 'active') AS employmentStatus,
                     u.counts_as_employee AS countsAsEmployee,

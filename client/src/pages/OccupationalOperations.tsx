@@ -26,11 +26,14 @@ import {
   History,
   Microscope,
   Plus,
+  RefreshCw,
   Search,
   Send,
+  Settings2,
   ShieldCheck,
   Sparkles,
   Stethoscope,
+  Trash2,
   UserRoundCheck,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -113,6 +116,54 @@ function downloadData(dataBase64: string, fileName: string) {
   anchor.click();
 }
 
+function downloadCsv(rows: any[], fileName: string) {
+  const escaped = (value: unknown) =>
+    `"${String(value ?? "").replaceAll('"', '""')}"`;
+  const content = rows.map(row => row.map(escaped).join(";")).join("\r\n");
+  const anchor = document.createElement("a");
+  anchor.href = URL.createObjectURL(
+    new Blob(["\uFEFF", content], { type: "text/csv;charset=utf-8" })
+  );
+  anchor.download = fileName;
+  anchor.click();
+  URL.revokeObjectURL(anchor.href);
+}
+
+function screeningOf(row: any) {
+  if (row?.screening && typeof row.screening === "object") return row.screening;
+  try {
+    return JSON.parse(String(row?.automated_screening_json || "null"));
+  } catch {
+    return null;
+  }
+}
+
+function screeningLabel(value: unknown) {
+  const labels: Record<string, string> = {
+    normal: "Sem alteração detectada",
+    alterado: "Possível alteração",
+    critico: "Parâmetro crítico",
+    parcial: "Triagem parcial",
+    nao_classificado: "Sem parâmetro comparável",
+    requer_avaliacao_medica: "Aguardando avaliação médica",
+    aguardando_revisao: "Aguardando revisão",
+    revisado: "Revisado",
+  };
+  return (
+    labels[String(value || "")] ||
+    String(value || "Não processado").replaceAll("_", " ")
+  );
+}
+
+function screeningTone(value: unknown) {
+  const status = String(value || "");
+  if (status === "critico") return "bg-red-100 text-red-800";
+  if (status === "alterado") return "bg-orange-100 text-orange-800";
+  if (status === "normal" || status === "revisado")
+    return "bg-emerald-100 text-emerald-800";
+  return "bg-amber-100 text-amber-800";
+}
+
 function dateOnly(value: any) {
   if (!value) return "-";
   const text = String(value).slice(0, 10);
@@ -136,8 +187,11 @@ export default function OccupationalOperations() {
   const utils = trpc.useUtils();
   const [tab, setTab] = useState<Tab>("painel");
   useEffect(() => {
-    const requested = new URLSearchParams(window.location.search).get("tab") as Tab | null;
-    if (requested && tabs.some(item => item.id === requested)) setTab(requested);
+    const requested = new URLSearchParams(window.location.search).get(
+      "tab"
+    ) as Tab | null;
+    if (requested && tabs.some(item => item.id === requested))
+      setTab(requested);
   }, []);
   const [workerQuery, setWorkerQuery] = useState("");
   const [orderOpen, setOrderOpen] = useState(false);
@@ -150,6 +204,7 @@ export default function OccupationalOperations() {
   const [ocrOpen, setOcrOpen] = useState(false);
   const [examOpen, setExamOpen] = useState(false);
   const [examEditing, setExamEditing] = useState<any>(null);
+  const [referenceExam, setReferenceExam] = useState<any>(null);
   const [providerOpen, setProviderOpen] = useState(false);
   const [providerEditing, setProviderEditing] = useState<any>(null);
   const [providerAccess, setProviderAccess] = useState<any>(null);
@@ -167,6 +222,19 @@ export default function OccupationalOperations() {
   });
   const [catOpen, setCatOpen] = useState(false);
   const [osOpen, setOsOpen] = useState(false);
+  const [alteredFilters, setAlteredFilters] = useState<{
+    periodStart: string;
+    periodEnd: string;
+    examId: number;
+    query: string;
+    status: "todos" | "critico" | "alterado" | "confirmado" | "pendente";
+  }>({
+    periodStart: "",
+    periodEnd: "",
+    examId: 0,
+    query: "",
+    status: "todos",
+  });
 
   const dashboardQ = trpc.occupationalLifecycle.dashboard.useQuery();
   const workersQ = trpc.occupationalLifecycle.listWorkers.useQuery({
@@ -177,6 +245,17 @@ export default function OccupationalOperations() {
   const ordersQ = trpc.occupationalLifecycle.listExamOrders.useQuery();
   const populationQ = trpc.occupationalLifecycle.listExamPopulation.useQuery();
   const resultsQ = trpc.occupationalLifecycle.listExamResults.useQuery();
+  const alteredResultsQ =
+    trpc.occupationalLifecycle.listAlteredExamResults.useQuery(
+      {
+        periodStart: alteredFilters.periodStart || undefined,
+        periodEnd: alteredFilters.periodEnd || undefined,
+        examId: alteredFilters.examId || undefined,
+        query: alteredFilters.query || undefined,
+        status: alteredFilters.status,
+      },
+      { enabled: tab === "resultados" }
+    );
   const asosQ = trpc.occupationalLifecycle.listAsos.useQuery();
   const catsQ = trpc.occupationalLifecycle.listCats.useQuery();
   const workOrdersQ = trpc.occupationalLifecycle.listWorkOrders.useQuery();
@@ -206,6 +285,7 @@ export default function OccupationalOperations() {
       utils.occupationalLifecycle.listExamOrders.invalidate(),
       utils.occupationalLifecycle.listExamPopulation.invalidate(),
       utils.occupationalLifecycle.listExamResults.invalidate(),
+      utils.occupationalLifecycle.listAlteredExamResults.invalidate(),
       utils.occupationalLifecycle.listExamCatalog.invalidate(),
       utils.occupationalLifecycle.listProviders.invalidate(),
       utils.occupationalLifecycle.listAsos.invalidate(),
@@ -304,6 +384,24 @@ export default function OccupationalOperations() {
     },
     onError: error => toast.error(error.message),
   });
+  const resultReevaluate =
+    trpc.occupationalLifecycle.reevaluateExamResult.useMutation({
+      onSuccess: async result => {
+        await refresh();
+        setReview((current: any) =>
+          current
+            ? {
+                ...current,
+                automated_screening_status:
+                  result.screening?.status || "nao_classificado",
+                automated_screening_json: JSON.stringify(result.screening),
+              }
+            : current
+        );
+        toast.success("Triagem refeita com a parametrização vigente.");
+      },
+      onError: error => toast.error(error.message),
+    });
   const resultDocument =
     trpc.occupationalLifecycle.getExamResultDocument.useMutation({
       onSuccess: result => downloadData(result.dataBase64, result.fileName),
@@ -506,6 +604,7 @@ export default function OccupationalOperations() {
     [examPopulation]
   );
   const results = (resultsQ.data || []) as any[];
+  const alteredResults = (alteredResultsQ.data || []) as any[];
   const dashboard = dashboardQ.data as any;
 
   return (
@@ -616,319 +715,311 @@ export default function OccupationalOperations() {
         {tab === "requisicoes" && (
           <div className="space-y-4">
             <Panel
-                title="Programação ocupacional"
-                subtitle="População derivada de colaborador ativo, GSE atual, PGR, PCMSO vigente e matriz médica. Consultas clínicas são procedimentos independentes."
-              >
-                <div className="mb-3 grid gap-2 md:grid-cols-3 xl:grid-cols-6">
-                  <Input
-                    value={populationFilters.search}
-                    onChange={event =>
-                      setPopulationFilters(current => ({
-                        ...current,
-                        search: event.target.value,
-                      }))
-                    }
-                    placeholder="Buscar trabalhador"
-                  />
-                  <select
-                    className="h-10 border bg-white px-2 text-sm"
-                    value={populationFilters.branch}
-                    onChange={event =>
-                      setPopulationFilters(current => ({
-                        ...current,
-                        branch: event.target.value,
-                      }))
-                    }
-                  >
-                    <option value="">Todas as filiais</option>
-                    {populationBranches.map((row: any) => (
-                      <option key={row.id} value={row.id}>
-                        {row.name}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    className="h-10 border bg-white px-2 text-sm"
-                    value={populationFilters.sector}
-                    onChange={event =>
-                      setPopulationFilters(current => ({
-                        ...current,
-                        sector: event.target.value,
-                      }))
-                    }
-                  >
-                    <option value="">Todos os setores</option>
-                    {populationSectors.map((row: any) => (
-                      <option key={row.id} value={row.id}>
-                        {row.name}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    className="h-10 border bg-white px-2 text-sm"
-                    value={populationFilters.gse}
-                    onChange={event =>
-                      setPopulationFilters(current => ({
-                        ...current,
-                        gse: event.target.value,
-                      }))
-                    }
-                  >
-                    <option value="">Todos os GSEs</option>
-                    {populationGses.map((row: any) => (
-                      <option key={row.id} value={row.id}>
-                        {row.name}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    className="h-10 border bg-white px-2 text-sm"
-                    value={populationFilters.exam}
-                    onChange={event =>
-                      setPopulationFilters(current => ({
-                        ...current,
-                        exam: event.target.value,
-                      }))
-                    }
-                  >
-                    <option value="">Todos os procedimentos</option>
-                    {exams
-                      .filter(row => Number(row.is_active))
-                      .map(row => (
-                        <option key={row.id} value={row.id}>
-                          {row.name}
-                        </option>
-                      ))}
-                  </select>
-                  <select
-                    className="h-10 border bg-white px-2 text-sm"
-                    value={populationFilters.status}
-                    onChange={event =>
-                      setPopulationFilters(current => ({
-                        ...current,
-                        status: event.target.value,
-                      }))
-                    }
-                  >
-                    <option value="todos">Todas as situações</option>
-                    <option value="requisicao_pendente">
-                      Requisição pendente
+              title="Programação ocupacional"
+              subtitle="População derivada de colaborador ativo, GSE atual, PGR, PCMSO vigente e matriz médica. Consultas clínicas são procedimentos independentes."
+            >
+              <div className="mb-3 grid gap-2 md:grid-cols-3 xl:grid-cols-6">
+                <Input
+                  value={populationFilters.search}
+                  onChange={event =>
+                    setPopulationFilters(current => ({
+                      ...current,
+                      search: event.target.value,
+                    }))
+                  }
+                  placeholder="Buscar trabalhador"
+                />
+                <select
+                  className="h-10 border bg-white px-2 text-sm"
+                  value={populationFilters.branch}
+                  onChange={event =>
+                    setPopulationFilters(current => ({
+                      ...current,
+                      branch: event.target.value,
+                    }))
+                  }
+                >
+                  <option value="">Todas as filiais</option>
+                  {populationBranches.map((row: any) => (
+                    <option key={row.id} value={row.id}>
+                      {row.name}
                     </option>
-                    <option value="pendente">Pendente</option>
-                    <option value="enviada">Enviada</option>
-                    <option value="realizada">Realizada</option>
-                    <option value="vencida">Vencida</option>
-                    <option value="resultado_recebido">
-                      Resultado recebido
+                  ))}
+                </select>
+                <select
+                  className="h-10 border bg-white px-2 text-sm"
+                  value={populationFilters.sector}
+                  onChange={event =>
+                    setPopulationFilters(current => ({
+                      ...current,
+                      sector: event.target.value,
+                    }))
+                  }
+                >
+                  <option value="">Todos os setores</option>
+                  {populationSectors.map((row: any) => (
+                    <option key={row.id} value={row.id}>
+                      {row.name}
                     </option>
-                  </select>
+                  ))}
+                </select>
+                <select
+                  className="h-10 border bg-white px-2 text-sm"
+                  value={populationFilters.gse}
+                  onChange={event =>
+                    setPopulationFilters(current => ({
+                      ...current,
+                      gse: event.target.value,
+                    }))
+                  }
+                >
+                  <option value="">Todos os GSEs</option>
+                  {populationGses.map((row: any) => (
+                    <option key={row.id} value={row.id}>
+                      {row.name}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="h-10 border bg-white px-2 text-sm"
+                  value={populationFilters.exam}
+                  onChange={event =>
+                    setPopulationFilters(current => ({
+                      ...current,
+                      exam: event.target.value,
+                    }))
+                  }
+                >
+                  <option value="">Todos os procedimentos</option>
+                  {exams
+                    .filter(row => Number(row.is_active))
+                    .map(row => (
+                      <option key={row.id} value={row.id}>
+                        {row.name}
+                      </option>
+                    ))}
+                </select>
+                <select
+                  className="h-10 border bg-white px-2 text-sm"
+                  value={populationFilters.status}
+                  onChange={event =>
+                    setPopulationFilters(current => ({
+                      ...current,
+                      status: event.target.value,
+                    }))
+                  }
+                >
+                  <option value="todos">Todas as situações</option>
+                  <option value="requisicao_pendente">
+                    Requisição pendente
+                  </option>
+                  <option value="pendente">Pendente</option>
+                  <option value="enviada">Enviada</option>
+                  <option value="realizada">Realizada</option>
+                  <option value="vencida">Vencida</option>
+                  <option value="resultado_recebido">Resultado recebido</option>
+                </select>
+              </div>
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                <div className="text-sm text-slate-600">
+                  <b>{filteredPopulation.length}</b> de {examPopulation.length}{" "}
+                  vínculo(s) ·{" "}
+                  <b>
+                    {
+                      filteredPopulation.filter(
+                        row => row.operational_status === "requisicao_pendente"
+                      ).length
+                    }
+                  </b>{" "}
+                  aguardam requisição
                 </div>
-                <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                  <div className="text-sm text-slate-600">
-                    <b>{filteredPopulation.length}</b> de{" "}
-                    {examPopulation.length} vínculo(s) ·{" "}
-                    <b>
-                      {
-                        filteredPopulation.filter(
-                          row =>
-                            row.operational_status === "requisicao_pendente"
-                        ).length
-                      }
-                    </b>{" "}
-                    aguardam requisição
-                  </div>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      disabled={programmingPdf.isPending}
-                      onClick={() =>
-                        programmingPdf.mutate({
-                          branchId: populationFilters.branch
-                            ? Number(populationFilters.branch)
-                            : undefined,
-                          sectorId: populationFilters.sector
-                            ? Number(populationFilters.sector)
-                            : undefined,
-                          gseId: populationFilters.gse
-                            ? Number(populationFilters.gse)
-                            : undefined,
-                          examId: populationFilters.exam
-                            ? Number(populationFilters.exam)
-                            : undefined,
-                          status: populationFilters.status as any,
-                        })
-                      }
-                    >
-                      <Download size={14} className="mr-2" /> Relatório PDF
-                    </Button>
-                    <Button
-                      disabled={!selectedPopulation.length}
-                      onClick={() => setPcmsoOrderOpen(true)}
-                    >
-                      <FilePlus2 size={14} className="mr-2" /> Gerar pelo PCMSO
-                      ({selectedPopulation.length})
-                    </Button>
-                  </div>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    disabled={programmingPdf.isPending}
+                    onClick={() =>
+                      programmingPdf.mutate({
+                        branchId: populationFilters.branch
+                          ? Number(populationFilters.branch)
+                          : undefined,
+                        sectorId: populationFilters.sector
+                          ? Number(populationFilters.sector)
+                          : undefined,
+                        gseId: populationFilters.gse
+                          ? Number(populationFilters.gse)
+                          : undefined,
+                        examId: populationFilters.exam
+                          ? Number(populationFilters.exam)
+                          : undefined,
+                        status: populationFilters.status as any,
+                      })
+                    }
+                  >
+                    <Download size={14} className="mr-2" /> Relatório PDF
+                  </Button>
+                  <Button
+                    disabled={!selectedPopulation.length}
+                    onClick={() => setPcmsoOrderOpen(true)}
+                  >
+                    <FilePlus2 size={14} className="mr-2" /> Gerar pelo PCMSO (
+                    {selectedPopulation.length})
+                  </Button>
                 </div>
-                <div className="max-h-96 overflow-auto border">
-                  <table className="w-full min-w-[1250px] text-sm">
-                    <thead className="sticky top-0 bg-slate-50 text-xs text-slate-600">
-                      <tr>
-                        <th className="w-10 p-2">
-                          <input
-                            type="checkbox"
-                            checked={
-                              Boolean(filteredPopulation.length) &&
-                              selectedPopulation.length === filteredPopulation.length
-                            }
-                            onChange={event =>
-                              setSelectedPopulation(
-                                event.target.checked
-                                  ? filteredPopulation.map(row => ({
-                                        collaboratorId: Number(
-                                          row.collaborator_id
-                                        ),
-                                        monitoringId: Number(row.monitoring_id),
-                                      }))
-                                  : []
-                              )
-                            }
-                          />
-                        </th>
-                        <th className="p-2 text-left">Trabalhador</th>
-                        <th className="p-2 text-left">Filial / setor</th>
-                        <th className="p-2 text-left">GSE</th>
-                        <th className="p-2 text-left">PGR / PCMSO</th>
-                        <th className="p-2 text-left">Procedimento</th>
-                        <th className="p-2 text-left">Prestadores aptos</th>
-                        <th className="p-2 text-left">Periodicidade</th>
-                        <th className="p-2 text-left">Situação</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredPopulation.map(row => {
-                        const key = `${row.collaborator_id}:${row.monitoring_id}`;
-                        const checked = selectedPopulation.some(
-                          item =>
-                            `${item.collaboratorId}:${item.monitoringId}` ===
-                            key
-                        );
-                        return (
-                          <tr key={key} className="border-t">
-                            <td className="p-2 text-center">
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={() =>
-                                  setSelectedPopulation(current =>
-                                    checked
-                                      ? current.filter(
-                                          item =>
-                                            `${item.collaboratorId}:${item.monitoringId}` !==
-                                            key
-                                        )
-                                      : [
-                                          ...current,
-                                          {
-                                            collaboratorId: Number(
-                                              row.collaborator_id
-                                            ),
-                                            monitoringId: Number(
-                                              row.monitoring_id
-                                            ),
-                                          },
-                                        ]
-                                  )
-                                }
-                              />
-                            </td>
-                            <td className="p-2 font-medium">
-                              {row.collaborator_name}
-                              <br />
-                              <span className="text-xs text-slate-500">
-                                {row.position || "Sem cargo"}
-                              </span>
-                            </td>
-                            <td className="p-2">
-                              {row.branch_name || "-"}
-                              <br />
-                              <span className="text-xs text-slate-500">
-                                {row.sector_name || "-"}
-                              </span>
-                            </td>
-                            <td className="p-2">
-                              {row.gse_code} · {row.gse_name}
-                            </td>
-                            <td className="p-2">
-                              {row.pgr_title || "PGR não identificado"}
-                              <br />
-                              <span className="text-xs text-slate-500">
-                                {row.pcmso_title}
-                              </span>
-                            </td>
-                            <td className="p-2">
-                              <Badge
-                                className={`mb-1 rounded-sm ${row.procedure_kind === "consulta_clinica" ? "bg-sky-100 text-sky-800" : "bg-violet-100 text-violet-800"}`}
-                              >
-                                {row.procedure_kind === "consulta_clinica"
-                                  ? "Consulta clínica"
-                                  : "Exame complementar"}
-                              </Badge>
-                              <br />
-                              <b>{row.exam_name}</b>
-                            </td>
-                            <td className="p-2 text-xs">
-                              {row.recommendedProviders?.join(", ") ||
-                                "A definir"}
-                            </td>
-                            <td className="p-2">
-                              {row.periodicity || "Definida pelo médico"}
-                            </td>
-                            <td className="p-2">
-                              <Badge
-                                className={`rounded-sm ${statusTone(row.operational_status)}`}
-                              >
-                                {String(row.operational_status).replaceAll(
-                                  "_",
-                                  " "
-                                )}
-                              </Badge>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                  {!filteredPopulation.length && (
-                    <p className="p-6 text-center text-sm text-slate-500">
-                      Nenhum procedimento ocupacional encontrado para os filtros
-                      informados.
-                    </p>
-                  )}
-                </div>
-              </Panel>
+              </div>
+              <div className="max-h-96 overflow-auto border">
+                <table className="w-full min-w-[1250px] text-sm">
+                  <thead className="sticky top-0 bg-slate-50 text-xs text-slate-600">
+                    <tr>
+                      <th className="w-10 p-2">
+                        <input
+                          type="checkbox"
+                          checked={
+                            Boolean(filteredPopulation.length) &&
+                            selectedPopulation.length ===
+                              filteredPopulation.length
+                          }
+                          onChange={event =>
+                            setSelectedPopulation(
+                              event.target.checked
+                                ? filteredPopulation.map(row => ({
+                                    collaboratorId: Number(row.collaborator_id),
+                                    monitoringId: Number(row.monitoring_id),
+                                  }))
+                                : []
+                            )
+                          }
+                        />
+                      </th>
+                      <th className="p-2 text-left">Trabalhador</th>
+                      <th className="p-2 text-left">Filial / setor</th>
+                      <th className="p-2 text-left">GSE</th>
+                      <th className="p-2 text-left">PGR / PCMSO</th>
+                      <th className="p-2 text-left">Procedimento</th>
+                      <th className="p-2 text-left">Prestadores aptos</th>
+                      <th className="p-2 text-left">Periodicidade</th>
+                      <th className="p-2 text-left">Situação</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredPopulation.map(row => {
+                      const key = `${row.collaborator_id}:${row.monitoring_id}`;
+                      const checked = selectedPopulation.some(
+                        item =>
+                          `${item.collaboratorId}:${item.monitoringId}` === key
+                      );
+                      return (
+                        <tr key={key} className="border-t">
+                          <td className="p-2 text-center">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() =>
+                                setSelectedPopulation(current =>
+                                  checked
+                                    ? current.filter(
+                                        item =>
+                                          `${item.collaboratorId}:${item.monitoringId}` !==
+                                          key
+                                      )
+                                    : [
+                                        ...current,
+                                        {
+                                          collaboratorId: Number(
+                                            row.collaborator_id
+                                          ),
+                                          monitoringId: Number(
+                                            row.monitoring_id
+                                          ),
+                                        },
+                                      ]
+                                )
+                              }
+                            />
+                          </td>
+                          <td className="p-2 font-medium">
+                            {row.collaborator_name}
+                            <br />
+                            <span className="text-xs text-slate-500">
+                              {row.position || "Sem cargo"}
+                            </span>
+                          </td>
+                          <td className="p-2">
+                            {row.branch_name || "-"}
+                            <br />
+                            <span className="text-xs text-slate-500">
+                              {row.sector_name || "-"}
+                            </span>
+                          </td>
+                          <td className="p-2">
+                            {row.gse_code} · {row.gse_name}
+                          </td>
+                          <td className="p-2">
+                            {row.pgr_title || "PGR não identificado"}
+                            <br />
+                            <span className="text-xs text-slate-500">
+                              {row.pcmso_title}
+                            </span>
+                          </td>
+                          <td className="p-2">
+                            <Badge
+                              className={`mb-1 rounded-sm ${row.procedure_kind === "consulta_clinica" ? "bg-sky-100 text-sky-800" : "bg-violet-100 text-violet-800"}`}
+                            >
+                              {row.procedure_kind === "consulta_clinica"
+                                ? "Consulta clínica"
+                                : "Exame complementar"}
+                            </Badge>
+                            <br />
+                            <b>{row.exam_name}</b>
+                          </td>
+                          <td className="p-2 text-xs">
+                            {row.recommendedProviders?.join(", ") ||
+                              "A definir"}
+                          </td>
+                          <td className="p-2">
+                            {row.periodicity || "Definida pelo médico"}
+                          </td>
+                          <td className="p-2">
+                            <Badge
+                              className={`rounded-sm ${statusTone(row.operational_status)}`}
+                            >
+                              {String(row.operational_status).replaceAll(
+                                "_",
+                                " "
+                              )}
+                            </Badge>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                {!filteredPopulation.length && (
+                  <p className="p-6 text-center text-sm text-slate-500">
+                    Nenhum procedimento ocupacional encontrado para os filtros
+                    informados.
+                  </p>
+                )}
+              </div>
+            </Panel>
             <Panel
               title="Requisições de exames ocupacionais"
               subtitle="Cada emissão possui número, validade, prestador, local e histórico próprios."
               action={
                 <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      disabled={!selectedOrders.length}
-                      onClick={() =>
-                        generateGroupedPdf.mutate({ ids: selectedOrders })
-                      }
-                    >
-                      <Download size={14} className="mr-2" /> PDF agrupado (
-                      {selectedOrders.length})
-                    </Button>
-                    <Button
-                      variant="outline"
-                      onClick={() => setOrderOpen(true)}
-                    >
-                      <Plus size={14} className="mr-2" /> Exceção manual
-                    </Button>
-                  </div>
+                  <Button
+                    variant="outline"
+                    disabled={!selectedOrders.length}
+                    onClick={() =>
+                      generateGroupedPdf.mutate({ ids: selectedOrders })
+                    }
+                  >
+                    <Download size={14} className="mr-2" /> PDF agrupado (
+                    {selectedOrders.length})
+                  </Button>
+                  <Button variant="outline" onClick={() => setOrderOpen(true)}>
+                    <Plus size={14} className="mr-2" /> Exceção manual
+                  </Button>
+                </div>
               }
             >
               <div className="overflow-auto border">
@@ -984,7 +1075,8 @@ export default function OccupationalOperations() {
                           </span>
                           <br />
                           <span className="text-xs text-slate-500">
-                            {row.version_label} · Exercício {row.exercise_year || "-"}
+                            {row.version_label} · Exercício{" "}
+                            {row.exercise_year || "-"}
                           </span>
                         </td>
                         <td className="p-2">
@@ -1120,11 +1212,18 @@ export default function OccupationalOperations() {
                 : "O SESMT recebe e vincula o documento. Conteúdo clínico detalhado fica restrito ao Médico."
             }
             action={
-              <div className="flex gap-2">
-                <Button variant="outline" onClick={() => setOcrOpen(true)}>
+              <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+                <Button
+                  className="w-full sm:w-auto"
+                  variant="outline"
+                  onClick={() => setOcrOpen(true)}
+                >
                   <Microscope size={14} className="mr-2" /> Importar lote OCR
                 </Button>
-                <Button onClick={() => setResultOpen(true)}>
+                <Button
+                  className="w-full sm:w-auto"
+                  onClick={() => setResultOpen(true)}
+                >
                   <FilePlus2 size={14} className="mr-2" /> Lançar resultado
                 </Button>
               </div>
@@ -1139,6 +1238,7 @@ export default function OccupationalOperations() {
                     <th className="p-2 text-left">Data</th>
                     <th className="p-2 text-left">Origem</th>
                     <th className="p-2 text-left">Identidade</th>
+                    <th className="p-2 text-left">Triagem</th>
                     <th className="p-2 text-left">Classificação</th>
                     <th className="p-2 text-left">Resumo</th>
                     {isDoctor && <th className="p-2"></th>}
@@ -1156,6 +1256,13 @@ export default function OccupationalOperations() {
                       </td>
                       <td className="p-2">{row.source}</td>
                       <td className="p-2">{row.identity_status}</td>
+                      <td className="p-2">
+                        <Badge
+                          className={`rounded-sm ${screeningTone(row.automated_screening_status)}`}
+                        >
+                          {screeningLabel(row.automated_screening_status)}
+                        </Badge>
+                      </td>
                       <td className="p-2">
                         <Badge
                           className={`rounded-sm ${statusTone(row.classification)}`}
@@ -1181,6 +1288,180 @@ export default function OccupationalOperations() {
                   ))}
                 </tbody>
               </table>
+            </div>
+            <div className="mt-5 border-t pt-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 className="font-semibold text-slate-900">
+                    Relatório de exames alterados
+                  </h3>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {isDoctor
+                      ? "Triagens automáticas e alterações confirmadas, sempre sujeitas à avaliação médica."
+                      : "Acompanhamento operacional sem exposição dos valores clínicos do trabalhador."}
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!alteredResults.length}
+                  onClick={() =>
+                    downloadCsv(
+                      [
+                        [
+                          "Funcionário",
+                          "CPF",
+                          "Exame",
+                          "Data",
+                          "Triagem",
+                          "Situação operacional",
+                          "Revisor médico",
+                        ],
+                        ...alteredResults.map(row => [
+                          row.collaborator_name,
+                          row.cpf,
+                          row.exam_name,
+                          dateOnly(row.performed_at),
+                          screeningLabel(row.automated_screening_status),
+                          String(row.operational_status || "").replaceAll(
+                            "_",
+                            " "
+                          ),
+                          row.reviewer_name || "",
+                        ]),
+                      ],
+                      "acompanhamento-exames-alterados.csv"
+                    )
+                  }
+                >
+                  <Download size={14} className="mr-2" /> Exportar CSV
+                </Button>
+              </div>
+              <div className="mt-3 grid gap-2 md:grid-cols-5">
+                <Input
+                  type="date"
+                  aria-label="Data inicial"
+                  value={alteredFilters.periodStart}
+                  onChange={event =>
+                    setAlteredFilters(current => ({
+                      ...current,
+                      periodStart: event.target.value,
+                    }))
+                  }
+                />
+                <Input
+                  type="date"
+                  aria-label="Data final"
+                  value={alteredFilters.periodEnd}
+                  onChange={event =>
+                    setAlteredFilters(current => ({
+                      ...current,
+                      periodEnd: event.target.value,
+                    }))
+                  }
+                />
+                <select
+                  className="h-10 border bg-white px-3 text-sm"
+                  value={alteredFilters.examId}
+                  onChange={event =>
+                    setAlteredFilters(current => ({
+                      ...current,
+                      examId: Number(event.target.value),
+                    }))
+                  }
+                >
+                  <option value={0}>Todos os exames</option>
+                  {exams.map(row => (
+                    <option key={row.id} value={row.id}>
+                      {row.name}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="h-10 border bg-white px-3 text-sm"
+                  value={alteredFilters.status}
+                  onChange={event =>
+                    setAlteredFilters(current => ({
+                      ...current,
+                      status: event.target.value as typeof current.status,
+                    }))
+                  }
+                >
+                  <option value="todos">Todos os alertas</option>
+                  <option value="critico">Parâmetro crítico</option>
+                  <option value="alterado">Possível alteração</option>
+                  <option value="confirmado">Alteração confirmada</option>
+                  <option value="pendente">Aguardando médico</option>
+                </select>
+                <Input
+                  placeholder="Buscar trabalhador ou exame"
+                  value={alteredFilters.query}
+                  onChange={event =>
+                    setAlteredFilters(current => ({
+                      ...current,
+                      query: event.target.value,
+                    }))
+                  }
+                />
+              </div>
+              <div className="mt-3 overflow-auto border">
+                <table className="w-full min-w-[900px] text-sm">
+                  <thead className="bg-slate-50 text-xs text-slate-600">
+                    <tr>
+                      <th className="p-2 text-left">Funcionário</th>
+                      <th className="p-2 text-left">Exame</th>
+                      <th className="p-2 text-left">Data</th>
+                      <th className="p-2 text-left">Triagem</th>
+                      <th className="p-2 text-left">Situação</th>
+                      <th className="p-2 text-left">Responsável</th>
+                      {isDoctor && <th className="p-2"></th>}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {alteredResults.map(row => (
+                      <tr key={row.id} className="border-t">
+                        <td className="p-2 font-medium">
+                          {row.collaborator_name}
+                        </td>
+                        <td className="p-2">{row.exam_name}</td>
+                        <td className="p-2">{dateOnly(row.performed_at)}</td>
+                        <td className="p-2">
+                          <Badge
+                            className={`rounded-sm ${screeningTone(row.automated_screening_status)}`}
+                          >
+                            {screeningLabel(row.automated_screening_status)}
+                          </Badge>
+                        </td>
+                        <td className="p-2">
+                          {String(row.operational_status || "").replaceAll(
+                            "_",
+                            " "
+                          )}
+                        </td>
+                        <td className="p-2">
+                          {row.reviewer_name || "Aguardando médico"}
+                        </td>
+                        {isDoctor && (
+                          <td className="p-2 text-right">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setReview(row)}
+                            >
+                              Analisar
+                            </Button>
+                          </td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {!alteredResults.length && (
+                  <p className="p-6 text-center text-sm text-slate-500">
+                    Nenhum resultado encontrado para os filtros selecionados.
+                  </p>
+                )}
+              </div>
             </div>
           </Panel>
         )}
@@ -1224,18 +1505,30 @@ export default function OccupationalOperations() {
                     <span>
                       Periodicidade: {row.default_periodicity || "médica"}
                     </span>
+                    <span className="col-span-2">
+                      Parâmetros de referência ativos:{" "}
+                      {Number(row.reference_rule_count || 0)}
+                    </span>
                   </div>
-                  <Button
-                    className="mt-3 w-full"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => {
-                      setExamEditing(row);
-                      setExamOpen(true);
-                    }}
-                  >
-                    Editar exame
-                  </Button>
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setExamEditing(row);
+                        setExamOpen(true);
+                      }}
+                    >
+                      Editar exame
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setReferenceExam(row)}
+                    >
+                      <Settings2 size={14} className="mr-2" /> Referências
+                    </Button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -1321,7 +1614,9 @@ export default function OccupationalOperations() {
                             <Badge
                               className={`rounded-sm ${Number(row.access_active) ? "bg-emerald-100 text-emerald-800" : "bg-slate-200 text-slate-700"}`}
                             >
-                              {Number(row.access_active) ? "Ativo" : "Bloqueado"}
+                              {Number(row.access_active)
+                                ? "Ativo"
+                                : "Bloqueado"}
                             </Badge>
                             <br />
                             <span className="text-xs font-medium">
@@ -1593,7 +1888,12 @@ export default function OccupationalOperations() {
                       {(dossierQ.data as any).laborHistory?.map((row: any) => (
                         <div key={`h${row.id}`} className="border p-3 text-sm">
                           <div className="flex flex-wrap items-center justify-between gap-2">
-                            <b>{String(row.event_type || "evento").replaceAll("_", " ")}</b>
+                            <b>
+                              {String(row.event_type || "evento").replaceAll(
+                                "_",
+                                " "
+                              )}
+                            </b>
                             <Badge
                               className={`rounded-sm ${row.status === "valido" ? "bg-emerald-100 text-emerald-800" : "bg-slate-200 text-slate-700"}`}
                             >
@@ -1601,12 +1901,18 @@ export default function OccupationalOperations() {
                             </Badge>
                           </div>
                           <p className="mt-1 text-xs text-slate-500">
-                            {dateOnly(row.valid_from)} até {row.valid_until ? dateOnly(row.valid_until) : "atual"}
+                            {dateOnly(row.valid_from)} até{" "}
+                            {row.valid_until
+                              ? dateOnly(row.valid_until)
+                              : "atual"}
                             {row.position_name ? ` · ${row.position_name}` : ""}
                             {row.gse_name ? ` · ${row.gse_name}` : ""}
                           </p>
                           <p className="mt-1 text-xs">
-                            {row.risk_agent || row.exam_name || row.source_document || `Origem: ${row.origin}`}
+                            {row.risk_agent ||
+                              row.exam_name ||
+                              row.source_document ||
+                              `Origem: ${row.origin}`}
                           </p>
                         </div>
                       ))}
@@ -1617,14 +1923,16 @@ export default function OccupationalOperations() {
                         >
                           <b>PPP consolidado · versão {row.version_number}</b>
                           <p className="mt-1 text-xs text-slate-600">
-                            Referência {dateOnly(row.reference_date)} · responsável {row.legal_responsible_name}
+                            Referência {dateOnly(row.reference_date)} ·
+                            responsável {row.legal_responsible_name}
                           </p>
                         </div>
                       ))}
                       {!(dossierQ.data as any).laborHistory?.length &&
                       !(dossierQ.data as any).pppDocuments?.length ? (
                         <p className="text-sm text-slate-500">
-                          Nenhum histórico anterior ou PPP consolidado localizado.
+                          Nenhum histórico anterior ou PPP consolidado
+                          localizado.
                         </p>
                       ) : null}
                     </div>
@@ -1899,9 +2207,16 @@ export default function OccupationalOperations() {
         <ReviewDialog
           row={review}
           close={() => setReview(null)}
-          busy={resultReview.isPending || resultDocument.isPending}
+          busy={
+            resultReview.isPending ||
+            resultDocument.isPending ||
+            resultReevaluate.isPending
+          }
           viewDocument={() =>
             review && resultDocument.mutate({ id: Number(review.id) })
+          }
+          reevaluate={() =>
+            review && resultReevaluate.mutate({ id: Number(review.id) })
           }
           save={(payload: any) => resultReview.mutate(payload)}
         />
@@ -1914,6 +2229,13 @@ export default function OccupationalOperations() {
           row={examEditing}
           busy={examSave.isPending}
           save={(payload: any) => examSave.mutate(payload)}
+        />
+        <ReferenceRulesDialog
+          exam={referenceExam}
+          close={() => setReferenceExam(null)}
+          saved={async () => {
+            await refresh();
+          }}
         />
         <ProviderDialog
           open={providerOpen}
@@ -2157,14 +2479,21 @@ function PcmsoOrderDialog({
             A conferência é individual por trabalhador e exame. Resultados já
             registrados no exercício bloqueiam uma emissão normal.
           </p>
-          <Button variant="outline" disabled={preview.isPending} onClick={analyze}>
+          <Button
+            variant="outline"
+            disabled={preview.isPending}
+            onClick={analyze}
+          >
             {preview.isPending ? "Analisando..." : "Analisar exercício"}
           </Button>
         </div>
         {preview.data && (
           <div className="grid gap-2 sm:grid-cols-3">
             <Metric label="Analisados" value={preview.data.summary.analyzed} />
-            <Metric label="Serão gerados" value={preview.data.summary.toGenerate} />
+            <Metric
+              label="Serão gerados"
+              value={preview.data.summary.toGenerate}
+            />
             <Metric
               label="Não serão gerados"
               value={preview.data.summary.notGenerated}
@@ -2195,7 +2524,8 @@ function PcmsoOrderDialog({
                   return (
                     <tr key={key} className="border-t align-top">
                       <td className="p-2 font-medium">
-                        {row.collaborator_name || `Colaborador ${row.collaboratorId}`}
+                        {row.collaborator_name ||
+                          `Colaborador ${row.collaboratorId}`}
                       </td>
                       <td className="p-2">{row.exam_name || "Procedimento"}</td>
                       <td className="p-2">
@@ -2219,7 +2549,9 @@ function PcmsoOrderDialog({
                                 type="checkbox"
                                 checked={repeat.enabled}
                                 onChange={event =>
-                                  updateRepeat(key, { enabled: event.target.checked })
+                                  updateRepeat(key, {
+                                    enabled: event.target.checked,
+                                  })
                                 }
                               />
                               Solicitar repetição
@@ -2238,7 +2570,9 @@ function PcmsoOrderDialog({
                             )}
                           </div>
                         ) : (
-                          <span className="text-xs text-slate-400">Não se aplica</span>
+                          <span className="text-xs text-slate-400">
+                            Não se aplica
+                          </span>
                         )}
                       </td>
                     </tr>
@@ -2250,8 +2584,8 @@ function PcmsoOrderDialog({
         )}
         {analysisDirty && preview.data && (
           <p className="border-l-4 border-amber-400 bg-amber-50 p-3 text-xs text-amber-900">
-            A seleção foi alterada. Clique em “Analisar exercício” novamente antes
-            de gerar as requisições.
+            A seleção foi alterada. Clique em “Analisar exercício” novamente
+            antes de gerar as requisições.
           </p>
         )}
         <div className="grid gap-4 md:grid-cols-2">
@@ -2686,12 +3020,30 @@ function ResultDialog({
   const [orderId, setOrderId] = useState(0);
   const [performedAt, setPerformedAt] = useState("");
   const [lab, setLab] = useState("");
+  const [methodName, setMethodName] = useState("");
   const [type, setType] = useState("qualitativo");
   const [summary, setSummary] = useState("");
   const [reference, setReference] = useState("");
+  const [parameters, setParameters] = useState<any[]>([]);
   const [source, setSource] = useState("manual");
   const [identity, setIdentity] = useState("confirmado");
   const [file, setFile] = useState<{ data: string; name: string } | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    setWorkerId(0);
+    setExamId(0);
+    setOrderId(0);
+    setPerformedAt("");
+    setLab("");
+    setMethodName("");
+    setType("qualitativo");
+    setSummary("");
+    setReference("");
+    setParameters([]);
+    setSource("manual");
+    setIdentity("confirmado");
+    setFile(null);
+  }, [open]);
   const readFile = (selected?: File) => {
     if (!selected) return;
     const reader = new FileReader();
@@ -2701,7 +3053,7 @@ function ResultDialog({
   };
   return (
     <Dialog open={open} onOpenChange={value => !value && close()}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent className="max-h-[92vh] max-w-3xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Lançar resultado de exame</DialogTitle>
         </DialogHeader>
@@ -2786,6 +3138,15 @@ function ResultDialog({
             </select>
           </label>
           <label className="md:col-span-2 text-xs font-semibold">
+            Método laboratorial
+            <Input
+              className="mt-1"
+              value={methodName}
+              onChange={event => setMethodName(event.target.value)}
+              placeholder="Ex.: impedância, citometria, espectrofotometria"
+            />
+          </label>
+          <label className="md:col-span-2 text-xs font-semibold">
             Resumo transcrito do laudo
             <Textarea
               className="mt-1"
@@ -2801,6 +3162,109 @@ function ResultDialog({
               onChange={event => setReference(event.target.value)}
             />
           </label>
+          <div className="md:col-span-2 border-t pt-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-slate-900">
+                  Parâmetros do resultado
+                </p>
+                <p className="text-xs text-slate-500">
+                  Informe cada valor e a referência exibida no próprio laudo.
+                </p>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  setParameters(current => [
+                    ...current,
+                    { name: "", value: "", unit: "", reference: "" },
+                  ])
+                }
+              >
+                <Plus size={14} className="mr-2" /> Adicionar parâmetro
+              </Button>
+            </div>
+            <div className="mt-3 space-y-2">
+              {parameters.map((parameter, index) => (
+                <div
+                  key={index}
+                  className="grid gap-2 border p-2 md:grid-cols-[1fr_1fr_120px_1fr_40px]"
+                >
+                  <Input
+                    aria-label="Parâmetro"
+                    placeholder="Parâmetro"
+                    value={parameter.name}
+                    onChange={event =>
+                      setParameters(current =>
+                        current.map((item, itemIndex) =>
+                          itemIndex === index
+                            ? { ...item, name: event.target.value }
+                            : item
+                        )
+                      )
+                    }
+                  />
+                  <Input
+                    aria-label="Valor"
+                    placeholder="Valor"
+                    value={parameter.value}
+                    onChange={event =>
+                      setParameters(current =>
+                        current.map((item, itemIndex) =>
+                          itemIndex === index
+                            ? { ...item, value: event.target.value }
+                            : item
+                        )
+                      )
+                    }
+                  />
+                  <Input
+                    aria-label="Unidade"
+                    placeholder="Unidade"
+                    value={parameter.unit}
+                    onChange={event =>
+                      setParameters(current =>
+                        current.map((item, itemIndex) =>
+                          itemIndex === index
+                            ? { ...item, unit: event.target.value }
+                            : item
+                        )
+                      )
+                    }
+                  />
+                  <Input
+                    aria-label="Referência"
+                    placeholder="Referência"
+                    value={parameter.reference}
+                    onChange={event =>
+                      setParameters(current =>
+                        current.map((item, itemIndex) =>
+                          itemIndex === index
+                            ? { ...item, reference: event.target.value }
+                            : item
+                        )
+                      )
+                    }
+                  />
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    title="Remover parâmetro"
+                    onClick={() =>
+                      setParameters(current =>
+                        current.filter((_, itemIndex) => itemIndex !== index)
+                      )
+                    }
+                  >
+                    <Trash2 size={14} />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
           <label className="text-xs font-semibold">
             Origem
             <select
@@ -2854,9 +3318,17 @@ function ResultDialog({
                 examId,
                 performedAt: new Date(performedAt).toISOString(),
                 laboratoryName: lab || undefined,
+                methodName: methodName || undefined,
                 resultType: type,
                 resultSummary: summary || undefined,
-                parameters: [],
+                parameters: parameters
+                  .filter(item => item.name.trim() && item.value.trim())
+                  .map(item => ({
+                    name: item.name.trim(),
+                    value: item.value.trim(),
+                    unit: item.unit.trim() || undefined,
+                    reference: item.reference.trim() || undefined,
+                  })),
                 referenceText: reference || undefined,
                 source,
                 identityStatus: identity,
@@ -3014,6 +3486,7 @@ function OcrBatchDialog({
           ? row.fields.resultType
           : "misto",
         resultSummary: row.fields?.resultSummary || undefined,
+        methodName: row.fields?.methodName || undefined,
         parameters: Array.isArray(row.fields?.parameters)
           ? row.fields.parameters
           : [],
@@ -3256,12 +3729,40 @@ function OcrBatchDialog({
   );
 }
 
-function ReviewDialog({ row, close, busy, save, viewDocument }: any) {
-  const [classification, setClassification] = useState("normal");
+function ReviewDialog({
+  row,
+  close,
+  busy,
+  save,
+  viewDocument,
+  reevaluate,
+}: any) {
+  const [classification, setClassification] = useState("inconclusivo");
   const [notes, setNotes] = useState("");
+  const screening = screeningOf(row);
+  useEffect(() => {
+    if (!row) return;
+    const existing = String(row.classification || "");
+    if (
+      [
+        "normal",
+        "alterado",
+        "inconclusivo",
+        "insatisfatorio",
+        "nao_realizado",
+      ].includes(existing)
+    )
+      setClassification(existing);
+    else if (["alterado", "critico"].includes(row.automated_screening_status))
+      setClassification("alterado");
+    else if (row.automated_screening_status === "normal")
+      setClassification("normal");
+    else setClassification("inconclusivo");
+    setNotes(row.medical_notes || "");
+  }, [row?.id, row?.automated_screening_status]);
   return (
     <Dialog open={Boolean(row)} onOpenChange={value => !value && close()}>
-      <DialogContent>
+      <DialogContent className="max-h-[92vh] max-w-4xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Revisão médica do resultado</DialogTitle>
         </DialogHeader>
@@ -3271,6 +3772,11 @@ function ReviewDialog({ row, close, busy, save, viewDocument }: any) {
             <br />
             {row?.exam_name} ·{" "}
             {row?.laboratory_name || "Prestador não informado"}
+            {row?.method_name && (
+              <p className="mt-1 text-xs text-slate-500">
+                Método: {row.method_name}
+              </p>
+            )}
             <p className="mt-2 text-slate-600">
               {row?.result_summary || "Sem resumo"}
             </p>
@@ -3289,6 +3795,78 @@ function ReviewDialog({ row, close, busy, save, viewDocument }: any) {
               </Button>
             )}
           </div>
+          <div
+            className={`border-l-4 p-3 ${row?.automated_screening_status === "critico" ? "border-red-500 bg-red-50" : row?.automated_screening_status === "alterado" ? "border-orange-500 bg-orange-50" : "border-teal-500 bg-teal-50"}`}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-sm font-semibold text-slate-900">
+                  Triagem parametrizada:{" "}
+                  {screeningLabel(row?.automated_screening_status)}
+                </p>
+                <p className="mt-1 text-xs text-slate-700">
+                  {screening?.summary ||
+                    "Não há parâmetros suficientes para comparação automática."}
+                </p>
+              </div>
+              {!row?.reviewed_at && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={reevaluate}
+                >
+                  <RefreshCw size={14} className="mr-2" /> Reprocessar
+                </Button>
+              )}
+            </div>
+          </div>
+          {Array.isArray(screening?.flags) && screening.flags.length > 0 && (
+            <div className="overflow-auto border">
+              <table className="w-full min-w-[760px] text-sm">
+                <thead className="bg-slate-50 text-xs text-slate-600">
+                  <tr>
+                    <th className="p-2 text-left">Parâmetro</th>
+                    <th className="p-2 text-left">Valor</th>
+                    <th className="p-2 text-left">Referência</th>
+                    <th className="p-2 text-left">Fonte</th>
+                    <th className="p-2 text-left">Triagem</th>
+                    <th className="p-2 text-left">Motivo</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {screening.flags.map((flag: any, index: number) => (
+                    <tr key={`${flag.parameter}-${index}`} className="border-t">
+                      <td className="p-2 font-medium">{flag.parameter}</td>
+                      <td className="p-2">
+                        {flag.rawValue} {flag.unit || ""}
+                      </td>
+                      <td className="p-2">
+                        {flag.reference || "Não informada"}
+                      </td>
+                      <td className="p-2">
+                        {flag.referenceSource === "laudo"
+                          ? "Laudo"
+                          : flag.referenceSource === "catalogo"
+                            ? `Catálogo${flag.ruleVersion ? ` v${flag.ruleVersion}` : ""}`
+                            : "Sem regra"}
+                      </td>
+                      <td className="p-2">
+                        <Badge
+                          className={`rounded-sm ${["critico_alto", "critico_baixo"].includes(flag.status) ? "bg-red-100 text-red-800" : ["alto", "baixo", "alterado_qualitativo"].includes(flag.status) ? "bg-orange-100 text-orange-800" : flag.status === "normal" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}
+                        >
+                          {String(flag.status).replaceAll("_", " ")}
+                        </Badge>
+                      </td>
+                      <td className="max-w-xs p-2 text-xs text-slate-600">
+                        {flag.reason}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
           <label className="text-xs font-semibold">
             Classificação
             <select
@@ -3312,8 +3890,9 @@ function ReviewDialog({ row, close, busy, save, viewDocument }: any) {
             />
           </label>
           <div className="border-l-4 border-teal-500 bg-teal-50 p-3 text-xs">
-            A classificação compara o resultado à referência do laudo. Não
-            equivale a diagnóstico nem define aptidão automaticamente.
+            A triagem compara o resultado às referências disponíveis e apenas
+            prioriza a revisão. A decisão clínica e ocupacional é exclusiva do
+            médico e a plataforma não define aptidão automaticamente.
           </div>
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={close}>
@@ -3480,6 +4059,417 @@ function ExamDialog({ open, close, row, busy, save }: any) {
           >
             {busy ? "Salvando..." : "Salvar exame"}
           </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ReferenceRulesDialog({ exam, close, saved }: any) {
+  const [editing, setEditing] = useState<any>(null);
+  const emptyForm = () => ({
+    parameterName: "",
+    aliases: "",
+    sexScope: "todos",
+    ageMinYears: "",
+    ageMaxYears: "",
+    methodPattern: "",
+    laboratoryPattern: "",
+    unit: exam?.default_unit || "",
+    lowerBound: "",
+    upperBound: "",
+    criticalLowerBound: "",
+    criticalUpperBound: "",
+    qualitativeNormal: "",
+    qualitativeAltered: "",
+    effectiveFrom: "",
+    effectiveUntil: "",
+    notes: "",
+  });
+  const [form, setForm] = useState<any>(emptyForm());
+  const rulesQ = trpc.occupationalLifecycle.listExamReferenceRules.useQuery(
+    { examId: Number(exam?.id || 0), includeHistory: true },
+    { enabled: Boolean(exam?.id) }
+  );
+  const reset = () => {
+    setEditing(null);
+    setForm(emptyForm());
+  };
+  useEffect(() => {
+    if (exam?.id) reset();
+  }, [exam?.id]);
+  const persist =
+    trpc.occupationalLifecycle.upsertExamReferenceRule.useMutation({
+      onSuccess: async result => {
+        await rulesQ.refetch();
+        await saved();
+        reset();
+        toast.success(
+          `Regra v${result.version} salva; ${result.reprocessed} resultado(s) pendente(s) reprocessado(s).`
+        );
+      },
+      onError: error => toast.error(error.message),
+    });
+  const archive =
+    trpc.occupationalLifecycle.archiveExamReferenceRule.useMutation({
+      onSuccess: async () => {
+        await rulesQ.refetch();
+        await saved();
+        toast.success("Regra arquivada com o histórico preservado.");
+      },
+      onError: error => toast.error(error.message),
+    });
+  const set = (key: string, value: any) =>
+    setForm((current: any) => ({ ...current, [key]: value }));
+  const split = (value: string) =>
+    value
+      .split(/[,;\n]/)
+      .map(item => item.trim())
+      .filter(Boolean);
+  const numberOrNull = (value: string) =>
+    String(value).trim() === ""
+      ? null
+      : Number(String(value).replace(",", "."));
+  const editRule = (rule: any) => {
+    setEditing(rule);
+    setForm({
+      parameterName: rule.parameter_name || "",
+      aliases: (rule.aliases || []).join(", "),
+      sexScope: rule.sex_scope || "todos",
+      ageMinYears: rule.age_min_years ?? "",
+      ageMaxYears: rule.age_max_years ?? "",
+      methodPattern: rule.method_pattern || "",
+      laboratoryPattern: rule.laboratory_pattern || "",
+      unit: rule.unit || "",
+      lowerBound: rule.lower_bound ?? "",
+      upperBound: rule.upper_bound ?? "",
+      criticalLowerBound: rule.critical_lower_bound ?? "",
+      criticalUpperBound: rule.critical_upper_bound ?? "",
+      qualitativeNormal: (rule.qualitativeNormal || []).join(", "),
+      qualitativeAltered: (rule.qualitativeAltered || []).join(", "),
+      effectiveFrom: String(rule.effective_from || "").slice(0, 10),
+      effectiveUntil: String(rule.effective_until || "").slice(0, 10),
+      notes: rule.notes || "",
+    });
+  };
+  const rules = (rulesQ.data || []) as any[];
+  return (
+    <Dialog open={Boolean(exam)} onOpenChange={value => !value && close()}>
+      <DialogContent className="max-h-[94vh] max-w-6xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>
+            Parâmetros de referência · {exam?.name || "Exame"}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="border-l-4 border-teal-500 bg-teal-50 p-3 text-xs text-teal-950">
+          A referência informada no laudo tem prioridade. As regras abaixo são
+          usadas quando o documento não traz uma faixa comparável e servem
+          somente para triagem médica, sem determinar diagnóstico ou aptidão.
+        </div>
+        <div className="grid gap-3 md:grid-cols-4">
+          <label className="text-xs font-semibold md:col-span-2">
+            Parâmetro
+            <Input
+              className="mt-1"
+              value={form.parameterName}
+              onChange={event => set("parameterName", event.target.value)}
+              placeholder="Ex.: Leucócitos"
+            />
+          </label>
+          <label className="text-xs font-semibold md:col-span-2">
+            Sinônimos
+            <Input
+              className="mt-1"
+              value={form.aliases}
+              onChange={event => set("aliases", event.target.value)}
+              placeholder="Separados por vírgula"
+            />
+          </label>
+          <label className="text-xs font-semibold">
+            Sexo
+            <select
+              className="mt-1 h-10 w-full border bg-white px-3 text-sm"
+              value={form.sexScope}
+              onChange={event => set("sexScope", event.target.value)}
+            >
+              <option value="todos">Todos</option>
+              <option value="feminino">Feminino</option>
+              <option value="masculino">Masculino</option>
+              <option value="outro">Outro</option>
+            </select>
+          </label>
+          <label className="text-xs font-semibold">
+            Idade mínima
+            <Input
+              className="mt-1"
+              type="number"
+              min={0}
+              max={130}
+              value={form.ageMinYears}
+              onChange={event => set("ageMinYears", event.target.value)}
+            />
+          </label>
+          <label className="text-xs font-semibold">
+            Idade máxima
+            <Input
+              className="mt-1"
+              type="number"
+              min={0}
+              max={130}
+              value={form.ageMaxYears}
+              onChange={event => set("ageMaxYears", event.target.value)}
+            />
+          </label>
+          <label className="text-xs font-semibold">
+            Unidade
+            <Input
+              className="mt-1"
+              value={form.unit}
+              onChange={event => set("unit", event.target.value)}
+              placeholder="Ex.: /mm³"
+            />
+          </label>
+          <label className="text-xs font-semibold md:col-span-2">
+            Método aplicável
+            <Input
+              className="mt-1"
+              value={form.methodPattern}
+              onChange={event => set("methodPattern", event.target.value)}
+            />
+          </label>
+          <label className="text-xs font-semibold md:col-span-2">
+            Laboratório aplicável
+            <Input
+              className="mt-1"
+              value={form.laboratoryPattern}
+              onChange={event => set("laboratoryPattern", event.target.value)}
+            />
+          </label>
+          <label className="text-xs font-semibold">
+            Limite mínimo
+            <Input
+              className="mt-1"
+              inputMode="decimal"
+              value={form.lowerBound}
+              onChange={event => set("lowerBound", event.target.value)}
+            />
+          </label>
+          <label className="text-xs font-semibold">
+            Limite máximo
+            <Input
+              className="mt-1"
+              inputMode="decimal"
+              value={form.upperBound}
+              onChange={event => set("upperBound", event.target.value)}
+            />
+          </label>
+          <label className="text-xs font-semibold">
+            Crítico abaixo de
+            <Input
+              className="mt-1"
+              inputMode="decimal"
+              value={form.criticalLowerBound}
+              onChange={event => set("criticalLowerBound", event.target.value)}
+            />
+          </label>
+          <label className="text-xs font-semibold">
+            Crítico acima de
+            <Input
+              className="mt-1"
+              inputMode="decimal"
+              value={form.criticalUpperBound}
+              onChange={event => set("criticalUpperBound", event.target.value)}
+            />
+          </label>
+          <label className="text-xs font-semibold md:col-span-2">
+            Valores qualitativos normais
+            <Input
+              className="mt-1"
+              value={form.qualitativeNormal}
+              onChange={event => set("qualitativeNormal", event.target.value)}
+              placeholder="Ex.: negativo, não reagente, ausente"
+            />
+          </label>
+          <label className="text-xs font-semibold md:col-span-2">
+            Valores qualitativos alterados
+            <Input
+              className="mt-1"
+              value={form.qualitativeAltered}
+              onChange={event => set("qualitativeAltered", event.target.value)}
+              placeholder="Ex.: positivo, reagente, presente"
+            />
+          </label>
+          <label className="text-xs font-semibold">
+            Vigência inicial
+            <Input
+              className="mt-1"
+              type="date"
+              value={form.effectiveFrom}
+              onChange={event => set("effectiveFrom", event.target.value)}
+            />
+          </label>
+          <label className="text-xs font-semibold">
+            Vigência final
+            <Input
+              className="mt-1"
+              type="date"
+              value={form.effectiveUntil}
+              onChange={event => set("effectiveUntil", event.target.value)}
+            />
+          </label>
+          <label className="text-xs font-semibold md:col-span-2">
+            Observações técnicas
+            <Input
+              className="mt-1"
+              value={form.notes}
+              onChange={event => set("notes", event.target.value)}
+            />
+          </label>
+        </div>
+        <div className="flex justify-end gap-2">
+          {editing && (
+            <Button variant="outline" onClick={reset}>
+              Cancelar edição
+            </Button>
+          )}
+          <Button
+            disabled={persist.isPending || !form.parameterName.trim()}
+            onClick={() =>
+              persist.mutate({
+                id: editing ? Number(editing.id) : undefined,
+                examId: Number(exam.id),
+                parameterName: form.parameterName.trim(),
+                aliases: split(form.aliases),
+                sexScope: form.sexScope,
+                ageMinYears: numberOrNull(form.ageMinYears),
+                ageMaxYears: numberOrNull(form.ageMaxYears),
+                methodPattern: form.methodPattern || undefined,
+                laboratoryPattern: form.laboratoryPattern || undefined,
+                unit: form.unit || undefined,
+                lowerBound: numberOrNull(form.lowerBound),
+                upperBound: numberOrNull(form.upperBound),
+                criticalLowerBound: numberOrNull(form.criticalLowerBound),
+                criticalUpperBound: numberOrNull(form.criticalUpperBound),
+                qualitativeNormal: split(form.qualitativeNormal),
+                qualitativeAltered: split(form.qualitativeAltered),
+                effectiveFrom: form.effectiveFrom || undefined,
+                effectiveUntil: form.effectiveUntil || undefined,
+                notes: form.notes || undefined,
+              })
+            }
+          >
+            {persist.isPending
+              ? "Salvando..."
+              : editing
+                ? `Criar versão ${Number(editing.version || 1) + 1}`
+                : "Adicionar regra"}
+          </Button>
+        </div>
+        <div className="overflow-auto border">
+          <table className="w-full min-w-[1050px] text-sm">
+            <thead className="bg-slate-50 text-xs text-slate-600">
+              <tr>
+                <th className="p-2 text-left">Parâmetro</th>
+                <th className="p-2 text-left">Aplicabilidade</th>
+                <th className="p-2 text-left">Referência</th>
+                <th className="p-2 text-left">Vigência</th>
+                <th className="p-2 text-left">Versão</th>
+                <th className="p-2 text-left">Situação</th>
+                <th className="p-2 text-right">Ações</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rules.map(rule => (
+                <tr key={rule.id} className="border-t">
+                  <td className="p-2 font-medium">
+                    {rule.parameter_name}
+                    {rule.unit && (
+                      <span className="block text-xs text-slate-500">
+                        {rule.unit}
+                      </span>
+                    )}
+                  </td>
+                  <td className="p-2 text-xs">
+                    {rule.sex_scope || "todos"}
+                    {(rule.age_min_years !== null ||
+                      rule.age_max_years !== null) && (
+                      <span className="block text-slate-500">
+                        {rule.age_min_years ?? 0} a {rule.age_max_years ?? 130}{" "}
+                        anos
+                      </span>
+                    )}
+                    {rule.method_pattern && (
+                      <span className="block text-slate-500">
+                        Método: {rule.method_pattern}
+                      </span>
+                    )}
+                  </td>
+                  <td className="p-2 text-xs">
+                    {rule.lower_bound !== null || rule.upper_bound !== null
+                      ? `${rule.lower_bound ?? "-∞"} a ${rule.upper_bound ?? "+∞"}`
+                      : (rule.qualitativeNormal || []).join(", ") || "-"}
+                    {(rule.critical_lower_bound !== null ||
+                      rule.critical_upper_bound !== null) && (
+                      <span className="block text-red-700">
+                        Crítico: {rule.critical_lower_bound ?? "-"} /{" "}
+                        {rule.critical_upper_bound ?? "-"}
+                      </span>
+                    )}
+                  </td>
+                  <td className="p-2 text-xs">
+                    {dateOnly(rule.effective_from)} a{" "}
+                    {dateOnly(rule.effective_until)}
+                  </td>
+                  <td className="p-2">v{rule.version}</td>
+                  <td className="p-2">
+                    <Badge
+                      className={`rounded-sm ${Number(rule.is_active) ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-600"}`}
+                    >
+                      {Number(rule.is_active) ? "vigente" : "histórico"}
+                    </Badge>
+                  </td>
+                  <td className="p-2 text-right">
+                    {Number(rule.is_active) ? (
+                      <div className="flex justify-end gap-1">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => editRule(rule)}
+                        >
+                          Nova versão
+                        </Button>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          title="Arquivar regra"
+                          disabled={archive.isPending}
+                          onClick={() => {
+                            if (
+                              window.confirm(
+                                "Arquivar esta regra? O histórico será preservado."
+                              )
+                            )
+                              archive.mutate({ id: Number(rule.id) });
+                          }}
+                        >
+                          <Trash2 size={14} />
+                        </Button>
+                      </div>
+                    ) : (
+                      <span className="text-xs text-slate-500">
+                        Somente leitura
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!rules.length && (
+            <p className="p-6 text-center text-sm text-slate-500">
+              Nenhuma regra parametrizada para este exame.
+            </p>
+          )}
         </div>
       </DialogContent>
     </Dialog>
@@ -3925,6 +4915,12 @@ function ClinicalWorkspace({
       Number(question.is_required) &&
       !String(answers[question.question_code] ?? "").trim()
   );
+  const missingExamCount = Number(validation?.missingExams?.length || 0);
+  const pendingReviewCount = Number(validation?.pendingMedicalReview || 0);
+  const requiresMedicalJustification =
+    Boolean(validation) &&
+    !validation?.ready &&
+    (missingExamCount > 0 || pendingReviewCount > 0);
   const responseField = (question: any) => {
     const code = String(question.question_code);
     if (["sim_nao", "sim_nao_detalhe"].includes(question.response_type))
@@ -4045,9 +5041,17 @@ function ClinicalWorkspace({
             GSE: {context.worker.gse_code || "-"} -{" "}
             {context.worker.gse_name || "Sem GSE"}
             <br />
+            Exercício: {context.program?.exercise_year || new Date().getFullYear()}
+            <br />
             PGR: {context.program?.pgr_title || "não identificado"}
+            {context.program?.pgr_revision_number
+              ? ` · Revisão ${context.program.pgr_revision_number}`
+              : ""}
             <br />
             PCMSO: {context.program?.pcmso_title || "não identificado"}
+            {context.program?.pcmso_revision_number
+              ? ` · Revisão ${context.program.pcmso_revision_number}`
+              : ""}
           </div>
         )}
         <div className="mb-4 border p-3">
@@ -4176,12 +5180,12 @@ function ClinicalWorkspace({
           ) : (
             <div className="space-y-3">
               <div
-                className={`border p-3 ${validation?.ready ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50"}`}
+                className={`border p-3 ${requiresMedicalJustification ? "border-amber-200 bg-amber-50" : "border-emerald-200 bg-emerald-50"}`}
               >
                 <p className="font-semibold">
-                  {validation?.ready
-                    ? "Requisitos encontrados"
-                    : "Pendências identificadas"}
+                  {requiresMedicalJustification
+                    ? "Pendências identificadas"
+                    : "Sem pendências obrigatórias"}
                 </p>
                 <p className="mt-1 text-xs">
                   Procedimentos ausentes:{" "}
@@ -4213,7 +5217,7 @@ function ClinicalWorkspace({
                   placeholder="Altura, espaço confinado..."
                 />
               </label>
-              {!validation?.ready && (
+              {requiresMedicalJustification && (
                 <label className="text-xs font-semibold">
                   Justificativa médica obrigatória
                   <Textarea
@@ -4225,7 +5229,7 @@ function ClinicalWorkspace({
               )}
               <Button
                 className="w-full"
-                disabled={busy || (!validation?.ready && !justification.trim())}
+                disabled={busy || (requiresMedicalJustification && !justification.trim())}
                 onClick={() =>
                   issueAso({
                     collaboratorId: workerId,
@@ -4603,8 +5607,8 @@ function CatDialog({ open, close, workers, busy, save }: any) {
 
           <div className="border-l-4 border-sky-400 bg-sky-50 p-3 text-xs text-sky-950">
             As sugestões da IA são auxiliares. A confirmação final permanece sob
-            responsabilidade do profissional que registra a CAT. Este registro não
-            será transmitido automaticamente ao eSocial.
+            responsabilidade do profissional que registra a CAT. Este registro
+            não será transmitido automaticamente ao eSocial.
           </div>
           <div className="flex flex-wrap justify-end gap-2">
             <Button variant="outline" onClick={() => setReview(null)}>

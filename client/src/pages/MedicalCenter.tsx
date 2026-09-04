@@ -1718,6 +1718,7 @@ function LegacyMonitoringRow({
   const [examId, setExamId] = useState(row.exam_id || 0);
   const [periodicity, setPeriodicity] = useState(row.periodicity || "");
   const [observations, setObservations] = useState(row.observations || "");
+  const selectedExam = exams.find((exam: any) => Number(exam.id) === Number(examId));
   return (
     <tr className="border-t align-top">
       <td className="p-2">
@@ -1744,7 +1745,12 @@ function LegacyMonitoringRow({
           <select
             className="mt-1 w-full border bg-white p-1"
             value={examId}
-            onChange={e => setExamId(Number(e.target.value))}
+            onChange={e => {
+              const nextId = Number(e.target.value);
+              const exam = exams.find((item: any) => Number(item.id) === nextId);
+              setExamId(nextId);
+              setPeriodicity(exam?.default_periodicity || "");
+            }}
           >
             <option value={0}>Selecione o exame</option>
             {exams
@@ -1769,6 +1775,11 @@ function LegacyMonitoringRow({
           onChange={e => setPeriodicity(e.target.value)}
           placeholder="Ex.: anual"
         />
+        {selectedExam?.default_periodicity && (
+          <p className="mt-1 text-[11px] text-slate-500">
+            Catálogo Mestre: {selectedExam.default_periodicity}
+          </p>
+        )}
       </td>
       <td className="p-2">
         <Textarea

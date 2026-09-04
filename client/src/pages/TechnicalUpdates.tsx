@@ -46,6 +46,12 @@ const fieldLabels: Record<string, string> = {
   monitoring_name: "Exame ou avaliação", monitoring_kind: "Controle médico",
   periodicity: "Periodicidade definida", applicability: "Aplicabilidade",
   observations: "Observações", is_active: "Ativo",
+  collaborator: "Colaborador", cpf: "CPF", matricula: "Matrícula",
+  filial: "Filial", setor: "Setor", cargo: "Cargo", exame: "Exame",
+  dataExame: "Data do exame", dataLancamento: "Data de lançamento",
+  clinica: "Clínica/credenciado", cnpjClinica: "CNPJ da clínica",
+  resultado: "Resultado", classificacao: "Classificação",
+  prioridadeMedica: "Prioridade médica",
 };
 
 type FeedFilter = "pending" | "history" | "all";

@@ -176,6 +176,63 @@ function next12Months(startIso?: string | null): string[] {
   return out;
 }
 
+function hasRiskRequiringSpecificAction(items: InventoryRow[] | undefined | null): boolean {
+  return (items || []).some((it) =>
+    ["medio", "media", "alto", "alta", "critico", "critica"].includes(
+      String(it.riscoFinal || "").toLowerCase()
+    )
+  );
+}
+
+function preventiveMonitoringHtml(): string {
+  return `
+    <div class="monitoring-box">
+      <h3>Plano de Ação Preventivo – Monitoramento dos Fatores Psicossociais</h3>
+      <p>Com base na identificação e avaliação dos fatores de risco psicossociais relacionados ao trabalho, realizada neste ciclo avaliativo por meio da metodologia integrada DRPS + AEP, não foram identificados fatores psicossociais com classificação de risco que demandem, neste momento, a implementação de medidas adicionais específicas de intervenção, correção ou prevenção.</p>
+      <p>Os fatores psicossociais avaliados apresentaram classificação compatível com risco baixo, conforme os critérios técnicos e a matriz de risco adotados neste Laudo. Dessa forma, não houve geração de plano de ação específico para intervenção sobre os fatores avaliados.</p>
+      <p>Nos termos do subitem 1.5.4.4.5 da NR-01, a avaliação e classificação dos riscos devem subsidiar a tomada de decisão quanto à necessidade de adoção de medidas de prevenção. Da mesma forma, o subitem 1.5.5.2.1 da NR-01 estabelece que o plano de ação deve contemplar as medidas de prevenção a serem introduzidas, aprimoradas ou mantidas, de acordo com os resultados da avaliação de riscos.</p>
+      <p>Assim, considerando os resultados obtidos neste ciclo, a medida preventiva aplicável é a manutenção das condições organizacionais identificadas e o monitoramento contínuo dos fatores psicossociais relacionados ao trabalho, não sendo indicada, no presente momento, a implementação de ação corretiva específica.</p>
+      <p>Em conformidade com o subitem 1.5.4.4.6 da NR-01, recomenda-se que a avaliação seja mantida sob acompanhamento e revista conforme as condições de trabalho e as situações que possam alterar o perfil de risco.</p>
+      <p><b>Ação preventiva definida:</b> Manter o monitoramento dos fatores psicossociais relacionados ao trabalho e realizar nova avaliação no próximo ciclo anual, com o objetivo de acompanhar a manutenção das condições atuais, monitorar eventuais mudanças e identificar precocemente novos fatores de risco psicossocial relacionados ao trabalho.</p>
+    </div>
+    <table>
+      <tr><th>Classificação</th><th>Ação preventiva</th><th>Responsável</th><th>Periodicidade</th></tr>
+      <tr>
+        <td><span class="badge" style="background:#16a34a">Monitoramento Preventivo</span></td>
+        <td>Manter o monitoramento dos fatores psicossociais relacionados ao trabalho e reavaliar no próximo ciclo anual ou antes, caso ocorram mudanças significativas nas condições de trabalho.</td>
+        <td>SESMT / Gestão responsável</td>
+        <td>Próximo ciclo anual, com antecipação se houver alteração do perfil de risco.</td>
+      </tr>
+    </table>`;
+}
+
+function pendingSpecificActionHtml(label: string): string {
+  return `<p><i>Existem fatores com classificação que pode demandar ação específica para <b>${esc(label)}</b>, porém nenhuma ação corretiva/preventiva foi cadastrada até o momento. Revisar o plano de ação antes da emissão final.</i></p>`;
+}
+
+async function pdfImageSrcFromUpload(url?: string | null): Promise<string | null> {
+  if (!url) return null;
+  const clean = String(url).trim();
+  if (!clean) return null;
+  if (/^(data:|https?:|file:)/i.test(clean)) return clean;
+  if (!clean.startsWith("/uploads/")) return clean;
+  const rel = clean.replace(/^\/uploads\/?/, "").replace(/^\\+/, "");
+  const fullPath = path.join(getUploadRoot(), rel);
+  try {
+    const buffer = await fs.readFile(fullPath);
+    const ext = path.extname(fullPath).toLowerCase();
+    const mime =
+      ext === ".png" ? "image/png" :
+      ext === ".webp" ? "image/webp" :
+      ext === ".gif" ? "image/gif" :
+      "image/jpeg";
+    return `data:${mime};base64,${buffer.toString("base64")}`;
+  } catch (error) {
+    console.warn("[risk_pdf] signature image not readable:", clean, (error as Error)?.message);
+    return clean;
+  }
+}
+
 // ── 1. LAUDO TÉCNICO (19 seções — NR-01 + ISO 45003) ─────────────────────────
 export async function generateRiskLaudoPDF(
   a: AssessmentData,
@@ -193,6 +250,8 @@ export async function generateRiskLaudoPDF(
   const highFactors     = inventory.filter(it => ["alto","alta"].includes((it.riscoFinal||"").toLowerCase()));
   const mediumFactors   = inventory.filter(it => ["medio","media"].includes((it.riscoFinal||"").toLowerCase()));
   const lowFactors      = inventory.filter(it => ["baixo","baixa"].includes((it.riscoFinal||"").toLowerCase()));
+  const requiresSpecificAction = hasRiskRequiringSpecificAction(inventory);
+  const responsibleSignatureSrc = await pdfImageSrcFromUpload(a.responsibleSignatureUrl);
   const protectiveFactors = lowFactors.slice(0, 5);
 
   const allFontes = inventory
@@ -252,6 +311,8 @@ export async function generateRiskLaudoPDF(
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
   <style>${BASE_CSS}
     .info-box{background:#f0f9ff;border-left:4px solid #0ea5e9;padding:8px 12px;margin:8px 0;border-radius:0 6px 6px 0;font-size:9.5pt;}
+    .monitoring-box{background:#f8fafc;border-left:4px solid #16a34a;padding:10px 12px;margin:8px 0 12px;border-radius:0 6px 6px 0;font-size:9.5pt;}
+    .monitoring-box h3{margin-top:0;color:#166534;}
     .legal-box{background:#fef3c7;border-left:4px solid #d97706;padding:8px 12px;margin:8px 0;border-radius:0 6px 6px 0;font-size:9pt;font-style:italic;}
     .step-flow{display:flex;flex-wrap:wrap;gap:4px;margin:8px 0;}
     .step{background:#1e3a5f;color:#fff;padding:4px 10px;border-radius:12px;font-size:8.5pt;}
@@ -454,7 +515,7 @@ export async function generateRiskLaudoPDF(
     <tr><td>Fatores com risco baixo (protetivos)</td><td><b>${lowFactors.length}</b></td></tr>
     <tr><td>Total respondentes DRPS</td><td><b>${a.drpsResponses}</b></td></tr>
     <tr><td>Total respondentes AEP</td><td><b>${a.aepResponses}</b></td></tr>
-    <tr><td>Ações preventivas planejadas</td><td><b>${actions.length}</b></td></tr>
+    <tr><td>Ações preventivas planejadas</td><td><b>${actions.length || (!requiresSpecificAction ? 1 : 0)}</b></td></tr>
   </table>
 
   <h2>12. Síntese Técnica Integrada</h2>
@@ -479,6 +540,7 @@ export async function generateRiskLaudoPDF(
   ${sectorGroups && sectorGroups.length > 0 ? `
   <p>O plano de ação preventivo está organizado por setor avaliado, em conformidade com as exigências da NR-01.</p>
   ${sectorGroups.map((sg, idx) => {
+    const sgRequiresSpecificAction = hasRiskRequiringSpecificAction(sg.inventory);
     const sgActRows = sg.actions.map((ac) => `
       <tr>
         <td>${esc(ac.factorName)}</td>
@@ -491,7 +553,7 @@ export async function generateRiskLaudoPDF(
     ${sgActRows ? `<table>
       <tr><th>Fator</th><th>Ação preventiva</th><th>Responsável</th><th>Prioridade</th><th>Período</th></tr>
       ${sgActRows}
-    </table>` : "<p><i>Nenhuma ação definida para este setor.</i></p>"}`;
+    </table>` : (sgRequiresSpecificAction ? pendingSpecificActionHtml(sg.sectorName) : preventiveMonitoringHtml())}`;
   }).join("")}
   ` : `${actionRows ? `
   <p>Os dados obtidos subsidiam tecnicamente a elaboração do inventário de riscos psicossociais, da matriz de
@@ -499,7 +561,7 @@ export async function generateRiskLaudoPDF(
   <table>
     <tr><th>Fator</th><th>Ação preventiva</th><th>Responsável</th><th>Prioridade</th><th>Período</th></tr>
     ${actionRows}
-  </table>` : "<p><i>Plano de ação a ser definido após análise dos resultados pela equipe técnica.</i></p>"}`}
+  </table>` : (requiresSpecificAction ? pendingSpecificActionHtml(a.sectorName || "escopo avaliado") : preventiveMonitoringHtml())}`}
 
   <h2>15. Monitoramento e Reavaliação</h2>
   <div class="info-box">A presente avaliação possui caráter contínuo e preventivo, devendo integrar processo
@@ -513,10 +575,17 @@ export async function generateRiskLaudoPDF(
   </table>
 
   <h2>16. Conclusão Técnica</h2>
-  <p>O presente ciclo avaliativo evidencia o panorama atual dos fatores psicossociais relacionados ao trabalho
+  ${requiresSpecificAction
+    ? `<p>O presente ciclo avaliativo evidencia o panorama atual dos fatores psicossociais relacionados ao trabalho
   em <b>${esc(a.companyName)}</b>. A implementação das medidas preventivas propostas no plano de ação, somada
   ao monitoramento sistemático e à rastreabilidade contínua, permitirá à organização elevar seu nível de
-  maturidade em saúde mental no trabalho e atender plenamente às exigências legais vigentes.</p>
+  maturidade em saúde mental no trabalho e atender plenamente às exigências legais vigentes.</p>`
+    : `<p>O presente ciclo avaliativo evidencia o panorama atual dos fatores psicossociais relacionados ao trabalho
+  em <b>${esc(a.companyName)}</b>. Considerando que os fatores avaliados não apresentaram classificação final
+  Médio, Alto ou Crítico, não foi indicada, neste momento, a adoção de ações corretivas específicas. A medida
+  preventiva aplicável consiste na manutenção das condições organizacionais identificadas, no monitoramento
+  sistemático dos fatores psicossociais e na reavaliação no próximo ciclo anual, ou antes, caso ocorram mudanças
+  capazes de alterar o perfil de risco.</p>`}
 
   <h2>17. Responsabilidade Técnica</h2>
   <p>Este laudo foi elaborado sob responsabilidade técnica de
@@ -531,7 +600,7 @@ export async function generateRiskLaudoPDF(
     <tr><td>Data de emissão</td><td>${esc(mesAno)}</td></tr>
   </table>
   <div class="signature">
-    ${a.responsibleSignatureUrl ? `<img src="${esc(a.responsibleSignatureUrl)}" alt="Assinatura" style="max-height:60px;display:block;margin:0 auto 8px;">` : '<div class="line"></div>'}
+    ${responsibleSignatureSrc ? `<img src="${esc(responsibleSignatureSrc)}" alt="Assinatura" style="max-height:60px;display:block;margin:0 auto 8px;">` : '<div class="line"></div>'}
     <div style="text-align:center">${esc(a.responsibleTechnician || "—")}<br>
     <small class="muted">Responsável Técnica</small></div>
   </div>
@@ -652,7 +721,8 @@ export async function generateInventoryPDF(
 export async function generateCronogramaPDF(
   a: AssessmentData,
   actions: ActionPlanRow[],
-  sectorGroups?: SectorGroup[]
+  sectorGroups?: SectorGroup[],
+  inventory?: InventoryRow[]
 ): Promise<string> {
   await fs.mkdir(UPLOAD_DIR, { recursive: true });
   const outPath = path.join(UPLOAD_DIR, `cronograma_${a.id}.pdf`);
@@ -660,9 +730,27 @@ export async function generateCronogramaPDF(
   const months = next12Months(a.startDate || null);
   const headers = months.map((m) => `<th style="text-align:center;width:6%">${esc(monthLabel(m))}</th>`).join("");
 
-  function buildBlock(acts: ActionPlanRow[], label: string): string {
+  function buildMonitoringCronograma(label: string): string {
+    const cells = months.map((_, idx) =>
+      `<td style="text-align:center">${idx === months.length - 1 ? `<span class="month-dot"></span>` : `<span class="month-empty"></span>`}</td>`
+    ).join("");
+    return `
+      <p style="color:#475569;margin:6px 0 10px;">Não foram identificados fatores psicossociais com classificação Médio, Alto ou Crítico para <b>${esc(label)}</b>. O cronograma registra a ação de monitoramento preventivo aplicável ao ciclo.</p>
+      <table>
+        <tr><th style="width:28%">Programa Preventivo</th><th style="width:9%">Prioridade</th>${headers}</tr>
+        <tr>
+          <td><b>Monitoramento Preventivo</b><br><small class="muted">Manutenção do monitoramento dos fatores psicossociais, acompanhamento contínuo das condições organizacionais e reavaliação no próximo ciclo anual, com antecipação caso ocorram mudanças significativas ou novos indícios de risco.</small></td>
+          <td><span class="badge" style="background:#16a34a">Baixa</span></td>
+          ${cells}
+        </tr>
+      </table>`;
+  }
+
+  function buildBlock(acts: ActionPlanRow[], label: string, inv?: InventoryRow[]): string {
     if (acts.length === 0) {
-      return `<p style="font-style:italic;color:#64748b;margin:6px 0 14px;">Nenhuma ação cadastrada para <b>${esc(label)}</b>.</p>`;
+      return hasRiskRequiringSpecificAction(inv)
+        ? pendingSpecificActionHtml(label)
+        : buildMonitoringCronograma(label);
     }
     const rows = acts.map((ac) => {
       const cells = months.map((m) => {
@@ -686,11 +774,11 @@ export async function generateCronogramaPDF(
     ? sectorGroups!.map((sg, idx) => `
         <div class="section">
           <h3>${idx + 1}. ${esc(sg.assessment?.branchName ? `Filial ${sg.assessment.branchName} — ` : "")}Setor: ${esc(sg.sectorName)}</h3>
-          ${buildBlock(sg.actions, sg.sectorName)}
+          ${buildBlock(sg.actions, sg.sectorName, sg.inventory)}
         </div>
         ${idx < sectorGroups!.length - 1 ? '<div class="page-break"></div>' : ''}
       `).join("")
-    : `<h2 style="margin-top:0">Cronograma de Implementação — 12 meses</h2>${buildBlock(actions, a.sectorName || "Setor único")}`;
+    : `<h2 style="margin-top:0">Cronograma de Implementação — 12 meses</h2>${buildBlock(actions, a.sectorName || "Setor único", inventory)}`;
 
   const html = `<!doctype html><html><head><meta charset="utf-8">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
@@ -738,6 +826,7 @@ export async function generateAEPLaudoPDF(
   const outPath = path.join(UPLOAD_DIR, `laudo_aep_${a.id}.pdf`);
   const now = new Date();
   const mesAno = `${now.toLocaleDateString("pt-BR", { month: "long" })} / ${now.getFullYear()}`;
+  const responsibleSignatureSrc = await pdfImageSrcFromUpload(a.responsibleSignatureUrl);
 
   // Monta os blocos qualitativos e a tabela Likert para um conjunto de itens (todo o ciclo
   // ou de um único setor). Usado tanto no modo consolidado quanto no detalhamento por setor.
@@ -904,8 +993,8 @@ export async function generateAEPLaudoPDF(
   legislação vigente.${a.responsibleProfession ? ` ${esc(a.responsibleProfession)}.` : ""}
   ${a.responsibleArt ? ` ART nº ${esc(a.responsibleArt)}.` : ""}</p>
   <div class="signature">
-    ${a.responsibleSignatureUrl ? `<div style="text-align:center;margin-top:24mm;"><img src="${esc(a.responsibleSignatureUrl)}" alt="Assinatura" style="max-width:70mm;max-height:24mm;object-fit:contain;display:inline-block"/></div>` : ""}
-    <div class="line" style="margin-top:${a.responsibleSignatureUrl ? '0' : '30mm'}"></div>
+    ${responsibleSignatureSrc ? `<div style="text-align:center;margin-top:24mm;"><img src="${esc(responsibleSignatureSrc)}" alt="Assinatura" style="max-width:70mm;max-height:24mm;object-fit:contain;display:inline-block"/></div>` : ""}
+    <div class="line" style="margin-top:${responsibleSignatureSrc ? '0' : '30mm'}"></div>
     <div style="text-align:center">${esc(a.responsibleTechnician || "—")}<br>
     <small class="muted">Responsável Técnica${a.responsibleRegistration ? ` · ${esc(a.responsibleRegistration)}` : ""}</small></div>
   </div>

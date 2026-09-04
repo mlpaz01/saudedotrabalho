@@ -20,6 +20,11 @@ import {
   orderLabel,
 } from "./occupationalLifecycle";
 import { classifyExamPlanning } from "./occupationalExamPlanning";
+import {
+  ensureExamScreeningSchema,
+  evaluateAndStoreExamResult,
+  reprocessPendingExamResults,
+} from "./examReferenceService";
 import { ensurePppTables } from "./occupationalPppRouter";
 import {
   mysqlDateTime,
@@ -82,6 +87,29 @@ function rowsOf(result: any): any[] {
     : Array.isArray(result)
       ? result
       : [];
+}
+
+function jsonArray(value: unknown): any[] {
+  if (Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(String(value || "[]"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function safeJsonObject(value: unknown): Record<string, any> | null {
+  if (value && typeof value === "object" && !Array.isArray(value))
+    return value as Record<string, any>;
+  try {
+    const parsed = JSON.parse(String(value || "null"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function roleOf(ctx: any) {
@@ -221,14 +249,82 @@ async function requireProviderSupportsExam(
 async function resolveCurrentPcmso(
   db: any,
   companyId: number,
-  preferredId?: number | null
+  preferredId?: number | null,
+  collaboratorId?: number | null
 ) {
+  if (collaboratorId) {
+    const linkedResult: any = await db.execute(
+      preferredId
+        ? drzSql`SELECT DISTINCT p.id
+          FROM users u
+          JOIN occupational_gse_worker_history h ON h.collaborator_id=u.id AND h.company_id=u.company_id AND h.is_current=1
+          JOIN pcmso_risk_monitoring_v2 m ON m.company_id=u.company_id AND m.master_gse_id=h.gse_id
+            AND m.pcmso_id=${preferredId}
+            AND m.monitoring_kind IN ('avaliacao_clinica','exame_complementar')
+            AND (m.monitoring_kind='avaliacao_clinica' OR m.exam_id IS NOT NULL)
+            AND m.suggestion_status IN ('aprovada','editada')
+          JOIN pcmso_programs_v2 p ON p.id=m.pcmso_id AND p.company_id=u.company_id
+          WHERE u.id=${collaboratorId} AND u.company_id=${companyId}
+            AND p.status IN ('em_revisao','vigente')
+            AND (p.saved_at IS NOT NULL OR p.status='vigente')
+            AND (p.valid_from IS NULL OR p.valid_from<=CURDATE())
+            AND (p.valid_until IS NULL OR p.valid_until>=CURDATE())
+          LIMIT 1`
+        : drzSql`SELECT DISTINCT p.id
+          FROM users u
+          JOIN occupational_gse_worker_history h ON h.collaborator_id=u.id AND h.company_id=u.company_id AND h.is_current=1
+          JOIN pcmso_risk_monitoring_v2 m ON m.company_id=u.company_id AND m.master_gse_id=h.gse_id
+            AND m.monitoring_kind IN ('avaliacao_clinica','exame_complementar')
+            AND (m.monitoring_kind='avaliacao_clinica' OR m.exam_id IS NOT NULL)
+            AND m.suggestion_status IN ('aprovada','editada')
+          JOIN pcmso_programs_v2 p ON p.id=m.pcmso_id AND p.company_id=u.company_id
+          WHERE u.id=${collaboratorId} AND u.company_id=${companyId}
+            AND p.status IN ('em_revisao','vigente')
+            AND (p.saved_at IS NOT NULL OR p.status='vigente')
+            AND (p.valid_from IS NULL OR p.valid_from<=CURDATE())
+            AND (p.valid_until IS NULL OR p.valid_until>=CURDATE())
+          ORDER BY FIELD(p.status,'vigente','em_revisao'),p.updated_at DESC,p.id DESC
+          LIMIT 1`
+    );
+    const linkedId = Number(rowsOf(linkedResult)[0]?.id || 0);
+    if (linkedId) return linkedId;
+  }
   const result: any = await db.execute(
     preferredId
-      ? drzSql`SELECT id FROM pcmso_programs_v2 WHERE id=${preferredId} AND company_id=${companyId} AND status='vigente' AND (valid_from IS NULL OR valid_from<=CURDATE()) AND (valid_until IS NULL OR valid_until>=CURDATE()) LIMIT 1`
-      : drzSql`SELECT id FROM pcmso_programs_v2 WHERE company_id=${companyId} AND status='vigente' AND (valid_from IS NULL OR valid_from<=CURDATE()) AND (valid_until IS NULL OR valid_until>=CURDATE()) ORDER BY updated_at DESC LIMIT 1`
+      ? drzSql`SELECT id FROM pcmso_programs_v2 WHERE id=${preferredId} AND company_id=${companyId} AND status IN ('em_revisao','vigente') AND (saved_at IS NOT NULL OR status='vigente') AND (valid_from IS NULL OR valid_from<=CURDATE()) AND (valid_until IS NULL OR valid_until>=CURDATE()) LIMIT 1`
+      : drzSql`SELECT id FROM pcmso_programs_v2 WHERE company_id=${companyId} AND status IN ('em_revisao','vigente') AND (saved_at IS NOT NULL OR status='vigente') AND (valid_from IS NULL OR valid_from<=CURDATE()) AND (valid_until IS NULL OR valid_until>=CURDATE()) ORDER BY FIELD(status,'vigente','em_revisao'),updated_at DESC LIMIT 1`
   );
   return Number(rowsOf(result)[0]?.id || 0);
+}
+
+async function loadCurrentPcmsoContext(
+  db: any,
+  companyId: number,
+  collaboratorId: number,
+  preferredId?: number | null
+) {
+  const pcmsoId = await resolveCurrentPcmso(
+    db,
+    companyId,
+    preferredId,
+    collaboratorId
+  );
+  if (!pcmsoId) return null;
+  const result: any = await db.execute(
+    drzSql`SELECT p.id pcmso_id,p.title pcmso_title,p.status pcmso_status,
+      p.valid_from,p.valid_until,p.doctor_name,p.doctor_crm,p.revision_number pcmso_revision_number,
+      COALESCE(p.exercise_year,pg.exercise_year,YEAR(COALESCE(p.valid_from,CURDATE()))) exercise_year,
+      pg.id pgr_id,pg.title pgr_title,pg.revision_number pgr_revision_number,
+      g.id gse_id,g.code gse_code,g.name gse_name
+      FROM users u
+      LEFT JOIN occupational_gse_worker_history h ON h.collaborator_id=u.id AND h.company_id=u.company_id AND h.is_current=1
+      LEFT JOIN occupational_gse_master g ON g.id=h.gse_id AND g.company_id=u.company_id
+      JOIN pcmso_programs_v2 p ON p.id=${pcmsoId} AND p.company_id=u.company_id
+      LEFT JOIN pgr_documents pg ON pg.id=p.pgr_id AND pg.company_id=p.company_id
+      WHERE u.id=${collaboratorId} AND u.company_id=${companyId}
+      LIMIT 1`
+  );
+  return rowsOf(result)[0] || null;
 }
 
 async function loadAsoProcedureState(
@@ -887,6 +983,7 @@ export async function ensureOccupationalTables() {
     "periodicity_rules_json",
     "LONGTEXT NULL"
   );
+  await ensureExamScreeningSchema(db);
   await ensureColumn(db, "pgr_gse", "master_gse_id", "INT NULL");
   const defaultQuestions = [
     [
@@ -1088,6 +1185,122 @@ export async function ensureClinicalConsultationExam(
   return Number((result as any)[0]?.insertId || 0);
 }
 
+const INITIAL_OCCUPATIONAL_EXAM_LIBRARY = [
+  {
+    name: "Audiometria",
+    category: "Audiologia ocupacional",
+    resultType: "misto",
+    defaultPeriodicity: "Anual",
+    defaultUnit: "",
+    description:
+      "Exame complementar utilizado para acompanhamento auditivo ocupacional, conforme PCMSO e decisão médica.",
+    referenceGuidance:
+      "Parâmetros de interpretação devem ser cadastrados e validados pelo médico responsável, considerando laudo, metodologia e critérios técnicos aplicáveis.",
+    rules: [
+      { appointmentType: "admissional", periodicity: "no_atendimento", intervalMonths: null, notes: "Aplicar quando previsto no PCMSO." },
+      { appointmentType: "periodico", periodicity: "anual", intervalMonths: 12, notes: "Periodicidade padrão editável pelo médico responsável." },
+    ],
+  },
+  {
+    name: "Hemograma",
+    category: "Laboratorial",
+    resultType: "quantitativo",
+    defaultPeriodicity: "Anual",
+    defaultUnit: "",
+    description:
+      "Exame laboratorial complementar utilizado quando definido pelo PCMSO para determinado GSE, risco ou condição clínica.",
+    referenceGuidance:
+      "Cadastrar faixas por parâmetro somente após validação médica/laboratorial. A plataforma sinaliza alterações para avaliação, sem concluir aptidão automaticamente.",
+    rules: [
+      { appointmentType: "periodico", periodicity: "anual", intervalMonths: 12, notes: "Periodicidade padrão editável conforme PCMSO." },
+    ],
+  },
+  {
+    name: "Espirometria",
+    category: "Função pulmonar",
+    resultType: "misto",
+    defaultPeriodicity: "Anual",
+    defaultUnit: "",
+    description:
+      "Exame complementar para avaliação funcional respiratória quando indicado no PCMSO.",
+    referenceGuidance:
+      "Interpretação depende de laudo, método, valores previstos e validação do profissional responsável. Não utilizar para decisão automática de aptidão.",
+    rules: [
+      { appointmentType: "periodico", periodicity: "anual", intervalMonths: 12, notes: "Periodicidade padrão editável." },
+    ],
+  },
+  {
+    name: "Acuidade Visual",
+    category: "Oftalmologia ocupacional",
+    resultType: "misto",
+    defaultPeriodicity: "Anual",
+    defaultUnit: "",
+    description:
+      "Avaliação visual complementar para atividades e riscos definidos no PCMSO.",
+    referenceGuidance:
+      "Parâmetros devem considerar tipo de avaliação, correção visual e orientação do médico responsável.",
+    rules: [
+      { appointmentType: "admissional", periodicity: "no_atendimento", intervalMonths: null, notes: "Aplicar quando previsto no PCMSO." },
+      { appointmentType: "periodico", periodicity: "anual", intervalMonths: 12, notes: "Periodicidade padrão editável." },
+    ],
+  },
+  {
+    name: "Radiografia de Tórax",
+    category: "Imagem",
+    resultType: "qualitativo",
+    defaultPeriodicity: "Conforme configuração específica",
+    defaultUnit: "",
+    description:
+      "Exame de imagem complementar vinculado a riscos ou protocolos definidos pelo médico responsável.",
+    referenceGuidance:
+      "OCR pode apoiar a leitura textual do laudo, mas a classificação técnica depende da validação profissional.",
+    rules: [
+      { appointmentType: "periodico", periodicity: "personalizada", intervalMonths: null, notes: "Definir conforme PCMSO e critério médico." },
+    ],
+  },
+  {
+    name: "Eletrocardiograma",
+    category: "Cardiologia ocupacional",
+    resultType: "qualitativo",
+    defaultPeriodicity: "Conforme configuração específica",
+    defaultUnit: "",
+    description:
+      "Exame complementar cardiológico utilizado conforme atividade, risco, idade, protocolo ou avaliação médica.",
+    referenceGuidance:
+      "Resultado deve ser revisado por profissional habilitado; a plataforma não define aptidão automaticamente.",
+    rules: [
+      { appointmentType: "periodico", periodicity: "personalizada", intervalMonths: null, notes: "Definir conforme PCMSO." },
+    ],
+  },
+  {
+    name: "Exame Toxicológico",
+    category: "Toxicologia ocupacional",
+    resultType: "qualitativo",
+    defaultPeriodicity: "Conforme configuração específica",
+    defaultUnit: "",
+    description:
+      "Exame toxicológico ocupacional, inclusive para motoristas profissionais quando aplicável ao fluxo S-2221.",
+    referenceGuidance:
+      "Registrar código, laboratório, resultado e validações específicas do processo antes de qualquer envio ao eSocial.",
+    rules: [
+      { appointmentType: "admissional", periodicity: "no_atendimento", intervalMonths: null, notes: "Quando aplicável." },
+      { appointmentType: "periodico", periodicity: "personalizada", intervalMonths: null, notes: "Definir conforme regra vigente e PCMSO." },
+    ],
+  },
+] as const;
+
+async function seedInitialOccupationalExamLibrary(
+  db: any,
+  companyId: number,
+  actorId: number
+) {
+  for (const exam of INITIAL_OCCUPATIONAL_EXAM_LIBRARY) {
+    await db.execute(drzSql`INSERT IGNORE INTO pcmso_exam_catalog_v2
+      (company_id,name,exam_type,category,description,default_periodicity,periodicity_rules_json,result_type,default_unit,reference_guidance,is_active,created_by)
+      VALUES (${companyId},${exam.name},'complementar',${exam.category},${exam.description},${exam.defaultPeriodicity},${JSON.stringify(exam.rules)},${exam.resultType},${exam.defaultUnit || null},${exam.referenceGuidance},1,${actorId})`);
+  }
+}
+
 function catEsocialPayload(
   input: any,
   company: any,
@@ -1096,11 +1309,8 @@ function catEsocialPayload(
 ) {
   const dateTimeParts = (value: unknown) => {
     const raw = String(value || "").trim();
-    const local = raw.match(
-      /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})(?::\d{2})?$/
-    );
-    if (local)
-      return { date: local[1], time: `${local[2]}${local[3]}` };
+    const local = raw.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})(?::\d{2})?$/);
+    if (local) return { date: local[1], time: `${local[2]}${local[3]}` };
     const parsed = new Date(raw);
     return Number.isNaN(parsed.getTime())
       ? { date: null, time: null }
@@ -1228,10 +1438,12 @@ async function notifyCollaboratorDocument(
 ) {
   const key = `occupational-document:${kind}:${entityId}:u${collaboratorId}`;
   await db
-    .execute(drzSql`INSERT INTO notifications
+    .execute(
+      drzSql`INSERT INTO notifications
       (user_id,company_id,type,priority,title,body,link,icon,dedup_key)
       VALUES (${collaboratorId},${companyId},'documento_ocupacional','media',${title},${body},'/documentos-ocupacionais','file-text',${key})
-      ON DUPLICATE KEY UPDATE title=VALUES(title),body=VALUES(body),link=VALUES(link),read_at=NULL,created_at=NOW()`)
+      ON DUPLICATE KEY UPDATE title=VALUES(title),body=VALUES(body),link=VALUES(link),read_at=NULL,created_at=NOW()`
+    )
     .catch(() => undefined);
 }
 
@@ -1249,19 +1461,28 @@ async function notifyProviderOrder(
   for (const row of rowsOf(usersResult)) {
     const userId = Number(row.user_id);
     await db
-      .execute(drzSql`INSERT INTO notifications
+      .execute(
+        drzSql`INSERT INTO notifications
         (user_id,company_id,type,priority,title,body,link,icon,dedup_key)
         VALUES (${userId},${companyId},'requisicao_clinica','alta','Nova requisição ocupacional',${`A requisição ${orderNumber} foi direcionada à clínica para atendimento.`},'/clinica','stethoscope',${`provider-order:${orderId}:${userId}`})
-        ON DUPLICATE KEY UPDATE read_at=NULL,created_at=NOW()`)
+        ON DUPLICATE KEY UPDATE read_at=NULL,created_at=NOW()`
+      )
       .catch(() => undefined);
   }
 }
 
-export function privateDocumentPayload(companyId: number, documentPath: unknown) {
+export function privateDocumentPayload(
+  companyId: number,
+  documentPath: unknown
+) {
   const value = String(documentPath || "").trim();
   const root = path.resolve(privateRoot(companyId));
   const resolved = path.resolve(value || root);
-  if (!value || !resolved.startsWith(`${root}${path.sep}`) || !fs.existsSync(resolved)) {
+  if (
+    !value ||
+    !resolved.startsWith(`${root}${path.sep}`) ||
+    !fs.existsSync(resolved)
+  ) {
     throw new TRPCError({
       code: "NOT_FOUND",
       message: "Documento digital não encontrado.",
@@ -1867,8 +2088,8 @@ export const occupationalLifecycleRouter = router({
             .includes(input.position.toLowerCase())
         )
           return false;
-        const gseStatus = input?.gseStatus ||
-          (input?.onlyWithoutGse ? "without" : "all");
+        const gseStatus =
+          input?.gseStatus || (input?.onlyWithoutGse ? "without" : "all");
         if (gseStatus === "without" && row.gse_id) return false;
         if (gseStatus === "current" && !row.gse_id) return false;
         if (
@@ -2131,8 +2352,18 @@ export const occupationalLifecycleRouter = router({
     const db = await getDb();
     const companyId = companyOf(ctx);
     if (!db) return [];
+    await seedInitialOccupationalExamLibrary(
+      db,
+      companyId,
+      Number(ctx.user.id)
+    );
     const result: any = await db.execute(
-      drzSql`SELECT * FROM pcmso_exam_catalog_v2 WHERE company_id=${companyId} ORDER BY is_active DESC,category,name`
+      drzSql`SELECT e.*,
+        (SELECT COUNT(*) FROM occupational_exam_reference_rules r
+          WHERE r.company_id=e.company_id AND r.exam_id=e.id AND r.is_active=1) reference_rule_count
+        FROM pcmso_exam_catalog_v2 e
+        WHERE e.company_id=${companyId}
+        ORDER BY e.is_active DESC,e.category,e.name`
     );
     return rowsOf(result);
   }),
@@ -2164,7 +2395,13 @@ export const occupationalLifecycleRouter = router({
                 "bienal",
                 "personalizada",
               ]),
-              intervalMonths: z.number().int().min(1).max(120).nullable().optional(),
+              intervalMonths: z
+                .number()
+                .int()
+                .min(1)
+                .max(120)
+                .nullable()
+                .optional(),
               notes: z.string().max(1000).optional(),
             })
           )
@@ -2200,8 +2437,9 @@ export const occupationalLifecycleRouter = router({
         personalizada: "Conforme configuração específica",
       };
       const preferredRule =
-        input.periodicityRules.find(rule => rule.appointmentType === "periodico") ||
-        input.periodicityRules[0];
+        input.periodicityRules.find(
+          rule => rule.appointmentType === "periodico"
+        ) || input.periodicityRules[0];
       const defaultPeriodicity =
         input.defaultPeriodicity ||
         (preferredRule
@@ -2236,11 +2474,17 @@ export const occupationalLifecycleRouter = router({
       const current = rowsOf(currentResult)[0] || null;
       const changed = technicalChangedFields(previous, current);
       if (!previous || Object.keys(changed).length) {
-        const periodicityChanged = Boolean(previous && changed.default_periodicity);
+        const periodicityChanged = Boolean(
+          previous && changed.default_periodicity
+        );
         await recordTechnicalChangeEvent(db, {
           companyId,
           originRole: String(ctx.user.role || "sesmt"),
-          changeType: previous ? (periodicityChanged ? "exam_periodicity_updated" : "exam_updated") : "exam_added",
+          changeType: previous
+            ? periodicityChanged
+              ? "exam_periodicity_updated"
+              : "exam_updated"
+            : "exam_added",
           entityType: "exam_catalog",
           entityId: id,
           title: previous
@@ -2249,9 +2493,10 @@ export const occupationalLifecycleRouter = router({
               : "Exame do Catálogo Mestre alterado"
             : "Novo exame incluído no Catálogo Mestre",
           summary: `${current?.name || input.name}${current?.default_periodicity ? ` · ${current.default_periodicity}` : ""}`,
-          actionExpected: String(ctx.user.role || "") === "medico"
-            ? "O SESMT deve avaliar os reflexos operacionais nas requisições e controles de exames."
-            : "O médico deve avaliar se a alteração impacta definições do PCMSO.",
+          actionExpected:
+            String(ctx.user.role || "") === "medico"
+              ? "O SESMT deve avaliar os reflexos operacionais nas requisições e controles de exames."
+              : "O médico deve avaliar se a alteração impacta definições do PCMSO.",
           before: previous,
           after: current,
           context: { category: current?.category || input.category || null },
@@ -2259,6 +2504,193 @@ export const occupationalLifecycleRouter = router({
         });
       }
       return { ok: true, id };
+    }),
+
+  listExamReferenceRules: protectedProcedure
+    .input(
+      z.object({
+        examId: z.number().int().positive(),
+        includeHistory: z.boolean().default(true),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      requireExamCatalogManager(ctx);
+      await ensureOccupationalTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) return [];
+      await requireOwnedEntity(db, companyId, "exam", input.examId, "Exame");
+      const result: any =
+        await db.execute(drzSql`SELECT r.*,u.name created_by_name
+        FROM occupational_exam_reference_rules r
+        LEFT JOIN users u ON u.id=r.created_by
+        WHERE r.company_id=${companyId} AND r.exam_id=${input.examId}
+          AND (${input.includeHistory ? 1 : 0}=1 OR r.is_active=1)
+        ORDER BY r.is_active DESC,r.parameter_name,r.version DESC,r.id DESC`);
+      return rowsOf(result).map((row: any) => ({
+        ...row,
+        aliases: jsonArray(row.aliases_json),
+        qualitativeNormal: jsonArray(row.qualitative_normal_json),
+        qualitativeAltered: jsonArray(row.qualitative_altered_json),
+      }));
+    }),
+
+  upsertExamReferenceRule: protectedProcedure
+    .input(
+      z.object({
+        id: z.number().int().positive().optional(),
+        examId: z.number().int().positive(),
+        parameterName: z.string().min(1).max(255),
+        aliases: z.array(z.string().min(1).max(255)).max(50).default([]),
+        sexScope: z
+          .enum(["todos", "feminino", "masculino", "outro"])
+          .default("todos"),
+        ageMinYears: z.number().min(0).max(130).nullable().optional(),
+        ageMaxYears: z.number().min(0).max(130).nullable().optional(),
+        methodPattern: z.string().max(255).optional(),
+        laboratoryPattern: z.string().max(255).optional(),
+        unit: z.string().max(80).optional(),
+        lowerBound: z.number().finite().nullable().optional(),
+        upperBound: z.number().finite().nullable().optional(),
+        criticalLowerBound: z.number().finite().nullable().optional(),
+        criticalUpperBound: z.number().finite().nullable().optional(),
+        qualitativeNormal: z
+          .array(z.string().min(1).max(255))
+          .max(50)
+          .default([]),
+        qualitativeAltered: z
+          .array(z.string().min(1).max(255))
+          .max(50)
+          .default([]),
+        notes: z.string().max(10000).optional(),
+        effectiveFrom: z.string().date().nullable().optional(),
+        effectiveUntil: z.string().date().nullable().optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      requireExamCatalogManager(ctx);
+      await ensureOccupationalTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      await requireOwnedEntity(db, companyId, "exam", input.examId, "Exame");
+      const lower = input.lowerBound ?? null;
+      const upper = input.upperBound ?? null;
+      const criticalLower = input.criticalLowerBound ?? null;
+      const criticalUpper = input.criticalUpperBound ?? null;
+      if (
+        lower === null &&
+        upper === null &&
+        criticalLower === null &&
+        criticalUpper === null &&
+        !input.qualitativeNormal.length &&
+        !input.qualitativeAltered.length
+      )
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "Informe uma faixa numérica ou valores qualitativos para a regra.",
+        });
+      if (lower !== null && upper !== null && lower > upper)
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "O limite mínimo não pode ser maior que o limite máximo.",
+        });
+      if (
+        input.ageMinYears !== null &&
+        input.ageMinYears !== undefined &&
+        input.ageMaxYears !== null &&
+        input.ageMaxYears !== undefined &&
+        input.ageMinYears > input.ageMaxYears
+      )
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "A idade mínima não pode ser maior que a idade máxima.",
+        });
+      if (
+        input.effectiveFrom &&
+        input.effectiveUntil &&
+        input.effectiveFrom > input.effectiveUntil
+      )
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "O início da vigência não pode ser posterior ao término.",
+        });
+
+      let previous: any = null;
+      let version = 1;
+      if (input.id) {
+        const previousResult: any = await db.execute(
+          drzSql`SELECT * FROM occupational_exam_reference_rules WHERE id=${input.id} AND company_id=${companyId} AND exam_id=${input.examId} LIMIT 1`
+        );
+        previous = rowsOf(previousResult)[0];
+        if (!previous) throw new TRPCError({ code: "NOT_FOUND" });
+        version = Number(previous.version || 1) + 1;
+        await db.execute(
+          drzSql`UPDATE occupational_exam_reference_rules SET is_active=0 WHERE id=${input.id} AND company_id=${companyId}`
+        );
+      }
+      const created: any =
+        await db.execute(drzSql`INSERT INTO occupational_exam_reference_rules
+        (company_id,exam_id,parameter_name,aliases_json,sex_scope,age_min_years,age_max_years,method_pattern,laboratory_pattern,unit,lower_bound,upper_bound,critical_lower_bound,critical_upper_bound,qualitative_normal_json,qualitative_altered_json,notes,effective_from,effective_until,version,supersedes_rule_id,is_active,created_by)
+        VALUES (${companyId},${input.examId},${input.parameterName.trim()},${JSON.stringify(input.aliases)},${input.sexScope},${input.ageMinYears ?? null},${input.ageMaxYears ?? null},${input.methodPattern || null},${input.laboratoryPattern || null},${input.unit || null},${lower},${upper},${criticalLower},${criticalUpper},${JSON.stringify(input.qualitativeNormal)},${JSON.stringify(input.qualitativeAltered)},${input.notes || null},${input.effectiveFrom || null},${input.effectiveUntil || null},${version},${previous?.id || null},1,${Number(ctx.user.id)})`);
+      const id = Number((created as any)[0]?.insertId || 0);
+      const reprocessed = await reprocessPendingExamResults(
+        db,
+        companyId,
+        input.examId,
+        Number(ctx.user.id)
+      );
+      await audit(
+        db,
+        ctx,
+        previous
+          ? "exam_reference_rule_versioned"
+          : "exam_reference_rule_created",
+        "exam_reference_rule",
+        id,
+        undefined,
+        {
+          examId: input.examId,
+          parameterName: input.parameterName,
+          version,
+          supersedesRuleId: previous?.id || null,
+          pendingResultsReprocessed: reprocessed,
+        }
+      );
+      return { ok: true, id, version, reprocessed };
+    }),
+
+  archiveExamReferenceRule: protectedProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ ctx, input }) => {
+      requireExamCatalogManager(ctx);
+      await ensureOccupationalTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const result: any = await db.execute(
+        drzSql`SELECT id,exam_id,parameter_name,version FROM occupational_exam_reference_rules WHERE id=${input.id} AND company_id=${companyId} LIMIT 1`
+      );
+      const row = rowsOf(result)[0];
+      if (!row) throw new TRPCError({ code: "NOT_FOUND" });
+      await db.execute(
+        drzSql`UPDATE occupational_exam_reference_rules SET is_active=0 WHERE id=${input.id} AND company_id=${companyId}`
+      );
+      await audit(
+        db,
+        ctx,
+        "exam_reference_rule_archived",
+        "exam_reference_rule",
+        input.id,
+        undefined,
+        {
+          examId: row.exam_id,
+          parameterName: row.parameter_name,
+          version: row.version,
+        }
+      );
+      return { ok: true };
     }),
 
   listProviders: protectedProcedure.query(async ({ ctx }) => {
@@ -2481,7 +2913,8 @@ export const occupationalLifecycleRouter = router({
           });
           emailSent = Boolean(sent.ok && !sent.preview);
           if (sent.preview)
-            emailWarning = "SMTP não configurado; convite mantido para ativação.";
+            emailWarning =
+              "SMTP não configurado; convite mantido para ativação.";
           else if (!sent.ok)
             emailWarning = `E-mail não enviado: ${sent.error || "falha desconhecida"}`;
         } catch (error: any) {
@@ -2927,13 +3360,7 @@ export const occupationalLifecycleRouter = router({
           "Nova requisicao de exame ocupacional",
           "Uma requisicao vigente foi disponibilizada em seus documentos ocupacionais."
         );
-        await notifyProviderOrder(
-          db,
-          companyId,
-          input.providerId,
-          id,
-          number
-        );
+        await notifyProviderOrder(db, companyId, input.providerId, id, number);
         await audit(
           db,
           ctx,
@@ -3045,13 +3472,7 @@ export const occupationalLifecycleRouter = router({
           "Nova requisicao de exame ocupacional",
           "Uma requisicao vigente foi disponibilizada em seus documentos ocupacionais."
         );
-        await notifyProviderOrder(
-          db,
-          companyId,
-          input.providerId,
-          id,
-          number
-        );
+        await notifyProviderOrder(db, companyId, input.providerId, id, number);
         await audit(
           db,
           ctx,
@@ -3145,13 +3566,7 @@ export const occupationalLifecycleRouter = router({
         "Requisicao de exame atualizada",
         "A requisicao anterior foi substituida. Consulte apenas a nova versao vigente em seus documentos ocupacionais."
       );
-      await notifyProviderOrder(
-        db,
-        companyId,
-        input.providerId,
-        id,
-        number
-      );
+      await notifyProviderOrder(db, companyId, input.providerId, id, number);
       await audit(
         db,
         ctx,
@@ -3332,6 +3747,12 @@ export const occupationalLifecycleRouter = router({
             parameters_json: null,
             reference_text: null,
             medical_notes: null,
+            automated_screening_json: null,
+            automated_screening_status: row.reviewed_at
+              ? "revisado"
+              : ["alterado", "critico"].includes(row.automated_screening_status)
+                ? "requer_avaliacao_medica"
+                : "aguardando_revisao",
             document_private_path: null,
             classification: row.reviewed_at ? "revisado" : "pendente_revisao",
             result_summary: row.reviewed_at
@@ -3340,6 +3761,83 @@ export const occupationalLifecycleRouter = router({
           }
     );
   }),
+
+  listAlteredExamResults: protectedProcedure
+    .input(
+      z
+        .object({
+          periodStart: z.string().date().optional(),
+          periodEnd: z.string().date().optional(),
+          examId: z.number().int().positive().optional(),
+          query: z.string().max(120).optional(),
+          status: z
+            .enum(["todos", "critico", "alterado", "confirmado", "pendente"])
+            .default("todos"),
+        })
+        .default({ status: "todos" })
+    )
+    .query(async ({ ctx, input }) => {
+      requireOperational(ctx);
+      await ensureOccupationalTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) return [];
+      const start = input.periodStart || "2000-01-01";
+      const end = input.periodEnd || "2100-12-31";
+      const search = `%${String(input.query || "").trim()}%`;
+      const result: any =
+        await db.execute(drzSql`SELECT r.*,u.name collaborator_name,u.cpf,u.employee_registration,
+          e.name exam_name,reviewer.name reviewer_name
+        FROM occupational_exam_results r
+        JOIN users u ON u.id=r.collaborator_id AND u.company_id=r.company_id
+        JOIN pcmso_exam_catalog_v2 e ON e.id=r.exam_id AND e.company_id=r.company_id
+        LEFT JOIN users reviewer ON reviewer.id=r.reviewed_by
+        WHERE r.company_id=${companyId}
+          AND DATE(r.performed_at) BETWEEN ${start} AND ${end}
+          AND (${input.examId || 0}=0 OR r.exam_id=${input.examId || 0})
+          AND (${String(input.query || "").trim()}='' OR u.name LIKE ${search} OR u.cpf LIKE ${search} OR e.name LIKE ${search})
+          AND (r.classification='alterado' OR r.automated_screening_status IN ('alterado','critico'))
+          AND (${input.status}='todos'
+            OR (${input.status}='critico' AND r.automated_screening_status='critico')
+            OR (${input.status}='alterado' AND r.automated_screening_status='alterado')
+            OR (${input.status}='confirmado' AND r.classification='alterado' AND r.reviewed_at IS NOT NULL)
+            OR (${input.status}='pendente' AND r.reviewed_at IS NULL))
+        ORDER BY FIELD(r.automated_screening_status,'critico','alterado'),r.reviewed_at IS NULL DESC,r.performed_at DESC,r.id DESC
+        LIMIT 3000`);
+      const isDoctor = roleOf(ctx) === "medico";
+      return rowsOf(result).map((row: any) => {
+        const operationalStatus = row.reviewed_at
+          ? row.classification === "alterado"
+            ? "alteracao_confirmada"
+            : "revisado_pelo_medico"
+          : "aguardando_avaliacao_medica";
+        if (isDoctor)
+          return {
+            ...row,
+            operational_status: operationalStatus,
+            screening: safeJsonObject(row.automated_screening_json),
+          };
+        return {
+          id: row.id,
+          collaborator_id: row.collaborator_id,
+          collaborator_name: row.collaborator_name,
+          cpf: row.cpf,
+          employee_registration: row.employee_registration,
+          exam_id: row.exam_id,
+          exam_name: row.exam_name,
+          performed_at: row.performed_at,
+          reviewed_at: row.reviewed_at,
+          reviewer_name: row.reviewer_name,
+          operational_status: operationalStatus,
+          automated_screening_status: row.reviewed_at
+            ? "revisado"
+            : "requer_avaliacao_medica",
+          action_required: row.reviewed_at
+            ? "Acompanhar somente a conduta ocupacional comunicada pelo médico."
+            : "Aguardar avaliação do médico responsável.",
+        };
+      });
+    }),
 
   getExamResultDocument: protectedProcedure
     .input(z.object({ id: z.number().int().positive() }))
@@ -3446,7 +3944,7 @@ export const occupationalLifecycleRouter = router({
                     content: [
                       {
                         type: "text",
-                        text: "Leia este laudo de exame ocupacional brasileiro somente como apoio de digitação. Não conclua diagnóstico, autenticidade nem aptidão. Retorne JSON com fields: employeeName, cpf, employeeRegistration, examName, performedDate (YYYY-MM-DD), laboratoryName, resultType (qualitativo, quantitativo ou misto), resultSummary, referenceText; parameters como array de {name,value,unit,reference}; confidence de 0 a 1 por campo; warnings como array. Use null quando não estiver legível e preserve a referência informada no próprio laudo.",
+                        text: "Leia este laudo de exame ocupacional brasileiro somente como apoio de digitação. Não conclua diagnóstico, autenticidade nem aptidão. Retorne JSON com fields: employeeName, cpf, employeeRegistration, examName, performedDate (YYYY-MM-DD), laboratoryName, methodName, resultType (qualitativo, quantitativo ou misto), resultSummary, referenceText; parameters como array de {name,value,unit,reference}; confidence de 0 a 1 por campo; warnings como array. Use null quando não estiver legível e preserve a referência informada no próprio laudo para cada parâmetro.",
                       },
                       {
                         type: "image_url",
@@ -3559,6 +4057,7 @@ export const occupationalLifecycleRouter = router({
         examId: z.number().int().positive(),
         performedAt: z.string().min(10).max(40),
         laboratoryName: z.string().max(255).optional(),
+        methodName: z.string().max(255).optional(),
         resultType: z.enum(["qualitativo", "quantitativo", "misto"]),
         resultSummary: z.string().max(20000).optional(),
         parameters: z
@@ -3623,9 +4122,15 @@ export const occupationalLifecycleRouter = router({
       const classification = "pendente_revisao";
       const result: any =
         await db.execute(drzSql`INSERT INTO occupational_exam_results
-        (company_id,order_id,collaborator_id,exam_id,performed_at,laboratory_name,result_type,result_summary,parameters_json,reference_text,classification,source,identity_status,document_private_path,created_by)
-        VALUES (${companyId},${input.orderId || null},${input.collaboratorId},${input.examId},${input.performedAt},${input.laboratoryName || null},${input.resultType},${input.resultSummary || null},${JSON.stringify(input.parameters)},${input.referenceText || null},${classification},${input.source},${input.identityStatus},${documentPath},${Number(ctx.user.id)})`);
+        (company_id,order_id,collaborator_id,exam_id,performed_at,laboratory_name,method_name,result_type,result_summary,parameters_json,reference_text,classification,source,identity_status,document_private_path,created_by)
+        VALUES (${companyId},${input.orderId || null},${input.collaboratorId},${input.examId},${input.performedAt},${input.laboratoryName || null},${input.methodName || null},${input.resultType},${input.resultSummary || null},${JSON.stringify(input.parameters)},${input.referenceText || null},${classification},${input.source},${input.identityStatus},${documentPath},${Number(ctx.user.id)})`);
       const id = Number((result as any)[0]?.insertId || 0);
+      const screening = await evaluateAndStoreExamResult(
+        db,
+        companyId,
+        id,
+        Number(ctx.user.id)
+      );
       if (input.orderId)
         await db.execute(
           drzSql`UPDATE occupational_exam_orders SET status='realizada' WHERE id=${input.orderId} AND company_id=${companyId}`
@@ -3637,7 +4142,11 @@ export const occupationalLifecycleRouter = router({
         "exam_result",
         id,
         input.collaboratorId,
-        { source: input.source, identityStatus: input.identityStatus }
+        {
+          source: input.source,
+          identityStatus: input.identityStatus,
+          screeningStatus: screening?.status || "nao_classificado",
+        }
       );
       if (documentPath && input.identityStatus === "confirmado") {
         await notifyCollaboratorDocument(
@@ -3650,7 +4159,7 @@ export const occupationalLifecycleRouter = router({
           "Um resultado de exame identificado para voce foi disponibilizado em seus documentos ocupacionais."
         );
       }
-      return { ok: true, id, classification };
+      return { ok: true, id, classification, screening };
     }),
 
   reviewExamResult: protectedProcedure
@@ -3677,18 +4186,61 @@ export const occupationalLifecycleRouter = router({
         drzSql`UPDATE occupational_exam_results SET classification=${input.classification},medical_notes=${input.medicalNotes || null},reviewed_by=${Number(ctx.user.id)},reviewed_at=NOW() WHERE id=${input.id} AND company_id=${companyId}`
       );
       const row: any = await db.execute(
-        drzSql`SELECT collaborator_id FROM occupational_exam_results WHERE id=${input.id} AND company_id=${companyId} LIMIT 1`
+        drzSql`SELECT collaborator_id,automated_screening_status FROM occupational_exam_results WHERE id=${input.id} AND company_id=${companyId} LIMIT 1`
       );
+      const reviewed = rowsOf(row)[0] || {};
       await audit(
         db,
         ctx,
         "exam_result_reviewed",
         "exam_result",
         input.id,
-        Number(rowsOf(row)[0]?.collaborator_id || 0),
-        { classification: input.classification }
+        Number(reviewed.collaborator_id || 0),
+        {
+          classification: input.classification,
+          automatedScreeningStatus:
+            reviewed.automated_screening_status || "nao_classificado",
+          doctorOverride:
+            ["normal", "alterado"].includes(input.classification) &&
+            ["normal", "alterado", "critico"].includes(
+              String(reviewed.automated_screening_status || "")
+            ) &&
+            (input.classification === "normal"
+              ? reviewed.automated_screening_status !== "normal"
+              : !["alterado", "critico"].includes(
+                  reviewed.automated_screening_status
+                )),
+        }
       );
       return { ok: true };
+    }),
+
+  reevaluateExamResult: protectedProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ ctx, input }) => {
+      requireExamCatalogManager(ctx);
+      await ensureOccupationalTables();
+      const db = await getDb();
+      const companyId = companyOf(ctx);
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const exists: any = await db.execute(
+        drzSql`SELECT id,reviewed_at FROM occupational_exam_results WHERE id=${input.id} AND company_id=${companyId} LIMIT 1`
+      );
+      const row = rowsOf(exists)[0];
+      if (!row) throw new TRPCError({ code: "NOT_FOUND" });
+      if (row.reviewed_at)
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Resultados já revisados preservam a triagem original. Registre uma nova versão do resultado para nova análise.",
+        });
+      const screening = await evaluateAndStoreExamResult(
+        db,
+        companyId,
+        input.id,
+        Number(ctx.user.id)
+      );
+      return { ok: true, screening };
     }),
 
   getAnamnesisContext: protectedProcedure
@@ -3699,7 +4251,12 @@ export const occupationalLifecycleRouter = router({
       const db = await getDb();
       const companyId = companyOf(ctx);
       if (!db) return null;
-      const [worker, results, orders, anamneses, risks, program] =
+      const programContext = await loadCurrentPcmsoContext(
+        db,
+        companyId,
+        input.collaboratorId
+      );
+      const [worker, results, orders, anamneses, risks] =
         await Promise.all([
           db.execute(
             drzSql`SELECT u.id,u.name,u.cpf,u.position,b.name branch_name,s.name sector_name,g.id gse_id,g.code gse_code,g.name gse_name FROM users u LEFT JOIN branches b ON b.id=u.branch_id LEFT JOIN sectors s ON s.id=u.sector_id LEFT JOIN occupational_gse_worker_history h ON h.collaborator_id=u.id AND h.company_id=u.company_id AND h.is_current=1 LEFT JOIN occupational_gse_master g ON g.id=h.gse_id WHERE u.id=${input.collaboratorId} AND u.company_id=${companyId} LIMIT 1`
@@ -3714,10 +4271,9 @@ export const occupationalLifecycleRouter = router({
             drzSql`SELECT id,anamnesis_type,status,created_at,updated_at FROM occupational_anamneses WHERE company_id=${companyId} AND collaborator_id=${input.collaboratorId} ORDER BY created_at DESC LIMIT 30`
           ),
           db.execute(
-            drzSql`SELECT DISTINCT m.risk_name,m.risk_type,m.risk_classification,m.monitoring_kind,m.monitoring_name,m.periodicity,e.name exam_name FROM users u JOIN occupational_gse_worker_history h ON h.collaborator_id=u.id AND h.company_id=u.company_id AND h.is_current=1 JOIN pcmso_risk_monitoring_v2 m ON m.company_id=u.company_id AND m.master_gse_id=h.gse_id LEFT JOIN pcmso_exam_catalog_v2 e ON e.id=m.exam_id WHERE u.id=${input.collaboratorId} AND u.company_id=${companyId} ORDER BY m.risk_name`
-          ),
-          db.execute(
-            drzSql`SELECT p.id pcmso_id,p.title pcmso_title,p.valid_from,p.valid_until,p.doctor_name,p.doctor_crm,pg.id pgr_id,pg.title pgr_title FROM pcmso_programs_v2 p LEFT JOIN pgr_documents pg ON pg.id=p.pgr_id AND pg.company_id=p.company_id WHERE p.company_id=${companyId} AND p.status='vigente' AND (p.valid_from IS NULL OR p.valid_from<=CURDATE()) AND (p.valid_until IS NULL OR p.valid_until>=CURDATE()) ORDER BY p.updated_at DESC LIMIT 1`
+            programContext?.pcmso_id
+              ? drzSql`SELECT DISTINCT m.risk_name,m.risk_type,m.risk_classification,m.monitoring_kind,m.monitoring_name,m.periodicity,e.name exam_name FROM users u JOIN occupational_gse_worker_history h ON h.collaborator_id=u.id AND h.company_id=u.company_id AND h.is_current=1 JOIN pcmso_risk_monitoring_v2 m ON m.company_id=u.company_id AND m.master_gse_id=h.gse_id AND m.pcmso_id=${Number(programContext.pcmso_id)} LEFT JOIN pcmso_exam_catalog_v2 e ON e.id=m.exam_id WHERE u.id=${input.collaboratorId} AND u.company_id=${companyId} ORDER BY m.risk_name`
+              : drzSql`SELECT DISTINCT m.risk_name,m.risk_type,m.risk_classification,m.monitoring_kind,m.monitoring_name,m.periodicity,e.name exam_name FROM users u JOIN occupational_gse_worker_history h ON h.collaborator_id=u.id AND h.company_id=u.company_id AND h.is_current=1 JOIN pcmso_risk_monitoring_v2 m ON m.company_id=u.company_id AND m.master_gse_id=h.gse_id LEFT JOIN pcmso_exam_catalog_v2 e ON e.id=m.exam_id WHERE u.id=${input.collaboratorId} AND u.company_id=${companyId} ORDER BY m.risk_name`
           ),
         ]);
       return {
@@ -3726,7 +4282,7 @@ export const occupationalLifecycleRouter = router({
         orders: rowsOf(orders),
         anamneses: rowsOf(anamneses),
         risks: rowsOf(risks),
-        program: rowsOf(program)[0] || null,
+        program: programContext,
       };
     }),
 
@@ -3954,7 +4510,12 @@ export const occupationalLifecycleRouter = router({
         input.collaboratorId,
         "Colaborador"
       );
-      const pcmsoId = await resolveCurrentPcmso(db, companyId);
+      const pcmsoId = await resolveCurrentPcmso(
+        db,
+        companyId,
+        null,
+        input.collaboratorId
+      );
       if (!pcmsoId)
         return {
           ready: false,
@@ -4038,11 +4599,13 @@ export const occupationalLifecycleRouter = router({
           code: "PRECONDITION_FAILED",
           message: "Cadastre o CRM do médico antes de emitir o ASO.",
         });
-      const resolvedPcmsoId = await resolveCurrentPcmso(
+      const programContext = await loadCurrentPcmsoContext(
         db,
         companyId,
+        input.collaboratorId,
         input.pcmsoId
       );
+      const resolvedPcmsoId = Number(programContext?.pcmso_id || 0);
       if (!resolvedPcmsoId)
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
@@ -4068,9 +4631,7 @@ export const occupationalLifecycleRouter = router({
           db.execute(
             drzSql`SELECT DISTINCT m.risk_name,m.risk_type,m.risk_classification,m.monitoring_kind,m.monitoring_name,e.name exam_name FROM pcmso_risk_monitoring_v2 m LEFT JOIN pcmso_exam_catalog_v2 e ON e.id=m.exam_id AND e.company_id=m.company_id WHERE m.company_id=${companyId} AND m.pcmso_id=${resolvedPcmsoId} AND m.master_gse_id=${worker.gse_id || 0} ORDER BY m.risk_name`
           ),
-          db.execute(
-            drzSql`SELECT p.title,p.valid_from,p.valid_until,p.doctor_name,p.doctor_crm,pg.title pgr_title FROM pcmso_programs_v2 p LEFT JOIN pgr_documents pg ON pg.id=p.pgr_id AND pg.company_id=p.company_id WHERE p.id=${resolvedPcmsoId} AND p.company_id=${companyId} LIMIT 1`
-          ),
+          Promise.resolve([[programContext]]),
         ]);
       if (!rowsOf(anamnesisResult).length)
         throw new TRPCError({
@@ -5287,7 +5848,14 @@ export const occupationalLifecycleRouter = router({
             drzSql`UPDATE occupational_exam_orders SET pdf_private_path=${file} WHERE id=${input.id} AND company_id=${companyId}`
           );
         }
-        await audit(db, ctx, "employee_document_downloaded", "exam_order", input.id, collaboratorId);
+        await audit(
+          db,
+          ctx,
+          "employee_document_downloaded",
+          "exam_order",
+          input.id,
+          collaboratorId
+        );
         const payload = privateDocumentPayload(companyId, file);
         return { fileName: payload.fileName, dataBase64: payload.dataBase64 };
       }
@@ -5299,7 +5867,14 @@ export const occupationalLifecycleRouter = router({
         const row = rowsOf(result)[0];
         if (!row) throw new TRPCError({ code: "NOT_FOUND" });
         const payload = privateDocumentPayload(companyId, row.pdf_private_path);
-        await audit(db, ctx, "employee_document_downloaded", "aso", input.id, collaboratorId);
+        await audit(
+          db,
+          ctx,
+          "employee_document_downloaded",
+          "aso",
+          input.id,
+          collaboratorId
+        );
         return { fileName: payload.fileName, dataBase64: payload.dataBase64 };
       }
 
@@ -5309,8 +5884,18 @@ export const occupationalLifecycleRouter = router({
         );
         const row = rowsOf(result)[0];
         if (!row) throw new TRPCError({ code: "NOT_FOUND" });
-        const payload = privateDocumentPayload(companyId, row.document_private_path);
-        await audit(db, ctx, "employee_document_downloaded", "exam_result", input.id, collaboratorId);
+        const payload = privateDocumentPayload(
+          companyId,
+          row.document_private_path
+        );
+        await audit(
+          db,
+          ctx,
+          "employee_document_downloaded",
+          "exam_result",
+          input.id,
+          collaboratorId
+        );
         return { fileName: payload.fileName, dataBase64: payload.dataBase64 };
       }
 
@@ -5326,8 +5911,20 @@ export const occupationalLifecycleRouter = router({
       const row = rowsOf(referralResult)[0];
       if (!row) throw new TRPCError({ code: "NOT_FOUND" });
       const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>@page{size:A4;margin:18mm}body{font-family:Arial;color:#173047;font-size:10pt;line-height:1.55}h1{border-bottom:4px solid #0895a5;padding-bottom:5mm}.box{border:1px solid #d8e2e8;padding:5mm;margin:6mm 0}.sign{margin-top:22mm;text-align:center}.line{border-top:1px solid #173047;width:85mm;margin:auto}</style></head><body><h1>ENCAMINHAMENTO MEDICO OCUPACIONAL</h1><p><b>${esc(row.company_name)}</b><br>CNPJ: ${esc(row.cnpj || "-")}</p><div class="box"><b>Colaborador:</b> ${esc(row.collaborator_name)}<br><b>CPF:</b> ${esc(row.cpf || "-")}<br><b>Matricula:</b> ${esc(row.employee_registration || "-")}<br><b>Data:</b> ${esc(row.referral_date)}</div><div class="box"><b>Destino:</b> ${esc(row.destination_name || String(row.destination_type || "").replaceAll("_", " "))}<br><br><b>Motivo:</b><br>${esc(row.reason || "Nao informado")}<br><br><b>Orientacoes:</b><br>${esc(row.guidance || "Nao informadas")}</div><div class="sign"><div class="line"></div><b>${esc(row.doctor_name)}</b><br>${esc([row.crm, row.crm_state].filter(Boolean).join("/") || "CRM nao informado")}</div></body></html>`;
-      const file = await renderPdf(companyId, "referrals", `encaminhamento_${input.id}.pdf`, html);
-      await audit(db, ctx, "employee_document_downloaded", "medical_referral", input.id, collaboratorId);
+      const file = await renderPdf(
+        companyId,
+        "referrals",
+        `encaminhamento_${input.id}.pdf`,
+        html
+      );
+      await audit(
+        db,
+        ctx,
+        "employee_document_downloaded",
+        "medical_referral",
+        input.id,
+        collaboratorId
+      );
       return {
         fileName: path.basename(file),
         dataBase64: `data:application/pdf;base64,${fs.readFileSync(file).toString("base64")}`,

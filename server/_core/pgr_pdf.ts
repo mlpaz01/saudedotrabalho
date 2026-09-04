@@ -22,6 +22,29 @@ function esc(s: unknown): string {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] as string));
 }
 
+async function pdfImageSrcFromUpload(url?: string | null): Promise<string | null> {
+  if (!url) return null;
+  const clean = String(url).trim();
+  if (!clean) return null;
+  if (/^(data:|https?:|file:)/i.test(clean)) return clean;
+  if (!clean.startsWith("/uploads/") && !clean.startsWith("/api/uploads/")) return clean;
+  const rel = clean.replace(/^\/api\/uploads\/?/, "").replace(/^\/uploads\/?/, "");
+  const fullPath = path.join(getUploadRoot(), rel);
+  try {
+    const buffer = await fs.readFile(fullPath);
+    const ext = path.extname(fullPath).toLowerCase();
+    const mime =
+      ext === ".png" ? "image/png" :
+      ext === ".webp" ? "image/webp" :
+      ext === ".gif" ? "image/gif" :
+      "image/jpeg";
+    return `data:${mime};base64,${buffer.toString("base64")}`;
+  } catch (error) {
+    console.warn("[pgr_pdf] signature image not readable:", clean, (error as Error)?.message);
+    return clean;
+  }
+}
+
 /** Quebra texto multilinha em parágrafos preservando \n. */
 function multiline(s: unknown): string {
   if (s == null) return "";
@@ -1074,6 +1097,7 @@ export async function generatePGRPDF(d: PgrData): Promise<string> {
   const respTec = d.respTecnicoNome
     ? `${esc(d.respTecnicoNome)}${d.respTecnicoRegistro ? ` — ${esc(d.respTecnicoRegistro)}` : ""}`
     : "Responsável Técnico (a definir)";
+  const respTecnicoAssinaturaSrc = await pdfImageSrcFromUpload(d.respTecnicoAssinaturaUrl);
   const empresaNome = esc(d.razaoSocial || d.nomeFantasia || "Empresa");
   const rootId = Number(d.revisionRootId || d.documentNumber || d.id);
   const revisionNumber = Number(d.revisionNumber || 0);
@@ -1148,7 +1172,7 @@ ${renderUserText(d.textoConclusao)}
     <tr><td>Data de emissão</td><td>${esc(now.toLocaleDateString("pt-BR"))}</td></tr>
   </table>
   <div class="signature">
-    ${d.respTecnicoAssinaturaUrl ? `<img src="${esc(d.respTecnicoAssinaturaUrl)}" alt="Assinatura" style="max-height:60px;display:block;margin:0 auto 8px;">` : '<div class="line"></div>'}
+    ${respTecnicoAssinaturaSrc ? `<img src="${esc(respTecnicoAssinaturaSrc)}" alt="Assinatura" style="max-height:60px;display:block;margin:0 auto 8px;">` : '<div class="line"></div>'}
     <div style="text-align:center">${respTec}<br><small class="muted">Responsável Técnico</small></div>
   </div>
 

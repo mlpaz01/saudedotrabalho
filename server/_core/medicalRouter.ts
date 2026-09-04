@@ -36,6 +36,17 @@ function rowsOf(result: any): any[] {
       : [];
 }
 
+const LEGACY_GENERIC_PERIODICITY =
+  "Definir pelo médico conforme classificação do risco, NR-07 e anexos aplicáveis.";
+
+function isLegacyGenericPeriodicity(value: unknown) {
+  return (
+    String(value || "")
+      .trim()
+      .toLowerCase() === LEGACY_GENERIC_PERIODICITY.toLowerCase()
+  );
+}
+
 function roleOf(ctx: any) {
   return String(ctx.user?.role || "");
 }
@@ -2140,7 +2151,9 @@ export const medicalRouter = router({
           });
         monitoringName = exam.name;
         catalogPeriodicity = exam.default_periodicity || null;
-        periodicity = periodicity || catalogPeriodicity;
+        if (!periodicity || isLegacyGenericPeriodicity(periodicity)) {
+          periodicity = catalogPeriodicity;
+        }
         periodicitySource = periodicity && catalogPeriodicity && periodicity !== catalogPeriodicity
           ? "medical_override"
           : "catalog";

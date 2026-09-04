@@ -9,7 +9,8 @@ import {
   varchar,
   float,
   json,
-  decimal} from "drizzle-orm/mysql-core";
+  decimal,
+  date} from "drizzle-orm/mysql-core";
 
 // ─── Users ───────────────────────────────────────────────────────────────────
 export const users = mysqlTable("users", {
@@ -29,6 +30,8 @@ export const users = mysqlTable("users", {
   position: varchar("position", { length: 120 }),
   employeeRegistration: varchar("employee_registration", { length: 120 }),
   cpf: varchar("cpf", { length: 20 }),
+  sex: varchar("sex", { length: 30 }),
+  birthDate: date("birth_date", { mode: "date" }),
   whatsappE164: varchar("whatsapp_e164", { length: 20 }),
   employmentStatus: varchar("employment_status", { length: 30 }).default("active").notNull(),
   countsAsEmployee: tinyint("counts_as_employee"),

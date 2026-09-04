@@ -301,6 +301,11 @@ class SDKServer {
       throw ForbiddenError("User not found");
     }
 
+    const accessBlock = await db.getAccessBlockForUser(user.id);
+    if (accessBlock?.blocked) {
+      throw ForbiddenError(accessBlock.reason || "Acesso bloqueado pelo Super Admin.");
+    }
+
     await db.upsertUser({
       openId: user.openId,
       lastSignedIn: signedInAt,

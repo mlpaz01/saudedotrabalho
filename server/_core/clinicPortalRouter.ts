@@ -17,6 +17,8 @@ import {
   summarizeClinicBilling,
   type ClinicOrderStatus,
 } from "./clinicPortal";
+import { evaluateAndStoreExamResult } from "./examReferenceService";
+import { recordTechnicalChangeEvent } from "./technicalChangeEvents";
 import { protectedProcedure, router } from "./trpc";
 
 let clinicTablesReady = false;
@@ -460,7 +462,7 @@ export const clinicPortalRouter = router({
                 content: [
                   {
                     type: "text",
-                    text: `Leia este resultado somente como apoio de digitacao. O exame esperado e ${order.exam_name}. Retorne JSON com performedDate (YYYY-MM-DD), resultType (qualitativo, quantitativo ou misto), resultSummary, referenceText, parameters [{name,value,unit,reference}], confidence e warnings. Nao conclua diagnostico, autenticidade ou aptidao.`,
+                    text: `Leia este resultado somente como apoio de digitacao. O exame esperado e ${order.exam_name}. Retorne JSON com performedDate (YYYY-MM-DD), methodName, resultType (qualitativo, quantitativo ou misto), resultSummary, referenceText, parameters [{name,value,unit,reference}], confidence e warnings. Nao conclua diagnostico, autenticidade ou aptidao.`,
                   },
                   {
                     type: "image_url",
@@ -500,6 +502,7 @@ export const clinicPortalRouter = router({
       z.object({
         orderId: z.number().int().positive(),
         performedAt: z.string().min(10).max(40),
+        methodName: z.string().max(255).optional(),
         resultType: z.enum(["qualitativo", "quantitativo", "misto"]),
         resultSummary: z.string().max(20000).optional(),
         referenceText: z.string().max(50000).optional(),
@@ -544,15 +547,59 @@ export const clinicPortalRouter = router({
       let resultId = Number(existing?.id || 0);
       if (resultId) {
         await db.execute(
-          drzSql`UPDATE occupational_exam_results SET performed_at=${input.performedAt},laboratory_name=${clinicName},result_type=${input.resultType},result_summary=${input.resultSummary || null},parameters_json=${JSON.stringify(input.parameters)},reference_text=${input.referenceText || null},classification='pendente_revisao',source='clinica',identity_status='confirmado',document_private_path=COALESCE(${documentPath},document_private_path),reviewed_by=NULL,reviewed_at=NULL,updated_at=NOW() WHERE id=${resultId} AND company_id=${companyId}`
+          drzSql`UPDATE occupational_exam_results SET performed_at=${input.performedAt},laboratory_name=${clinicName},method_name=${input.methodName || null},result_type=${input.resultType},result_summary=${input.resultSummary || null},parameters_json=${JSON.stringify(input.parameters)},reference_text=${input.referenceText || null},classification='pendente_revisao',source='clinica',identity_status='confirmado',document_private_path=COALESCE(${documentPath},document_private_path),reviewed_by=NULL,reviewed_at=NULL,updated_at=NOW() WHERE id=${resultId} AND company_id=${companyId}`
         );
       } else {
         const created: any = await db.execute(
-          drzSql`INSERT INTO occupational_exam_results (company_id,order_id,collaborator_id,exam_id,performed_at,laboratory_name,result_type,result_summary,parameters_json,reference_text,classification,source,identity_status,document_private_path,created_by)
-          VALUES (${companyId},${input.orderId},${Number(order.collaborator_id)},${Number(order.exam_id)},${input.performedAt},${clinicName},${input.resultType},${input.resultSummary || null},${JSON.stringify(input.parameters)},${input.referenceText || null},'pendente_revisao','clinica','confirmado',${documentPath},${Number(ctx.user.id)})`
+          drzSql`INSERT INTO occupational_exam_results (company_id,order_id,collaborator_id,exam_id,performed_at,laboratory_name,method_name,result_type,result_summary,parameters_json,reference_text,classification,source,identity_status,document_private_path,created_by)
+          VALUES (${companyId},${input.orderId},${Number(order.collaborator_id)},${Number(order.exam_id)},${input.performedAt},${clinicName},${input.methodName || null},${input.resultType},${input.resultSummary || null},${JSON.stringify(input.parameters)},${input.referenceText || null},'pendente_revisao','clinica','confirmado',${documentPath},${Number(ctx.user.id)})`
         );
         resultId = Number((created as any)[0]?.insertId || 0);
       }
+      const screening = await evaluateAndStoreExamResult(
+        db,
+        companyId,
+        resultId,
+        Number(ctx.user.id)
+      );
+      await recordTechnicalChangeEvent(db, {
+        companyId,
+        originRole: "clinica",
+        targetRole: "sesmt",
+        changeType: existing ? "clinic_exam_result_updated" : "clinic_exam_result_submitted",
+        entityType: "exam_result",
+        entityId: resultId,
+        title: existing
+          ? "Resultado atualizado pela clínica credenciada"
+          : "Novo resultado lançado pela clínica credenciada",
+        summary: `${order.collaborator_name} · ${order.exam_name} · ${screening?.status || "pendente_revisao"}`,
+        actionExpected:
+          "O SESMT deve conferir o resultado recebido, acompanhar pendências e acionar o médico quando houver necessidade de avaliação.",
+        after: {
+          collaborator: order.collaborator_name,
+          cpf: order.cpf || null,
+          matricula: order.employee_registration || null,
+          filial: order.branch_name || null,
+          setor: order.sector_name || null,
+          cargo: order.position || null,
+          exame: order.exam_name,
+          dataExame: input.performedAt,
+          dataLancamento: new Date().toISOString(),
+          clinica: clinicName,
+          cnpjClinica: order.provider_cnpj || null,
+          resultado: input.resultSummary || null,
+          classificacao: screening?.status || "pendente_revisao",
+          prioridadeMedica: screening?.medicalPriority || null,
+          observacoes: screening?.summary || input.referenceText || null,
+        },
+        context: {
+          orderId: input.orderId,
+          providerId,
+          providerName: clinicName,
+          companyName: order.company_name || null,
+        },
+        createdBy: Number(ctx.user.id),
+      });
       await progressForOrder(db, companyId, providerId, input.orderId);
       await db.execute(
         drzSql`UPDATE occupational_provider_order_progress SET result_id=${resultId},performed_at=${input.performedAt},workflow_status=IF(workflow_status='concluida','concluida','resultado_enviado') WHERE company_id=${companyId} AND provider_id=${providerId} AND order_id=${input.orderId}`
@@ -574,7 +621,7 @@ export const clinicPortalRouter = router({
         Number(order.collaborator_id),
         { orderId: input.orderId }
       );
-      return { ok: true, resultId };
+      return { ok: true, resultId, screening };
     }),
 
   billing: protectedProcedure

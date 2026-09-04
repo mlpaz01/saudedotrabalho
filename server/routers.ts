@@ -40,6 +40,7 @@ import {
   technicalChangedFields,
 } from "./_core/technicalChangeEvents";
 import { mandatoryTrainingRouter } from "./_core/mandatoryTrainingRouter";
+import { sgqRouter } from "./_core/sgqRouter";
 import { resolveImportedRoles } from "./_core/importRoles";
 import {
   MAX_DOCUMENT_RICH_TEXT_BYTES,
@@ -227,6 +228,8 @@ import {
   removeModuleFromTrail,
   removeTrailItem,
   getCompanyNameById,
+  getAccessBlockForUser,
+  logAccessSecurityAction,
   getImpersonationContext,
   listProfessionalLicenses,
   createProfessionalLicense,
@@ -382,22 +385,31 @@ async function computeStreakDays(userId: number): Promise<number> {
   return streak;
 }
 
-// Salva uma assinatura (PNG/JPG em data URL) em disco e devolve a URL origin-absolute
-// servida pelo nginx em /uploads/signatures/...; retorna null se não houver imagem.
+// Salva uma assinatura (PNG/JPG/WEBP em data URL) no diretório de uploads ativo
+// e devolve a URL servida pelo nginx em /uploads/signatures/...
 async function saveSignatureFile(
-  cid: number,
+  cid: number | string,
   base64?: string | null
 ): Promise<string | null> {
   if (!base64) return null;
   const fsmod = await import("fs");
   const pathmod = await import("path");
-  const dir = "/var/www/saudedotrabalho/uploads/signatures";
+  const dir = pathmod.join(getUploadRoot(), "signatures");
   if (!fsmod.existsSync(dir)) fsmod.mkdirSync(dir, { recursive: true });
-  const m = /^data:image\/(png|jpe?g)/i.exec(base64);
-  const ext = m ? (m[1].toLowerCase().startsWith("jp") ? "jpg" : "png") : "png";
+  const m = /^data:image\/(png|jpe?g|webp)/i.exec(base64);
+  const ext = m
+    ? (m[1].toLowerCase().startsWith("jp") ? "jpg" : m[1].toLowerCase())
+    : "png";
   const data = base64.replace(/^data:[^;]+;base64,/, "");
   const buf = Buffer.from(data, "base64");
-  const filename = `${cid}_${Date.now()}_sig.${ext}`;
+  if (buf.length > 1_500_000) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Imagem muito grande. Use uma assinatura em PNG, JPG ou WEBP com até 1,5MB.",
+    });
+  }
+  const hash = crypto.createHash("sha1").update(buf).digest("hex").slice(0, 10);
+  const filename = `${cid}_${Date.now()}_${hash}_sig.${ext}`;
   fsmod.writeFileSync(pathmod.join(dir, filename), buf);
   return `/uploads/signatures/${filename}`;
 }
@@ -1288,6 +1300,12 @@ async function ensureAuthIdentityColumns(db: any) {
   } catch (_) {}
   try {
     await db.execute(drzSql`ALTER TABLE users ADD INDEX idx_users_cpf (cpf)`);
+  } catch (_) {}
+  try {
+    await db.execute(drzSql`ALTER TABLE users ADD COLUMN sex VARCHAR(30) NULL`);
+  } catch (_) {}
+  try {
+    await db.execute(drzSql`ALTER TABLE users ADD COLUMN birth_date DATE NULL`);
   } catch (_) {}
   try {
     await db.execute(
@@ -4470,6 +4488,12 @@ function rowsOf<T = any>(result: any): T[] {
       : [];
 }
 
+function isBlockedSubscriptionStatus(status: unknown): boolean {
+  return ["blocked", "bloqueado", "suspended", "suspenso"].includes(
+    String(status ?? "").trim().toLowerCase()
+  );
+}
+
 async function ensureTotvsRmTables() {
   const db = await getDb();
   if (!db)
@@ -4628,6 +4652,7 @@ export const appRouter = router({
   technicalDocuments: technicalDocumentsRouter,
   technicalCommunication: technicalCommunicationRouter,
   mandatoryTraining: mandatoryTrainingRouter,
+  sgq: sgqRouter,
   ehs: ehsRouter,
   denuncia: denunciaRouter,
 
@@ -4927,6 +4952,16 @@ export const appRouter = router({
               code: "INTERNAL_SERVER_ERROR",
               message: "UsuÃ¡rio nÃ£o encontrado.",
             });
+          const accessBlock0 = await getAccessBlockForUser(Number(user0.id));
+          const accessBlocked0 = Boolean(accessBlock0?.blocked);
+          const accessBlockReason0 = accessBlock0?.reason ?? "";
+          if (accessBlocked0) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message:
+                accessBlockReason0 || "Acesso bloqueado pelo Super Admin.",
+            });
+          }
           if (user0.role !== "super_admin" && user0.role !== "admin_global") {
             const { isCompanyAccessAllowed } = await import(
               "./_core/business_hours"
@@ -5027,6 +5062,17 @@ export const appRouter = router({
             code: "INTERNAL_SERVER_ERROR",
             message: "Usuário não encontrado.",
           });
+
+        const accessBlock = await getAccessBlockForUser(Number(user.id));
+        const accessBlocked = Boolean(accessBlock?.blocked);
+        const accessBlockReason = accessBlock?.reason ?? "";
+        if (accessBlocked) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message:
+              accessBlockReason || "Acesso bloqueado pelo Super Admin.",
+          });
+        }
 
         // Sprint 2 item 24 — Janela de acesso por empresa.
         // Super admin / admin_global passam sempre. Para os demais, valida regras
@@ -6213,7 +6259,9 @@ export const appRouter = router({
           sesmt: "SESMT",
           medico: "Médico do Trabalho",
           clinica: "Clínica Credenciada",
-          treinamento: "Responsável por Treinamentos",
+          treinamento: "Treinador / Treinamentos",
+          gestor_qualidade: "Gestor da Qualidade / SGQ",
+          qualidade: "Operação da Qualidade",
           cipa: "CIPA",
           admin: "Administrador",
           company_admin: "Admin Empresa",
@@ -6225,8 +6273,12 @@ export const appRouter = router({
           if (!v) return "user";
           if (v.includes("cipa") || v.includes("cipeiro")) return "cipa";
           if (v.includes("sesmt")) return "sesmt";
-          if (v.includes("treinamento") || v.includes("capacitacao") || v.includes("capacitação"))
+          if (v.includes("treinador") || v.includes("treinamento") || v.includes("capacitacao") || v.includes("capacitação"))
             return "treinamento";
+          if (v.includes("sgq") || v.includes("gestao da qualidade") || v.includes("gestão da qualidade") || v.includes("gestor da qualidade"))
+            return "gestor_qualidade";
+          if (v.includes("qualidade"))
+            return "qualidade";
           if (
             [
               "chefia",
@@ -6677,10 +6729,15 @@ export const appRouter = router({
           name: z.string().optional(),
           email: z.string().email().optional(),
           role: z
-            .enum(["user", "chefia", "rh", "sesmt", "medico", "treinamento", "cipa", "admin"])
+            .enum(["user", "chefia", "rh", "sesmt", "medico", "treinamento", "gestor_qualidade", "qualidade", "cipa", "admin"])
             .optional(),
           cpf: z.string().nullable().optional(),
           employeeRegistration: z.string().max(120).nullable().optional(),
+          sex: z
+            .enum(["feminino", "masculino", "outro", "nao_informado"])
+            .nullable()
+            .optional(),
+          birthDate: z.string().date().nullable().optional(),
           employmentStatus: z
             .enum(["active", "away", "terminated", "death", "retired", "other"])
             .optional(),
@@ -6824,6 +6881,17 @@ export const appRouter = router({
           }
           await db.execute(
             drzSql`UPDATE users SET employee_registration=${registration} WHERE id=${input.userId}`
+          );
+        }
+        if (input.sex !== undefined) {
+          const sex = input.sex === "nao_informado" ? null : input.sex;
+          await db.execute(
+            drzSql`UPDATE users SET sex = ${sex} WHERE id = ${input.userId}`
+          );
+        }
+        if (input.birthDate !== undefined) {
+          await db.execute(
+            drzSql`UPDATE users SET birth_date = ${input.birthDate || null} WHERE id = ${input.userId}`
           );
         }
         if (input.cpf !== undefined) {
@@ -9545,6 +9613,185 @@ export const appRouter = router({
         return { ok: true };
       }),
 
+    setCompanyAccess: superAdminProcedure
+      .input(
+        z.object({
+          companyId: z.number().int(),
+          blocked: z.boolean(),
+          reason: z.string().max(1000).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const current: any = await db.execute(
+          drzSql`SELECT id, name, subscription_status, is_active FROM companies WHERE id=${input.companyId} LIMIT 1`
+        );
+        const company = rowsOf<any>(current)[0];
+        if (!company) throw new TRPCError({ code: "NOT_FOUND" });
+        await db.execute(drzSql`
+          UPDATE companies
+             SET is_active=${input.blocked ? 0 : 1},
+                 subscription_status=${input.blocked
+                   ? "blocked"
+                   : (isBlockedSubscriptionStatus(company.subscription_status) ? "active" : String(company.subscription_status || "active"))}
+           WHERE id=${input.companyId}`);
+        await logAccessSecurityAction({
+          operatorUserId: Number((ctx.user as any).id ?? 0) || null,
+          operatorEmail: String((ctx.user as any).email ?? "") || null,
+          companyId: input.companyId,
+          action: input.blocked ? "company_blocked" : "company_unblocked",
+          reason: input.reason ?? null,
+          details: {
+            companyName: company.name,
+            previousStatus: company.subscription_status,
+            previousIsActive: company.is_active,
+          },
+        });
+        return { ok: true };
+      }),
+
+    listCompanyUsersForAccess: superAdminProcedure
+      .input(z.object({ companyId: z.number().int() }))
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const r: any = await db.execute(drzSql`
+          SELECT u.id, u.name, u.email, u.role, u.lastSignedIn, COALESCE(u.is_active, 1) AS is_active,
+                 ce.id AS corporate_email_id, ce.isActive AS corporate_email_active, ce.hasSetPassword AS has_set_password,
+                 ce.employeeName AS employee_name
+            FROM users u
+            LEFT JOIN corporate_emails ce ON ce.userId = u.id OR (LOWER(ce.email) = LOWER(u.email) AND ce.company_id = u.company_id)
+           WHERE u.company_id=${input.companyId}
+           GROUP BY u.id
+           ORDER BY u.name ASC, u.email ASC`);
+        return rowsOf<any>(r).map((row) => ({
+          id: Number(row.id),
+          name: row.name || row.employee_name || row.email || `Usuário ${row.id}`,
+          email: row.email,
+          role: row.role,
+          lastSignedIn: row.lastSignedIn,
+          isActive: Number(row.is_active ?? 1) === 1 && (row.corporate_email_active == null || Number(row.corporate_email_active) === 1),
+          userIsActive: Number(row.is_active ?? 1) === 1,
+          corporateEmailActive: row.corporate_email_active == null ? null : Number(row.corporate_email_active) === 1,
+          hasSetPassword: Number(row.has_set_password ?? 0) === 1,
+        }));
+      }),
+
+    setUserAccess: superAdminProcedure
+      .input(
+        z.object({
+          userId: z.number().int(),
+          blocked: z.boolean(),
+          reason: z.string().max(1000).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const current: any = await db.execute(
+          drzSql`SELECT id, name, email, company_id, role, is_active FROM users WHERE id=${input.userId} LIMIT 1`
+        );
+        const user = rowsOf<any>(current)[0];
+        if (!user) throw new TRPCError({ code: "NOT_FOUND" });
+        await db.execute(
+          drzSql`UPDATE users SET is_active=${input.blocked ? 0 : 1}, updatedAt=NOW() WHERE id=${input.userId}`
+        );
+        await db.execute(
+          drzSql`UPDATE corporate_emails SET isActive=${input.blocked ? 0 : 1} WHERE userId=${input.userId} OR LOWER(email)=LOWER(${user.email ?? ""})`
+        );
+        await logAccessSecurityAction({
+          operatorUserId: Number((ctx.user as any).id ?? 0) || null,
+          operatorEmail: String((ctx.user as any).email ?? "") || null,
+          companyId: Number(user.company_id ?? 0) || null,
+          targetUserId: input.userId,
+          targetEmail: user.email ?? null,
+          action: input.blocked ? "user_blocked" : "user_unblocked",
+          reason: input.reason ?? null,
+          details: {
+            userName: user.name,
+            role: user.role,
+            previousIsActive: user.is_active,
+          },
+        });
+        return { ok: true };
+      }),
+
+    resetManagedUserPassword: superAdminProcedure
+      .input(
+        z.object({
+          userId: z.number().int(),
+          temporaryPassword: z.string().min(8).max(120),
+          reason: z.string().max(1000).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const current: any = await db.execute(
+          drzSql`SELECT id, name, email, company_id, role FROM users WHERE id=${input.userId} LIMIT 1`
+        );
+        const user = rowsOf<any>(current)[0];
+        if (!user?.email) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Usuário sem e-mail corporativo para reset de senha.",
+          });
+        }
+        const hash = await bcrypt.hash(input.temporaryPassword, 10);
+        await db.execute(drzSql`
+          UPDATE corporate_emails
+             SET passwordHash=${hash}, hasSetPassword=1, isActive=1, userId=${input.userId},
+                 activation_token=NULL, activation_expires_at=NULL
+           WHERE userId=${input.userId} OR LOWER(email)=LOWER(${user.email})`);
+        await db.execute(
+          drzSql`UPDATE users SET is_active=1, updatedAt=NOW() WHERE id=${input.userId}`
+        );
+        await logAccessSecurityAction({
+          operatorUserId: Number((ctx.user as any).id ?? 0) || null,
+          operatorEmail: String((ctx.user as any).email ?? "") || null,
+          companyId: Number(user.company_id ?? 0) || null,
+          targetUserId: input.userId,
+          targetEmail: user.email,
+          action: "user_password_reset",
+          reason: input.reason ?? null,
+          details: { userName: user.name, role: user.role },
+        });
+        return { ok: true };
+      }),
+
+    listAccessSecurityLogs: superAdminProcedure
+      .input(z.object({ limit: z.number().int().min(1).max(300).default(100) }).optional())
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await db.execute(drzSql.raw(`CREATE TABLE IF NOT EXISTS access_security_audit_logs (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          operator_user_id INT NULL,
+          operator_email VARCHAR(320) NULL,
+          company_id INT NULL,
+          white_label_partner_id INT NULL,
+          target_user_id INT NULL,
+          target_email VARCHAR(320) NULL,
+          action VARCHAR(80) NOT NULL,
+          reason TEXT NULL,
+          details_json JSON NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_access_security_company (company_id, created_at),
+          INDEX idx_access_security_user (target_user_id, created_at),
+          INDEX idx_access_security_action (action, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`));
+        const limit = input?.limit ?? 100;
+        const r: any = await db.execute(drzSql`
+          SELECT l.*, c.name AS company_name, w.legal_name AS white_label_name
+            FROM access_security_audit_logs l
+            LEFT JOIN companies c ON c.id=l.company_id
+            LEFT JOIN white_label_partners w ON w.id=l.white_label_partner_id
+           ORDER BY l.id DESC
+           LIMIT ${limit}`);
+        return rowsOf<any>(r);
+      }),
+
     deleteCompany: superAdminProcedure
 
       .input(z.object({ id: z.number() }))
@@ -10754,10 +11001,31 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const { upsertWhiteLabelPartner } = await import("./_core/whiteLabel");
+        let previousStatus: string | null = null;
+        if (input.id) {
+          const db = await getDb();
+          if (db) {
+            const old: any = await db.execute(
+              drzSql`SELECT status FROM white_label_partners WHERE id=${input.id} LIMIT 1`
+            ).catch(() => null);
+            previousStatus = rowsOf<any>(old)[0]?.status ?? null;
+          }
+        }
         const result = await upsertWhiteLabelPartner(
           input,
           Number((ctx.user as any)?.id || 0)
         );
+        const finalPartnerId = Number(input.id ?? result.id ?? 0) || null;
+        if (finalPartnerId && previousStatus !== null && previousStatus !== input.status) {
+          await logAccessSecurityAction({
+            operatorUserId: Number((ctx.user as any).id ?? 0) || null,
+            operatorEmail: String((ctx.user as any).email ?? "") || null,
+            whiteLabelPartnerId: finalPartnerId,
+            action: isBlockedSubscriptionStatus(input.status) ? "white_label_blocked" : "white_label_status_changed",
+            reason: input.changeNote ?? null,
+            details: { previousStatus, newStatus: input.status, legalName: input.legalName },
+          });
+        }
         return { ok: true, ...result };
       }),
 
@@ -17004,7 +17272,8 @@ Return only the JSON content object (no wrapper). Format per type:
         const url = await generateCronogramaPDF(
           data.assessment,
           data.actions,
-          data.sectorGroups
+          data.sectorGroups,
+          data.inventory
         );
         return { ok: true, url };
       }),
@@ -20064,39 +20333,14 @@ Return only the JSON content object (no wrapper). Format per type:
     uploadSignature: adminOrRhProcedure
       .input(
         z.object({
-          imageBase64: z.string().max(500_000),
+          imageBase64: z.string().max(2_100_000),
           type: z.enum(["resp_tecnico", "logo"]).default("resp_tecnico"),
         })
       )
       .mutation(async ({ ctx, input }) => {
         const cid = (ctx.user as any).companyId ?? "global";
-        const uid = (ctx.user as any).id;
-        const fs = await import("fs");
-        const path = await import("path");
-        const crypto = await import("crypto");
-        const base64Data = input.imageBase64.replace(
-          /^data:image\/\w+;base64,/,
-          ""
-        );
-        const buffer = Buffer.from(base64Data, "base64");
-        if (buffer.length > 200_000)
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "Imagem muito grande (max 200KB)",
-          });
-        const ext = input.imageBase64.startsWith("data:image/png")
-          ? ".png"
-          : ".jpg";
-        const hash = crypto
-          .createHash("md5")
-          .update(buffer)
-          .digest("hex")
-          .slice(0, 8);
-        const fileName = `${input.type}_${cid}_${uid}_${hash}${ext}`;
-        const uploadDir = "/var/www/saudedotrabalho/uploads/signatures";
-        fs.mkdirSync(uploadDir, { recursive: true });
-        fs.writeFileSync(path.join(uploadDir, fileName), buffer);
-        return { url: `/uploads/signatures/${fileName}` };
+        const url = await saveSignatureFile(`${input.type}_${cid}`, input.imageBase64);
+        return { url: url || "" };
       }),
 
     dashboard: adminOrRhProcedure.query(async ({ ctx }) => {

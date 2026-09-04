@@ -926,11 +926,15 @@ function AssignmentDialog({ user, onClose, onSaved }: { user: any; onClose: () =
   const [employeeRegistration, setEmployeeRegistration] = useState<string>(
     user?.employeeRegistration ?? user?.employee_registration ?? ""
   );
+  const [sex, setSex] = useState<string>(user?.sex ?? "nao_informado");
+  const [birthDate, setBirthDate] = useState<string>(
+    String(user?.birthDate ?? user?.birth_date ?? "").slice(0, 10)
+  );
   const [role, setRole] = useState<string>(user?.role ?? "user");
   const [employmentStatus, setEmploymentStatus] = useState<string>(user?.employmentStatus ?? "active");
   const [countsAsEmployee, setCountsAsEmployee] = useState<boolean>(
     user?.countsAsEmployee == null
-      ? ["user", "chefia", "cipa", "sesmt", "admin", "company_admin"].includes(String(user?.role ?? "user"))
+      ? ["user", "chefia", "cipa", "sesmt", "gestor_qualidade", "qualidade", "admin", "company_admin"].includes(String(user?.role ?? "user"))
       : Boolean(Number(user.countsAsEmployee))
   );
   const [branchId, setBranchId] = useState<number | null>(user?.branchId ?? null);
@@ -967,6 +971,8 @@ function AssignmentDialog({ user, onClose, onSaved }: { user: any; onClose: () =
       email: email.trim().toLowerCase(),
       cpf: cpf.trim() || null,
       employeeRegistration: employeeRegistration.trim() || null,
+      sex: sex as any,
+      birthDate: birthDate || null,
       role: role as any,
       employmentStatus: employmentStatus as any,
       countsAsEmployee,
@@ -1013,6 +1019,31 @@ function AssignmentDialog({ user, onClose, onSaved }: { user: any; onClose: () =
             </p>
           </div>
           <div>
+            <Label>Sexo para referências clínicas</Label>
+            <select
+              className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              value={sex}
+              onChange={(e) => setSex(e.target.value)}
+            >
+              <option value="nao_informado">Não informado</option>
+              <option value="feminino">Feminino</option>
+              <option value="masculino">Masculino</option>
+              <option value="outro">Outro</option>
+            </select>
+          </div>
+          <div>
+            <Label>Data de nascimento</Label>
+            <Input
+              className="mt-2"
+              type="date"
+              value={birthDate}
+              onChange={(e) => setBirthDate(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground mt-1">
+              Utilizada apenas para selecionar faixas de referência por idade.
+            </p>
+          </div>
+          <div>
             <Label>Status do colaborador</Label>
             <select
               className="w-full mt-2 border rounded-md px-3 py-2 text-sm bg-white"
@@ -1039,7 +1070,9 @@ function AssignmentDialog({ user, onClose, onSaved }: { user: any; onClose: () =
               <option value="rh">RH / Saúde</option>
               <option value="sesmt">SESMT</option>
               <option value="medico">Médico do Trabalho</option>
-              <option value="treinamento">Responsável por Treinamentos</option>
+              <option value="treinamento">Treinador / Treinamentos</option>
+              <option value="gestor_qualidade">Gestor da Qualidade / SGQ</option>
+              <option value="qualidade">Operação da Qualidade</option>
               <option value="cipa">CIPA</option>
               <option value="admin">Administrador</option>
             </select>

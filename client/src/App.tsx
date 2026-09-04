@@ -117,6 +117,7 @@ import MedicalCenter from "@/pages/MedicalCenter";
 import OccupationalOperations from "@/pages/OccupationalOperations";
 import TechnicalUpdates from "@/pages/TechnicalUpdates";
 import MandatoryTraining from "@/pages/MandatoryTraining";
+import SgqCenter from "@/pages/SgqCenter";
 import AdminPpp from "@/pages/admin/AdminPpp";
 import MyVaccines from "@/pages/MyVaccines";
 import MyOccupationalDocuments from "@/pages/MyOccupationalDocuments";
@@ -152,7 +153,7 @@ function isSuperAdmin(role?: string) {
 
 function isManagerRole(role?: string) {
   return (role === "admin" || role === "rh" || role === "admin_global" || role === "company_admin" || role === "super_admin"
-    || role === "chefia" || role === "sesmt" || role === "psicologo");
+    || role === "chefia" || role === "sesmt" || role === "psicologo" || role === "gestor_qualidade" || role === "qualidade");
 }
 
 // P15 #4 — Integrante da CIPA acessa só /admin/cipa (via employeeNav "Gestão da CIPA"),
@@ -236,6 +237,14 @@ function OccupationalProgramsRoute({ component: Component }: { component: React.
   return <Component />;
 }
 
+function SgqRoute({ component: Component }: { component: React.ComponentType }) {
+  const { user, loading } = useAuth();
+  if (loading) return (<div className="min-h-screen brand-gradient flex items-center justify-center"><div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" /></div>);
+  if (!user) return <Redirect to="/login" />;
+  if (!["gestor_qualidade", "qualidade", "treinamento", "rh", "admin", "company_admin", "admin_global", "super_admin"].includes(user.role)) return <Redirect to="/inicio" />;
+  return <Component />;
+}
+
 // P14 #5 — Perfil Intermediador: área comercial própria, isolada do admin/RH.
 function IntermediadorRoute({
   component: Component,
@@ -273,6 +282,7 @@ function RoleAwareDashboard() {
   if (user.role === "medico") return <Redirect to="/medico"/>;
   if (user.role === "clinica") return <Redirect to="/clinica"/>;
   if (user.role === "treinamento") return <Redirect to="/treinamentos-obrigatorios"/>;
+  if (["gestor_qualidade", "qualidade"].includes(user.role)) return <Redirect to="/sgq"/>;
   if (isManagerRole(user.role)) return <ManagerDashboard />;
   return <Redirect to="/inicio" />;
 }
@@ -308,6 +318,7 @@ function Router() {
       <Route path="/documentos-ocupacionais" component={() => <ProtectedRoute component={MyOccupationalDocuments} />} />
       <Route path="/treinamentos-obrigatorios" component={() => <ProtectedRoute component={MandatoryTraining} />} />
       <Route path="/admin/treinamentos-obrigatorios" component={() => <ProtectedRoute component={MandatoryTraining} adminOnly />} />
+      <Route path="/sgq" component={() => <SgqRoute component={SgqCenter} />} />
       <Route path="/clinica" component={() => <ClinicRoute component={ClinicPortal} />} />
       <Route path="/admin/qualificacoes" component={() => (<ProtectedRoute component={AdminQualifications} adminOnly />)} />
       <Route path="/area-de-descompressao" component={() => <ProtectedRoute component={Decompression} />} />
@@ -394,6 +405,7 @@ function Router() {
       <Route path="/admin/pgr/auditoria" component={() => (<ProtectedRoute component={AdminPGRAudit} adminOnly />)} />
       <Route path="/admin/arquivos" component={() => <ProtectedRoute component={AdminFiles} adminOnly />} />
       <Route path="/admin/treinamentos-nr" component={() => (<ProtectedRoute component={AdminNRTraining} adminOnly />)} />
+      <Route path="/admin/sgq" component={() => <SgqRoute component={SgqCenter} />} />
       <Route path="/admin/pcmso" component={() => <MedicalRoute component={MedicalCenter} />}
         />
       <Route path="/admin/saude-ocupacional" component={() => <OccupationalRoute component={OccupationalOperations} />} />
@@ -458,6 +470,7 @@ function Router() {
       <Route path="/super-admin/integracoes/esocial" component={() => (<SuperAdminRoute component={ESocialCenter} />)} />
       <Route path="/super-admin/biometria" component={() => (<SuperAdminRoute component={BiometricManagement} />)} />
       <Route path="/super-admin/crm" component={() => <SuperAdminRoute component={CommercialCrm} />} />
+      <Route path="/super-admin/sgq" component={() => <SuperAdminRoute component={SgqCenter} />} />
       <Route path="/super-admin/white-label" component={() => <SuperAdminRoute component={SuperAdminWhiteLabel} />} />
       <Route path="/rede" component={() => (<WhiteLabelNetworkRoute component={WhiteLabelNetworkAdmin} />)} />
       <Route path="/rede/biblioteca-cursos" component={() => (<WhiteLabelNetworkRoute component={WhiteLabelCourseLibrary} />)} />
